@@ -1,0 +1,16 @@
+[Unit]
+Description=Lightld local execution sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lightld
+ExecStart=/usr/bin/node --experimental-strip-types src/cli/run-local-execution-main.ts
+Restart=always
+RestartSec=5
+User=lightld
+EnvironmentFile=/etc/lightld-execution.env
+ReadWritePaths=/opt/lightld/state
+
+[Install]
+WantedBy=multi-user.target

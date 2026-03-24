@@ -1,0 +1,27 @@
+strategyId: new-token-v1
+poolClass: new-token
+exitMint: SOL
+hardGates:
+  requireSolRoute: true
+  minLiquidityUsd: 5000
+filters:
+  minHolders: 25
+  minLiquidityUsd: 5000
+scoringWeights:
+  holders: 0.4
+  liquidity: 0.35
+  momentum: 0.25
+riskThresholds:
+  maxPositionSol: 2
+  maxDailyLossSol: 1
+sessionWindows:
+  - start: "09:30"
+    end: "16:00"
+solRouteLimits:
+  maxSlippageBps: 100
+  maxImpactBps: 200
+live:
+  enabled: true
+  maxLivePositionSol: 0.25
+  autoFlattenRequired: true
+  requireWhitelist: true

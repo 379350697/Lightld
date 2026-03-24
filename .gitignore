@@ -1,0 +1,11 @@
+.worktrees/
+.npm-cache/
+liudx-ref/
+node_modules/
+dist/
+coverage/
+tmp/
+state/
+secrets/
+*.sqlite
+*.env

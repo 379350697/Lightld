@@ -1,0 +1,16 @@
+[Unit]
+Description=Lightld long-running live runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lightld
+ExecStart=/usr/bin/node --experimental-strip-types src/cli/run-live-daemon-main.ts --strategy new-token-v1
+Restart=always
+RestartSec=5
+User=lightld
+EnvironmentFile=/etc/lightld.env
+ReadWritePaths=/opt/lightld/state /opt/lightld/tmp/journals
+
+[Install]
+WantedBy=multi-user.target

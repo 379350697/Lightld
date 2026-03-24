@@ -1,0 +1,27 @@
+strategyId: large-pool-v1
+poolClass: large-pool
+exitMint: SOL
+hardGates:
+  requireSolRoute: true
+  minLiquidityUsd: 20000
+filters:
+  minHolders: 100
+  minLiquidityUsd: 20000
+scoringWeights:
+  holders: 0.25
+  liquidity: 0.5
+  momentum: 0.25
+riskThresholds:
+  maxPositionSol: 5
+  maxDailyLossSol: 2
+sessionWindows:
+  - start: "00:00"
+    end: "23:59"
+solRouteLimits:
+  maxSlippageBps: 80
+  maxImpactBps: 150
+live:
+  enabled: false
+  maxLivePositionSol: 0.25
+  autoFlattenRequired: true
+  requireWhitelist: true
