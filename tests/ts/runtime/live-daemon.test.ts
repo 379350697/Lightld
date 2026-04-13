@@ -8,6 +8,7 @@ import { appendJsonLine } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
+import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 
 describe('runLiveDaemon', () => {
   it('writes a health snapshot after running a single tick', async () => {
@@ -234,5 +235,103 @@ describe('runLiveDaemon', () => {
 
     expect(events.some((event) => event.type === 'order' && event.priority === 'low')).toBe(true);
     expect(Object.values(cursor.offsets)).toContain(1);
+  });
+
+  it('proves the staged exit chain withdraw-lp -> inventory -> dca-out across ticks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-exit-chain-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    const accountStates = [
+      {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200 }],
+        journalTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200 }],
+        fills: [{
+          submissionId: 'sub-1',
+          confirmationSignature: 'tx-1',
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          side: 'buy',
+          amount: 1200,
+          recordedAt: '2026-03-22T00:00:02.000Z'
+        }]
+      }
+    ];
+
+    let tick = 0;
+    const seenActions: string[] = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => {
+        const current = tick;
+        tick += 1;
+        const accountState = accountStates[Math.min(current, accountStates.length - 1)];
+
+        return {
+          requestedPositionSol: 0.1,
+          whitelist: ['SAFE'],
+          accountState,
+          context: {
+            pool: { address: 'pool-1', liquidityUsd: 10_000 },
+            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+            trader: current === 0
+              ? { hasInventory: false, hasLpPosition: true, lpNetPnlPct: -25 }
+              : { hasInventory: true, hasLpPosition: false },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          },
+          signer: {
+            sign: async (intent) => ({
+              intent,
+              signerId: 'test-signer',
+              signedAt: '2026-03-22T00:00:01.000Z',
+              signature: 'sig'
+            })
+          },
+          broadcaster: {
+            broadcast: async (signedIntent) => {
+              seenActions.push(signedIntent.intent.side ?? 'unknown');
+              return {
+                status: 'submitted' as const,
+                submissionId: `sub-${current + 1}`,
+                idempotencyKey: signedIntent.intent.idempotencyKey,
+                confirmationSignature: `tx-${current + 1}`
+              };
+            }
+          },
+          confirmationProvider: {
+            poll: async ({ submissionId, confirmationSignature }) => ({
+              submissionId,
+              confirmationSignature,
+              status: 'confirmed' as const,
+              finality: 'finalized' as const,
+              checkedAt: '2026-03-22T00:00:02.000Z'
+            })
+          }
+        };
+      }
+    });
+
+    const ordersRaw = await readFile(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), 'utf8');
+    const orders = ordersRaw.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) as Array<{ side: string }>;
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(seenActions).toEqual(['withdraw-lp', 'sell']);
+    expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
+    expect(positionState?.lastAction).toBe('dca-out');
   });
 });

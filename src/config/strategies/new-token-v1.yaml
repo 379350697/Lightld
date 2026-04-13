@@ -9,14 +9,14 @@ lpConfig:
   stopLossNetPnlPct: 20
   takeProfitNetPnlPct: 30
   minBinStep: 100
-  minVolume24hUsd: 1000
+  minVolume24hUsd: 1000000
   minFeeTvlRatio24h: 0
 hardGates:
   requireSolRoute: true
-  minLiquidityUsd: 10000
+  minLiquidityUsd: 1000
 filters:
   minHolders: 25
-  minLiquidityUsd: 10000
+  minLiquidityUsd: 1000
 scoringWeights:
   holders: 0.0
   liquidity: 0.5
