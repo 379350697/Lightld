@@ -6,18 +6,20 @@
   "scripts": {
     "build": "tsc --noEmit",
     "test": "vitest",
-    "run:strategy": "node --experimental-strip-types src/cli/run-strategy-cycle-main.ts",
-    "run:daemon": "node --experimental-strip-types src/cli/run-live-daemon-main.ts",
-    "run:execution": "node --experimental-strip-types src/cli/run-local-execution-main.ts",
-    "run:signer": "node --experimental-strip-types src/cli/run-local-signer-main.ts",
+    "run:strategy": "node --experimental-strip-types --use-env-proxy src/cli/run-strategy-cycle-main.ts",
+    "run:daemon": "node --experimental-strip-types --use-env-proxy src/cli/run-live-daemon-main.ts",
+    "run:execution": "node --experimental-strip-types --use-env-proxy src/cli/run-local-execution-main.ts",
+    "run:signer": "node --experimental-strip-types --use-env-proxy src/cli/run-local-signer-main.ts",
     "show:status": "node --experimental-strip-types src/cli/show-runtime-status-main.ts",
     "convert:phantom-key": "node --experimental-strip-types src/cli/convert-phantom-key.ts",
-    "run:solana-execution": "node --experimental-strip-types src/cli/run-solana-execution-main.ts",
-    "run:analytics": "node --experimental-strip-types src/cli/run-analytics-server-main.ts"
+    "run:solana-execution": "node --experimental-strip-types --use-env-proxy src/cli/run-solana-execution-main.ts",
+    "run:scanner": "node --experimental-strip-types --use-env-proxy src/cli/run-scanner.ts",
+    "run:analytics": "node --experimental-strip-types --use-env-proxy src/cli/run-analytics-server-main.ts"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",
     "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
   },
@@ -26,6 +28,7 @@
     "@meteora-ag/dlmm": "^1.9.4",
     "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.3",
+    "ws": "^8.20.0",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"
   }

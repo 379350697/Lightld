@@ -10,6 +10,7 @@ import { signSwapTransaction } from './solana-transaction-signer.ts';
 import { MeteoraDlmmClient } from './meteora-dlmm-client.ts';
 import type { LiveBroadcastResult } from '../live-broadcaster.ts';
 import type { LiveConfirmationResult } from '../live-confirmation-provider.ts';
+import { collectLiveQuote } from '../live-quote-service.ts';
 
 const BroadcastRequestSchema = z.object({
   intent: z.object({
@@ -149,10 +150,25 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let signedBase64: string;
 
             if (side === 'buy' || side === 'sell') {
-              // Get Jupiter quote
-              const quoteParams = side === 'buy'
-                ? jupiterClient.buildBuyQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps)
-                : jupiterClient.buildSellQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps);
+              let quoteParams: import('./jupiter-client.ts').JupiterQuoteParams;
+
+              if (side === 'buy') {
+                quoteParams = jupiterClient.buildBuyQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps);
+              } else {
+                // Sell: query actual token balance and sell all
+                const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
+                const tokenAccount = tokenAccounts.find(
+                  (a) => a.account.data.parsed.info.mint === tokenMint
+                );
+                if (!tokenAccount) {
+                  throw new Error(`No token account found for mint ${tokenMint}`);
+                }
+                const tokenLamports = Number(tokenAccount.account.data.parsed.info.tokenAmount.amount);
+                if (tokenLamports <= 0) {
+                  throw new Error(`Token balance is zero for mint ${tokenMint}`);
+                }
+                quoteParams = jupiterClient.buildSellQuoteParams(tokenMint, tokenLamports, defaultSlippageBps);
+              }
 
               const quoteResponse = await jupiterClient.getQuote(quoteParams);
 
@@ -308,6 +324,19 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               journalTokens: walletTokens,
               fills: []
             });
+            return;
+          }
+
+          // Quote — strategy-level exit quote (pure calculation, no external call)
+          if (request.method === 'POST' && request.url === '/quote') {
+            const body = await readBody(request);
+            const payload = JSON.parse(body);
+            const quote = await collectLiveQuote({
+              expectedOutSol: payload.expectedOutSol ?? 0,
+              slippageBps: payload.slippageBps ?? 50,
+              routeExists: payload.routeExists ?? true
+            });
+            writeJson(response, 200, quote);
             return;
           }
 

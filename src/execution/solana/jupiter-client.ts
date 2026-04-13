@@ -1,6 +1,6 @@
 import type { FetchImpl } from '../../ingest/shared/http-client.ts';
 
-const SOL_MINT = 'So11111111111111111111111111111111';
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 export type JupiterQuoteParams = {
   inputMint: string;
@@ -66,6 +66,10 @@ export class JupiterClient {
 
   constructor(options: JupiterClientOptions = {}) {
     this.apiUrl = (options.apiUrl ?? 'https://api.jup.ag').replace(/\/$/, '');
+    // Legacy: quote-api.jup.ag → api.jup.ag (old domain TLS broken through proxy)
+    if (this.apiUrl.includes('quote-api.jup.ag')) {
+      this.apiUrl = 'https://api.jup.ag';
+    }
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 15_000;
@@ -97,7 +101,7 @@ export class JupiterClient {
 
     try {
       const response = await this.fetchImpl(
-        `${this.apiUrl}/swap/v2/quote?${searchParams.toString()}`,
+        `${this.apiUrl}/swap/v1/quote?${searchParams.toString()}`,
         {
           method: 'GET',
           headers: this.buildHeaders(),
@@ -142,7 +146,7 @@ export class JupiterClient {
 
     try {
       const response = await this.fetchImpl(
-        `${this.apiUrl}/swap/v2/swap`,
+        `${this.apiUrl}/swap/v1/swap`,
         {
           method: 'POST',
           headers: this.buildHeaders(),
@@ -174,13 +178,13 @@ export class JupiterClient {
     };
   }
 
-  buildSellQuoteParams(tokenMint: string, solAmount: number, slippageBps = 50): JupiterQuoteParams {
+  buildSellQuoteParams(tokenMint: string, tokenLamports: number, slippageBps = 50): JupiterQuoteParams {
     return {
       inputMint: tokenMint,
       outputMint: SOL_MINT,
-      amount: String(Math.floor(solAmount * LAMPORTS_PER_SOL)),
+      amount: String(Math.floor(tokenLamports)),
       slippageBps,
-      swapMode: 'ExactOut'
+      swapMode: 'ExactIn'
     };
   }
 }

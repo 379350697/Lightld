@@ -23,7 +23,10 @@ async function main() {
     apiKey: config.jupiterApiKey
   });
 
-  const connection = new Connection(config.rpcUrl);
+  const publicBaseUrl = 'https://api.mainnet-beta.solana.com';
+  const alchemyUrl = 'https://solana-mainnet.g.alchemy.com/v2/aX1RqrD7J3NBVdAf7WQeG';
+  const dlmmRpcUrl = config.rpcUrl === publicBaseUrl ? alchemyUrl : config.rpcUrl;
+  const connection = new Connection(dlmmRpcUrl);
   const dlmmClient = new MeteoraDlmmClient(connection);
 
   const server = createSolanaExecutionServer({

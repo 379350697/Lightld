@@ -1,5 +1,15 @@
 import { Connection, PublicKey, Keypair, Transaction } from '@solana/web3.js';
-import DLMM, { StrategyType, PositionInfo } from '@meteora-ag/dlmm';
+// import DLMM, { StrategyType, PositionInfo } from '@meteora-ag/dlmm'; // Broken ESM dir imports
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const dlmmPkg = require('@meteora-ag/dlmm');
+const DLMM = dlmmPkg;
+const { StrategyType } = dlmmPkg;
+
+// PositionInfo is a type, so it's not present at runtime
+// We'll import it just for type usage if needed, or use any
+import type { PositionInfo } from '@meteora-ag/dlmm';
+
 import BN from 'bn.js';
 
 import { LAMPORTS_PER_SOL } from './jupiter-client.ts';
@@ -7,7 +17,11 @@ import { LAMPORTS_PER_SOL } from './jupiter-client.ts';
 export const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 
 export class MeteoraDlmmClient {
-  constructor(private connection: Connection) {}
+  private connection: Connection;
+
+  constructor(connection: Connection) {
+    this.connection = connection;
+  }
 
   async addLiquidityByStrategy(
     walletPublicKey: PublicKey,

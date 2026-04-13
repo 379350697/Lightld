@@ -13,10 +13,12 @@ type FetchMeteoraPoolsOptions = {
 
 export async function fetchMeteoraPools(options: FetchMeteoraPoolsOptions = {}) {
   const url = buildMeteoraPoolsUrl(SOURCE_ENDPOINTS.meteoraPools, options);
-  const rows = await fetchJson<Record<string, unknown>[]>(
+  const response = await fetchJson<{ data: Record<string, unknown>[] }>(
     url,
     { fetchImpl: options.fetchImpl }
   );
+
+  const rows = Array.isArray(response) ? response : (response?.data ?? []);
 
   return rows.map((row) => withSourceMetadata('meteora', row));
 }
