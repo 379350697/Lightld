@@ -8,9 +8,9 @@ filters:
   minHolders: 100
   minLiquidityUsd: 20000
 scoringWeights:
-  holders: 0.25
+  holders: 0.0
   liquidity: 0.5
-  momentum: 0.25
+  momentum: 0.5
 riskThresholds:
   maxPositionSol: 5
   maxDailyLossSol: 2
@@ -25,3 +25,4 @@ live:
   maxLivePositionSol: 0.25
   autoFlattenRequired: true
   requireWhitelist: true
+  minDeployScore: 70

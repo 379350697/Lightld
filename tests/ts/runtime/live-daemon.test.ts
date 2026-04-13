@@ -27,7 +27,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true },
+          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -77,7 +77,7 @@ describe('runLiveDaemon', () => {
               quoteMint: 'So11111111111111111111111111111111111111112',
               baseSymbol: 'SAFE',
               liquidityUsd: 10_000,
-              volume_5m: 3_000,
+              volume_5m: 5_000,
               updatedAt: '2026-03-22T09:59:00.000Z'
             }
           ],
@@ -150,7 +150,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true },
+          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })

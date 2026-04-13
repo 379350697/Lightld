@@ -3,6 +3,8 @@ export type BuildOrderIntentInput = {
   poolAddress: string;
   outputSol: number;
   createdAt?: string;
+  side?: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
+  tokenMint?: string;
 };
 
 export function buildOrderIntent(input: BuildOrderIntentInput) {
@@ -13,6 +15,9 @@ export function buildOrderIntent(input: BuildOrderIntentInput) {
     poolAddress: input.poolAddress,
     outputSol: input.outputSol,
     createdAt,
-    idempotencyKey: `${input.strategyId}:${input.poolAddress}:${createdAt}`
+    idempotencyKey: `${input.strategyId}:${input.poolAddress}:${createdAt}`,
+    side: input.side ?? 'buy',
+    tokenMint: input.tokenMint ?? ''
   };
 }
+

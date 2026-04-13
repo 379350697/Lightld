@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import { readJsonIfExists, writeJsonAtomically } from '../runtime/atomic-file.ts';
+import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
 import type { SignedLiveOrderIntent } from './live-signer.ts';
@@ -20,7 +21,9 @@ const SignedIntentSchema = z.object({
     poolAddress: z.string().min(1),
     outputSol: z.number().finite().positive(),
     createdAt: z.string().min(1),
-    idempotencyKey: z.string().min(1)
+    idempotencyKey: z.string().min(1),
+    side: z.enum(['buy', 'sell']).default('buy'),
+    tokenMint: z.string().default('')
   }),
   signerId: z.string().min(1),
   signedAt: z.string().min(1),
@@ -77,6 +80,7 @@ type LocalLiveExecutionServerOptions = {
   authToken?: string;
   expectedSignerPublicKeys?: string[];
   autoFinalizeAfterMs?: number;
+  maxOutputSol?: number;
 };
 
 function stableNormalize(value: unknown): unknown {
@@ -328,6 +332,22 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
             const body = await readBody(request);
             const payload = z.object({ intent: SignedIntentSchema }).parse(JSON.parse(body));
             verifySignedIntent(payload.intent, expectedSignerPublicKeys);
+
+            if (options.maxOutputSol !== undefined) {
+              const allowlistResult = validateIntentAllowlist(
+                payload.intent.intent,
+                { maxOutputSol: options.maxOutputSol }
+              );
+
+              if (!allowlistResult.allowed) {
+                writeJson(response, 403, {
+                  error: allowlistResult.reason,
+                  detail: allowlistResult.detail
+                });
+                return;
+              }
+            }
+
             const snapshot = await store.read();
             const existing = snapshot.submissions.find(
               (submission) => submission.idempotencyKey === payload.intent.intent.idempotencyKey

@@ -10,16 +10,40 @@ describe('runEngineCycle', () => {
         inSession: true,
         hasInventory: true,
         hasSolRoute: true,
-        liquidityUsd: 10_000
+        liquidityUsd: 10_000,
+        score: 80
       },
       config: {
         requireSolRoute: true,
         minLiquidityUsd: 5_000,
-        minScore: 70
+        minScore: 70,
+        minDeployScore: 70
       }
     });
 
     expect(result.action).toBe('dca-out');
+    expect(result.audit.reason).toBe('decision-generated');
+  });
+
+  it('returns deploy for new-token when no inventory and score meets threshold', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: false,
+        hasSolRoute: true,
+        liquidityUsd: 15_000,
+        score: 85
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        minScore: 70,
+        minDeployScore: 70
+      }
+    });
+
+    expect(result.action).toBe('deploy');
     expect(result.audit.reason).toBe('decision-generated');
   });
 
@@ -42,3 +66,4 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toContain('missing-sol-route');
   });
 });
+

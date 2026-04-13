@@ -1,27 +1,38 @@
 strategyId: new-token-v1
 poolClass: new-token
 exitMint: SOL
+lpConfig:
+  enabled: true
+  singleSideMint: SOL
+  strategyType: bid-ask
+  downsideCoveragePct: 66
+  stopLossNetPnlPct: 20
+  takeProfitNetPnlPct: 30
+  minBinStep: 100
+  minVolume24hUsd: 1000
+  minFeeTvlRatio24h: 0
 hardGates:
   requireSolRoute: true
-  minLiquidityUsd: 5000
+  minLiquidityUsd: 10000
 filters:
   minHolders: 25
-  minLiquidityUsd: 5000
+  minLiquidityUsd: 10000
 scoringWeights:
-  holders: 0.4
-  liquidity: 0.35
-  momentum: 0.25
+  holders: 0.0
+  liquidity: 0.5
+  momentum: 0.5
 riskThresholds:
-  maxPositionSol: 2
+  maxPositionSol: 0.5
   maxDailyLossSol: 1
 sessionWindows:
-  - start: "09:30"
-    end: "16:00"
+  - start: "00:00"
+    end: "23:59"
 solRouteLimits:
   maxSlippageBps: 100
   maxImpactBps: 200
 live:
   enabled: true
-  maxLivePositionSol: 0.25
+  maxLivePositionSol: 0.15
   autoFlattenRequired: true
-  requireWhitelist: true
+  requireWhitelist: false
+  minDeployScore: 70

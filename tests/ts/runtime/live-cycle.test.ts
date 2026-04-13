@@ -26,7 +26,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -39,7 +39,7 @@ describe('runLiveCycle', () => {
     const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
 
     expect(result.mode).toBe('LIVE');
-    expect(result.action).toBe('dca-out');
+    expect(result.action).toBe('withdraw-lp');
     expect(result.liveOrderSubmitted).toBe(true);
     expect(result.reason).toBe('live-order-submitted');
     expect(orderJournal[0]).toMatchObject({
@@ -65,7 +65,7 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0]).toMatchObject({
       strategyId: 'new-token-v1',
       stage: 'broadcast',
-      action: 'dca-out',
+      action: 'withdraw-lp',
       reason: 'live-order-submitted',
       poolAddress: 'pool-1',
       tokenSymbol: 'SAFE',
@@ -106,7 +106,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -116,7 +116,7 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(false);
   });
 
-  it('blocks when the token is not whitelisted', async () => {
+  it('allows tokens not in whitelist when requireWhitelist is false', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
@@ -126,14 +126,13 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
 
-    expect(result.mode).toBe('BLOCKED');
-    expect(result.reason).toBe('token-not-whitelisted');
-    expect(result.liveOrderSubmitted).toBe(false);
+    expect(result.mode).toBe('LIVE');
+    expect(result.liveOrderSubmitted).toBe(true);
   });
 
   it('blocks when the requested position exceeds the live cap', async () => {
@@ -146,7 +145,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.5, slippageBps: 50 }
       }
     });
@@ -164,7 +163,7 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0]).toMatchObject({
       strategyId: 'new-token-v1',
       stage: 'guards',
-      action: 'dca-out',
+      action: 'withdraw-lp',
       reason: 'live-position-cap-exceeded',
       poolAddress: 'pool-1',
       tokenSymbol: 'SAFE',
@@ -200,7 +199,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });

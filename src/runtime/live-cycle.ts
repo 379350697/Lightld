@@ -40,6 +40,8 @@ import { LiveIncidentJournal } from '../journals/live-incident-journal.ts';
 import { LiveOrderJournal } from '../journals/live-order-journal.ts';
 import { QuoteJournal } from '../journals/quote-journal.ts';
 import { evaluateLiveGuards } from '../risk/live-guards.ts';
+import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
+import { SpendingLimitsStore } from '../risk/spending-limits.ts';
 import { runEngineCycle } from '../strategy/engine-runner.ts';
 import { buildDecisionContext, type DecisionContextInput } from './build-decision-context.ts';
 import { KillSwitch } from './kill-switch.ts';
@@ -76,12 +78,13 @@ export type LiveCycleInput = {
   accountProvider?: LiveAccountStateProvider;
   accountState?: LiveAccountState;
   mirrorSink?: MirrorEventSink;
+  spendingLimitsConfig?: SpendingLimitsConfig;
 };
 
 export type LiveCycleResult = {
   status: 'ok';
   mode: 'LIVE' | 'BLOCKED';
-  action: 'hold' | 'deploy' | 'dca-out';
+  action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
   reason: string;
   audit: { reason: string };
   context: ReturnType<typeof buildDecisionContext>;
@@ -175,20 +178,30 @@ function buildEngineSnapshot(
       context.pool.hasSolRoute,
       context.token.hasSolRoute
     ),
-    liquidityUsd: firstNumber(context.pool.liquidityUsd, context.token.liquidityUsd)
+    liquidityUsd: firstNumber(context.pool.liquidityUsd, context.token.liquidityUsd),
+    poolCreatedAt: firstString(context.pool.capturedAt, context.pool.poolCreatedAt, context.token.capturedAt)
   };
 
   if (poolClass === 'new-token') {
     return {
       ...shared,
       inSession: firstBoolean(context.token.inSession, context.trader.inSession),
-      hasInventory: firstBoolean(context.trader.hasInventory, context.pool.hasInventory)
+      hasInventory: firstBoolean(context.trader.hasInventory, context.pool.hasInventory),
+      score: firstNumber(context.pool.score, context.token.score, context.trader.score),
+      unrealizedPct: typeof context.trader.unrealizedPct === 'number' ? context.trader.unrealizedPct : undefined,
+      hasLpPosition: firstBoolean(context.trader.hasLpPosition),
+      lpNetPnlPct: typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct : undefined,
+      lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
+      lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
+      lpActiveBinStatus: context.trader.lpActiveBinStatus as any
     };
   }
 
   return {
     ...shared,
-    score: firstNumber(context.pool.score, context.token.score, context.trader.score)
+    score: firstNumber(context.pool.score, context.token.score, context.trader.score),
+    feeTvlRatio: typeof context.pool.feeTvlRatio === 'number' ? context.pool.feeTvlRatio : undefined,
+    fees24h: typeof context.pool.fees24h === 'number' ? context.pool.fees24h : undefined
   };
 }
 
@@ -497,8 +510,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     snapshot,
     config: {
       minScore: 70,
+      minDeployScore: config.live.minDeployScore ?? 70,
       requireSolRoute: config.hardGates.requireSolRoute,
-      minLiquidityUsd: config.hardGates.minLiquidityUsd
+      minLiquidityUsd: config.hardGates.minLiquidityUsd,
+      minPoolAgeMinutes: config.hardGates.minPoolAgeMinutes,
+      maxPoolAgeMinutes: config.hardGates.maxPoolAgeMinutes,
+      takeProfitPct: config.riskThresholds.takeProfitPct,
+      stopLossPct: config.riskThresholds.stopLossPct,
+      lpEnabled: config.lpConfig?.enabled ?? false,
+      lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
+      lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct
     }
   });
   logContext.engineReason = engineResult.audit.reason;
@@ -710,6 +731,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
+  const spendingLimitsStore = input.spendingLimitsConfig
+    ? new SpendingLimitsStore(resolveStateRootDir(input.strategy, input.stateRootDir))
+    : undefined;
+  const spendingState = spendingLimitsStore
+    ? await spendingLimitsStore.read()
+    : undefined;
+
   const guardResult = evaluateLiveGuards({
     symbol: tokenSymbol,
     whitelist: input.whitelist ?? [],
@@ -717,7 +745,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     maxLivePositionSol: config.live.maxLivePositionSol,
     killSwitchEngaged: killSwitchState,
     requireWhitelist: config.live.requireWhitelist,
-    sessionPhase: logContext.sessionPhase
+    sessionPhase: logContext.sessionPhase,
+    maxSingleOrderSol: input.spendingLimitsConfig?.maxSingleOrderSol,
+    maxDailySpendSol: input.spendingLimitsConfig?.maxDailySpendSol,
+    dailySpendSol: spendingState?.dailySpendSol,
+    mintAuthorityRevoked: typeof context.token.mintAuthorityRevoked === 'boolean' ? context.token.mintAuthorityRevoked : undefined,
+    requireMintAuthorityRevoked: config.live.requireMintAuthorityRevoked,
+    lpBurnedPct: typeof context.token.lpBurnedPct === 'number' ? context.token.lpBurnedPct : undefined,
+    requireLpBurnedPct: config.live.requireLpBurnedPct,
+    top10HoldersPct: typeof context.token.top10HoldersPct === 'number' ? context.token.top10HoldersPct : undefined,
+    maxTop10HoldersPct: config.live.maxTop10HoldersPct
   });
 
   if (!guardResult.allowed) {
@@ -758,7 +795,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     strategyId: input.strategy,
     poolAddress: executionPlan.poolAddress,
     outputSol: requestedPositionSol,
-    createdAt: logContext.startedAt
+    side: actionableAction === 'deploy' ? 'buy' 
+      : actionableAction === 'dca-out' || actionableAction === 'hold' ? 'sell'
+      : actionableAction,
+    tokenMint: logContext.tokenMint
   });
   await journals.orders.append({
     cycleId: logContext.cycleId,
@@ -975,6 +1015,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   if (isResolvedConfirmation(confirmation.status, confirmationFinality)) {
     await pendingSubmissionStore.clear();
+  }
+
+  if (spendingLimitsStore) {
+    await spendingLimitsStore.recordSpend(requestedPositionSol);
   }
   emitMirrorEvent(mirrorSink, () => {
     mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({

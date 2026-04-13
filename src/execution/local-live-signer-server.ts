@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from 'zod';
 
 import { LocalLiveSigner } from './local-live-signer.ts';
+import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 
 const SignIntentRequestSchema = z.object({
   intent: z.object({
@@ -10,7 +11,9 @@ const SignIntentRequestSchema = z.object({
     poolAddress: z.string().min(1),
     outputSol: z.number().finite().positive(),
     createdAt: z.string().min(1),
-    idempotencyKey: z.string().min(1)
+    idempotencyKey: z.string().min(1),
+    side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
+    tokenMint: z.string().default('')
   })
 });
 
@@ -21,6 +24,7 @@ type LocalLiveSignerServerOptions = {
   expectedPublicKey?: string;
   signerId?: string;
   authToken?: string;
+  maxOutputSol?: number;
 };
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -90,6 +94,22 @@ export function createLocalLiveSignerServer(options: LocalLiveSignerServerOption
 
             const body = await readBody(request);
             const payload = SignIntentRequestSchema.parse(JSON.parse(body));
+
+            if (options.maxOutputSol !== undefined) {
+              const allowlistResult = validateIntentAllowlist(
+                payload.intent,
+                { maxOutputSol: options.maxOutputSol }
+              );
+
+              if (!allowlistResult.allowed) {
+                writeJson(response, 403, {
+                  error: allowlistResult.reason,
+                  detail: allowlistResult.detail
+                });
+                return;
+              }
+            }
+
             const signed = await signer.sign(payload.intent);
 
             writeJson(response, 200, {

@@ -46,7 +46,7 @@ describe('buildLiveCycleInputFromIngest', () => {
       })
     });
 
-    expect(result.requestedPositionSol).toBe(0.2);
+    expect(result.requestedPositionSol).toBe(0.1);
     expect(result.whitelist).toEqual(['SAFE']);
     expect(result.sessionPhase).toBe('active');
     expect(result.context.pool).toMatchObject({
@@ -67,7 +67,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.context.route).toMatchObject({
       poolAddress: 'pool-safe',
       token: 'SAFE',
-      expectedOutSol: 0.2
+      expectedOutSol: 0.1
     });
   });
 

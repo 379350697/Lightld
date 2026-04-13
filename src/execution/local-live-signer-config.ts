@@ -6,7 +6,8 @@ const LocalLiveSignerConfigSchema = z.object({
   keypairPath: z.string().min(1),
   expectedPublicKey: z.string().min(1).optional(),
   signerId: z.string().min(1).optional(),
-  authToken: z.string().min(1).optional()
+  authToken: z.string().min(1).optional(),
+  maxOutputSol: z.number().finite().positive().optional()
 });
 
 export type LocalLiveSignerConfig = z.infer<typeof LocalLiveSignerConfigSchema>;
@@ -18,6 +19,10 @@ export function loadLocalLiveSignerConfig(env: Record<string, string | undefined
     keypairPath: env.LIVE_LOCAL_SIGNER_KEYPAIR_PATH,
     expectedPublicKey: env.LIVE_LOCAL_SIGNER_EXPECTED_PUBLIC_KEY,
     signerId: env.LIVE_LOCAL_SIGNER_ID,
-    authToken: env.LIVE_LOCAL_SIGNER_AUTH_TOKEN
+    authToken: env.LIVE_LOCAL_SIGNER_AUTH_TOKEN,
+    maxOutputSol: env.LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL
+      ? Number(env.LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL)
+      : undefined
   });
 }
+

@@ -7,7 +7,8 @@ const LocalLiveExecutionConfigSchema = z.object({
   accountStatePath: z.string().min(1).optional(),
   authToken: z.string().min(1).optional(),
   expectedSignerPublicKeys: z.array(z.string().min(1)).default([]),
-  autoFinalizeAfterMs: z.number().int().min(0).default(5_000)
+  autoFinalizeAfterMs: z.number().int().min(0).default(5_000),
+  maxOutputSol: z.number().finite().positive().optional()
 });
 
 export type LocalLiveExecutionConfig = z.infer<typeof LocalLiveExecutionConfigSchema>;
@@ -25,6 +26,10 @@ export function loadLocalLiveExecutionConfig(env: Record<string, string | undefi
       .filter(Boolean),
     autoFinalizeAfterMs: env.LIVE_LOCAL_EXECUTION_AUTO_FINALIZE_AFTER_MS
       ? Number(env.LIVE_LOCAL_EXECUTION_AUTO_FINALIZE_AFTER_MS)
-      : 5_000
+      : 5_000,
+    maxOutputSol: env.LIVE_LOCAL_EXECUTION_MAX_OUTPUT_SOL
+      ? Number(env.LIVE_LOCAL_EXECUTION_MAX_OUTPUT_SOL)
+      : undefined
   });
 }
+

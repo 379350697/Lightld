@@ -18,7 +18,7 @@ type EngineCycleResult =
       };
     }
   | {
-      action: 'deploy' | 'dca-out';
+      action: 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
       audit: {
         reason: string;
       };
@@ -28,11 +28,14 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
   const gates = evaluateHardGates(
     {
       hasSolRoute: Boolean(input.snapshot.hasSolRoute),
-      liquidityUsd: typeof input.snapshot.liquidityUsd === 'number' ? input.snapshot.liquidityUsd : undefined
+      liquidityUsd: typeof input.snapshot.liquidityUsd === 'number' ? input.snapshot.liquidityUsd : undefined,
+      poolCreatedAt: typeof input.snapshot.poolCreatedAt === 'string' ? input.snapshot.poolCreatedAt : undefined
     },
     {
       requireSolRoute: Boolean(input.config.requireSolRoute),
-      minLiquidityUsd: typeof input.config.minLiquidityUsd === 'number' ? input.config.minLiquidityUsd : undefined
+      minLiquidityUsd: typeof input.config.minLiquidityUsd === 'number' ? input.config.minLiquidityUsd : undefined,
+      minPoolAgeMinutes: typeof input.config.minPoolAgeMinutes === 'number' ? input.config.minPoolAgeMinutes : undefined,
+      maxPoolAgeMinutes: typeof input.config.maxPoolAgeMinutes === 'number' ? input.config.maxPoolAgeMinutes : undefined
     }
   );
 
@@ -46,23 +49,47 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
   }
 
   const decision = input.engine === 'new-token'
-    ? buildNewTokenDecision({
-        inSession: Boolean(input.snapshot.inSession),
-        hasInventory: Boolean(input.snapshot.hasInventory)
-      })
-    : buildLargePoolDecision(
+    ? buildNewTokenDecision(
         {
-          score: Number(input.snapshot.score ?? 0)
+          inSession: Boolean(input.snapshot.inSession),
+          hasInventory: Boolean(input.snapshot.hasInventory),
+          score: Number(input.snapshot.score ?? 0),
+          unrealizedPct: typeof input.snapshot.unrealizedPct === 'number' ? input.snapshot.unrealizedPct : undefined,
+          hasLpPosition: Boolean(input.snapshot.hasLpPosition),
+          lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
+          lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
+          lpActiveBinStatus: typeof input.snapshot.lpActiveBinStatus === 'string' ? (input.snapshot.lpActiveBinStatus as any) : undefined,
+          lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined
         },
         {
-          minScore: Number(input.config.minScore ?? 0)
+          minDeployScore: Number(input.config.minDeployScore ?? 70),
+          takeProfitPct: typeof input.config.takeProfitPct === 'number' ? input.config.takeProfitPct : undefined,
+          stopLossPct: typeof input.config.stopLossPct === 'number' ? input.config.stopLossPct : undefined,
+          lpEnabled: Boolean(input.config.lpEnabled),
+          lpStopLossNetPnlPct: typeof input.config.lpStopLossNetPnlPct === 'number' ? input.config.lpStopLossNetPnlPct : undefined,
+          lpTakeProfitNetPnlPct: typeof input.config.lpTakeProfitNetPnlPct === 'number' ? input.config.lpTakeProfitNetPnlPct : undefined,
+          lpClaimFeeThresholdUsd: typeof input.config.lpClaimFeeThresholdUsd === 'number' ? input.config.lpClaimFeeThresholdUsd : undefined,
+          lpRebalanceOnOutOfRange: Boolean(input.config.lpRebalanceOnOutOfRange),
+          lpMaxImpermanentLossPct: typeof input.config.lpMaxImpermanentLossPct === 'number' ? input.config.lpMaxImpermanentLossPct : undefined
+        }
+      )
+    : buildLargePoolDecision(
+        {
+          score: Number(input.snapshot.score ?? 0),
+          feeTvlRatio: typeof input.snapshot.feeTvlRatio === 'number' ? input.snapshot.feeTvlRatio : undefined,
+          fees24h: typeof input.snapshot.fees24h === 'number' ? input.snapshot.fees24h : undefined
+        },
+        {
+          minScore: Number(input.config.minScore ?? 0),
+          minFeeTvlRatio: typeof input.config.minFeeTvlRatio === 'number' ? input.config.minFeeTvlRatio : undefined,
+          minFees24h: typeof input.config.minFees24h === 'number' ? input.config.minFees24h : undefined
         }
       );
 
   return {
     action: decision.action,
     audit: {
-      reason: 'decision-generated'
+      reason: ('reason' in decision) ? (decision.reason as string) : 'decision-generated'
     }
   };
 }

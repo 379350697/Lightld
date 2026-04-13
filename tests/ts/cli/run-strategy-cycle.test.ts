@@ -20,13 +20,13 @@ describe('runStrategyCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
 
     expect(result.status).toBe('ok');
     expect(result.mode).toBe('LIVE');
-    expect(result.action).toBe('dca-out');
+    expect(result.action).toBe('withdraw-lp');
   });
 });

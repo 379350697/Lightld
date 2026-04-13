@@ -10,14 +10,22 @@
     "run:daemon": "node --experimental-strip-types src/cli/run-live-daemon-main.ts",
     "run:execution": "node --experimental-strip-types src/cli/run-local-execution-main.ts",
     "run:signer": "node --experimental-strip-types src/cli/run-local-signer-main.ts",
-    "show:status": "node --experimental-strip-types src/cli/show-runtime-status-main.ts"
+    "show:status": "node --experimental-strip-types src/cli/show-runtime-status-main.ts",
+    "convert:phantom-key": "node --experimental-strip-types src/cli/convert-phantom-key.ts",
+    "run:solana-execution": "node --experimental-strip-types src/cli/run-solana-execution-main.ts",
+    "run:analytics": "node --experimental-strip-types src/cli/run-analytics-server-main.ts"
   },
   "devDependencies": {
+    "@types/bn.js": "^5.2.0",
     "@types/node": "^25.5.0",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@meteora-ag/dlmm": "^1.9.4",
+    "@solana/web3.js": "^1.98.4",
+    "bn.js": "^5.2.3",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"
   }

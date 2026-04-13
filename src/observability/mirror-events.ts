@@ -9,7 +9,7 @@ export type CycleRunMirrorPayload = {
   finishedAt: string;
   runtimeMode: RuntimeMode;
   sessionPhase: 'active' | 'flatten-only' | 'closed';
-  action: 'hold' | 'deploy' | 'dca-out';
+  action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
   resultMode: 'LIVE' | 'BLOCKED';
   reason: string;
   poolAddress: string;
@@ -32,7 +32,7 @@ export type OrderMirrorPayload = {
   poolAddress: string;
   tokenMint: string;
   tokenSymbol: string;
-  action: 'hold' | 'deploy' | 'dca-out' | 'unknown';
+  action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'unknown';
   requestedPositionSol: number;
   quotedOutputSol: number;
   broadcastStatus: 'pending' | 'submitted' | 'failed' | 'unknown';

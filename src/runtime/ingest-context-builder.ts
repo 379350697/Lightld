@@ -6,6 +6,7 @@ import { fetchPumpTrades } from '../ingest/pump/client.ts';
 import { normalizePumpTokenEvent, normalizePumpWalletTrade } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
 import { computeWeightedScore } from '../strategy/filtering/scoring.ts';
+import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
@@ -62,6 +63,14 @@ type IngestCandidate = {
   momentum: number;
   hasInventory: boolean;
   score: number;
+  /** DLMM pool bin step (from pool_config.bin_step) */
+  binStep: number;
+  /** DLMM base fee percentage (from pool_config.base_fee_pct) */
+  baseFeePct: number;
+  /** 24h trading volume in USD */
+  volume24h: number;
+  /** 24h fee/tvl ratio */
+  feeTvlRatio24h: number;
 };
 
 type PumpIndexes = {
@@ -407,6 +416,10 @@ function buildCandidate(
     )
   );
 
+  const poolConfig = isRecord(payload.pool_config) ? payload.pool_config : {};
+  const volumeObj = isRecord(payload.volume) ? payload.volume : {};
+  const feeTvlObj = isRecord(payload.fee_tvl_ratio) ? payload.fee_tvl_ratio : {};
+
   return {
     address: readString(payload, ['address', 'poolAddress', 'pool_address']),
     mint,
@@ -418,7 +431,11 @@ function buildCandidate(
     holders,
     momentum,
     hasInventory: hasAccountInventory(accountState, mint),
-    score
+    score,
+    binStep: readNumber(poolConfig, ['bin_step', 'binStep']),
+    baseFeePct: readNumber(poolConfig, ['base_fee_pct', 'baseFeePct']),
+    volume24h: readNumber(volumeObj, ['24h']),
+    feeTvlRatio24h: readNumber(feeTvlObj, ['24h'])
   } satisfies IngestCandidate;
 }
 
@@ -466,8 +483,6 @@ export async function buildLiveCycleInputFromIngest(
   const now = input.now ?? new Date();
   const whitelist = input.whitelist ?? [];
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
-  const requestedPositionSol =
-    input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
   const [poolRows, pumpRows, traderSnapshot] = await Promise.all([
     (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
@@ -496,12 +511,17 @@ export async function buildLiveCycleInputFromIngest(
   if (!candidate) {
     return buildFallbackContext(
       input,
-      requestedPositionSol,
+      input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
       sessionActive,
       config.solRouteLimits.maxSlippageBps,
       traderSnapshot
     );
   }
+
+  const requestedPositionSol = computeDynamicPositionSol(
+    candidate.liquidityUsd,
+    input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol)
+  );
 
   const context: DecisionContextInput = {
     pool: {
@@ -510,7 +530,11 @@ export async function buildLiveCycleInputFromIngest(
       hasSolRoute: candidate.hasSolRoute,
       score: candidate.score,
       capturedAt: candidate.capturedAt,
-      candidateCount: candidates.length
+      candidateCount: candidates.length,
+      binStep: candidate.binStep,
+      baseFeePct: candidate.baseFeePct,
+      volume24h: candidate.volume24h,
+      feeTvlRatio24h: candidate.feeTvlRatio24h
     },
     token: {
       mint: candidate.mint,

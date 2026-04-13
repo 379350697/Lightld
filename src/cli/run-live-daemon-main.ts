@@ -194,6 +194,13 @@ async function main() {
       return {
         ...executionAdapters,
         accountState,
+        spendingLimitsConfig:
+          runtimeConfig.maxSingleOrderSol || runtimeConfig.maxDailySpendSol
+            ? {
+                maxSingleOrderSol: runtimeConfig.maxSingleOrderSol ?? Number.POSITIVE_INFINITY,
+                maxDailySpendSol: runtimeConfig.maxDailySpendSol ?? Number.POSITIVE_INFINITY
+              }
+            : undefined,
         ...(await buildLiveCycleInputFromIngest({
           strategy,
           whitelist: args.whitelist,
