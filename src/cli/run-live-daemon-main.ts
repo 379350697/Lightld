@@ -192,6 +192,72 @@ async function main() {
         ? await executionAdapters.accountProvider.readState()
         : undefined;
 
+      const ingestInput = await (async () => {
+        let dynamicWhitelist = [...args.whitelist];
+        const activePositions = accountState
+          ? (accountState.walletTokens || []).filter((t) => t.amount > 0 && t.mint !== 'So11111111111111111111111111111111111111112')
+          : [];
+
+        const maxPositions = 5;
+        const currentMinute = new Date().getMinutes();
+        const isTriggerWindow = currentMinute === 0 || currentMinute === 30;
+
+        if (activePositions.length < maxPositions && isTriggerWindow) {
+          const signalStore = new SignalStore();
+          const pending = signalStore.getPendingSignals();
+
+          const nowMs = Date.now();
+          const matured = pending.filter((s) => (nowMs - new Date(s.discoveredAt).getTime()) >= 30 * 60 * 1000);
+
+          if (matured.length > 0) {
+            const { DexScreenerClient } = await import('../ingest/dexscreener/client.ts');
+            const dexClient = new DexScreenerClient();
+            const fetched = await dexClient.getTokensData(matured.map((m) => m.tokenMint).slice(0, 30));
+
+            const requireTvl = Number(process.env.SCANNER_MIN_TVL_USD || '5000');
+            const requireVol = Number(process.env.SCANNER_MIN_VOL_USD || '1000000');
+            const requireMcap = Number(process.env.SCANNER_MIN_MCAP_USD || '150000');
+
+            const stillValid = matured.filter((s) => {
+              const pair = fetched.find((p) => p.baseToken?.address === s.tokenMint);
+              if (!pair) return false;
+              const tvl = pair.liquidity?.usd ?? 0;
+              const vol24 = pair.volume?.h24 ?? 0;
+              const mcap = pair.marketCap ?? pair.fdv ?? 0;
+
+              return tvl >= requireTvl && vol24 >= requireVol && mcap >= requireMcap;
+            });
+
+            if (stillValid.length > 0) {
+              stillValid.sort((a, b) => {
+                const tvlA = fetched.find((p) => p.baseToken?.address === a.tokenMint)?.liquidity?.usd ?? 0;
+                const tvlB = fetched.find((p) => p.baseToken?.address === b.tokenMint)?.liquidity?.usd ?? 0;
+                return tvlB - tvlA;
+              });
+
+              const nextSignal = stillValid[0];
+              if (nextSignal.tokenSymbol && nextSignal.tokenSymbol !== 'UNKNOWN') {
+                dynamicWhitelist.push(nextSignal.tokenSymbol);
+                signalStore.updateSignalStatus(nextSignal.id, 'processing');
+                console.log(`\n[Daemon] 🎯 DISPATCHED! Selected ${nextSignal.tokenSymbol} after 30-min survival. Real-time TVL: Highest in queue.`);
+              }
+            }
+          }
+        }
+
+        return buildLiveCycleInputFromIngest({
+          strategy,
+          whitelist: dynamicWhitelist,
+          traderWallet: args.traderWallet,
+          requestedPositionSol: args.requestedPositionSol,
+          accountState,
+          meteoraPageSize: args.meteoraPageSize,
+          meteoraQuery: args.meteoraQuery,
+          meteoraSortBy: args.meteoraSortBy,
+          meteoraFilterBy: args.meteoraFilterBy
+        });
+      })();
+
       return {
         ...executionAdapters,
         accountState,
@@ -202,72 +268,7 @@ async function main() {
                 maxDailySpendSol: runtimeConfig.maxDailySpendSol ?? Number.POSITIVE_INFINITY
               }
             : undefined,
-        ...(await (async () => {
-          let dynamicWhitelist = [...args.whitelist];
-          const activePositions = accountState ? (accountState.walletTokens || []).filter(t => t.amount > 0 && t.mint !== 'So11111111111111111111111111111111111111112') : [];
-          
-          const maxPositions = 5;
-          const currentMinute = new Date().getMinutes();
-          const isTriggerWindow = currentMinute === 0 || currentMinute === 30;
-
-          if (activePositions.length < maxPositions && isTriggerWindow) {
-            const signalStore = new SignalStore();
-            const pending = signalStore.getPendingSignals();
-            
-            // 1. 30-Minute Maturation survival test
-            const nowMs = Date.now();
-            const matured = pending.filter(s => (nowMs - new Date(s.discoveredAt).getTime()) >= 30 * 60 * 1000);
-
-            if (matured.length > 0) {
-              // 2. Real-time Market Validation
-              const { DexScreenerClient } = await import('../ingest/dexscreener/client.ts');
-              const dexClient = new DexScreenerClient();
-              // Batch limit is 30. We take the oldest matured ones to check
-              const fetched = await dexClient.getTokensData(matured.map(m => m.tokenMint).slice(0, 30));
-              
-              const requireTvl = Number(process.env.SCANNER_MIN_TVL_USD || '5000');
-              const requireVol = Number(process.env.SCANNER_MIN_VOL_USD || '1000000');
-              const requireMcap = Number(process.env.SCANNER_MIN_MCAP_USD || '150000');
-
-              const stillValid = matured.filter(s => {
-                const pair = fetched.find(p => p.baseToken?.address === s.tokenMint);
-                if (!pair) return false;
-                const tvl = pair.liquidity?.usd ?? 0;
-                const vol24 = pair.volume?.h24 ?? 0;
-                const mcap = pair.marketCap ?? pair.fdv ?? 0;
-                
-                return tvl >= requireTvl && vol24 >= requireVol && mcap >= requireMcap;
-              });
-
-              if (stillValid.length > 0) {
-                // 3. Pick the absolute best real-time TVL from survivors
-                stillValid.sort((a, b) => {
-                  const tvlA = fetched.find(p => p.baseToken?.address === a.tokenMint)?.liquidity?.usd ?? 0;
-                  const tvlB = fetched.find(p => p.baseToken?.address === b.tokenMint)?.liquidity?.usd ?? 0;
-                  return tvlB - tvlA;
-                });
-                
-                const nextSignal = stillValid[0];
-                if (nextSignal.tokenSymbol && nextSignal.tokenSymbol !== 'UNKNOWN') {
-                  dynamicWhitelist.push(nextSignal.tokenSymbol);
-                  signalStore.updateSignalStatus(nextSignal.id, 'processing');
-                  console.log(`\n[Daemon] 🎯 DISPATCHED! Selected ${nextSignal.tokenSymbol} after 30-min survival. Real-time TVL: Highest in queue.`);
-                }
-              }
-            }
-          }
-
-          return buildLiveCycleInputFromIngest({
-            strategy,
-            whitelist: dynamicWhitelist,
-            traderWallet: args.traderWallet,
-          requestedPositionSol: args.requestedPositionSol,
-          accountState,
-          meteoraPageSize: args.meteoraPageSize,
-          meteoraQuery: args.meteoraQuery,
-          meteoraSortBy: args.meteoraSortBy,
-          meteoraFilterBy: args.meteoraFilterBy
-        }))
+        ...ingestInput
       };
     },
     alertSink

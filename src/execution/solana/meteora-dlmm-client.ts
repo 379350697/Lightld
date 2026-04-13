@@ -27,7 +27,7 @@ export class MeteoraDlmmClient {
     walletPublicKey: PublicKey,
     poolAddress: string,
     amountSol: number,
-    strategyType: StrategyType = StrategyType.Spot
+    strategyType: any = StrategyType.Spot
   ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair: Keypair }> {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
     const activeBin = await dlmmPool.getActiveBin();

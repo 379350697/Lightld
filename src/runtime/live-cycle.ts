@@ -532,7 +532,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         failureKind: recovery.reason === 'pending-submission-timeout' ? 'unknown' : undefined,
         failureSource: 'recovery',
         journalPaths: journals.paths,
-        killSwitchState
+        killSwitchState,
+        liveOrderSubmitted: false,
+        quoteCollected: false
       });
     }
   }

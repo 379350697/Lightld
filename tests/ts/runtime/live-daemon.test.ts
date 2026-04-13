@@ -261,7 +261,7 @@ describe('runLiveDaemon', () => {
           confirmationSignature: 'tx-1',
           mint: 'mint-safe',
           symbol: 'SAFE',
-          side: 'buy',
+          side: 'buy' as const,
           amount: 1200,
           recordedAt: '2026-03-22T00:00:02.000Z'
         }]
