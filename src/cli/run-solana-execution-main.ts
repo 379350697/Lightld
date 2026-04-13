@@ -14,19 +14,22 @@ async function main() {
   });
 
   process.stdout.write(`Wallet: ${keypair.publicKey.toBase58()}\n`);
-  process.stdout.write(`RPC: ${config.rpcUrl}\n`);
+  process.stdout.write(`Trade RPCs: ${config.writeRpcUrls.join(', ')}\n`);
+  process.stdout.write(`Read RPCs: ${config.readRpcUrls.join(', ')}\n`);
+  process.stdout.write(`DLMM RPC: ${config.dlmmRpcUrl}\n`);
   process.stdout.write(`Jupiter: ${config.jupiterApiUrl}\n`);
 
-  const rpcClient = new SolanaRpcClient({ rpcUrl: config.rpcUrl });
+  const rpcClient = new SolanaRpcClient({
+    rpcUrl: config.rpcUrl,
+    writeRpcUrls: config.writeRpcUrls,
+    readRpcUrls: config.readRpcUrls
+  });
   const jupiterClient = new JupiterClient({
     apiUrl: config.jupiterApiUrl,
     apiKey: config.jupiterApiKey
   });
 
-  const publicBaseUrl = 'https://api.mainnet-beta.solana.com';
-  const alchemyUrl = 'https://solana-mainnet.g.alchemy.com/v2/aX1RqrD7J3NBVdAf7WQeG';
-  const dlmmRpcUrl = config.rpcUrl === publicBaseUrl ? alchemyUrl : config.rpcUrl;
-  const connection = new Connection(dlmmRpcUrl);
+  const connection = new Connection(config.dlmmRpcUrl);
   const dlmmClient = new MeteoraDlmmClient(connection);
 
   const server = createSolanaExecutionServer({

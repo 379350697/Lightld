@@ -2,6 +2,8 @@ import type { FetchImpl } from '../../ingest/shared/http-client.ts';
 
 type SolanaRpcClientOptions = {
   rpcUrl?: string;
+  writeRpcUrls?: string[];
+  readRpcUrls?: string[];
   fetchImpl?: FetchImpl;
   timeoutMs?: number;
 };
@@ -53,21 +55,9 @@ export class SolanaRpcClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 10_000;
 
-    const basePublicUrl = 'https://api.mainnet-beta.solana.com';
-    const alchemyUrl = 'https://solana-mainnet.g.alchemy.com/v2/aX1RqrD7J3NBVdAf7WQeG';
-    const heliusKeys = [
-      '218113a4-bca4-4aad-a594-499bfef95880',
-      'fb64f8b3-48ce-416f-8c7a-6f265c3ee227',
-      'a5db71fe-3c58-472e-9ba8-3c2c37d9d533'
-    ];
-    const heliusUrls = heliusKeys.map(k => `https://mainnet.helius-rpc.com/?api-key=${k}`);
-
-    // If generic rpcUrl is provided via config, push it to front, otherwise use the priority list
-    const defaultsWrite = [...heliusUrls, basePublicUrl];
-    const defaultsRead = [alchemyUrl, ...heliusUrls, basePublicUrl];
-
-    this.writeUrls = options.rpcUrl && options.rpcUrl !== basePublicUrl ? [options.rpcUrl, ...defaultsWrite] : defaultsWrite;
-    this.readUrls = options.rpcUrl && options.rpcUrl !== basePublicUrl ? [options.rpcUrl, ...defaultsRead] : defaultsRead;
+    const fallbackUrl = options.rpcUrl ?? 'https://api.mainnet-beta.solana.com';
+    this.writeUrls = options.writeRpcUrls?.length ? options.writeRpcUrls : [fallbackUrl];
+    this.readUrls = options.readRpcUrls?.length ? options.readRpcUrls : this.writeUrls;
   }
 
   private async call<T>(method: string, params: unknown[]): Promise<T> {
