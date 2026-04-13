@@ -59,7 +59,8 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
           lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
           lpActiveBinStatus: typeof input.snapshot.lpActiveBinStatus === 'string' ? (input.snapshot.lpActiveBinStatus as any) : undefined,
-          lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined
+          lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined,
+          lifecycleState: typeof input.snapshot.lifecycleState === 'string' ? input.snapshot.lifecycleState : undefined
         },
         {
           minDeployScore: Number(input.config.minDeployScore ?? 70),

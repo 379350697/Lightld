@@ -13,6 +13,8 @@ type NewTokenSnapshot = {
   lpActiveBinStatus?: 'in-range' | 'out-of-range';
   /** LP mode: impermanent loss percentage (positive number means loss) */
   lpImpermanentLossPct?: number;
+  /** Explicit state machine for exits */
+  lifecycleState?: string;
 };
 
 type NewTokenConfig = {
@@ -41,6 +43,11 @@ export function buildNewTokenDecision(
 ): { action: NewTokenAction } {
   if (!snapshot.inSession) {
     return { action: 'hold' };
+  }
+
+  // ===== Explicit Exit State Machine =====
+  if (snapshot.lifecycleState === 'inventory_exit_ready') {
+    return { action: 'dca-out' };
   }
 
   // ===== LP mode (bid-ask single-sided SOL) =====

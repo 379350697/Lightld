@@ -14,7 +14,8 @@ describe('buildLargePoolDecision', () => {
         }
       )
     ).toEqual({
-      action: 'deploy'
+      action: 'deploy',
+      reason: 'criteria-met'
     });
   });
 
@@ -29,7 +30,8 @@ describe('buildLargePoolDecision', () => {
         }
       )
     ).toEqual({
-      action: 'hold'
+      action: 'hold',
+      reason: 'score-below-minimum'
     });
   });
 });

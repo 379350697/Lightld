@@ -50,7 +50,7 @@ import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import { reconcileLiveState } from './reconcile-live-state.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
-import type { RuntimeMode } from './state-types.ts';
+import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
 import { toPendingConfirmationStatus } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
@@ -77,6 +77,7 @@ export type LiveCycleInput = {
   confirmationProvider?: LiveConfirmationProvider;
   accountProvider?: LiveAccountStateProvider;
   accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
 };
@@ -95,6 +96,7 @@ export type LiveCycleResult = {
   orderIntent?: LiveOrderIntent;
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
+  nextLifecycleState?: PositionLifecycleState;
   failureKind?: ExecutionFailureKind;
   failureSource?: 'quote' | 'signer' | 'broadcast' | 'confirmation' | 'account' | 'recovery' | 'runtime-policy';
   journalPaths: {
@@ -193,7 +195,8 @@ function buildEngineSnapshot(
       lpNetPnlPct: typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
       lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
-      lpActiveBinStatus: context.trader.lpActiveBinStatus as any
+      lpActiveBinStatus: context.trader.lpActiveBinStatus as any,
+      lifecycleState: typeof context.trader.lifecycleState === 'string' ? context.trader.lifecycleState : undefined
     };
   }
 
@@ -389,6 +392,7 @@ async function appendIncident(
 }
 
 export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResult> {
+  let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'open';
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const context = buildDecisionContext(input.context ?? {});
   const mirrorSink = input.mirrorSink;
@@ -429,7 +433,22 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;
 
-  const finalize = (result: LiveCycleResult) => {
+  context.trader.lifecycleState = currentLifecycleState;
+
+  const finalize = (result: Omit<LiveCycleResult, 'nextLifecycleState'>, synchronouslyResolved?: boolean): LiveCycleResult => {
+    let nextLifecycleState = currentLifecycleState;
+    if (result.liveOrderSubmitted) {
+      if (result.action === 'withdraw-lp') {
+        nextLifecycleState = synchronouslyResolved ? 'inventory_exit_ready' : 'lp_exit_pending';
+      }
+      if (result.action === 'dca-out') {
+        nextLifecycleState = synchronouslyResolved ? 'closed' : 'inventory_exit_pending';
+      }
+      if (result.action === 'deploy' || result.action === 'add-lp') {
+        nextLifecycleState = 'open';
+      }
+    }
+
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toCycleRunEvent(buildCycleRunMirrorPayload({
         cycleId: logContext.cycleId,
@@ -453,7 +472,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       })));
     });
 
-    return result;
+    return { ...result, nextLifecycleState };
   };
   const pendingSubmission = await pendingSubmissionStore.read();
 
@@ -467,9 +486,24 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       confirmationProvider: input.confirmationProvider,
       accountState
     });
+    console.log('!!! RECOVERY !!!', recovery);
 
     if (recovery.clearPending) {
       await pendingSubmissionStore.clear();
+
+      if (recovery.reason === 'pending-submission-confirmed' || recovery.reason === 'pending-submission-filled') {
+        if (currentLifecycleState === 'lp_exit_pending') {
+          currentLifecycleState = 'inventory_exit_ready';
+        } else if (currentLifecycleState === 'inventory_exit_pending') {
+          currentLifecycleState = 'closed';
+        }
+      } else if (recovery.reason === 'pending-submission-failed') {
+        if (currentLifecycleState === 'lp_exit_pending' || currentLifecycleState === 'inventory_exit_pending') {
+          currentLifecycleState = 'open';
+        }
+      }
+      // Update context trader state after recovery state changes
+      context.trader.lifecycleState = currentLifecycleState;
     } else if (recovery.nextPendingSubmission) {
       await pendingSubmissionStore.write(recovery.nextPendingSubmission);
     }
@@ -495,8 +529,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         reason: recovery.reason,
         audit: { reason: recovery.reason },
         context,
-        quoteCollected: false,
-        liveOrderSubmitted: false,
         failureKind: recovery.reason === 'pending-submission-timeout' ? 'unknown' : undefined,
         failureSource: 'recovery',
         journalPaths: journals.paths,
@@ -505,9 +537,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
+  const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
   const engineResult = runEngineCycle({
     engine: config.poolClass,
-    snapshot,
+    snapshot: updatedSnapshot,
     config: {
       minScore: 70,
       minDeployScore: config.live.minDeployScore ?? 70,
@@ -1094,5 +1127,5 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationStatus: confirmation.status,
     journalPaths: journals.paths,
     killSwitchState
-  });
+  }, isResolvedConfirmation(confirmation.status, confirmationFinality));
 }

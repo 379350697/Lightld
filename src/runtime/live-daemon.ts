@@ -61,6 +61,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       tickCount += 1;
       const cycleInput = await buildCycleInput(tickCount);
       const pendingSubmission = await pendingSubmissionStore.read();
+      const positionState = await runtimeStateStore.readPositionState() ?? undefined;
       const derived = deriveRuntimeMode({
         currentMode: runtimeState.mode,
         quoteFailures: dependencyHealth.quote.consecutiveFailures,
@@ -92,6 +93,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           stateRootDir,
           runtimeMode: runtimeState.mode,
           mirrorSink: mirrorRuntime,
+          positionState,
           ...cycleInput
         });
 
@@ -188,6 +190,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
+          lifecycleState: result.nextLifecycleState ?? positionState?.lifecycleState ?? 'open',
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
@@ -269,6 +272,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
+          lifecycleState: positionState?.lifecycleState ?? 'open',
           updatedAt: now
         });
         await runtimeStateStore.writeHealthReport(report);
