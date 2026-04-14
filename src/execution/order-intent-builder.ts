@@ -5,6 +5,7 @@ export type BuildOrderIntentInput = {
   createdAt?: string;
   side?: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
   tokenMint?: string;
+  fullPositionExit?: boolean;
 };
 
 export function buildOrderIntent(input: BuildOrderIntentInput) {
@@ -17,7 +18,8 @@ export function buildOrderIntent(input: BuildOrderIntentInput) {
     createdAt,
     idempotencyKey: `${input.strategyId}:${input.poolAddress}:${createdAt}`,
     side: input.side ?? 'buy',
-    tokenMint: input.tokenMint ?? ''
+    tokenMint: input.tokenMint ?? '',
+    fullPositionExit: input.fullPositionExit ?? false
   };
 }
 

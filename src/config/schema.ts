@@ -9,7 +9,6 @@ export const LiveConfigSchema = z.object({
   enabled: z.boolean(),
   maxLivePositionSol: z.number().positive(),
   autoFlattenRequired: z.boolean(),
-  requireWhitelist: z.boolean(),
   minDeployScore: z.number().nonnegative().default(70),
   
   // Strict Rug Guards
@@ -33,7 +32,13 @@ export const LpConfigSchema = z.object({
   /** Minimum 24h volume in USD */
   minVolume24hUsd: z.number().nonnegative().default(1000),
   /** Minimum 24h fee/tvl ratio (0 = no filter) */
-  minFeeTvlRatio24h: z.number().nonnegative().default(0)
+  minFeeTvlRatio24h: z.number().nonnegative().default(0),
+  /** Claim fees when unclaimed fee balance reaches threshold */
+  claimFeeThresholdUsd: z.number().nonnegative().optional(),
+  /** Rebalance when position is out of range */
+  rebalanceOnOutOfRange: z.boolean().default(false),
+  /** Withdraw LP when impermanent loss reaches threshold */
+  maxImpermanentLossPct: z.number().nonnegative().optional()
 });
 
 export const StrategyConfigSchema = z.object({

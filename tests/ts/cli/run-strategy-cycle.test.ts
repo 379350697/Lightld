@@ -16,7 +16,6 @@ describe('runStrategyCycle', () => {
       stateRootDir: 'tmp/tests/run-strategy-cycle-state',
       journalRootDir: 'tmp/tests/run-strategy-cycle-journals',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },

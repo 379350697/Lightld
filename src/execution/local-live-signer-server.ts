@@ -13,7 +13,8 @@ const SignIntentRequestSchema = z.object({
     createdAt: z.string().min(1),
     idempotencyKey: z.string().min(1),
     side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
-    tokenMint: z.string().default('')
+    tokenMint: z.string().default(''),
+    fullPositionExit: z.boolean().default(false)
   })
 });
 

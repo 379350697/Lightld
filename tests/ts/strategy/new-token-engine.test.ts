@@ -131,4 +131,36 @@ describe('buildNewTokenDecision — LP mode', () => {
       )
     ).toEqual({ action: 'hold' });
   });
+
+  it('returns claim-fee when unclaimed fees exceed configured threshold', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          score: 80,
+          hasLpPosition: true,
+          lpNetPnlPct: 10,
+          lpUnclaimedFeeUsd: 30
+        },
+        { ...lpConfig, lpClaimFeeThresholdUsd: 25 }
+      )
+    ).toEqual({ action: 'claim-fee' });
+  });
+
+  it('returns rebalance-lp when configured and position is out of range', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          score: 80,
+          hasLpPosition: true,
+          lpNetPnlPct: 10,
+          lpActiveBinStatus: 'out-of-range'
+        },
+        { ...lpConfig, lpRebalanceOnOutOfRange: true }
+      )
+    ).toEqual({ action: 'rebalance-lp' });
+  });
 });

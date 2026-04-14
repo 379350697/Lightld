@@ -56,4 +56,19 @@ describe('loadStrategyConfig', () => {
 
     expect(second.strategyId).toBe('new-token-v1');
   });
+
+  it('fails fast when unsupported LP rebalance is enabled', async () => {
+    const path = await cloneStrategyConfig('new-token-v1.yaml');
+    const raw = await (await import('node:fs/promises')).readFile(path, 'utf8');
+
+    await writeFile(
+      path,
+      raw.replace('rebalanceOnOutOfRange: false', 'rebalanceOnOutOfRange: true'),
+      'utf8'
+    );
+
+    await expect(loadStrategyConfig(path)).rejects.toThrow(
+      'lpRebalanceOnOutOfRange=true is not supported by the current live execution path'
+    );
+  });
 });

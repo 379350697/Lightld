@@ -19,7 +19,6 @@ type ParsedArgs = {
   tickIntervalMs: number;
   maxTicks?: number;
   requestedPositionSol?: number;
-  whitelist: string[];
   traderWallet?: string;
   meteoraPageSize?: number;
   meteoraQuery?: string;
@@ -35,10 +34,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     requestedPositionSol: process.env.LIVE_REQUESTED_POSITION_SOL
       ? Number(process.env.LIVE_REQUESTED_POSITION_SOL)
       : undefined,
-    whitelist: (process.env.LIVE_WHITELIST ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
     traderWallet: process.env.LIVE_TRADER_WALLET,
     meteoraPageSize: process.env.LIVE_METEORA_PAGE_SIZE
       ? Number(process.env.LIVE_METEORA_PAGE_SIZE)
@@ -84,15 +79,6 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (current === '--requested-position-sol' && next) {
       parsed.requestedPositionSol = Number(next);
-      index += 1;
-      continue;
-    }
-
-    if (current === '--whitelist' && next) {
-      parsed.whitelist = next
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean);
       index += 1;
       continue;
     }
@@ -193,7 +179,6 @@ async function main() {
 
       const ingestInput = await buildLiveCycleInputFromIngest({
         strategy,
-        whitelist: args.whitelist,
         traderWallet: args.traderWallet,
         requestedPositionSol: args.requestedPositionSol,
         accountState,

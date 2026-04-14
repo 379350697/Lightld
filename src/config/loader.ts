@@ -19,8 +19,11 @@ export async function loadStrategyConfig(path: string): Promise<StrategyConfig> 
 
   const pending = (async () => {
     const raw = await readFile(path, 'utf8');
+    const parsed = StrategyConfigSchema.parse(parse(raw));
 
-    return StrategyConfigSchema.parse(parse(raw));
+    validateStrategyExecutionCompatibility(parsed);
+
+    return parsed;
   })();
 
   strategyConfigCache.set(path, pending);
@@ -30,5 +33,13 @@ export async function loadStrategyConfig(path: string): Promise<StrategyConfig> 
   } catch (error) {
     strategyConfigCache.delete(path);
     throw error;
+  }
+}
+
+function validateStrategyExecutionCompatibility(config: StrategyConfig) {
+  if (config.lpConfig?.rebalanceOnOutOfRange) {
+    throw new Error(
+      'lpRebalanceOnOutOfRange=true is not supported by the current live execution path'
+    );
   }
 }

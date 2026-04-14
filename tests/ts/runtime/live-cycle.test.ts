@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { readJsonLines } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
+import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { KillSwitch } from '../../../src/runtime/kill-switch';
 import { runLiveCycle } from '../../../src/runtime/live-cycle';
+import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 
 const TEST_JOURNAL_DIR = 'tmp/tests/runtime-live-cycle';
 const TEST_STATE_DIR = 'tmp/tests/runtime-live-cycle-state';
@@ -22,7 +24,6 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -47,7 +48,8 @@ describe('runLiveCycle', () => {
       poolAddress: 'pool-1',
       outputSol: 0.1,
       requestedPositionSol: 0.1,
-      quotedOutputSol: 0.1
+      quotedOutputSol: 0.1,
+      fullPositionExit: true
     });
     expect(orderJournal[0].cycleId).toEqual(expect.any(String));
     expect(quoteJournal[0]).toMatchObject({
@@ -80,7 +82,6 @@ describe('runLiveCycle', () => {
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -102,7 +103,6 @@ describe('runLiveCycle', () => {
       stateRootDir: TEST_STATE_DIR,
       killSwitch: new KillSwitch(true),
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -116,13 +116,12 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(false);
   });
 
-  it('allows tokens not in whitelist when requireWhitelist is false', async () => {
+  it('does not depend on whitelist membership for live submission', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
-      whitelist: ['CANARY'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -135,13 +134,96 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(true);
   });
 
-  it('blocks when the requested position exceeds the live cap', async () => {
+  it('blocks new LP opens in flatten_only mode while still allowing exits', async () => {
+    const blockedOpen = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      runtimeMode: 'flatten_only',
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    const allowedExit = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      runtimeMode: 'flatten_only',
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(blockedOpen.mode).toBe('BLOCKED');
+    expect(blockedOpen.reason).toBe('runtime-flatten-only');
+    expect(allowedExit.mode).toBe('LIVE');
+    expect(allowedExit.action).toBe('withdraw-lp');
+  });
+
+  it('does not count exits toward daily spend limits', async () => {
+    const stateDir = `${TEST_STATE_DIR}-spending`;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const openingResult = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+    await new PendingSubmissionStore(stateDir).clear();
+
+    const exitResult = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    const spendingStore = new SpendingLimitsStore(stateDir);
+    const spendingState = await spendingStore.read();
+
+    expect(openingResult.action).toBe('add-lp');
+    expect(exitResult.action).toBe('withdraw-lp');
+    expect(spendingState.dailySpendSol).toBe(0.1);
+    expect(spendingState.orderCount).toBe(1);
+  });
+
+  it('allows exits even when the requested position exceeds the live cap', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.5,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -150,36 +232,10 @@ describe('runLiveCycle', () => {
       }
     });
 
-    const decisionJournal = await readJsonLines<Record<string, unknown>>(
-      result.journalPaths.decisionAuditPath
-    );
-    const incidentJournal = await readJsonLines<Record<string, unknown>>(
-      result.journalPaths.liveIncidentPath
-    );
-
-    expect(result.mode).toBe('BLOCKED');
-    expect(result.reason).toBe('live-position-cap-exceeded');
-    expect(result.liveOrderSubmitted).toBe(false);
-    expect(decisionJournal[0]).toMatchObject({
-      strategyId: 'new-token-v1',
-      stage: 'guards',
-      action: 'withdraw-lp',
-      reason: 'live-position-cap-exceeded',
-      poolAddress: 'pool-1',
-      tokenSymbol: 'SAFE',
-      requestedPositionSol: 0.5,
-      quoteOutputSol: 0.5,
-      routeExists: true,
-      killSwitchEngaged: false
-    });
-    expect(incidentJournal[0]).toMatchObject({
-      strategyId: 'new-token-v1',
-      stage: 'guards',
-      reason: 'live-position-cap-exceeded',
-      poolAddress: 'pool-1',
-      tokenSymbol: 'SAFE',
-      requestedPositionSol: 0.5
-    });
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.orderIntent?.fullPositionExit).toBe(true);
   });
 
   it('emits mirror events without blocking the live cycle result', async () => {
@@ -190,7 +246,6 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       mirrorSink: {
         enqueue(event) {
           events.push(event);

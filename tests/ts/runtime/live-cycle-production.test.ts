@@ -8,6 +8,7 @@ import { runLiveCycle } from '../../../src/runtime/live-cycle';
 import { HttpLiveBroadcaster } from '../../../src/execution/http-live-broadcaster';
 import { HttpLiveQuoteProvider } from '../../../src/execution/http-live-quote-provider';
 import { HttpLiveSigner } from '../../../src/execution/http-live-signer';
+import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 
 describe('runLiveCycle production adapters', () => {
@@ -22,7 +23,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -108,7 +108,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -142,7 +141,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -168,7 +166,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -204,7 +201,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -277,7 +273,6 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
-      whitelist: ['SAFE'],
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -303,5 +298,52 @@ describe('runLiveCycle production adapters', () => {
     expect(result.mode).toBe('BLOCKED');
     expect(result.reason).toBe('pending-submission-timeout');
     expect(result.failureSource).toBe('recovery');
+  });
+
+  it('only records spending for exposure-increasing actions', async () => {
+    const stateDir = 'tmp/tests/runtime-live-cycle-production-state';
+
+    const openingResult = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+    await new PendingSubmissionStore(stateDir).clear();
+
+    const exitResult = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    const spendingStore = new SpendingLimitsStore(stateDir);
+    const spendingState = await spendingStore.read();
+
+    expect(openingResult.action).toBe('add-lp');
+    expect(exitResult.action).toBe('withdraw-lp');
+    expect(spendingState.dailySpendSol).toBe(0.1);
+    expect(spendingState.orderCount).toBe(1);
   });
 });

@@ -6,7 +6,6 @@ describe('buildLiveCycleInputFromIngest', () => {
   it('builds a scored large-pool context selecting highest-score candidate', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
-      whitelist: ['SAFE'],
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.2,
       now: new Date('2026-03-22T10:00:00.000Z'),
@@ -48,7 +47,6 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
 
     expect(result.requestedPositionSol).toBe(0.1);
-    expect(result.whitelist).toEqual(['SAFE']);
     expect(result.sessionPhase).toBe('active');
     expect(result.context.pool).toMatchObject({
       address: 'pool-safe',
@@ -75,7 +73,6 @@ describe('buildLiveCycleInputFromIngest', () => {
   it('derives new-token inventory from real account holdings', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',
-      whitelist: ['SAFE'],
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
@@ -130,7 +127,6 @@ describe('buildLiveCycleInputFromIngest', () => {
   it('does not infer inventory from pump wallet flow when real holdings are empty', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',
-      whitelist: ['SAFE'],
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
@@ -179,7 +175,6 @@ describe('buildLiveCycleInputFromIngest', () => {
   it('returns a safe fallback context when ingest finds no eligible pools', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
-      whitelist: ['SAFE'],
       requestedPositionSol: 0.15,
       now: new Date('2026-03-22T10:00:00.000Z'),
       safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
@@ -201,6 +196,74 @@ describe('buildLiveCycleInputFromIngest', () => {
       poolAddress: '',
       expectedOutSol: 0.15,
       hasSolRoute: false
+    });
+  });
+
+  it('applies LP selection thresholds from config before choosing a candidate', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-low-volume',
+          baseMint: 'mint-low-volume',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'LOWVOL',
+          liquidityUsd: 12_000,
+          updatedAt: '2026-03-22T09:58:00.000Z',
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 10_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.02
+          }
+        },
+        {
+          address: 'pool-good',
+          baseMint: 'mint-good',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'GOOD',
+          liquidityUsd: 20_000,
+          updatedAt: '2026-03-22T09:57:00.000Z',
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 1_500_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-low-volume',
+          symbol: 'LOWVOL',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        },
+        {
+          mint: 'mint-good',
+          symbol: 'GOOD',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:30.000Z'
+        }
+      ]
+    });
+
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-good'
+    });
+    expect(result.context.token).toMatchObject({
+      symbol: 'GOOD'
     });
   });
 });

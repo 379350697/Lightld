@@ -22,8 +22,9 @@ const SignedIntentSchema = z.object({
     outputSol: z.number().finite().positive(),
     createdAt: z.string().min(1),
     idempotencyKey: z.string().min(1),
-    side: z.enum(['buy', 'sell']).default('buy'),
-    tokenMint: z.string().default('')
+    side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
+    tokenMint: z.string().default(''),
+    fullPositionExit: z.boolean().default(false)
   }),
   signerId: z.string().min(1),
   signedAt: z.string().min(1),
@@ -53,7 +54,14 @@ const AccountStateSchema = z.object({
     confirmationSignature: z.string().optional(),
     mint: z.string(),
     symbol: z.string().optional(),
-    side: z.union([z.literal('buy'), z.literal('sell')]),
+    side: z.union([
+      z.literal('buy'),
+      z.literal('sell'),
+      z.literal('add-lp'),
+      z.literal('withdraw-lp'),
+      z.literal('claim-fee'),
+      z.literal('rebalance-lp')
+    ]),
     amount: z.number().finite(),
     recordedAt: z.string().min(1)
   })).optional()

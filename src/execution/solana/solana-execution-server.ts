@@ -21,7 +21,8 @@ const BroadcastRequestSchema = z.object({
       createdAt: z.string().min(1),
       idempotencyKey: z.string().min(1),
       side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).optional(),
-      tokenMint: z.string().min(1).optional()
+      tokenMint: z.string().min(1).optional(),
+      fullPositionExit: z.boolean().optional()
     }),
     signerId: z.string().min(1),
     signedAt: z.string().min(1),
@@ -155,6 +156,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               if (side === 'buy') {
                 quoteParams = jupiterClient.buildBuyQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps);
               } else {
+                if (!intent.fullPositionExit) {
+                  throw new Error('Sell intent must explicitly declare fullPositionExit=true');
+                }
+
                 // Sell: query actual token balance and sell all
                 const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
                 const tokenAccount = tokenAccounts.find(

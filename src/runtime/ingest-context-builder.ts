@@ -3,17 +3,24 @@ import { fetchGmgnTrader } from '../ingest/gmgn/client.ts';
 import { normalizeGmgnTrader } from '../ingest/gmgn/normalize.ts';
 import {
   fetchTokenSafetyBatch,
-  isTokenSafe,
   DEFAULT_SAFETY_CONFIG,
-  type TokenSafetyResult,
-  type TokenSafetyConfig
+  type TokenSafetyConfig,
+  type TokenSafetyResult
 } from '../ingest/gmgn/token-safety-client.ts';
 import { fetchMeteoraPools } from '../ingest/meteora/client.ts';
 import { fetchPumpTrades } from '../ingest/pump/client.ts';
-import { normalizePumpTokenEvent, normalizePumpWalletTrade } from '../ingest/pump/normalize.ts';
+import { normalizePumpTokenEvent } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
 import { computeWeightedScore } from '../strategy/filtering/scoring.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
+import {
+  applySafetyFilter,
+  countActiveInventoryPositions,
+  filterLpEligibleCandidates,
+  type IngestCandidate,
+  isInScanWindow,
+  selectCandidate
+} from './ingest-candidate-selection.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
@@ -34,17 +41,16 @@ type FetchGmgnTraderImpl = (
   wallet: string,
   options?: Parameters<typeof fetchGmgnTrader>[1]
 ) => Promise<Record<string, unknown>>;
+type FetchTokenSafetyBatchImpl = (mints: string[]) => Promise<TokenSafetyResult[]>;
 
 export type IngestBackedCycleInput = Omit<LiveCycleInput, 'strategy'> & {
   context: DecisionContextInput;
-  whitelist: string[];
   requestedPositionSol: number;
   sessionPhase: 'active' | 'closed';
 };
 
 type IngestContextBuilderInput = {
   strategy: StrategyId;
-  whitelist?: string[];
   traderWallet?: string;
   requestedPositionSol?: number;
   accountState?: LiveAccountState;
@@ -57,31 +63,7 @@ type IngestContextBuilderInput = {
   fetchMeteoraPoolsImpl?: FetchMeteoraPoolsImpl;
   fetchPumpTradesImpl?: FetchPumpTradesImpl;
   fetchGmgnTraderImpl?: FetchGmgnTraderImpl;
-  fetchTokenSafetyBatchImpl?: (mints: string[]) => Promise<TokenSafetyResult[]>;
-};
-
-type IngestCandidate = {
-  address: string;
-  mint: string;
-  symbol: string;
-  quoteMint: string;
-  liquidityUsd: number;
-  hasSolRoute: boolean;
-  capturedAt: string;
-  holders: number;
-  momentum: number;
-  hasInventory: boolean;
-  score: number;
-  /** DLMM pool bin step (from pool_config.bin_step) */
-  binStep: number;
-  /** DLMM base fee percentage (from pool_config.base_fee_pct) */
-  baseFeePct: number;
-  /** 24h trading volume in USD */
-  volume24h: number;
-  /** 24h fee/tvl ratio */
-  feeTvlRatio24h: number;
-  /** Score from safety filter (GMGN) */
-  safetyScore?: number;
+  fetchTokenSafetyBatchImpl?: FetchTokenSafetyBatchImpl;
 };
 
 type PumpIndexes = {
@@ -244,7 +226,7 @@ function resolveMomentum(
 
 function buildPumpIndexes(
   rows: Record<string, unknown>[],
-  traderWallet: string | undefined
+  _traderWallet: string | undefined
 ): PumpIndexes {
   const tokenByMint = new Map<string, ReturnType<typeof normalizePumpTokenEvent>>();
 
@@ -254,15 +236,6 @@ function buildPumpIndexes(
     const mint = readString(payload, ['mint', 'baseMint', 'base_mint']);
 
     if (wallet.length > 0) {
-      const trade = normalizePumpWalletTrade({
-        wallet,
-        mint,
-        side: readString(payload, ['side']).toLowerCase() || 'buy',
-        amount: readNumber(payload, ['amount']),
-        timestamp: readString(payload, ['timestamp', 'capturedAt', 'updatedAt']),
-        raw: payload
-      });
-
       continue;
     }
 
@@ -356,8 +329,6 @@ function buildFallbackContext(
   slippageBps: number,
   traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null
 ): IngestBackedCycleInput {
-  const whitelist = input.whitelist ?? [];
-
   const context: DecisionContextInput = {
     pool: {
       address: '',
@@ -392,7 +363,6 @@ function buildFallbackContext(
 
   return {
     context,
-    whitelist,
     requestedPositionSol,
     sessionPhase: sessionActive ? 'active' : 'closed'
   };
@@ -450,62 +420,10 @@ function buildCandidate(
   } satisfies IngestCandidate;
 }
 
-function selectCandidate(
-  candidates: IngestCandidate[],
-  strategy: StrategyId,
-  inScanWindow: boolean,
-  activePositionsCount: number
-) {
-  const filtered = candidates.filter((candidate) => {
-    if (candidate.address.length === 0 || candidate.symbol.length === 0) {
-      return false;
-    }
-
-    // Ignore new tokens if we are not in a valid scanning window or if max capacity reached
-    if (!candidate.hasInventory && (!inScanWindow || activePositionsCount >= 5)) {
-      return false;
-    }
-
-    return true;
-  });
-
-  if (filtered.length === 0) {
-    return null;
-  }
-
-  filtered.sort((left, right) => {
-    if (strategy === 'new-token-v1') {
-      // Prioritize existing inventory positions
-      if (left.hasInventory !== right.hasInventory) {
-        return Number(right.hasInventory) - Number(left.hasInventory);
-      }
-      // Primary sort: safety score from GMGN (highest first)
-      const leftSafety = left.safetyScore ?? 0;
-      const rightSafety = right.safetyScore ?? 0;
-      if (rightSafety !== leftSafety) {
-        return rightSafety - leftSafety;
-      }
-      // Secondary sort: fee/TVL ratio (highest yield first)
-      if (right.feeTvlRatio24h !== left.feeTvlRatio24h) {
-        return right.feeTvlRatio24h - left.feeTvlRatio24h;
-      }
-    }
-
-    if (right.score !== left.score) {
-      return right.score - left.score;
-    }
-
-    return right.liquidityUsd - left.liquidityUsd;
-  });
-
-  return filtered[0] ?? null;
-}
-
 export async function buildLiveCycleInputFromIngest(
   input: IngestContextBuilderInput
 ): Promise<IngestBackedCycleInput> {
   const now = input.now ?? new Date();
-  const whitelist = input.whitelist ?? [];
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
   const [poolRows, pumpRows, traderSnapshot] = await Promise.all([
@@ -530,48 +448,18 @@ export async function buildLiveCycleInputFromIngest(
       config.scoringWeights
     )
   );
-
-  const activePositionsCount = (input.accountState?.walletTokens ?? [])
-    .filter(t => t.amount > 0 && t.symbol !== 'SOL' && t.mint !== 'So11111111111111111111111111111111111111112').length;
-
-  const currentMin = now.getMinutes();
-  const inScanWindow = (currentMin >= 0 && currentMin <= 10) || (currentMin >= 30 && currentMin <= 40);
+  candidates = filterLpEligibleCandidates(candidates, config);
+  const activePositionsCount = countActiveInventoryPositions(input.accountState);
+  const inScanWindow = isInScanWindow(now);
   const maxBatchSize = inScanWindow ? 50 : 0;
-
-  // --- Token safety filter (GMGN via Scrapling) ---
   const safetyConfig = input.safetyFilterConfig ?? DEFAULT_SAFETY_CONFIG;
-  if (!safetyConfig.disabled) {
-    const solMints = candidates.filter((c) => c.hasSolRoute).map((c) => c.mint).filter(Boolean);
-    const uniqueMints = [...new Set(solMints)];
-    if (uniqueMints.length > 0) {
-      try {
-        const fetchSafety = input.fetchTokenSafetyBatchImpl ?? fetchTokenSafetyBatch;
-        // The script blocks during the fetch to safely wait
-        const safetyResults = await fetchSafety(uniqueMints, { maxBatchSize, timeoutMs: 15 * 60_000 });
-        const safeMap = new Map<string, number>();
-        for (const res of safetyResults) {
-          if (isTokenSafe(res, safetyConfig)) {
-            safeMap.set(res.mint, res.safetyScore);
-          }
-        }
-        const beforeCount = candidates.length;
-        candidates = candidates
-          .filter((c) => safeMap.has(c.mint))
-          .map((c) => {
-            let bonus = 0;
-            if (c.feeTvlRatio24h > 0.20) bonus = 40;
-            else if (c.feeTvlRatio24h >= 0.10) bonus = 30;
-            else if (c.feeTvlRatio24h >= 0.05) bonus = 20;
-
-            return { ...c, safetyScore: (safeMap.get(c.mint) ?? 0) + bonus };
-          });
-          
-        console.log(`[Ingest] Safety filter: ${beforeCount} → ${candidates.length} safe candidates (${uniqueMints.length} unique SOL pairs checked, maxBatchSize=${maxBatchSize})`);
-      } catch (err) {
-        console.warn(`[Ingest] Safety check failed, skipping filter: ${(err as Error).message}`);
-      }
-    }
-  }
+  candidates = await applySafetyFilter(candidates, {
+    safetyConfig,
+    maxBatchSize,
+    fetchSafety: async (mints) =>
+      (input.fetchTokenSafetyBatchImpl ?? defaultFetchSafetyBatch(maxBatchSize))(mints),
+    logger: console
+  });
 
   const candidate = selectCandidate(candidates, input.strategy, inScanWindow, activePositionsCount);
 
@@ -633,8 +521,12 @@ export async function buildLiveCycleInputFromIngest(
 
   return {
     context,
-    whitelist,
     requestedPositionSol,
     sessionPhase: sessionActive ? 'active' : 'closed'
   };
+}
+
+function defaultFetchSafetyBatch(maxBatchSize: number) {
+  return async (mints: string[]) =>
+    fetchTokenSafetyBatch(mints, { maxBatchSize, timeoutMs: 15 * 60_000 });
 }

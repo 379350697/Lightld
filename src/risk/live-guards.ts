@@ -1,10 +1,11 @@
+import { classifyAction, type LiveAction } from '../runtime/action-semantics.ts';
+
 export type LiveGuardInput = {
+  action: LiveAction;
   symbol: string;
-  whitelist: string[];
   requestedPositionSol: number;
   maxLivePositionSol: number;
   killSwitchEngaged: boolean;
-  requireWhitelist?: boolean;
   sessionPhase?: 'active' | 'flatten-only' | 'closed';
   maxSingleOrderSol?: number;
   maxDailySpendSol?: number;
@@ -29,16 +30,17 @@ export type LiveGuardResult =
       reason:
         | 'kill-switch-engaged'
         | 'flatten-only'
-        | 'token-not-whitelisted'
         | 'live-position-cap-exceeded'
         | 'single-order-limit-exceeded'
         | 'daily-spend-limit-exceeded'
         | 'mint-authority-not-revoked'
         | 'lp-burn-insufficient'
         | 'top-holders-concentrated';
-    };
+};
 
 export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
+  const actionClass = classifyAction(input.action);
+
   if (input.killSwitchEngaged) {
     return {
       allowed: false,
@@ -46,17 +48,20 @@ export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
     };
   }
 
-  if (input.sessionPhase === 'flatten-only' || input.sessionPhase === 'closed') {
+  if (
+    actionClass === 'open_risk'
+    && (input.sessionPhase === 'flatten-only' || input.sessionPhase === 'closed')
+  ) {
     return {
       allowed: false,
       reason: 'flatten-only'
     };
   }
 
-  if ((input.requireWhitelist ?? true) && !input.whitelist.includes(input.symbol)) {
+  if (actionClass !== 'open_risk') {
     return {
-      allowed: false,
-      reason: 'token-not-whitelisted'
+      allowed: true,
+      reason: 'allowed'
     };
   }
 

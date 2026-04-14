@@ -24,5 +24,4 @@ live:
   enabled: false
   maxLivePositionSol: 0.25
   autoFlattenRequired: true
-  requireWhitelist: true
   minDeployScore: 70

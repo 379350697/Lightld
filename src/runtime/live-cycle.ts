@@ -47,11 +47,30 @@ import { buildDecisionContext, type DecisionContextInput } from './build-decisio
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
-import { recoverPendingSubmission } from './pending-submission-recovery.ts';
-import { reconcileLiveState } from './reconcile-live-state.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
+import {
+  classifyAction,
+  type LiveAction
+} from './action-semantics.ts';
+import {
+  buildPendingTimeoutAt,
+  isFullPositionExitAction,
+  isResolvedConfirmation,
+  resolveNextLifecycleState,
+  resolveOrderIntentSide
+} from './live-cycle-state.ts';
+import {
+  buildBlockedCycleResult,
+  buildLiveSubmittedResult,
+  buildTrackedPendingSubmissionSnapshot,
+  buildUnknownPendingSubmissionSnapshot,
+  resolveFillMirrorSide
+} from './live-cycle-outcomes.ts';
+import {
+  runAccountReconciliationGate,
+  runPendingRecoveryGate
+} from './live-cycle-preflight.ts';
 import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
-import { toPendingConfirmationStatus } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
   'new-token-v1': 'src/config/strategies/new-token-v1.yaml',
@@ -64,7 +83,6 @@ export type LiveCycleInput = {
   strategy: StrategyId;
   context?: DecisionContextInput;
   killSwitch?: KillSwitch;
-  whitelist?: string[];
   requestedPositionSol?: number;
   journalRootDir?: string;
   stateRootDir?: string;
@@ -85,7 +103,7 @@ export type LiveCycleInput = {
 export type LiveCycleResult = {
   status: 'ok';
   mode: 'LIVE' | 'BLOCKED';
-  action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
+  action: LiveAction;
   reason: string;
   audit: { reason: string };
   context: ReturnType<typeof buildDecisionContext>;
@@ -119,8 +137,6 @@ type LiveCycleJournals = {
   fills: LiveFillJournal<Record<string, unknown>>;
   incidents: LiveIncidentJournal<Record<string, unknown>>;
 };
-
-const PENDING_SUBMISSION_TIMEOUT_MS = 2 * 60_000;
 
 type LiveCycleLogContext = {
   cycleId: string;
@@ -258,18 +274,6 @@ function durationMs(logContext: LiveCycleLogContext) {
   return Math.max(0, Date.now() - logContext.startedAtMs);
 }
 
-function buildPendingTimeoutAt(startedAt: string) {
-  return new Date(Date.parse(startedAt) + PENDING_SUBMISSION_TIMEOUT_MS).toISOString();
-}
-
-function isResolvedConfirmation(status: ConfirmationStatus, finality?: ConfirmationFinality) {
-  if (status === 'failed') {
-    return true;
-  }
-
-  return status === 'confirmed' && (finality === 'confirmed' || finality === 'finalized');
-}
-
 function toConfirmationResult(
   result: LiveConfirmationResult
 ): {
@@ -296,6 +300,14 @@ function emitMirrorEvent(mirrorSink: MirrorEventSink | undefined, eventFactory: 
   } catch {
     // Mirror failures must never block the trade path.
   }
+}
+
+function getBroadcastSubmissionId(result: LiveBroadcastResult | undefined) {
+  if (!result || result.status !== 'submitted') {
+    return undefined;
+  }
+
+  return result.submissionId;
 }
 
 async function appendDecision(
@@ -462,18 +474,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   context.trader.lifecycleState = currentLifecycleState;
 
   const finalize = (result: Omit<LiveCycleResult, 'nextLifecycleState'>, synchronouslyResolved?: boolean): LiveCycleResult => {
-    let nextLifecycleState = currentLifecycleState;
-    if (result.liveOrderSubmitted) {
-      if (result.action === 'withdraw-lp') {
-        nextLifecycleState = synchronouslyResolved ? 'inventory_exit_ready' : 'lp_exit_pending';
-      }
-      if (result.action === 'dca-out') {
-        nextLifecycleState = synchronouslyResolved ? 'closed' : 'inventory_exit_pending';
-      }
-      if (result.action === 'deploy' || result.action === 'add-lp') {
-        nextLifecycleState = 'open';
-      }
-    }
+    const nextLifecycleState = resolveNextLifecycleState(
+      currentLifecycleState,
+      result.action,
+      result.liveOrderSubmitted,
+      synchronouslyResolved
+    );
 
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toCycleRunEvent(buildCycleRunMirrorPayload({
@@ -500,62 +506,88 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
     return { ...result, nextLifecycleState };
   };
+  const blockCycle = async (entry: {
+    stage: 'live-config' | 'reconciliation' | 'guards' | 'broadcast' | 'recovery' | 'runtime-policy';
+    action: LiveAction;
+    reason: string;
+    audit: { reason: string };
+    requestedPositionSol?: number;
+    quote?: SolExitQuote;
+    executionPlan?: ExecutionPlan;
+    orderIntent?: LiveOrderIntent;
+    broadcastResult?: LiveBroadcastResult;
+    confirmationStatus?: ConfirmationStatus;
+    failureKind?: ExecutionFailureKind;
+    failureSource?: 'quote' | 'signer' | 'broadcast' | 'confirmation' | 'account' | 'recovery' | 'runtime-policy';
+    reconciliationDeltaSol?: number;
+    severity?: 'warning' | 'error';
+    emitIncident?: boolean;
+    quoteCollected: boolean;
+  }) => {
+    await appendDecision(journals, logContext, {
+      stage: entry.stage,
+      mode: 'BLOCKED',
+      action: entry.action,
+      reason: entry.reason,
+      requestedPositionSol: entry.requestedPositionSol,
+      quote: entry.quote,
+      confirmationStatus: entry.confirmationStatus,
+      submissionId: getBroadcastSubmissionId(entry.broadcastResult),
+      reconciliationDeltaSol: entry.reconciliationDeltaSol,
+      liveOrderSubmitted: false
+    });
+
+    if (entry.emitIncident ?? true) {
+      await appendIncident(journals, logContext, mirrorSink, {
+        stage: entry.stage,
+        reason: entry.reason,
+        severity: entry.severity ?? 'warning',
+        requestedPositionSol: entry.requestedPositionSol,
+        quote: entry.quote,
+        submissionId: getBroadcastSubmissionId(entry.broadcastResult),
+        reconciliationDeltaSol: entry.reconciliationDeltaSol
+      });
+    }
+
+    return finalize(buildBlockedCycleResult({
+      action: entry.action,
+      reason: entry.reason,
+      audit: entry.audit,
+      context,
+      quoteCollected: entry.quoteCollected,
+      quote: entry.quote,
+      executionPlan: entry.executionPlan,
+      orderIntent: entry.orderIntent,
+      broadcastResult: entry.broadcastResult,
+      confirmationStatus: entry.confirmationStatus,
+      failureKind: entry.failureKind,
+      failureSource: entry.failureSource,
+      journalPaths: journals.paths,
+      killSwitchState
+    }));
+  };
   const pendingSubmission = await pendingSubmissionStore.read();
 
   if (pendingSubmission) {
-    const recovery = await recoverPendingSubmission({
+    const recoveryGate = await runPendingRecoveryGate({
+      pendingSubmissionStore,
       pendingSubmission,
       confirmationProvider: input.confirmationProvider,
-      accountState
+      accountState,
+      currentLifecycleState
     });
-    console.log('!!! RECOVERY !!!', recovery);
+    currentLifecycleState = recoveryGate.lifecycleState;
+    context.trader.lifecycleState = currentLifecycleState;
 
-    if (recovery.clearPending) {
-      await pendingSubmissionStore.clear();
-
-      if (recovery.reason === 'pending-submission-confirmed' || recovery.reason === 'pending-submission-filled') {
-        if (currentLifecycleState === 'lp_exit_pending') {
-          currentLifecycleState = 'inventory_exit_ready';
-        } else if (currentLifecycleState === 'inventory_exit_pending') {
-          currentLifecycleState = 'closed';
-        }
-      } else if (recovery.reason === 'pending-submission-failed') {
-        if (currentLifecycleState === 'lp_exit_pending' || currentLifecycleState === 'inventory_exit_pending') {
-          currentLifecycleState = 'open';
-        }
-      }
-      // Update context trader state after recovery state changes
-      context.trader.lifecycleState = currentLifecycleState;
-    } else if (recovery.nextPendingSubmission) {
-      await pendingSubmissionStore.write(recovery.nextPendingSubmission);
-    }
-
-    if (recovery.blocked) {
-      await appendDecision(journals, logContext, {
+    if (recoveryGate.blocked) {
+      return blockCycle({
         stage: 'recovery',
-        mode: 'BLOCKED',
         action: 'hold',
-        reason: recovery.reason,
-        liveOrderSubmitted: false
-      });
-      await appendIncident(journals, logContext, mirrorSink, {
-        stage: 'recovery',
-        reason: recovery.reason,
-        severity: recovery.reason === 'pending-submission-timeout' ? 'error' : 'warning'
-      });
-
-      return finalize({
-        status: 'ok',
-        mode: 'BLOCKED',
-        action: 'hold',
-        reason: recovery.reason,
-        audit: { reason: recovery.reason },
-        context,
-        failureKind: recovery.reason === 'pending-submission-timeout' ? 'unknown' : undefined,
+        reason: recoveryGate.reason,
+        audit: { reason: recoveryGate.reason },
+        severity: recoveryGate.reason === 'pending-submission-timeout' ? 'error' : 'warning',
+        failureKind: recoveryGate.reason === 'pending-submission-timeout' ? 'unknown' : undefined,
         failureSource: 'recovery',
-        journalPaths: journals.paths,
-        killSwitchState,
-        liveOrderSubmitted: false,
         quoteCollected: false
       });
     }
@@ -579,7 +611,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       stopLossPct: config.riskThresholds.stopLossPct,
       lpEnabled: config.lpConfig?.enabled ?? false,
       lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
-      lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct
+      lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
+      lpClaimFeeThresholdUsd: config.lpConfig?.claimFeeThresholdUsd,
+      lpRebalanceOnOutOfRange: config.lpConfig?.rebalanceOnOutOfRange ?? false,
+      lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
     }
   });
   logContext.engineReason = engineResult.audit.reason;
@@ -593,18 +628,15 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       liveOrderSubmitted: false
     });
 
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
+    return finalize(buildBlockedCycleResult({
       action: 'hold',
       reason: 'hold',
       audit: engineResult.audit,
       context,
       quoteCollected: false,
-      liveOrderSubmitted: false,
       journalPaths: journals.paths,
       killSwitchState
-    });
+    }));
   }
 
   const runtimeAction = applyRuntimeActionPolicy({
@@ -613,26 +645,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
 
   if (runtimeAction.action === 'hold' && runtimeAction.blockedReason) {
-    await appendDecision(journals, logContext, {
+    return blockCycle({
       stage: 'runtime-policy',
-      mode: 'BLOCKED',
-      action: 'hold',
-      reason: runtimeAction.blockedReason,
-      liveOrderSubmitted: false
-    });
-
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
       action: 'hold',
       reason: runtimeAction.blockedReason,
       audit: engineResult.audit,
-      context,
-      quoteCollected: false,
-      liveOrderSubmitted: false,
       failureSource: 'runtime-policy',
-      journalPaths: journals.paths,
-      killSwitchState
+      emitIncident: false,
+      quoteCollected: false
     });
   }
 
@@ -668,76 +688,39 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const actionableAction = runtimeAction.action;
 
   if (!config.live.enabled) {
-    await appendDecision(journals, logContext, {
+    return blockCycle({
       stage: 'live-config',
-      mode: 'BLOCKED',
-      action: actionableAction,
-      reason: 'strategy-live-disabled',
-      requestedPositionSol,
-      quote,
-      liveOrderSubmitted: false
-    });
-    await appendIncident(journals, logContext, mirrorSink, {
-      stage: 'live-config',
-      reason: 'strategy-live-disabled',
-      severity: 'warning',
-      requestedPositionSol,
-      quote
-    });
-
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
       action: actionableAction,
       reason: 'strategy-live-disabled',
       audit: engineResult.audit,
-      context,
-      quoteCollected: true,
+      requestedPositionSol,
       quote,
       executionPlan,
-      liveOrderSubmitted: false,
-      journalPaths: journals.paths,
-      killSwitchState
+      severity: 'warning',
+      quoteCollected: true
     });
   }
 
   if ((input.reconciliationStatus ?? 'matched') !== 'matched') {
     reconciliationOk = false;
-    await appendDecision(journals, logContext, {
+    return blockCycle({
       stage: 'reconciliation',
-      mode: 'BLOCKED',
-      action: actionableAction,
-      reason: 'reconciliation-required',
-      requestedPositionSol,
-      quote,
-      liveOrderSubmitted: false
-    });
-    await appendIncident(journals, logContext, mirrorSink, {
-      stage: 'reconciliation',
-      reason: 'reconciliation-required',
-      severity: 'warning',
-      requestedPositionSol,
-      quote
-    });
-
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
       action: actionableAction,
       reason: 'reconciliation-required',
       audit: engineResult.audit,
-      context,
-      quoteCollected: true,
+      requestedPositionSol,
       quote,
       executionPlan,
-      liveOrderSubmitted: false,
-      journalPaths: journals.paths,
-      killSwitchState
+      severity: 'warning',
+      quoteCollected: true
     });
   }
 
   if (accountState || input.accountProvider) {
-    const reconciliation = reconcileLiveState(accountState!);
+    const reconciliation = runAccountReconciliationGate(accountState);
+    if (!reconciliation) {
+      throw new Error('Expected reconciliation input when account state is available');
+    }
     reconciliationOk = reconciliation.ok;
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toReconciliationMirrorEvent({
@@ -754,38 +737,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
 
     if (!reconciliation.ok) {
-      await appendDecision(journals, logContext, {
+      return blockCycle({
         stage: 'reconciliation',
-        mode: 'BLOCKED',
-        action: actionableAction,
-        reason: reconciliation.reason,
-        requestedPositionSol,
-        quote,
-        reconciliationDeltaSol: reconciliation.deltaSol,
-        liveOrderSubmitted: false
-      });
-      await appendIncident(journals, logContext, mirrorSink, {
-        stage: 'reconciliation',
-        reason: reconciliation.reason,
-        severity: 'warning',
-        requestedPositionSol,
-        quote,
-        reconciliationDeltaSol: reconciliation.deltaSol
-      });
-
-      return finalize({
-        status: 'ok',
-        mode: 'BLOCKED',
         action: actionableAction,
         reason: reconciliation.reason,
         audit: engineResult.audit,
-        context,
-        quoteCollected: true,
+        requestedPositionSol,
         quote,
         executionPlan,
-        liveOrderSubmitted: false,
-        journalPaths: journals.paths,
-        killSwitchState
+        reconciliationDeltaSol: reconciliation.deltaSol,
+        severity: 'warning',
+        quoteCollected: true
       });
     }
   }
@@ -798,12 +760,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     : undefined;
 
   const guardResult = evaluateLiveGuards({
+    action: actionableAction,
     symbol: tokenSymbol,
-    whitelist: input.whitelist ?? [],
     requestedPositionSol,
     maxLivePositionSol: config.live.maxLivePositionSol,
     killSwitchEngaged: killSwitchState,
-    requireWhitelist: config.live.requireWhitelist,
     sessionPhase: logContext.sessionPhase,
     maxSingleOrderSol: input.spendingLimitsConfig?.maxSingleOrderSol,
     maxDailySpendSol: input.spendingLimitsConfig?.maxDailySpendSol,
@@ -815,38 +776,19 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     top10HoldersPct: typeof context.token.top10HoldersPct === 'number' ? context.token.top10HoldersPct : undefined,
     maxTop10HoldersPct: config.live.maxTop10HoldersPct
   });
+  const actionableActionClass = classifyAction(actionableAction);
 
   if (!guardResult.allowed) {
-    await appendDecision(journals, logContext, {
+    return blockCycle({
       stage: 'guards',
-      mode: 'BLOCKED',
-      action: actionableAction,
-      reason: guardResult.reason,
-      requestedPositionSol,
-      quote,
-      liveOrderSubmitted: false
-    });
-    await appendIncident(journals, logContext, mirrorSink, {
-      stage: 'guards',
-      reason: guardResult.reason,
-      severity: 'warning',
-      requestedPositionSol,
-      quote
-    });
-
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
       action: actionableAction,
       reason: guardResult.reason,
       audit: engineResult.audit,
-      context,
-      quoteCollected: true,
+      requestedPositionSol,
       quote,
       executionPlan,
-      liveOrderSubmitted: false,
-      journalPaths: journals.paths,
-      killSwitchState
+      severity: 'warning',
+      quoteCollected: true
     });
   }
 
@@ -854,10 +796,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     strategyId: input.strategy,
     poolAddress: executionPlan.poolAddress,
     outputSol: requestedPositionSol,
-    side: actionableAction === 'deploy' ? 'buy' 
-      : actionableAction === 'dca-out' || actionableAction === 'hold' ? 'sell'
-      : actionableAction,
-    tokenMint: logContext.tokenMint
+    side: resolveOrderIntentSide(actionableAction),
+    tokenMint: logContext.tokenMint,
+    fullPositionExit: isFullPositionExitAction(actionableAction)
   });
   await journals.orders.append({
     cycleId: logContext.cycleId,
@@ -892,38 +833,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     broadcastResult = await broadcaster.broadcast(signedIntent);
   } catch (error) {
     if (error instanceof ExecutionRequestError && error.kind === 'unknown') {
-      await pendingSubmissionStore.write({
+      const updatedAt = new Date().toISOString();
+      await pendingSubmissionStore.write(buildUnknownPendingSubmissionSnapshot({
         strategyId: input.strategy,
         idempotencyKey: orderIntent.idempotencyKey,
-        submissionId: '',
-        confirmationSignature: undefined,
-        confirmationStatus: 'unknown',
-        finality: 'unknown',
         createdAt: logContext.startedAt,
-        updatedAt: new Date().toISOString(),
-        lastCheckedAt: new Date().toISOString(),
+        updatedAt,
         timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
         tokenMint: logContext.tokenMint,
         tokenSymbol,
         reason: error.reason
-      });
-      await appendDecision(journals, logContext, {
-        stage: 'broadcast',
-        mode: 'BLOCKED',
-        action: actionableAction,
-        reason: error.reason,
-        requestedPositionSol,
-        quote,
-        confirmationStatus: 'unknown',
-        liveOrderSubmitted: false
-      });
-      await appendIncident(journals, logContext, mirrorSink, {
-        stage: 'broadcast',
-        reason: error.reason,
-        severity: 'error',
-        requestedPositionSol,
-        quote
-      });
+      }));
       emitMirrorEvent(mirrorSink, () => {
         mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
           idempotencyKey: orderIntent.idempotencyKey,
@@ -939,27 +859,24 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
           confirmationStatus: 'unknown',
           finality: 'unknown',
           createdAt: logContext.startedAt,
-          updatedAt: new Date().toISOString()
+          updatedAt
         })));
       });
 
-      return finalize({
-        status: 'ok',
-        mode: 'BLOCKED',
+      return blockCycle({
+        stage: 'broadcast',
         action: actionableAction,
         reason: error.reason,
         audit: engineResult.audit,
-        context,
-        quoteCollected: true,
+        requestedPositionSol,
         quote,
         executionPlan,
-        liveOrderSubmitted: false,
         orderIntent,
         confirmationStatus: 'unknown',
         failureKind: error.kind,
         failureSource: 'broadcast',
-        journalPaths: journals.paths,
-        killSwitchState
+        severity: 'error',
+        quoteCollected: true
       });
     }
 
@@ -970,23 +887,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     const confirmation = trackConfirmation({
       submissionId: undefined,
       failureReason: broadcastResult.reason
-    });
-    await appendDecision(journals, logContext, {
-      stage: 'broadcast',
-      mode: 'BLOCKED',
-      action: actionableAction,
-      reason: broadcastResult.reason,
-      requestedPositionSol,
-      quote,
-      confirmationStatus: confirmation.status,
-      liveOrderSubmitted: false
-    });
-    await appendIncident(journals, logContext, mirrorSink, {
-      stage: 'broadcast',
-      reason: broadcastResult.reason,
-      severity: 'error',
-      requestedPositionSol,
-      quote
     });
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
@@ -1009,23 +909,20 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       })));
     });
 
-    return finalize({
-      status: 'ok',
-      mode: 'BLOCKED',
+    return blockCycle({
+      stage: 'broadcast',
       action: actionableAction,
       reason: broadcastResult.reason,
       audit: engineResult.audit,
-      context,
-      quoteCollected: true,
+      requestedPositionSol,
       quote,
       executionPlan,
-      liveOrderSubmitted: false,
       orderIntent,
       broadcastResult,
       confirmationStatus: confirmation.status,
       failureSource: 'broadcast',
-      journalPaths: journals.paths,
-      killSwitchState
+      severity: 'error',
+      quoteCollected: true
     });
   }
 
@@ -1056,27 +953,26 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationCheckedAt = normalizedConfirmation.checkedAt;
   }
 
-  await pendingSubmissionStore.write({
+  await pendingSubmissionStore.write(buildTrackedPendingSubmissionSnapshot({
     strategyId: input.strategy,
     idempotencyKey: orderIntent.idempotencyKey,
     submissionId: broadcastResult.submissionId,
     confirmationSignature: broadcastResult.confirmationSignature,
-    confirmationStatus: toPendingConfirmationStatus(confirmation.status),
+    confirmationStatus: confirmation.status,
     finality: confirmationFinality,
     createdAt: logContext.startedAt,
     updatedAt: confirmationCheckedAt,
-    lastCheckedAt: confirmationCheckedAt,
     timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
     tokenMint: logContext.tokenMint,
     tokenSymbol,
     reason: confirmation.reason
-  });
+  }));
 
   if (isResolvedConfirmation(confirmation.status, confirmationFinality)) {
     await pendingSubmissionStore.clear();
   }
 
-  if (spendingLimitsStore) {
+  if (spendingLimitsStore && actionableActionClass === 'open_risk') {
     await spendingLimitsStore.recordSpend(requestedPositionSol);
   }
   emitMirrorEvent(mirrorSink, () => {
@@ -1119,7 +1015,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       cycleId: logContext.cycleId,
       tokenMint: logContext.tokenMint,
       tokenSymbol,
-      side: actionableAction === 'deploy' ? 'buy' : actionableAction === 'dca-out' ? 'sell' : 'unknown',
+      side: resolveFillMirrorSide(actionableAction),
       amount: 0,
       filledSol: 0,
       recordedAt: fillRecordedAt
@@ -1137,21 +1033,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  return finalize({
-    status: 'ok',
-    mode: 'LIVE',
+  return finalize(buildLiveSubmittedResult({
     action: actionableAction,
     reason: 'live-order-submitted',
     audit: engineResult.audit,
     context,
-    quoteCollected: true,
     quote,
     executionPlan,
-    liveOrderSubmitted: true,
     orderIntent,
     broadcastResult,
     confirmationStatus: confirmation.status,
     journalPaths: journals.paths,
     killSwitchState
-  }, isResolvedConfirmation(confirmation.status, confirmationFinality));
+  }), isResolvedConfirmation(confirmation.status, confirmationFinality));
 }

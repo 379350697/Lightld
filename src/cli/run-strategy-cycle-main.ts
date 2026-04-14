@@ -10,7 +10,6 @@ import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
 type ParsedArgs = {
   strategy?: string;
   requestedPositionSol?: number;
-  whitelist?: string[];
   context?: DecisionContextInput;
   json: boolean;
 };
@@ -32,15 +31,6 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (current === '--requested-position-sol' && next) {
       parsed.requestedPositionSol = Number(next);
-      index += 1;
-      continue;
-    }
-
-    if (current === '--whitelist' && next) {
-      parsed.whitelist = next
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean);
       index += 1;
       continue;
     }
@@ -95,7 +85,6 @@ async function main() {
   const result = await runStrategyCycle({
     strategy: args.strategy,
     requestedPositionSol: args.requestedPositionSol,
-    whitelist: args.whitelist,
     context: args.context,
     ...executionAdapters
   });

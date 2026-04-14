@@ -6,6 +6,13 @@ This project is a lightweight Linux-friendly adaptation of the reference strateg
 - paper runtime
 - Python replay and backtest tooling
 
+The current operating model is:
+
+- personal-use only
+- live automation first
+- no simulation or paper workflow required
+- no whitelist dependency in the live trade path
+
 ## Requirements
 
 - Ubuntu 22.04+ or compatible Linux
@@ -60,7 +67,6 @@ The CLI is intended for Node 22 on Linux and runs directly from TypeScript sourc
 npm run run:strategy -- \
   --strategy new-token-v1 \
   --requested-position-sol 0.1 \
-  --whitelist SAFE \
   --context-json '{"pool":{"address":"pool-1","liquidityUsd":10000},"token":{"inSession":true,"hasSolRoute":true,"symbol":"SAFE"},"trader":{"hasInventory":true},"route":{"hasSolRoute":true,"expectedOutSol":0.1,"slippageBps":50}}' \
   --json
 ```
@@ -152,7 +158,7 @@ export LIVE_ACCOUNT_STATE_URL="http://127.0.0.1:8790/account-state"
 export LIVE_AUTH_TOKEN="replace-me"
 ```
 
-The sidecar verifies the signer signature, records local submissions in a file-backed store, and serves confirmation state based on a lightweight local lifecycle. `account-state` reads from the JSON file you provide at `LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH`, so you can keep wallet and journal snapshots under your own operational control.
+The sidecar verifies the signer signature, records local submissions in a file-backed store, and serves confirmation state based on a lightweight local lifecycle. It accepts swap actions and LP-oriented actions from the runtime contract. `account-state` reads from the JSON file you provide at `LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH`, so you can keep wallet and journal snapshots under your own operational control.
 
 ### Confirmation Service Contract
 
@@ -239,7 +245,6 @@ export LIVE_STATE_DIR="/opt/lightld/state"
 export LIVE_JOURNAL_DIR="/opt/lightld/tmp/journals"
 export LIVE_DAEMON_TICK_INTERVAL_MS="30000"
 export LIVE_REQUESTED_POSITION_SOL="0.1"
-export LIVE_WHITELIST="SAFE,ABC"
 export LIVE_TRADER_WALLET="your-wallet"
 export LIVE_METEORA_PAGE_SIZE="25"
 export LIVE_METEORA_SORT_BY="tvl:desc"
@@ -292,15 +297,12 @@ You can also override the ingest inputs per process start:
 ```bash
 npm run run:daemon -- \
   --strategy new-token-v1 \
-  --whitelist SAFE,ABC \
   --trader-wallet your-wallet \
   --requested-position-sol 0.1 \
   --meteora-page-size 25 \
   --meteora-sort-by tvl:desc \
   --meteora-filter-by "is_blacklisted=false"
 ```
-
-`LIVE_WHITELIST` remains important. If strategy live guards require a whitelist and you leave it empty, the daemon may build valid contexts but the live guard stage will still block submissions.
 
 `LIVE_TRADER_WALLET` is optional but still useful for GMGN enrichment. `hasInventory` no longer depends on Pump wallet flow. It now comes from the account-state service, so if `walletTokens` already reflects the real wallet position, the strategy can detect inventory even without `LIVE_TRADER_WALLET`.
 
@@ -311,9 +313,9 @@ npm run run:daemon -- \
 - `degraded`
   dependencies are shaky; the daemon stays active and keeps tracking risk
 - `circuit_open`
-  new `deploy` actions are blocked
+  new exposure-increasing actions such as `deploy` and `add-lp` are blocked
 - `flatten_only`
-  only reduction paths such as `dca-out` are allowed
+  only reduction paths such as `dca-out` and `withdraw-lp` are allowed
 - `paused`
   operator pause mode
 - `recovering`

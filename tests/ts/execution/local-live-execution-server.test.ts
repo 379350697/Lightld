@@ -171,6 +171,42 @@ describe('createLocalLiveExecutionServer', () => {
     await server.stop();
   });
 
+  it('accepts LP-capable action intents through the broadcast contract', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-local-execution-lp-'));
+    directories.push(root);
+    const keypair = await createSolanaKeypairFile(root);
+    const signer = new LocalLiveSigner({
+      keypairPath: keypair.path,
+      expectedPublicKey: keypair.publicKey
+    });
+    const server = createLocalLiveExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'test-token',
+      stateRootDir: join(root, 'execution-state'),
+      expectedSignerPublicKeys: [keypair.publicKey]
+    });
+
+    await server.start();
+
+    const signedIntent = await signer.sign(buildOrderIntent({
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1,
+      side: 'add-lp'
+    }));
+    const broadcaster = new HttpLiveBroadcaster({
+      url: `${server.origin}/broadcast`,
+      authToken: 'test-token'
+    });
+
+    const broadcast = await broadcaster.broadcast(signedIntent);
+
+    expect(broadcast.status).toBe('submitted');
+
+    await server.stop();
+  });
+
   it('rejects unauthorized broadcast requests', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-local-execution-auth-'));
     directories.push(root);

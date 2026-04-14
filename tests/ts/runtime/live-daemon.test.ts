@@ -24,7 +24,6 @@ describe('runLiveDaemon', () => {
       maxTicks: 1,
       buildCycleInput: async () => ({
         requestedPositionSol: 0.1,
-        whitelist: ['SAFE'],
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -56,7 +55,6 @@ describe('runLiveDaemon', () => {
       buildCycleInput: async () =>
         buildLiveCycleInputFromIngest({
           strategy: 'new-token-v1',
-          whitelist: ['SAFE'],
           traderWallet: 'wallet-1',
           requestedPositionSol: 0.1,
           safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
@@ -148,7 +146,6 @@ describe('runLiveDaemon', () => {
       },
       buildCycleInput: async () => ({
         requestedPositionSol: 0.1,
-        whitelist: ['SAFE'],
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -218,7 +215,6 @@ describe('runLiveDaemon', () => {
       },
       buildCycleInput: async () => ({
         requestedPositionSol: 0.1,
-        whitelist: ['SAFE'],
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -285,7 +281,6 @@ describe('runLiveDaemon', () => {
 
         return {
           requestedPositionSol: 0.1,
-          whitelist: ['SAFE'],
           accountState,
           context: {
             pool: { address: 'pool-1', liquidityUsd: 10_000 },

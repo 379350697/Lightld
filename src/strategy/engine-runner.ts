@@ -76,14 +76,10 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
       )
     : buildLargePoolDecision(
         {
-          score: Number(input.snapshot.score ?? 0),
-          feeTvlRatio: typeof input.snapshot.feeTvlRatio === 'number' ? input.snapshot.feeTvlRatio : undefined,
-          fees24h: typeof input.snapshot.fees24h === 'number' ? input.snapshot.fees24h : undefined
+          score: Number(input.snapshot.score ?? 0)
         },
         {
-          minScore: Number(input.config.minScore ?? 0),
-          minFeeTvlRatio: typeof input.config.minFeeTvlRatio === 'number' ? input.config.minFeeTvlRatio : undefined,
-          minFees24h: typeof input.config.minFees24h === 'number' ? input.config.minFees24h : undefined
+          minScore: Number(input.config.minScore ?? 0)
         }
       );
 

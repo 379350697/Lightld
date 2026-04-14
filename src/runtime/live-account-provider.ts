@@ -19,7 +19,7 @@ export type LiveAccountState = {
     confirmationSignature?: string;
     mint: string;
     symbol?: string;
-    side: 'buy' | 'sell';
+    side: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
     amount: number;
     recordedAt: string;
   }>;

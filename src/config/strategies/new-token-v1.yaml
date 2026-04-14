@@ -11,6 +11,8 @@ lpConfig:
   minBinStep: 100
   minVolume24hUsd: 1000000
   minFeeTvlRatio24h: 0
+  claimFeeThresholdUsd: 25
+  rebalanceOnOutOfRange: false
 hardGates:
   requireSolRoute: true
   minLiquidityUsd: 1000
@@ -34,5 +36,4 @@ live:
   enabled: true
   maxLivePositionSol: 0.15
   autoFlattenRequired: true
-  requireWhitelist: false
   minDeployScore: 70
