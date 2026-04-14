@@ -4,6 +4,7 @@ import { normalizeGmgnTrader } from '../ingest/gmgn/normalize.ts';
 import {
   fetchTokenSafetyBatch,
   DEFAULT_SAFETY_CONFIG,
+  GMGN_SAFETY_DEFERRED_ERROR,
   type TokenSafetyConfig,
   type TokenSafetyResult
 } from '../ingest/gmgn/token-safety-client.ts';
@@ -367,8 +368,18 @@ function resolveNoCandidateBlockReason(input: {
 
   if (input.postSafetyCount === 0) {
     const diagnostics = input.safetyDiagnostics;
+    const deferredChecks = diagnostics?.results.filter((result) => result.error === GMGN_SAFETY_DEFERRED_ERROR) ?? [];
     const scriptErrors = diagnostics?.results.filter((result) => result.error?.startsWith('script_error')) ?? [];
-    const otherErrors = diagnostics?.results.filter((result) => result.error && !result.error.startsWith('script_error')) ?? [];
+    const otherErrors = diagnostics?.results.filter((result) => result.error && !result.error.startsWith('script_error') && result.error !== GMGN_SAFETY_DEFERRED_ERROR) ?? [];
+
+    if (deferredChecks.length > 0 && deferredChecks.length === (diagnostics?.results.length ?? 0)) {
+      return {
+        blockReason: 'gmgn-safety-deferred',
+        blockDetails: input.inScanWindow
+          ? 'uncached GMGN safety checks were deferred by batch throttling'
+          : 'uncached GMGN safety checks were deferred because scan window is closed (maxBatchSize=0)'
+      };
+    }
 
     if (scriptErrors.length > 0 && scriptErrors.length === (diagnostics?.results.length ?? 0)) {
       return {

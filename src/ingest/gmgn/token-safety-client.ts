@@ -112,6 +112,8 @@ type CachedSafetyResult = {
   cachedAt: number;
 };
 
+export const GMGN_SAFETY_DEFERRED_ERROR = 'fetch_skipped:max_batch_size_zero';
+
 const safetyCache = new Map<string, CachedSafetyResult>();
 // Keep safety data for 24 hours to minimize repetitive GMGN requests
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -155,9 +157,25 @@ export async function fetchTokenSafetyBatch(
   // Pre-condition risk control: limit fetches to maxBatchSize
   const mintsToFetch = uncachedMints.slice(0, maxBatchSize);
 
-  if (mintsToFetch.length === 0) {
+  if (uncachedMints.length === 0) {
     console.log(`[GmgnSafety] All ${mints.length} mints loaded from cache.`);
     return finalResults;
+  }
+
+  if (mintsToFetch.length === 0) {
+    console.warn(
+      `[GmgnSafety] Deferred ${uncachedMints.length} uncached mints because maxBatchSize=0; returning cached results only.`
+    );
+    return [
+      ...finalResults,
+      ...uncachedMints.map((mint) => ({
+        mint,
+        safe: false,
+        safetyScore: 0,
+        maxScore: 120,
+        error: GMGN_SAFETY_DEFERRED_ERROR
+      }))
+    ];
   }
 
   console.log(`[GmgnSafety] Requesting ${mintsToFetch.length} new mints from GMGN (${uncachedMints.length - mintsToFetch.length} omitted this cycle to avoid rate limits).`);

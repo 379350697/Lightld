@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safety-client';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
@@ -280,6 +281,56 @@ describe('buildLiveCycleInputFromIngest', () => {
       blockReason: 'gmgn-safety-script-error'
     });
     expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('ModuleNotFoundError');
+  });
+
+  it('returns a deferred-safety fallback reason when uncached GMGN checks are skipped outside the scan window', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:20:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T10:19:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: false,
+          safetyScore: 0,
+          maxScore: 120,
+          error: GMGN_SAFETY_DEFERRED_ERROR
+        }
+      ]
+    });
+
+    expect(result.context.route).toMatchObject({
+      blockReason: 'gmgn-safety-deferred'
+    });
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('scan window is closed');
   });
 
   it('applies LP selection thresholds from config before choosing a candidate', async () => {
