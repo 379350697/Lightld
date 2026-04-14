@@ -16,12 +16,14 @@
  *   - Bluechip > 0.8%
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SCRIPT_PATH = resolve(__dirname, '../../../scripts/gmgn-token-safety.py');
-const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? 'python';
+const PROJECT_VENV_PYTHON = resolve(__dirname, '../../../.venv/bin/python');
+const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? (existsSync(PROJECT_VENV_PYTHON) ? PROJECT_VENV_PYTHON : 'python');
 const DEFAULT_TIMEOUT_MS = 15 * 60_000; // 15 minutes to safely wait for large batch 4s delays
 
 // ---------------------------------------------------------------------------

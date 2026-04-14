@@ -19,7 +19,8 @@ import {
   filterLpEligibleCandidates,
   type IngestCandidate,
   isInScanWindow,
-  selectCandidate
+  selectCandidate,
+  type SafetyFilterDiagnostics
 } from './ingest-candidate-selection.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
@@ -341,12 +342,77 @@ function defaultRequestedPositionSol(maxLivePositionSol: number) {
   return Math.min(0.1, maxLivePositionSol);
 }
 
+function resolveNoCandidateBlockReason(input: {
+  prefilteredCount: number;
+  postLpCount: number;
+  postSafetyCount: number;
+  eligibleSelectionCount: number;
+  inScanWindow: boolean;
+  activePositionsCount: number;
+  safetyDiagnostics: SafetyFilterDiagnostics | null;
+}) {
+  if (input.prefilteredCount === 0) {
+    return {
+      blockReason: 'no-prefiltered-candidate',
+      blockDetails: 'no pools passed ingest prefilter'
+    };
+  }
+
+  if (input.postLpCount === 0) {
+    return {
+      blockReason: 'no-lp-eligible-candidate',
+      blockDetails: 'prefiltered candidates failed LP thresholds'
+    };
+  }
+
+  if (input.postSafetyCount === 0) {
+    const diagnostics = input.safetyDiagnostics;
+    const scriptErrors = diagnostics?.results.filter((result) => result.error?.startsWith('script_error')) ?? [];
+    const otherErrors = diagnostics?.results.filter((result) => result.error && !result.error.startsWith('script_error')) ?? [];
+
+    if (scriptErrors.length > 0 && scriptErrors.length === (diagnostics?.results.length ?? 0)) {
+      return {
+        blockReason: 'gmgn-safety-script-error',
+        blockDetails: scriptErrors[0]?.error ?? 'gmgn safety subprocess failed'
+      };
+    }
+
+    if (otherErrors.length > 0) {
+      return {
+        blockReason: 'gmgn-safety-check-failed',
+        blockDetails: otherErrors[0]?.error ?? 'gmgn safety request failed'
+      };
+    }
+
+    return {
+      blockReason: 'no-safe-candidate',
+      blockDetails: 'all LP-eligible candidates failed safety checks'
+    };
+  }
+
+  if (input.eligibleSelectionCount === 0 && !input.inScanWindow && input.activePositionsCount < 5) {
+    return {
+      blockReason: 'outside-scan-window',
+      blockDetails: 'eligible candidates exist but opens are disabled outside scan window'
+    };
+  }
+
+  return {
+    blockReason: 'no-selected-candidate',
+    blockDetails: 'candidates remained after filtering but none were selected'
+  };
+}
+
 function buildFallbackContext(
   input: IngestContextBuilderInput,
   requestedPositionSol: number,
   sessionActive: boolean,
   slippageBps: number,
-  traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null
+  traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null,
+  diagnostics?: {
+    blockReason?: string;
+    blockDetails?: string;
+  }
 ): IngestBackedCycleInput {
   const context: DecisionContextInput = {
     pool: {
@@ -354,7 +420,9 @@ function buildFallbackContext(
       liquidityUsd: 0,
       hasSolRoute: false,
       score: 0,
-      candidateCount: 0
+      candidateCount: 0,
+      blockReason: diagnostics?.blockReason ?? '',
+      blockDetails: diagnostics?.blockDetails ?? ''
     },
     token: {
       mint: '',
@@ -363,7 +431,8 @@ function buildFallbackContext(
       hasSolRoute: false,
       inSession: sessionActive,
       score: 0,
-      holders: 0
+      holders: 0,
+      blockReason: diagnostics?.blockReason ?? ''
     },
     trader: {
       wallet: input.traderWallet ?? '',
@@ -376,7 +445,9 @@ function buildFallbackContext(
       expectedOutSol: requestedPositionSol,
       slippageBps,
       poolAddress: '',
-      token: ''
+      token: '',
+      blockReason: diagnostics?.blockReason ?? '',
+      blockDetails: diagnostics?.blockDetails ?? ''
     }
   };
 
@@ -493,31 +564,48 @@ export async function buildLiveCycleInputFromIngest(
   const inScanWindow = isInScanWindow(now);
   const maxBatchSize = inScanWindow ? 50 : 0;
   const safetyConfig = input.safetyFilterConfig ?? DEFAULT_SAFETY_CONFIG;
+  let safetyDiagnostics: SafetyFilterDiagnostics | null = null;
   candidates = await applySafetyFilter(candidates, {
     safetyConfig,
     maxBatchSize,
     fetchSafety: async (mints) =>
       (input.fetchTokenSafetyBatchImpl ?? defaultFetchSafetyBatch(maxBatchSize))(mints),
-    logger: console
+    logger: console,
+    onDiagnostics: (diagnostics) => {
+      safetyDiagnostics = diagnostics;
+    }
   });
   const postSafetyCount = candidates.length;
 
   console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
 
   const candidate = selectCandidate(candidates, input.strategy, inScanWindow, activePositionsCount);
+  const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || (inScanWindow && activePositionsCount < 5)).length;
 
   if (!candidate) {
-    const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || (inScanWindow && activePositionsCount < 5)).length;
     console.log(`[Ingest] No candidate selected: candidates=${candidates.length} eligibleForSelection=${eligibleSelectionCount}`);
   }
 
   if (!candidate) {
+    const diagnostics = resolveNoCandidateBlockReason({
+      prefilteredCount: prefilteredRows.length,
+      postLpCount,
+      postSafetyCount,
+      eligibleSelectionCount,
+      inScanWindow,
+      activePositionsCount,
+      safetyDiagnostics
+    });
+
+    console.log(`[Ingest] Blocking live cycle: ${diagnostics.blockReason}${diagnostics.blockDetails ? ` (${diagnostics.blockDetails})` : ''}`);
+
     return buildFallbackContext(
       input,
       input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
       sessionActive,
       config.solRouteLimits.maxSlippageBps,
-      traderSnapshot
+      traderSnapshot,
+      diagnostics
     );
   }
 

@@ -443,6 +443,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
   const tokenSymbol = firstString(context.token.symbol, context.route.token, context.token.mint);
   const poolAddress = firstString(context.pool.address, context.route.poolAddress, 'live-pool');
+  const ingestBlockReason = firstString(context.route.blockReason, context.pool.blockReason, context.token.blockReason);
   const journals = createJournals(input.strategy, input.journalRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(
     resolveStateRootDir(input.strategy, input.stateRootDir)
@@ -466,6 +467,27 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     sessionPhase: input.sessionPhase ?? 'active',
     liveEnabled: config.live.enabled
   };
+
+  if (ingestBlockReason) {
+    logContext.engineReason = ingestBlockReason;
+    await appendDecision(journals, logContext, {
+      stage: 'engine',
+      mode: 'BLOCKED',
+      action: 'hold',
+      reason: ingestBlockReason,
+      liveOrderSubmitted: false
+    });
+
+    return buildBlockedCycleResult({
+      action: 'hold',
+      reason: ingestBlockReason,
+      audit: { reason: ingestBlockReason },
+      context,
+      quoteCollected: false,
+      journalPaths: journals.paths,
+      killSwitchState
+    });
+  }
 
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;

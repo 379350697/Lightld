@@ -96,6 +96,40 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(false);
   });
 
+  it('returns hold without collecting a quote when ingest already provided a block reason', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      context: {
+        pool: { address: '', liquidityUsd: 0, blockReason: 'gmgn-safety-script-error' },
+        token: { inSession: true, hasSolRoute: false, symbol: '' },
+        trader: { hasInventory: false },
+        route: {
+          hasSolRoute: false,
+          expectedOutSol: 0.1,
+          slippageBps: 50,
+          blockReason: 'gmgn-safety-script-error',
+          blockDetails: 'script_error: ModuleNotFoundError'
+        }
+      }
+    });
+
+    const decisionJournal = await readJsonLines<Record<string, unknown>>(
+      result.journalPaths.decisionAuditPath
+    );
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.action).toBe('hold');
+    expect(result.reason).toBe('gmgn-safety-script-error');
+    expect(result.quoteCollected).toBe(false);
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(decisionJournal[0]).toMatchObject({
+      stage: 'engine',
+      reason: 'gmgn-safety-script-error'
+    });
+  });
+
   it('blocks when the kill switch is engaged', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
