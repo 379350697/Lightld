@@ -7,5 +7,7 @@ coverage/
 tmp/
 state/
 secrets/
+.venv/
 *.sqlite
 *.env
+.env.*
