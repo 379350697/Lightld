@@ -15,6 +15,8 @@ type NewTokenSnapshot = {
   lpImpermanentLossPct?: number;
   /** Explicit state machine for exits */
   lifecycleState?: string;
+  /** Time elapsed in ms since the first buy fill */
+  holdTimeMs?: number;
 };
 
 type NewTokenConfig = {
@@ -48,6 +50,17 @@ export function buildNewTokenDecision(
   // ===== Explicit Exit State Machine =====
   if (snapshot.lifecycleState === 'inventory_exit_ready') {
     return { action: 'dca-out' };
+  }
+
+  // ===== 18-Hour Force Exit =====
+  const maxHoldMs = 18 * 60 * 60 * 1000;
+  if (typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs) {
+    if (snapshot.hasLpPosition) {
+      return { action: 'withdraw-lp' };
+    }
+    if (snapshot.hasInventory) {
+      return { action: 'dca-out' };
+    }
   }
 
   // ===== LP mode (bid-ask single-sided SOL) =====

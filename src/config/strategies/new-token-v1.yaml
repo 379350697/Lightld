@@ -15,7 +15,7 @@ hardGates:
   requireSolRoute: true
   minLiquidityUsd: 1000
 filters:
-  minHolders: 25
+  minHolders: 0
   minLiquidityUsd: 1000
 scoringWeights:
   holders: 0.0

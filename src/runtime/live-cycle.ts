@@ -170,6 +170,21 @@ function firstString(...values: unknown[]) {
   return '';
 }
 
+function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string, nowMs: number): number {
+  if (!accountState || !accountState.fills || !mint) return 0;
+  
+  const mintFills = accountState.fills
+    .filter(f => f.mint === mint && f.side === 'buy' && f.recordedAt)
+    .sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
+
+  if (mintFills.length > 0) {
+    const elapsed = nowMs - Date.parse(mintFills[0].recordedAt!);
+    return elapsed > 0 ? elapsed : 0;
+  }
+  
+  return 0;
+}
+
 function buildEngineSnapshot(
   poolClass: 'new-token' | 'large-pool',
   context: ReturnType<typeof buildDecisionContext>
@@ -401,7 +416,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const quoteProvider = input.quoteProvider ?? new StaticLiveQuoteProvider();
   const signer = input.signer ?? new TestLiveSigner();
   const broadcaster = input.broadcaster ?? new TestLiveBroadcaster();
+  let accountState = input.accountState;
+  
+  if (!accountState && input.accountProvider) {
+    accountState = await input.accountProvider.readState();
+  }
+
   const snapshot = buildEngineSnapshot(config.poolClass, context);
+  
+  if (config.poolClass === 'new-token') {
+    (snapshot as any).holdTimeMs = getHoldTimeMs(accountState, firstString(context.token.mint), Date.now());
+  }
+
   const routeExists = Boolean(snapshot.hasSolRoute);
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
   const tokenSymbol = firstString(context.token.symbol, context.route.token, context.token.mint);
@@ -429,7 +455,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     sessionPhase: input.sessionPhase ?? 'active',
     liveEnabled: config.live.enabled
   };
-  let accountState = input.accountState;
+
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;
 
@@ -477,10 +503,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const pendingSubmission = await pendingSubmissionStore.read();
 
   if (pendingSubmission) {
-    if (!accountState && input.accountProvider) {
-      accountState = await input.accountProvider.readState();
-    }
-
     const recovery = await recoverPendingSubmission({
       pendingSubmission,
       confirmationProvider: input.confirmationProvider,
@@ -540,6 +562,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
+  if (config.poolClass === 'new-token') {
+    (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
+  }
   const engineResult = runEngineCycle({
     engine: config.poolClass,
     snapshot: updatedSnapshot,
@@ -712,8 +737,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   if (accountState || input.accountProvider) {
-    accountState = accountState ?? await input.accountProvider!.readState();
-    const reconciliation = reconcileLiveState(accountState);
+    const reconciliation = reconcileLiveState(accountState!);
     reconciliationOk = reconciliation.ok;
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toReconciliationMirrorEvent({

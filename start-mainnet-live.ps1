@@ -35,6 +35,9 @@ $DaemonCmd = "${ProxyEnv}" +
     "`$env:LIVE_REQUESTED_POSITION_SOL='0.01'; " +
     "`$env:LIVE_MAX_SINGLE_ORDER_SOL='0.05'; " +
     "`$env:LIVE_MAX_DAILY_SPEND_SOL='0.2'; " +
+    "`$env:LIVE_METEORA_SORT_BY='fee_tvl_ratio_24h:desc'; " +
+    "`$env:LIVE_METEORA_FILTER_BY='tvl>=10000 && is_blacklisted=false'; " +
+    "`$env:LIVE_METEORA_PAGE_SIZE='50'; " +
     "npm run run:daemon -- --strategy new-token-v1"
 
 Start-Process powershell -ArgumentList "-NoExit -Command `"$DaemonCmd`"" -WorkingDirectory 'D:\codex\Lightld'

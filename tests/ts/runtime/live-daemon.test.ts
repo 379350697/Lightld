@@ -59,6 +59,7 @@ describe('runLiveDaemon', () => {
           whitelist: ['SAFE'],
           traderWallet: 'wallet-1',
           requestedPositionSol: 0.1,
+          safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
           accountState: {
             walletSol: 1.25,
             journalSol: 1.25,

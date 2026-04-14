@@ -3,13 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
-  it('builds a scored large-pool context from whitelisted ingest candidates', async () => {
+  it('builds a scored large-pool context selecting highest-score candidate', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
       whitelist: ['SAFE'],
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.2,
       now: new Date('2026-03-22T10:00:00.000Z'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       fetchMeteoraPoolsImpl: async () => [
         {
           address: 'pool-meme',
@@ -78,6 +79,7 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       accountState: {
         walletSol: 1.25,
         journalSol: 1.25,
@@ -132,6 +134,7 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       accountState: {
         walletSol: 1.25,
         journalSol: 1.25,
@@ -179,6 +182,7 @@ describe('buildLiveCycleInputFromIngest', () => {
       whitelist: ['SAFE'],
       requestedPositionSol: 0.15,
       now: new Date('2026-03-22T10:00:00.000Z'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       fetchMeteoraPoolsImpl: async () => [],
       fetchPumpTradesImpl: async () => []
     });

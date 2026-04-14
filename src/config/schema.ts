@@ -48,7 +48,7 @@ export const StrategyConfigSchema = z.object({
     maxPoolAgeMinutes: z.number().nonnegative().optional()
   }),
   filters: z.object({
-    minHolders: z.number().int().positive(),
+    minHolders: z.number().int().nonnegative(),
     minLiquidityUsd: z.number().nonnegative()
   }),
   scoringWeights: z.object({
