@@ -11,7 +11,6 @@ import {
   toReconciliationMirrorEvent
 } from '../observability/mirror-adapters.ts';
 import type { MirrorEventSink } from '../observability/mirror-events.ts';
-import { buildExecutionPlan } from '../execution/build-execution-plan.ts';
 import {
   ExecutionRequestError,
   type ExecutionFailureKind
@@ -679,11 +678,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     ...quote
   });
 
-  const executionPlan = buildExecutionPlan({
+  const executionPlan = {
     strategyId: input.strategy,
-    targetPool: poolAddress,
-    quote
-  });
+    poolAddress,
+    exitMint: 'SOL',
+    maxSlippageBps: 100,
+    maxImpactBps: 200,
+    solExitQuote: quote
+  } satisfies ExecutionPlan;
 
   const actionableAction = runtimeAction.action;
 

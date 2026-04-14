@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluateLpPnl, type LpPnlConfig } from '../../../src/risk/position-tracker';
+import { evaluateLpPnl, type LpPnlConfig } from '../../../src/risk/lp-pnl';
 
 const DEFAULT_CONFIG: LpPnlConfig = {
   stopLossNetPnlPct: 20,

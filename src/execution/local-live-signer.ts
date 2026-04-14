@@ -3,10 +3,11 @@ import { readFile } from 'node:fs/promises';
 
 import type { SignedLiveOrderIntent } from './live-signer.ts';
 import type { LiveOrderIntent, LiveSigner } from './live-signer.ts';
+import { encodeBase58 } from '../shared/base58.ts';
+import { stableStringify } from '../shared/canonical-json.ts';
 
 const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 type LocalLiveSignerOptions = {
   keypairPath: string;
@@ -19,66 +20,6 @@ type LocalSignerMaterial = {
   publicKey: string;
   signerId: string;
 };
-
-function encodeBase58(bytes: Uint8Array) {
-  if (bytes.length === 0) {
-    return '';
-  }
-
-  const digits = [0];
-
-  for (const value of bytes) {
-    let carry = value;
-
-    for (let index = 0; index < digits.length; index += 1) {
-      const next = digits[index] * 256 + carry;
-      digits[index] = next % 58;
-      carry = Math.floor(next / 58);
-    }
-
-    while (carry > 0) {
-      digits.push(carry % 58);
-      carry = Math.floor(carry / 58);
-    }
-  }
-
-  let output = '';
-
-  for (const value of bytes) {
-    if (value !== 0) {
-      break;
-    }
-
-    output += BASE58_ALPHABET[0];
-  }
-
-  for (let index = digits.length - 1; index >= 0; index -= 1) {
-    output += BASE58_ALPHABET[digits[index]];
-  }
-
-  return output;
-}
-
-function stableNormalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => stableNormalize(entry));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.keys(value as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((result, key) => {
-        result[key] = stableNormalize((value as Record<string, unknown>)[key]);
-        return result;
-      }, {});
-  }
-
-  return value;
-}
-
-function stableStringify(value: unknown) {
-  return JSON.stringify(stableNormalize(value));
-}
 
 function createPrivateKeyFromSeed(seed: Uint8Array) {
   if (seed.length !== 32) {

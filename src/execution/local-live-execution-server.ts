@@ -11,8 +11,15 @@ import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
 import type { SignedLiveOrderIntent } from './live-signer.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
+import { decodeBase58 } from '../shared/base58.ts';
+import { stableStringify } from '../shared/canonical-json.ts';
+import {
+  hasExpectedBearerToken,
+  readBody,
+  writeJson,
+  writeText
+} from '../shared/http-server.ts';
 
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 const SignedIntentSchema = z.object({
@@ -91,68 +98,8 @@ type LocalLiveExecutionServerOptions = {
   maxOutputSol?: number;
 };
 
-function stableNormalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => stableNormalize(entry));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.keys(value as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((result, key) => {
-        result[key] = stableNormalize((value as Record<string, unknown>)[key]);
-        return result;
-      }, {});
-  }
-
-  return value;
-}
-
-function stableStringify(value: unknown) {
-  return JSON.stringify(stableNormalize(value));
-}
-
-function decodeBase58(value: string) {
-  if (value.length === 0) {
-    return Buffer.alloc(0);
-  }
-
-  const bytes = [0];
-
-  for (const character of value) {
-    const alphabetIndex = BASE58_ALPHABET.indexOf(character);
-
-    if (alphabetIndex < 0) {
-      throw new Error(`Invalid base58 character "${character}"`);
-    }
-
-    let carry = alphabetIndex;
-
-    for (let index = 0; index < bytes.length; index += 1) {
-      const next = bytes[index] * 58 + carry;
-      bytes[index] = next & 0xff;
-      carry = next >> 8;
-    }
-
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>= 8;
-    }
-  }
-
-  for (const character of value) {
-    if (character !== BASE58_ALPHABET[0]) {
-      break;
-    }
-
-    bytes.push(0);
-  }
-
-  return Buffer.from(bytes.reverse());
-}
-
 function createPublicKeyFromBase58(value: string) {
-  const raw = decodeBase58(value);
+  const raw = Buffer.from(decodeBase58(value));
 
   if (raw.length !== 32) {
     throw new Error(`Expected a 32-byte signer public key, received ${raw.length}`);
@@ -167,36 +114,6 @@ function createPublicKeyFromBase58(value: string) {
 
 function hashValue(value: string) {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {
-  response.statusCode = statusCode;
-  response.setHeader('content-type', 'application/json');
-  response.end(`${JSON.stringify(payload)}\n`);
-}
-
-function writeText(response: ServerResponse, statusCode: number, message: string) {
-  response.statusCode = statusCode;
-  response.setHeader('content-type', 'text/plain; charset=utf-8');
-  response.end(`${message}\n`);
-}
-
-function hasExpectedBearerToken(request: IncomingMessage, authToken: string | undefined) {
-  if (!authToken) {
-    return true;
-  }
-
-  return request.headers.authorization === `Bearer ${authToken}`;
-}
-
-async function readBody(request: IncomingMessage) {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 class LocalExecutionStateStore {

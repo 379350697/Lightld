@@ -4,6 +4,12 @@ import { z } from 'zod';
 
 import { LocalLiveSigner } from './local-live-signer.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
+import {
+  hasExpectedBearerToken,
+  readBody,
+  writeJson,
+  writeText
+} from '../shared/http-server.ts';
 
 const SignIntentRequestSchema = z.object({
   intent: z.object({
@@ -27,36 +33,6 @@ type LocalLiveSignerServerOptions = {
   authToken?: string;
   maxOutputSol?: number;
 };
-
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {
-  response.statusCode = statusCode;
-  response.setHeader('content-type', 'application/json');
-  response.end(`${JSON.stringify(payload)}\n`);
-}
-
-function writeText(response: ServerResponse, statusCode: number, message: string) {
-  response.statusCode = statusCode;
-  response.setHeader('content-type', 'text/plain; charset=utf-8');
-  response.end(`${message}\n`);
-}
-
-async function readBody(request: IncomingMessage) {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-function hasExpectedBearerToken(request: IncomingMessage, authToken: string | undefined) {
-  if (!authToken) {
-    return true;
-  }
-
-  return request.headers.authorization === `Bearer ${authToken}`;
-}
 
 export function createLocalLiveSignerServer(options: LocalLiveSignerServerOptions) {
   const signer = new LocalLiveSigner({
