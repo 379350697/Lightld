@@ -401,13 +401,6 @@ function resolveNoCandidateBlockReason(input: {
     };
   }
 
-  if (input.eligibleSelectionCount === 0 && !input.inScanWindow && input.activePositionsCount < 5) {
-    return {
-      blockReason: 'outside-scan-window',
-      blockDetails: 'eligible candidates exist but opens are disabled outside scan window'
-    };
-  }
-
   return {
     blockReason: 'no-selected-candidate',
     blockDetails: 'candidates remained after filtering but none were selected'
@@ -573,7 +566,7 @@ export async function buildLiveCycleInputFromIngest(
   const postLpCount = candidates.length;
   const activePositionsCount = countActiveInventoryPositions(input.accountState);
   const inScanWindow = isInScanWindow(now);
-  const maxBatchSize = inScanWindow ? 50 : 0;
+  const maxBatchSize = 50;
   const safetyConfig = input.safetyFilterConfig ?? DEFAULT_SAFETY_CONFIG;
   let safetyDiagnostics: SafetyFilterDiagnostics | null = null;
   candidates = await applySafetyFilter(candidates, {
@@ -591,7 +584,7 @@ export async function buildLiveCycleInputFromIngest(
   console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
 
   const candidate = selectCandidate(candidates, input.strategy, inScanWindow, activePositionsCount);
-  const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || (inScanWindow && activePositionsCount < 5)).length;
+  const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || activePositionsCount < 5).length;
 
   if (!candidate) {
     console.log(`[Ingest] No candidate selected: candidates=${candidates.length} eligibleForSelection=${eligibleSelectionCount}`);

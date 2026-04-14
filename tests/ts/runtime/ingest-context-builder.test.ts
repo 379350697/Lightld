@@ -283,7 +283,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('ModuleNotFoundError');
   });
 
-  it('returns a deferred-safety fallback reason when uncached GMGN checks are skipped outside the scan window', async () => {
+  it('continues through safety and selects a candidate outside the old scan window gate', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',
       requestedPositionSol: 0.1,
@@ -319,6 +319,64 @@ describe('buildLiveCycleInputFromIngest', () => {
       fetchTokenSafetyBatchImpl: async () => [
         {
           mint: 'mint-safe',
+          safe: true,
+          safetyScore: 90,
+          maxScore: 120,
+          holders: 50,
+          bluechipPct: 0.3
+        }
+      ]
+    });
+
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-safe'
+    });
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'SAFE'
+    });
+    expect(result.context.route).toMatchObject({
+      poolAddress: 'pool-safe',
+      token: 'SAFE'
+    });
+  });
+
+  it('still reports gmgn-safety-deferred when the safety client explicitly defers checks', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T09:59:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
           safe: false,
           safetyScore: 0,
           maxScore: 120,
@@ -330,7 +388,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.context.route).toMatchObject({
       blockReason: 'gmgn-safety-deferred'
     });
-    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('scan window is closed');
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('batch throttling');
   });
 
   it('applies LP selection thresholds from config before choosing a candidate', async () => {

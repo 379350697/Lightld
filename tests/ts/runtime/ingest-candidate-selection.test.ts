@@ -119,6 +119,15 @@ describe('ingest candidate helpers', () => {
     expect(result?.address).toBe('pool-b');
   });
 
+  it('still selects a fresh candidate outside the old scan window when position capacity is available', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'pool-a', hasInventory: false, safetyScore: 80 }),
+      makeCandidate({ address: 'pool-b', hasInventory: false, safetyScore: 70 })
+    ], 'new-token-v1', false, 0);
+
+    expect(result?.address).toBe('pool-a');
+  });
+
   it('applies safety results and fee/tvl bonus without mutating on failure', async () => {
     const logger = {
       log: vi.fn(),

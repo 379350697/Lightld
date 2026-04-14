@@ -58,12 +58,14 @@ export function selectCandidate(
   inScanWindow: boolean,
   activePositionsCount: number
 ) {
+  void inScanWindow;
+
   const filtered = candidates.filter((candidate) => {
     if (candidate.address.length === 0 || candidate.symbol.length === 0) {
       return false;
     }
 
-    if (!candidate.hasInventory && (!inScanWindow || activePositionsCount >= 5)) {
+    if (!candidate.hasInventory && activePositionsCount >= 5) {
       return false;
     }
 
