@@ -2,6 +2,7 @@ import { PumpPortalClient } from '../ingest/pumpportal/websocket-client.ts';
 import { DexScreenerClient } from '../ingest/dexscreener/client.ts';
 import { JupiterTokensClient } from '../ingest/jupiter-tokens/client.ts';
 import { SignalStore } from '../runtime/signal-store.ts';
+import { NewTokenPoolStore } from '../runtime/new-token-pool.ts';
 
 export type ScannerConfig = {
   minTvlUsd: number;
@@ -25,6 +26,7 @@ export class TokenScannerDaemon {
   private readonly dexClient = new DexScreenerClient();
   private readonly jupClient = new JupiterTokensClient();
   private readonly signalStore = new SignalStore();
+  private readonly newTokenPool = new NewTokenPoolStore();
 
   private isRunning = false;
   private loopTimer: NodeJS.Timeout | null = null;
@@ -43,6 +45,11 @@ export class TokenScannerDaemon {
     
     // Subscribe to PumpPortal stream
     this.pumpClient.onTokenEvent = (event) => {
+      this.newTokenPool.upsertToken({
+        tokenMint: event.mint,
+        source: 'PumpPortal',
+        seenAt: new Date().toISOString()
+      });
       this.addCandidate(event.mint);
     };
     this.pumpClient.connect();
@@ -84,7 +91,10 @@ export class TokenScannerDaemon {
   }
 
   private async runBatchCycle() {
-    // 1. Grab up to 30 new items for DexScreener batch
+    for (const token of this.newTokenPool.getActiveTokens()) {
+      this.addCandidate(token.tokenMint);
+    }
+
     const batch: Candidate[] = [];
     for (const cand of this.candidates.values()) {
       if (cand.status === 'new') {
@@ -119,23 +129,32 @@ export class TokenScannerDaemon {
         continue;
       }
 
-      // Check market threshold
       const tvl = pair.liquidity?.usd ?? 0;
       const vol24 = pair.volume?.h24 ?? 0;
       const mcap = pair.marketCap ?? pair.fdv ?? 0;
       const createdAt = pair.pairCreatedAt ?? 0;
       const ageMs = createdAt > 0 ? Date.now() - createdAt : 0;
 
+      this.newTokenPool.upsertToken({
+        tokenMint: c.mint,
+        source: 'PumpPortal',
+        tokenSymbol: pair.baseToken?.symbol,
+        pairAddress: pair.pairAddress,
+        seenAt: new Date().toISOString()
+      });
+
+      if (createdAt > 0 && ageMs > this.config.maxPoolAgeMs) {
+        c.status = 'resolved';
+        continue;
+      }
+
       if (
         tvl < this.config.minTvlUsd || 
         vol24 < this.config.minVol24hUsd || 
-        mcap < this.config.minMarketCapUsd ||
-        (createdAt > 0 && ageMs > this.config.maxPoolAgeMs)
+        mcap < this.config.minMarketCapUsd
       ) {
-        // Failed market check
-        c.status = 'resolved';
+        c.status = 'new';
       } else {
-        // Passed market check
         c.status = 'fetching_quality';
         passedMarket.set(c.mint, pair);
       }
@@ -171,8 +190,8 @@ export class TokenScannerDaemon {
 
       if (passedJup) {
         console.log(`[Scanner] 🚀 SIGNAL FOUND: ${mint} (${pair.baseToken?.symbol})`);
-        
-        // Push to Signal Queue
+        this.newTokenPool.markPromoted(mint);
+
         this.signalStore.pushSignal({
           tokenMint: mint,
           tokenSymbol: pair.baseToken?.symbol ?? 'UNKNOWN',
