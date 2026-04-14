@@ -6,11 +6,13 @@ import {
   createMirrorMetricsSnapshot
 } from './mirror-types.ts';
 import { SqliteMirrorWriter } from './sqlite-mirror-writer.ts';
+import type { MirrorPruneResult } from './sqlite-mirror-writer.ts';
 
 type MirrorWriter = {
   open(): Promise<void>;
   close(): Promise<void>;
   writeBatch(events: MirrorEvent[]): Promise<void>;
+  pruneOldData?(options: { retentionDays: number; now?: Date }): Promise<MirrorPruneResult>;
 };
 
 type CreateMirrorRuntimeOptions = {
@@ -21,7 +23,8 @@ type CreateMirrorRuntimeOptions = {
 export type MirrorRuntime = MirrorEventSink & {
   start(): Promise<void>;
   stop(): Promise<void>;
-  flushOnce(): Promise<boolean>;
+  flushOnce(options?: { now?: Date }): Promise<boolean>;
+  pruneOnce?(options?: { now?: Date; force?: boolean }): Promise<MirrorPruneResult | null>;
   snapshot(): MirrorMetricsSnapshot;
 };
 
@@ -36,6 +39,7 @@ export function createMirrorRuntime(options: CreateMirrorRuntimeOptions): Mirror
   let opened = false;
   let timer: NodeJS.Timeout | undefined;
   let flushing = false;
+  let lastPruneAtMs = 0;
 
   async function ensureOpened() {
     if (!options.config.enabled || opened) {
@@ -58,17 +62,54 @@ export function createMirrorRuntime(options: CreateMirrorRuntimeOptions): Mirror
     };
   }
 
-  async function flushOnce() {
+  async function maybePrune(now: Date, force = false): Promise<MirrorPruneResult | null> {
+    if (
+      !options.config.enabled
+      || options.config.retentionDays <= 0
+      || options.config.pruneIntervalMs <= 0
+      || !writer.pruneOldData
+    ) {
+      return null;
+    }
+
+    const nowMs = now.getTime();
+    if (!force && lastPruneAtMs > 0 && nowMs - lastPruneAtMs < options.config.pruneIntervalMs) {
+      return null;
+    }
+
+    try {
+      await ensureOpened();
+      const result = await writer.pruneOldData({
+        retentionDays: options.config.retentionDays,
+        now
+      });
+      lastPruneAtMs = nowMs;
+      updateMetrics({
+        state: metrics.state === 'open' ? 'open' : 'healthy'
+      });
+      return result;
+    } catch (error) {
+      updateMetrics({
+        state: metrics.state === 'open' ? 'open' : 'degraded',
+        lastError: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  async function flushOnce(runOptions?: { now?: Date }) {
     if (!options.config.enabled || flushing) {
       return false;
     }
 
-    const now = new Date();
+    const now = runOptions?.now ?? new Date();
 
     if (metrics.state === 'open' && metrics.cooldownUntil !== '' && metrics.cooldownUntil > now.toISOString()) {
       updateMetrics({});
       return false;
     }
+
+    await maybePrune(now);
 
     const batch = buffer.peek(options.config.batchSize);
 
@@ -154,6 +195,9 @@ export function createMirrorRuntime(options: CreateMirrorRuntimeOptions): Mirror
       }
     },
     flushOnce,
+    async pruneOnce(runOptions?: { now?: Date; force?: boolean }) {
+      return maybePrune(runOptions?.now ?? new Date(), runOptions?.force ?? false);
+    },
     snapshot() {
       updateMetrics({});
       return metrics;

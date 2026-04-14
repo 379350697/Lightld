@@ -15,6 +15,13 @@ describe('formatRuntimeStatus', () => {
         quoteFailures: 3,
         reconcileFailures: 0
       },
+      housekeeping: {
+        lastHousekeepingAt: '2026-03-22T00:00:06.000Z',
+        journalCleanupDeletedFiles: 2,
+        mirrorPruneDeletedRows: 4,
+        gmgnSafetyCacheEntries: 9,
+        lastCleanupError: ''
+      },
       mirror: {
         enabled: true,
         state: 'degraded',
@@ -35,5 +42,7 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('mode=degraded');
     expect(output).toContain('pendingSubmission=true');
     expect(output).toContain('mirrorState=degraded');
+    expect(output).toContain('lastHousekeepingAt=2026-03-22T00:00:06.000Z');
+    expect(output).toContain('mirrorPruneDeletedRows=4');
   });
 });

@@ -4,8 +4,9 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { appendJsonLine } from '../../../src/journals/jsonl-writer';
+import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
+import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
@@ -22,6 +23,16 @@ describe('runLiveDaemon', () => {
       journalRootDir,
       tickIntervalMs: 1,
       maxTicks: 1,
+      housekeepingRunner: createHousekeepingRunner({
+        intervalMs: 1,
+        runJournalCleanup: async () => 2,
+        runMirrorPrune: async () => 3,
+        runGmgnCacheSweep: () => ({
+          expiredDeleted: 0,
+          evictedDeleted: 0,
+          remainingEntries: 4
+        })
+      }),
       buildCycleInput: async () => ({
         requestedPositionSol: 0.1,
         context: {
@@ -35,10 +46,16 @@ describe('runLiveDaemon', () => {
 
     const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
       mode: string;
+      housekeeping?: {
+        journalCleanupDeletedFiles: number;
+        mirrorPruneDeletedRows: number;
+      };
     };
 
     expect(result.tickCount).toBe(1);
     expect(health.mode).toBe('healthy');
+    expect(health.housekeeping?.journalCleanupDeletedFiles).toBe(2);
+    expect(health.housekeeping?.mirrorPruneDeletedRows).toBe(3);
   });
 
   it('can drive a tick from ingest-backed context building', async () => {
@@ -183,6 +200,9 @@ describe('runLiveDaemon', () => {
       requestedPositionSol: 0.1,
       quotedOutputSol: 0.1,
       createdAt: '2026-03-22T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date()
     });
 
     await runLiveDaemon({
@@ -322,7 +342,10 @@ describe('runLiveDaemon', () => {
       }
     });
 
-    const ordersRaw = await readFile(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), 'utf8');
+    const ordersRaw = await readFile(
+      resolveActiveJsonlPath(join(journalRootDir, 'new-token-v1-live-orders.jsonl')),
+      'utf8'
+    );
     const orders = ordersRaw.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) as Array<{ side: string }>;
     const positionState = await runtimeStateStore.readPositionState();
 

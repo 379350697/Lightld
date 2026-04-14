@@ -38,6 +38,7 @@ import { LiveFillJournal } from '../journals/live-fill-journal.ts';
 import { LiveIncidentJournal } from '../journals/live-incident-journal.ts';
 import { LiveOrderJournal } from '../journals/live-order-journal.ts';
 import { QuoteJournal } from '../journals/quote-journal.ts';
+import { resolveActiveJsonlPath } from '../journals/jsonl-writer.ts';
 import { evaluateLiveGuards } from '../risk/live-guards.ts';
 import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { SpendingLimitsStore } from '../risk/spending-limits.ts';
@@ -239,25 +240,49 @@ function buildEngineSnapshot(
 }
 
 function createJournalPaths(strategyId: StrategyId, journalRootDir = join('tmp', 'journals')): LiveCycleJournalPaths {
+  const now = new Date();
+
   return {
-    decisionAuditPath: join(journalRootDir, `${strategyId}-decision-audit.jsonl`),
-    quoteJournalPath: join(journalRootDir, `${strategyId}-quotes.jsonl`),
-    liveOrderPath: join(journalRootDir, `${strategyId}-live-orders.jsonl`),
-    liveFillPath: join(journalRootDir, `${strategyId}-live-fills.jsonl`),
-    liveIncidentPath: join(journalRootDir, `${strategyId}-live-incidents.jsonl`)
+    decisionAuditPath: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-decision-audit.jsonl`), now),
+    quoteJournalPath: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-quotes.jsonl`), now),
+    liveOrderPath: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-orders.jsonl`), now),
+    liveFillPath: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-fills.jsonl`), now),
+    liveIncidentPath: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-incidents.jsonl`), now)
   };
 }
 
 function createJournals(strategyId: StrategyId, journalRootDir?: string): LiveCycleJournals {
-  const paths = createJournalPaths(strategyId, journalRootDir);
+  const rootDir = journalRootDir ?? join('tmp', 'journals');
+  const paths = createJournalPaths(strategyId, rootDir);
+  const now = () => new Date();
 
   return {
     paths,
-    decisionAudit: new DecisionAuditLog(paths.decisionAuditPath),
-    quotes: new QuoteJournal(paths.quoteJournalPath),
-    orders: new LiveOrderJournal(paths.liveOrderPath),
-    fills: new LiveFillJournal(paths.liveFillPath),
-    incidents: new LiveIncidentJournal(paths.liveIncidentPath)
+    decisionAudit: new DecisionAuditLog(join(rootDir, `${strategyId}-decision-audit.jsonl`), {
+      rotateDaily: true,
+      retentionDays: 14,
+      now
+    }),
+    quotes: new QuoteJournal(join(rootDir, `${strategyId}-quotes.jsonl`), {
+      rotateDaily: true,
+      retentionDays: 7,
+      now
+    }),
+    orders: new LiveOrderJournal(join(rootDir, `${strategyId}-live-orders.jsonl`), {
+      rotateDaily: true,
+      retentionDays: 90,
+      now
+    }),
+    fills: new LiveFillJournal(join(rootDir, `${strategyId}-live-fills.jsonl`), {
+      rotateDaily: true,
+      retentionDays: 90,
+      now
+    }),
+    incidents: new LiveIncidentJournal(join(rootDir, `${strategyId}-live-incidents.jsonl`), {
+      rotateDaily: true,
+      retentionDays: 30,
+      now
+    })
   };
 }
 

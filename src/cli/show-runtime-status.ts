@@ -14,6 +14,19 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
     `updatedAt=${report.updatedAt}`
   ];
 
+  if (report.housekeeping) {
+    lines.push(
+      `lastHousekeepingAt=${report.housekeeping.lastHousekeepingAt}`,
+      `journalCleanupDeletedFiles=${report.housekeeping.journalCleanupDeletedFiles}`,
+      `mirrorPruneDeletedRows=${report.housekeeping.mirrorPruneDeletedRows}`,
+      `gmgnSafetyCacheEntries=${report.housekeeping.gmgnSafetyCacheEntries}`
+    );
+
+    if (report.housekeeping.lastCleanupError) {
+      lines.push(`lastCleanupError=${report.housekeeping.lastCleanupError}`);
+    }
+  }
+
   if (report.mirror) {
     lines.push(
       `mirrorState=${report.mirror.state}`,

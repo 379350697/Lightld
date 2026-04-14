@@ -259,6 +259,15 @@ export LIVE_DB_MIRROR_FLUSH_INTERVAL_MS="250"
 export LIVE_DB_MIRROR_MAX_RETRIES="2"
 export LIVE_DB_MIRROR_COOLDOWN_MS="60000"
 export LIVE_DB_MIRROR_FAILURE_THRESHOLD="3"
+export LIVE_DB_MIRROR_RETENTION_DAYS="30"
+export LIVE_DB_MIRROR_PRUNE_INTERVAL_MS="1800000"
+export LIVE_HOUSEKEEPING_INTERVAL_MS="1800000"
+export LIVE_DECISION_AUDIT_RETENTION_DAYS="14"
+export LIVE_QUOTES_RETENTION_DAYS="7"
+export LIVE_ORDER_RETENTION_DAYS="90"
+export LIVE_FILL_RETENTION_DAYS="90"
+export LIVE_INCIDENT_RETENTION_DAYS="30"
+export GMGN_CACHE_MAX_ENTRIES="5000"
 ```
 
 The daemon keeps the process lightweight by staying single-process, but it adds:
@@ -347,13 +356,20 @@ If the SQLite mirror is enabled and healthy, `show:status` will also include rec
 
 Live runtime journals are written to `tmp/journals/`:
 
-- `*-decision-audit.jsonl`
-- `*-quotes.jsonl`
-- `*-live-orders.jsonl`
-- `*-live-fills.jsonl`
-- `*-live-incidents.jsonl`
+- `*-decision-audit-YYYY-MM-DD.jsonl`
+- `*-quotes-YYYY-MM-DD.jsonl`
+- `*-live-orders-YYYY-MM-DD.jsonl`
+- `*-live-fills-YYYY-MM-DD.jsonl`
+- `*-live-incidents-YYYY-MM-DD.jsonl`
 
 Each entry is compacted before write, so empty fields are dropped automatically. The runtime now records per-cycle summary fields such as `cycleId`, `stage`, `poolAddress`, `tokenSymbol`, `requestedPositionSol`, quote summary, confirmation status, and reconciliation delta where applicable.
+
+The daemon also keeps storage bounded automatically:
+
+- journals rotate daily
+- housekeeping removes expired journal shards on a timer
+- default retention is `7d` quotes, `14d` decision audit, `30d` incidents, `90d` orders/fills
+- the GMGN safety cache is swept and capped at `5000` entries by default
 
 ## SQLite Mirror
 
@@ -369,6 +385,7 @@ Important behavior:
 - SQLite is only an asynchronous mirror
 - mirror failures never block the trading path
 - when the mirror degrades, health output will include mirror state, queue depth, and dropped event counts
+- old mirror rows are pruned automatically, with `30d` retention by default
 
 The mirror stores structured summaries for:
 

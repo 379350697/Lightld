@@ -113,8 +113,75 @@ type CachedSafetyResult = {
 const safetyCache = new Map<string, CachedSafetyResult>();
 // Keep safety data for 24 hours to minimize repetitive GMGN requests
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 5_000;
 // Fallback if maxBatchSize isn't passed (we now pass 50 or 0 from ingest)
 const DEFAULT_MAX_BATCH_SIZE = 50;
+
+export type TokenSafetyCacheSweepResult = {
+  expiredDeleted: number;
+  evictedDeleted: number;
+  remainingEntries: number;
+};
+
+export function sweepTokenSafetyCache(options: {
+  now?: Date;
+  ttlMs?: number;
+  maxEntries?: number;
+} = {}): TokenSafetyCacheSweepResult {
+  const nowMs = (options.now ?? new Date()).getTime();
+  const ttlMs = options.ttlMs ?? CACHE_TTL_MS;
+  const maxEntries = options.maxEntries ?? MAX_CACHE_ENTRIES;
+  let expiredDeleted = 0;
+  let evictedDeleted = 0;
+
+  for (const [mint, cached] of safetyCache.entries()) {
+    if (nowMs - cached.cachedAt <= ttlMs) {
+      continue;
+    }
+
+    safetyCache.delete(mint);
+    expiredDeleted += 1;
+  }
+
+  if (safetyCache.size > maxEntries) {
+    const oldestEntries = [...safetyCache.entries()]
+      .sort((left, right) => left[1].cachedAt - right[1].cachedAt);
+
+    for (const [mint] of oldestEntries) {
+      if (safetyCache.size <= maxEntries) {
+        break;
+      }
+
+      safetyCache.delete(mint);
+      evictedDeleted += 1;
+    }
+  }
+
+  return {
+    expiredDeleted,
+    evictedDeleted,
+    remainingEntries: safetyCache.size
+  };
+}
+
+export function getTokenSafetyCacheSize() {
+  return safetyCache.size;
+}
+
+export function clearTokenSafetyCacheForTests() {
+  safetyCache.clear();
+}
+
+export function primeTokenSafetyCacheForTests(
+  mint: string,
+  result: TokenSafetyResult,
+  cachedAt: Date
+) {
+  safetyCache.set(mint, {
+    result,
+    cachedAt: cachedAt.getTime()
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Fetch
@@ -139,6 +206,11 @@ export async function fetchTokenSafetyBatch(
   const uncachedMints: string[] = [];
 
   const now = Date.now();
+  sweepTokenSafetyCache({
+    now: new Date(now),
+    ttlMs: CACHE_TTL_MS,
+    maxEntries: MAX_CACHE_ENTRIES
+  });
   for (const mint of mints) {
     const cached = safetyCache.get(mint);
     if (cached && now - cached.cachedAt < CACHE_TTL_MS) {

@@ -46,6 +46,9 @@ describe('applyCatchupWindow', () => {
       requestedPositionSol: 0.1,
       quotedOutputSol: 0.1,
       createdAt: '2026-03-22T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date()
     });
 
     await enqueueMirrorCatchupFromJournals({
@@ -101,6 +104,9 @@ describe('applyCatchupWindow', () => {
       cycleId: 'cycle-1',
       strategyId: 'new-token-v1',
       idempotencyKey: 'k1'
+    }, {
+      rotateDaily: true,
+      now: new Date()
     });
 
     const processed = await enqueueMirrorCatchupFromJournals({

@@ -8,7 +8,7 @@ import type {
 } from './mirror-events.ts';
 import type { MirrorRuntime } from './mirror-runtime.ts';
 import { MirrorCursorStore } from './mirror-cursor-store.ts';
-import { readJsonLines } from '../journals/jsonl-writer.ts';
+import { readJsonLines, resolveActiveJsonlPath } from '../journals/jsonl-writer.ts';
 
 export function applyCatchupWindow<T>(input: {
   lines: Array<{ offset: number; value: T }>;
@@ -202,17 +202,17 @@ function buildJournalSpecs(strategyId: string, journalRootDir: string): JournalS
   return [
     {
       key: `${strategyId}-live-orders`,
-      path: join(journalRootDir, `${strategyId}-live-orders.jsonl`),
+      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-orders.jsonl`)),
       toEvent: (value, currentStrategyId) => toOrderCatchupEvent(value, currentStrategyId)
     },
     {
       key: `${strategyId}-live-fills`,
-      path: join(journalRootDir, `${strategyId}-live-fills.jsonl`),
+      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-fills.jsonl`)),
       toEvent: (value, currentStrategyId, offset) => toFillCatchupEvent(value, currentStrategyId, offset)
     },
     {
       key: `${strategyId}-live-incidents`,
-      path: join(journalRootDir, `${strategyId}-live-incidents.jsonl`),
+      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-incidents.jsonl`)),
       toEvent: (value, currentStrategyId, offset) => toIncidentCatchupEvent(value, currentStrategyId, offset)
     }
   ];

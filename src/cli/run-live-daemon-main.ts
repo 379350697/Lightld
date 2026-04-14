@@ -7,6 +7,12 @@ import { HttpLiveSigner } from '../execution/http-live-signer.ts';
 import { loadMirrorConfig } from '../observability/mirror-config.ts';
 import { createMirrorRuntime } from '../observability/mirror-runtime.ts';
 import { HttpAlertSink } from '../runtime/http-alert-sink.ts';
+import { sweepTokenSafetyCache } from '../ingest/gmgn/token-safety-client.ts';
+import {
+  cleanupRuntimeJournals,
+  createHousekeepingRunner,
+  DEFAULT_JOURNAL_RETENTION_DAYS
+} from '../runtime/housekeeping.ts';
 import { buildLiveCycleInputFromIngest } from '../runtime/ingest-context-builder.ts';
 import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
@@ -116,6 +122,11 @@ function parseArgs(argv: string[]): ParsedArgs {
   return parsed;
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const runtimeConfig = loadLiveRuntimeConfig();
@@ -164,6 +175,41 @@ async function main() {
   const mirrorRuntime = mirrorConfig.enabled
     ? createMirrorRuntime({ config: mirrorConfig })
     : undefined;
+  const housekeepingRunner = createHousekeepingRunner({
+    intervalMs: parsePositiveInteger(process.env.LIVE_HOUSEKEEPING_INTERVAL_MS, 30 * 60_000),
+    runJournalCleanup: () =>
+      cleanupRuntimeJournals({
+        strategy,
+        journalRootDir: args.journalRootDir,
+        retentionDays: {
+          decisionAudit: parsePositiveInteger(
+            process.env.LIVE_DECISION_AUDIT_RETENTION_DAYS,
+            DEFAULT_JOURNAL_RETENTION_DAYS.decisionAudit
+          ),
+          quotes: parsePositiveInteger(
+            process.env.LIVE_QUOTES_RETENTION_DAYS,
+            DEFAULT_JOURNAL_RETENTION_DAYS.quotes
+          ),
+          orders: parsePositiveInteger(
+            process.env.LIVE_ORDER_RETENTION_DAYS,
+            DEFAULT_JOURNAL_RETENTION_DAYS.orders
+          ),
+          fills: parsePositiveInteger(
+            process.env.LIVE_FILL_RETENTION_DAYS,
+            DEFAULT_JOURNAL_RETENTION_DAYS.fills
+          ),
+          incidents: parsePositiveInteger(
+            process.env.LIVE_INCIDENT_RETENTION_DAYS,
+            DEFAULT_JOURNAL_RETENTION_DAYS.incidents
+          )
+        }
+      }),
+    runMirrorPrune: async () => (await mirrorRuntime?.pruneOnce?.({ force: true }))?.deletedRows ?? 0,
+    runGmgnCacheSweep: () =>
+      sweepTokenSafetyCache({
+        maxEntries: parsePositiveInteger(process.env.GMGN_CACHE_MAX_ENTRIES, 5_000)
+      })
+  });
 
   await runLiveDaemon({
     strategy,
@@ -172,6 +218,7 @@ async function main() {
     tickIntervalMs: args.tickIntervalMs,
     maxTicks: args.maxTicks,
     mirrorRuntime,
+    housekeepingRunner,
     buildCycleInput: async () => {
       const accountState = executionAdapters.accountProvider
         ? await executionAdapters.accountProvider.readState()

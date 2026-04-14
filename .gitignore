@@ -9,3 +9,4 @@ state/
 secrets/
 *.sqlite
 *.env
+.codex

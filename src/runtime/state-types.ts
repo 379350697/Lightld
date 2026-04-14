@@ -93,6 +93,16 @@ export const PositionStateSnapshotSchema = z.object({
 
 export type PositionStateSnapshot = z.infer<typeof PositionStateSnapshotSchema>;
 
+export const HousekeepingSnapshotSchema = z.object({
+  lastHousekeepingAt: z.string(),
+  journalCleanupDeletedFiles: z.number().int().nonnegative(),
+  mirrorPruneDeletedRows: z.number().int().nonnegative(),
+  gmgnSafetyCacheEntries: z.number().int().nonnegative(),
+  lastCleanupError: z.string()
+});
+
+export type HousekeepingSnapshot = z.infer<typeof HousekeepingSnapshotSchema>;
+
 export const HealthReportSchema = z.object({
   mode: RuntimeModeSchema,
   allowNewOpens: z.boolean(),
@@ -104,6 +114,7 @@ export const HealthReportSchema = z.object({
     quoteFailures: z.number().int().nonnegative(),
     reconcileFailures: z.number().int().nonnegative()
   }),
+  housekeeping: HousekeepingSnapshotSchema.optional(),
   mirror: MirrorMetricsSnapshotSchema.optional(),
   updatedAt: z.string()
 });

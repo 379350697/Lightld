@@ -17,6 +17,25 @@ type SqliteMirrorWriterOptions = {
   busyTimeoutMs?: number;
 };
 
+type PruneOptions = {
+  retentionDays: number;
+  now?: Date;
+};
+
+type PruneTableCounts = {
+  cycleRuns: number;
+  orders: number;
+  fills: number;
+  reconciliations: number;
+  incidents: number;
+  runtimeSnapshots: number;
+};
+
+export type MirrorPruneResult = {
+  deletedRows: number;
+  deletedByTable: PruneTableCounts;
+};
+
 type RecentIncidentRow = {
   incidentId: string;
   cycleId: string;
@@ -138,6 +157,51 @@ export class SqliteMirrorWriter {
         LIMIT ?
       `)
       .all(limit) as RecentOrderRow[];
+  }
+
+  async checkpointWal(mode: 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE' = 'TRUNCATE') {
+    this.requireDatabase().exec(`PRAGMA wal_checkpoint(${mode});`);
+  }
+
+  async pruneOldData(options: PruneOptions): Promise<MirrorPruneResult> {
+    const database = this.requireDatabase();
+    const cutoffIso = new Date(
+      (options.now ?? new Date()).getTime() - options.retentionDays * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const deletedByTable: PruneTableCounts = {
+      cycleRuns: 0,
+      orders: 0,
+      fills: 0,
+      reconciliations: 0,
+      incidents: 0,
+      runtimeSnapshots: 0
+    };
+
+    database.exec('BEGIN IMMEDIATE');
+
+    try {
+      deletedByTable.cycleRuns = this.deleteOlderThan('cycle_runs', 'finished_at', cutoffIso);
+      deletedByTable.orders = this.deleteOlderThan('orders', 'updated_at', cutoffIso);
+      deletedByTable.fills = this.deleteOlderThan('fills', 'recorded_at', cutoffIso);
+      deletedByTable.reconciliations = this.deleteOlderThan('reconciliations', 'recorded_at', cutoffIso);
+      deletedByTable.incidents = this.deleteOlderThan('incidents', 'recorded_at', cutoffIso);
+      deletedByTable.runtimeSnapshots = this.deleteOlderThan('runtime_snapshots', 'snapshot_at', cutoffIso);
+      database.exec('COMMIT');
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        // ignore rollback failures
+      }
+      throw error;
+    }
+
+    await this.checkpointWal('TRUNCATE');
+
+    return {
+      deletedRows: Object.values(deletedByTable).reduce((sum, count) => sum + count, 0),
+      deletedByTable
+    };
   }
 
   private requireDatabase() {
@@ -410,6 +474,14 @@ export class SqliteMirrorWriter {
       payload.quoteFailures,
       payload.reconcileFailures
     );
+  }
+
+  private deleteOlderThan(tableName: string, columnName: string, cutoffIso: string) {
+    const result = this.requireDatabase()
+      .prepare(`DELETE FROM ${tableName} WHERE ${columnName} < ?`)
+      .run(cutoffIso) as { changes?: number };
+
+    return result.changes ?? 0;
   }
 }
 

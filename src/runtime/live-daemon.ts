@@ -7,6 +7,7 @@ import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
 import type { RuntimeMode } from './state-types.ts';
+import type { HousekeepingRunner } from './housekeeping.ts';
 import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
@@ -20,6 +21,7 @@ type LiveDaemonOptions = {
   buildCycleInput?: (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'>;
   alertSink?: AlertSink;
   mirrorRuntime?: MirrorRuntime;
+  housekeepingRunner?: HousekeepingRunner;
 };
 
 function nowIso() {
@@ -40,6 +42,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       options.buildCycleInput ?? (() => ({} as Omit<LiveCycleInput, 'strategy'>));
   const alertSink = options.alertSink ?? new NoopAlertSink();
   const mirrorRuntime = options.mirrorRuntime;
+  const housekeepingRunner = options.housekeepingRunner;
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
@@ -169,6 +172,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           );
         }
 
+        const housekeeping = housekeepingRunner
+          ? await housekeepingRunner.runIfDue()
+          : undefined;
+
         const report = buildHealthReport({
           mode: runtimeState.mode,
           allowNewOpens:
@@ -181,6 +188,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             quoteFailures: dependencyHealth.quote.consecutiveFailures,
             reconcileFailures: dependencyHealth.account.consecutiveFailures
           },
+          housekeeping,
           mirror: mirrorRuntime?.snapshot()
         });
 
@@ -262,6 +270,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             quoteFailures: dependencyHealth.quote.consecutiveFailures,
             reconcileFailures: dependencyHealth.account.consecutiveFailures
           },
+          housekeeping: housekeepingRunner?.snapshot(),
           mirror: mirrorRuntime?.snapshot(),
           updatedAt: now
         });

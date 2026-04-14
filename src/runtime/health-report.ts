@@ -1,4 +1,9 @@
-import type { HealthReport, MirrorMetricsSnapshot, RuntimeMode } from './state-types.ts';
+import type {
+  HealthReport,
+  HousekeepingSnapshot,
+  MirrorMetricsSnapshot,
+  RuntimeMode
+} from './state-types.ts';
 
 export function buildHealthReport(input: {
   mode: RuntimeMode;
@@ -11,6 +16,7 @@ export function buildHealthReport(input: {
     quoteFailures: number;
     reconcileFailures: number;
   };
+  housekeeping?: HousekeepingSnapshot;
   mirror?: MirrorMetricsSnapshot;
   updatedAt?: string;
 }): HealthReport {
@@ -22,6 +28,7 @@ export function buildHealthReport(input: {
     circuitReason: input.circuitReason,
     lastSuccessfulTickAt: input.lastSuccessfulTickAt,
     dependencyHealth: input.dependencyHealth,
+    housekeeping: input.housekeeping,
     mirror: input.mirror,
     updatedAt: input.updatedAt ?? new Date().toISOString()
   };

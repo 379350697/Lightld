@@ -10,7 +10,9 @@ const MirrorConfigSchema = z.object({
   flushIntervalMs: z.number().int().positive(),
   maxRetries: z.number().int().nonnegative(),
   cooldownMs: z.number().int().positive(),
-  failureThreshold: z.number().int().positive()
+  failureThreshold: z.number().int().positive(),
+  retentionDays: z.number().int().positive(),
+  pruneIntervalMs: z.number().int().positive()
 });
 
 export type MirrorConfig = z.infer<typeof MirrorConfigSchema>;
@@ -42,6 +44,8 @@ export function loadMirrorConfig(
     flushIntervalMs: parseInteger(env.LIVE_DB_MIRROR_FLUSH_INTERVAL_MS, 250),
     maxRetries: parseInteger(env.LIVE_DB_MIRROR_MAX_RETRIES, 2),
     cooldownMs: parseInteger(env.LIVE_DB_MIRROR_COOLDOWN_MS, 60_000),
-    failureThreshold: parseInteger(env.LIVE_DB_MIRROR_FAILURE_THRESHOLD, 3)
+    failureThreshold: parseInteger(env.LIVE_DB_MIRROR_FAILURE_THRESHOLD, 3),
+    retentionDays: parseInteger(env.LIVE_DB_MIRROR_RETENTION_DAYS, 30),
+    pruneIntervalMs: parseInteger(env.LIVE_DB_MIRROR_PRUNE_INTERVAL_MS, 30 * 60_000)
   });
 }

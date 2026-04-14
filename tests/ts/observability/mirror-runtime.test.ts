@@ -14,7 +14,9 @@ describe('createMirrorRuntime', () => {
         flushIntervalMs: 10,
         maxRetries: 1,
         cooldownMs: 1000,
-        failureThreshold: 2
+        failureThreshold: 2,
+        retentionDays: 30,
+        pruneIntervalMs: 60_000
       },
       writer: {
         open: async () => {},

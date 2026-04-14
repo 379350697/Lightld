@@ -41,7 +41,6 @@ LIVE_STATE_DIR=/opt/lightld/state
 LIVE_JOURNAL_DIR=/opt/lightld/tmp/journals
 LIVE_DAEMON_TICK_INTERVAL_MS=30000
 LIVE_REQUESTED_POSITION_SOL=0.1
-LIVE_WHITELIST=SAFE,ABC
 LIVE_TRADER_WALLET=your-wallet
 LIVE_METEORA_PAGE_SIZE=25
 LIVE_METEORA_SORT_BY=tvl:desc
@@ -56,6 +55,15 @@ LIVE_DB_MIRROR_FLUSH_INTERVAL_MS=250
 LIVE_DB_MIRROR_MAX_RETRIES=2
 LIVE_DB_MIRROR_COOLDOWN_MS=60000
 LIVE_DB_MIRROR_FAILURE_THRESHOLD=3
+LIVE_DB_MIRROR_RETENTION_DAYS=30
+LIVE_DB_MIRROR_PRUNE_INTERVAL_MS=1800000
+LIVE_HOUSEKEEPING_INTERVAL_MS=1800000
+LIVE_DECISION_AUDIT_RETENTION_DAYS=14
+LIVE_QUOTES_RETENTION_DAYS=7
+LIVE_ORDER_RETENTION_DAYS=90
+LIVE_FILL_RETENTION_DAYS=90
+LIVE_INCIDENT_RETENTION_DAYS=30
+GMGN_CACHE_MAX_ENTRIES=5000
 ```
 
 ## Local Signer Option
@@ -143,7 +151,6 @@ The daemon now builds `DecisionContextInput` automatically on every tick:
 
 Recommended operator settings:
 
-- always set `LIVE_WHITELIST` for symbols you actually want to trade
 - keep the account-state service populated with `walletTokens`, because that is now the primary source for `hasInventory`
 - set `LIVE_TRADER_WALLET` when you want GMGN trader enrichment; it is no longer required for inventory detection
 - keep `LIVE_METEORA_PAGE_SIZE` small, usually `10` to `25`, to reduce per-tick bandwidth
@@ -268,6 +275,28 @@ Recommended Linux settings:
 - leave the queue and batch defaults small unless you observe sustained lag
 
 The mirror uses Node 22 built-in SQLite in `WAL` mode. You may see a one-time experimental warning from Node on startup. That warning is expected with the current API surface.
+
+## Bounded Storage Defaults
+
+The daemon now runs a lightweight housekeeping pass so unattended operation stays bounded over time.
+
+Default behavior:
+
+- housekeeping runs every `30m`
+- journal files rotate daily
+- journal retention defaults to:
+  - `7d` quotes
+  - `14d` decision audit
+  - `30d` incidents
+  - `90d` live orders and live fills
+- SQLite mirror retention defaults to `30d`
+- GMGN safety cache is TTL-swept and capped at `5000` entries
+
+Operational notes:
+
+- housekeeping failures are recorded in `state/health.json`
+- cleanup does not block trading; it only degrades maintenance visibility
+- `show:status` includes housekeeping timestamps and cleanup counters
 
 ## Runtime Modes
 

@@ -14,11 +14,19 @@ describe('buildHealthReport', () => {
       dependencyHealth: {
         quoteFailures: 3,
         reconcileFailures: 0
+      },
+      housekeeping: {
+        lastHousekeepingAt: '2026-03-22T00:00:01.000Z',
+        journalCleanupDeletedFiles: 2,
+        mirrorPruneDeletedRows: 4,
+        gmgnSafetyCacheEntries: 9,
+        lastCleanupError: ''
       }
     });
 
     expect(report.mode).toBe('degraded');
     expect(report.pendingSubmission).toBe(true);
     expect(report.dependencyHealth.quoteFailures).toBe(3);
+    expect(report.housekeeping?.mirrorPruneDeletedRows).toBe(4);
   });
 });
