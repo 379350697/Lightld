@@ -180,6 +180,22 @@ function isWithinSessionWindows(
   });
 }
 
+function resolveNestedString(payload: Record<string, unknown>, parentKeys: string[], childKeys: string[]) {
+  for (const parentKey of parentKeys) {
+    const nested = payload[parentKey];
+    if (!isRecord(nested)) {
+      continue;
+    }
+
+    const value = readString(nested, childKeys);
+    if (value.length > 0) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
 function resolveHasSolRoute(payload: Record<string, unknown>) {
   if (readBoolean(payload, ['hasSolRoute', 'has_sol_route'])) {
     return true;
@@ -188,8 +204,11 @@ function resolveHasSolRoute(payload: Record<string, unknown>) {
   const quoteMint = readString(payload, ['quoteMint', 'quote_mint', 'token_y_mint']);
   const quoteSymbol = readString(payload, ['quoteSymbol', 'quote_symbol', 'token_y_symbol']);
   const baseSymbol = readString(payload, ['baseSymbol', 'base_symbol', 'token_x_symbol']);
+  const tokenYMint = resolveNestedString(payload, ['token_y', 'tokenY'], ['address', 'mint']);
+  const tokenYSymbol = resolveNestedString(payload, ['token_y', 'tokenY'], ['symbol']);
+  const tokenXSymbol = resolveNestedString(payload, ['token_x', 'tokenX'], ['symbol']);
 
-  return quoteMint === SOL_MINT || quoteSymbol === 'SOL' || baseSymbol === 'SOL';
+  return quoteMint === SOL_MINT || quoteSymbol === 'SOL' || baseSymbol === 'SOL' || tokenYMint === SOL_MINT || tokenYSymbol === 'SOL' || tokenXSymbol === 'SOL';
 }
 
 function resolveMomentum(
@@ -368,6 +387,15 @@ function buildFallbackContext(
   };
 }
 
+function isRecentPool(payload: Record<string, unknown>, now: Date, maxAgeMs: number) {
+  const createdAt = readNumber(payload, ['created_at', 'createdAt', 'pool_created_at']);
+  if (!createdAt) {
+    return false;
+  }
+
+  return now.getTime() - createdAt <= maxAgeMs;
+}
+
 function buildCandidate(
   row: Record<string, unknown>,
   pumpIndexes: PumpIndexes,
@@ -378,8 +406,8 @@ function buildCandidate(
   scoringWeights: { holders: number; liquidity: number; momentum: number }
 ) {
   const payload = rawRecord(row);
-  const mint = readString(payload, ['baseMint', 'base_mint', 'mint', 'token_x_mint']);
-  const symbol = readString(payload, ['baseSymbol', 'base_symbol', 'symbol', 'token_x_symbol']);
+  const mint = readString(payload, ['baseMint', 'base_mint', 'mint', 'token_x_mint']) || resolveNestedString(payload, ['token_x', 'tokenX'], ['address', 'mint']);
+  const symbol = readString(payload, ['baseSymbol', 'base_symbol', 'symbol', 'token_x_symbol']) || resolveNestedString(payload, ['token_x', 'tokenX'], ['symbol']);
   const liquidityUsd = readNumber(payload, ['liquidityUsd', 'liquidity', 'tvl', 'tvlUsd']);
   const tokenEvent = mint.length > 0 ? pumpIndexes.tokenByMint.get(mint) : undefined;
   const holders = tokenEvent?.holders ?? readNumber(payload, ['holders']);
@@ -405,7 +433,7 @@ function buildCandidate(
     address: readString(payload, ['address', 'poolAddress', 'pool_address']),
     mint,
     symbol: tokenEvent?.symbol || symbol,
-    quoteMint: readString(payload, ['quoteMint', 'quote_mint', 'token_y_mint']),
+    quoteMint: readString(payload, ['quoteMint', 'quote_mint', 'token_y_mint']) || resolveNestedString(payload, ['token_y', 'tokenY'], ['address', 'mint']),
     liquidityUsd,
     hasSolRoute: resolveHasSolRoute(payload),
     capturedAt: readString(payload, ['capturedAt', 'updatedAt', 'pool_created_at']),
@@ -428,16 +456,26 @@ export async function buildLiveCycleInputFromIngest(
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
   const [poolRows, pumpRows, traderSnapshot] = await Promise.all([
     (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
-      pageSize: input.meteoraPageSize ?? 50,
+      pageSize: input.meteoraPageSize ?? 500,
       query: input.meteoraQuery,
       sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
-      filterBy: input.meteoraFilterBy ?? 'tvl>=10000 && is_blacklisted=false'
+      filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
     }),
     maybeFetchPumpTradesRows(input),
     maybeFetchTraderSnapshot(input)
   ]);
   const pumpIndexes = buildPumpIndexes(pumpRows, input.traderWallet);
-  let candidates = poolRows.map((row) =>
+  const maxPoolAgeMs = 3 * 24 * 60 * 60 * 1000;
+  const prefilteredRows = poolRows.filter((row) => {
+    const payload = rawRecord(row);
+    const poolConfig = isRecord(payload.pool_config) ? payload.pool_config : {};
+    const isBlacklisted = readBoolean(payload, ['is_blacklisted', 'isBlacklisted']);
+    const binStep = readNumber(poolConfig, ['bin_step', 'binStep']);
+    const hasSolRoute = resolveHasSolRoute(payload);
+    return hasSolRoute && !isBlacklisted && binStep >= 100 && isRecentPool(payload, now, maxPoolAgeMs);
+  });
+
+  let candidates = prefilteredRows.map((row) =>
     buildCandidate(
       row,
       pumpIndexes,
@@ -448,7 +486,9 @@ export async function buildLiveCycleInputFromIngest(
       config.scoringWeights
     )
   );
+  const preLpCount = candidates.length;
   candidates = filterLpEligibleCandidates(candidates, config);
+  const postLpCount = candidates.length;
   const activePositionsCount = countActiveInventoryPositions(input.accountState);
   const inScanWindow = isInScanWindow(now);
   const maxBatchSize = inScanWindow ? 50 : 0;
@@ -460,8 +500,16 @@ export async function buildLiveCycleInputFromIngest(
       (input.fetchTokenSafetyBatchImpl ?? defaultFetchSafetyBatch(maxBatchSize))(mints),
     logger: console
   });
+  const postSafetyCount = candidates.length;
+
+  console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
 
   const candidate = selectCandidate(candidates, input.strategy, inScanWindow, activePositionsCount);
+
+  if (!candidate) {
+    const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || (inScanWindow && activePositionsCount < 5)).length;
+    console.log(`[Ingest] No candidate selected: candidates=${candidates.length} eligibleForSelection=${eligibleSelectionCount}`);
+  }
 
   if (!candidate) {
     return buildFallbackContext(

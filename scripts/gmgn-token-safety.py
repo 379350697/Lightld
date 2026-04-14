@@ -13,7 +13,6 @@ Scoring system (max 120 pts):
 
 Hard gates (reject regardless of score):
   - Holders > 1000
-  - Bluechip > 0.8%
 
 Usage:
     python scripts/gmgn-token-safety.py <mint1> [mint2] ...
@@ -40,6 +39,17 @@ def _pct_after(lines: list[str], idx: int) -> float:
         return -1.0
     m = re.match(r'([\d.]+)\s*%', lines[idx + 1])
     return float(m.group(1)) if m else -1.0
+
+
+def _pct_near(lines: list[str], idx: int, window: int = 3) -> float:
+    """Search nearby lines for the first percentage value."""
+    start = max(0, idx + 1)
+    end = min(len(lines), idx + 1 + window)
+    for i in range(start, end):
+        m = re.search(r'([\d.]+)\s*%', lines[i])
+        if m:
+            return float(m.group(1))
+    return -1.0
 
 
 def _parse_count(text: str) -> int:
@@ -72,6 +82,7 @@ def parse_page_text(mint: str, text: str) -> dict:
         "bundlerPct": -1.0,    # % (捆绑交易)
         "holders": 0,
         "bluechipPct": -1.0,   # %
+        "bluechipHolders": 0,
         "snipersPct": -1.0,    # %
         "rugPct": -1.0,        # %
     }
@@ -94,54 +105,82 @@ def parse_page_text(mint: str, text: str) -> dict:
 
         if low == 'top 10':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["top10Pct"] = p
 
-        elif low == 'insiders':
+        elif low == 'insiders' or low == '老鼠仓':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["insidersPct"] = p
 
-        elif low == 'dev' and re.match(r'[\d.]+%', next_line):
+        elif low == 'dev':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["devPct"] = p
 
-        elif low == 'phishing':
+        elif low == 'phishing' or low == '钓鱼钱包':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["phishingPct"] = p
 
-        elif low == 'bundler':
+        elif low == 'bundler' or low == '捆绑交易':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["bundlerPct"] = p
 
-        elif low == 'holders':
+        elif low == 'holders' or low == '持有者':
             cnt = _parse_count(next_line)
+            if cnt <= 0 and i + 3 < len(lines):
+                for candidate in lines[i + 1:i + 4]:
+                    cnt = _parse_count(candidate)
+                    if cnt > 0:
+                        break
             if cnt > 0:
                 metrics["holders"] = cnt
 
-        elif low == 'snipers':
+        elif low == 'snipers' or low == '狙击者':
             if next_line == '--':
                 metrics["snipersPct"] = 0.0
             else:
                 p = _pct_after(lines, i)
+                if p < 0:
+                    p = _pct_near(lines, i)
                 if p >= 0:
                     metrics["snipersPct"] = p
 
         elif low == 'rug %':
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i)
             if p >= 0:
                 metrics["rugPct"] = p
             elif next_line in ('0', '0%'):
                 metrics["rugPct"] = 0.0
 
-        # Bluechip: might appear as "Blue Chip" or "BluechipPct" etc.
-        elif 'blue' in low and ('chip' in low or 'holder' in low):
+        # Bluechip: may appear as English label or Chinese "蓝筹持有者" block.
+        elif ('blue' in low and ('chip' in low or 'holder' in low)) or ('蓝筹' in line):
             p = _pct_after(lines, i)
+            if p < 0:
+                p = _pct_near(lines, i, window=6)
             if p >= 0:
                 metrics["bluechipPct"] = p
+
+            # also try to capture bluechip holder count from nearby lines
+            for candidate in lines[i:i + 6]:
+                cnt = _parse_count(candidate)
+                if cnt > 0:
+                    metrics["bluechipHolders"] = cnt
+                    break
 
         # Also search for "Red." label which appears near the bluechip area
         # In the GMGN page, the holder analysis section has Top10/DEV/.../Red.
@@ -228,6 +267,23 @@ def parse_page_text(mint: str, text: str) -> dict:
         else:
             score_breakdown["bundler"] = 0
 
+    # 9. Bluechip bonus (no longer a hard gate)
+    bc = metrics["bluechipPct"]
+    if bc >= 1.5:
+        score += 30
+        score_breakdown["bluechip"] = 30
+    elif bc >= 0.8:
+        score += 20
+        score_breakdown["bluechip"] = 20
+    elif bc >= 0.3:
+        score += 15
+        score_breakdown["bluechip"] = 15
+    elif bc >= 0.1:
+        score += 10
+        score_breakdown["bluechip"] = 10
+    elif bc >= 0:
+        score_breakdown["bluechip"] = 0
+
     # ==================================================================
     # Hard gates
     # ==================================================================
@@ -238,12 +294,6 @@ def parse_page_text(mint: str, text: str) -> dict:
     if metrics["holders"] <= 1000:
         hard_gate_pass = False
         reject_reasons.append(f"holders={metrics['holders']}<=1000")
-
-    # Bluechip > 0.8%
-    bc = metrics["bluechipPct"]
-    if bc <= 0.8:
-        hard_gate_pass = False
-        reject_reasons.append(f"bluechip={bc}%<=0.8%")
 
     return {
         "mint": mint,
@@ -260,6 +310,7 @@ def parse_page_text(mint: str, text: str) -> dict:
         "phishingPct": metrics["phishingPct"],
         "bundlerPct": metrics["bundlerPct"],
         "bluechipPct": metrics["bluechipPct"],
+        "bluechipHolders": metrics["bluechipHolders"],
         "snipersPct": metrics["snipersPct"],
         "rugPct": metrics["rugPct"],
         "isMintRenounced": metrics["isMintRenounced"],

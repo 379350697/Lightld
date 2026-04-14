@@ -163,9 +163,25 @@ export async function applySafetyFilter(
         safetyScore: (safeMap.get(candidate.mint) ?? 0) + resolveFeeTvlBonus(candidate.feeTvlRatio24h)
       }));
 
+    const rejected = candidates
+      .filter((candidate) => !safeMap.has(candidate.mint))
+      .map((candidate) => {
+        const result = safetyResults.find((item) => item.mint === candidate.mint);
+        return {
+          symbol: candidate.symbol,
+          mint: candidate.mint,
+          rejectReasons: result?.rejectReasons ?? [],
+          safetyScore: result?.safetyScore ?? 0
+        };
+      });
+
     options.logger?.log(
       `[Ingest] Safety filter: ${candidates.length} -> ${filtered.length} safe candidates (${uniqueMints.length} unique SOL pairs checked, maxBatchSize=${options.maxBatchSize})`
     );
+
+    if (rejected.length > 0) {
+      options.logger?.log(`[Ingest] Safety rejected: ${JSON.stringify(rejected)}`);
+    }
 
     return filtered;
   } catch (error) {
