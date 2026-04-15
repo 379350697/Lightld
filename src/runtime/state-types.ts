@@ -87,6 +87,8 @@ export const PositionStateSnapshotSchema = z.object({
   allowNewOpens: z.boolean(),
   flattenOnly: z.boolean(),
   lastAction: z.string(),
+  lastReason: z.string().optional(),
+  activeMint: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
   updatedAt: z.string()
 });

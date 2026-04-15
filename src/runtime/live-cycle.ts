@@ -65,6 +65,7 @@ import {
   buildUnknownPendingSubmissionSnapshot,
   resolveFillMirrorSide
 } from './live-cycle-outcomes.ts';
+import { resolveMintPositionAggregate } from './mint-position-aggregate.ts';
 import {
   runAccountReconciliationGate,
   runPendingRecoveryGate
@@ -91,55 +92,6 @@ function findLargestNonStableInventory(accountState: LiveAccountState | undefine
     .sort((a, b) => b.amount - a.amount)[0];
 }
 
-type MintOccupancy = {
-  mint: string;
-  occupied: boolean;
-  reason?: string;
-};
-
-async function resolveMintOccupancy(input: {
-  mint: string;
-  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
-  accountState: LiveAccountState | undefined;
-  lifecycleState: PositionLifecycleState;
-  journals: LiveCycleJournals;
-}) : Promise<MintOccupancy> {
-  const mint = input.mint;
-  if (!mint) {
-    return { mint, occupied: false };
-  }
-
-  if (input.pendingSubmission?.tokenMint === mint) {
-    return { mint, occupied: true, reason: `pending-submission:${input.pendingSubmission.confirmationStatus}` };
-  }
-
-  if (input.accountState?.walletTokens?.some((token) => token.mint === mint && token.amount > 0)) {
-    return { mint, occupied: true, reason: 'wallet-token-present' };
-  }
-
-  if (input.accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0)) {
-    return { mint, occupied: true, reason: 'journal-token-present' };
-  }
-
-  if (input.lifecycleState === 'lp_exit_pending' || input.lifecycleState === 'inventory_exit_pending' || input.lifecycleState === 'inventory_exit_ready') {
-    return { mint, occupied: true, reason: `lifecycle:${input.lifecycleState}` };
-  }
-
-  const [orders, fills] = await Promise.all([
-    input.journals.orders.readAll(),
-    input.journals.fills.readAll()
-  ]);
-
-  const hasOpenOrderIntent = orders.some((entry: any) => entry?.tokenMint === mint && (entry?.side === 'add-lp' || entry?.side === 'deploy' || entry?.side === 'buy'));
-  const hasResolvedExitFill = fills.some((entry: any) => entry?.mint === mint && (entry?.side === 'withdraw-lp' || entry?.side === 'dca-out' || entry?.side === 'sell'));
-  const hasEntryFill = fills.some((entry: any) => entry?.mint === mint && (entry?.side === 'add-lp' || entry?.side === 'buy' || entry?.side === 'deploy'));
-
-  if ((hasOpenOrderIntent || hasEntryFill) && !hasResolvedExitFill) {
-    return { mint, occupied: true, reason: 'journal-open-unresolved' };
-  }
-
-  return { mint, occupied: false };
-}
 
 export type StrategyId = keyof typeof STRATEGY_CONFIGS;
 
@@ -179,6 +131,7 @@ export type LiveCycleResult = {
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
   nextLifecycleState?: PositionLifecycleState;
+  aggregateLifecycleState?: PositionLifecycleState;
   failureKind?: ExecutionFailureKind;
   failureSource?: 'quote' | 'signer' | 'broadcast' | 'confirmation' | 'account' | 'recovery' | 'runtime-policy';
   journalPaths: {
@@ -591,7 +544,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       synchronouslyResolved
     );
 
-    if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
+    if (activeMint) {
+      const unresolved = result.reason.includes('journal-open-unresolved') || result.reason.includes('mint-position-already-active:') || result.reason.includes('pending-open:');
+      if (unresolved) {
+        nextLifecycleState = 'open';
+      } else if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
+        nextLifecycleState = 'closed';
+      }
+    } else if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
       nextLifecycleState = 'closed';
     }
 
@@ -709,9 +669,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
+  const preEngineMintAggregate = await resolveMintPositionAggregate({
+    mint: activeMint,
+    pendingSubmission,
+    accountState,
+    lifecycleState: currentLifecycleState,
+    orders: journals.orders,
+    fills: journals.fills
+  });
+
+  if (preEngineMintAggregate.mustCleanupDust) {
+    currentLifecycleState = 'inventory_exit_ready';
+    context.trader.lifecycleState = currentLifecycleState;
+    context.trader.hasInventory = true;
+    context.trader.hasLpPosition = false;
+  }
+
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
   if (config.poolClass === 'new-token') {
     (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
+    if (preEngineMintAggregate.mustCleanupDust) {
+      (updatedSnapshot as any).hasInventory = true;
+      (updatedSnapshot as any).hasLpPosition = false;
+      (updatedSnapshot as any).lifecycleState = 'inventory_exit_ready';
+    }
   }
   const engineResult = runEngineCycle({
     engine: config.poolClass,
@@ -769,24 +750,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     action: engineResult.action
   });
 
-  const mintOccupancy = await resolveMintOccupancy({
-    mint: activeMint,
-    pendingSubmission,
-    accountState,
-    lifecycleState: currentLifecycleState,
-    journals
-  });
+  const mintAggregate = preEngineMintAggregate;
 
   if (
     activeMint &&
     (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
-    mintOccupancy.occupied
+    !mintAggregate.canOpen
   ) {
     return blockCycle({
       stage: 'runtime-policy',
       action: 'hold',
-      reason: `mint-position-already-active:${activeMint}${mintOccupancy.reason ? `:${mintOccupancy.reason}` : ''}`,
-      audit: { reason: `mint-position-already-active:${activeMint}${mintOccupancy.reason ? `:${mintOccupancy.reason}` : ''}` },
+      reason: `mint-position-already-active:${activeMint}:${mintAggregate.reason}`,
+      audit: { reason: `mint-position-already-active:${activeMint}:${mintAggregate.reason}` },
       severity: 'warning',
       failureSource: 'runtime-policy',
       quoteCollected: false

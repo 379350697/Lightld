@@ -42,13 +42,25 @@ function resolveLifecycleStateForPersist(input: {
   previousLifecycleState?: PositionLifecycleState;
   pendingSubmission: boolean;
   accountState?: LiveAccountState;
+  lastAction?: string;
+  lastReason?: string;
+  activeMint?: string;
 }): PositionLifecycleState {
   if (input.nextLifecycleState) {
     return input.nextLifecycleState;
   }
 
-  if (!input.pendingSubmission && !hasOpenInventory(input.accountState)) {
+  const unresolvedOpen = Boolean(input.activeMint) && (
+    input.lastReason?.includes('journal-open-unresolved') ||
+    input.lastReason?.includes('pending-open:') ||
+    input.lastReason?.includes('mint-position-already-active:')
+  );
+  if (!input.pendingSubmission && !hasOpenInventory(input.accountState) && !unresolvedOpen) {
     return 'closed';
+  }
+
+  if (unresolvedOpen) {
+    return 'open';
   }
 
   return input.previousLifecycleState ?? 'open';
@@ -210,16 +222,24 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         await runtimeStateStore.writeRuntimeState(runtimeState);
         await runtimeStateStore.writeDependencyHealth(dependencyHealth);
+        const persistedActiveMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        const persistedLifecycleState = resolveLifecycleStateForPersist({
+          nextLifecycleState: result.nextLifecycleState,
+          previousLifecycleState: positionState?.lifecycleState,
+          pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+          accountState: cycleInput.accountState,
+          lastAction: result.action,
+          lastReason: result.reason,
+          activeMint: persistedActiveMint
+        });
+
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
-          lifecycleState: resolveLifecycleStateForPersist({
-            nextLifecycleState: result.nextLifecycleState,
-            previousLifecycleState: positionState?.lifecycleState,
-            pendingSubmission: (await pendingSubmissionStore.read()) !== null,
-            accountState: cycleInput.accountState
-          }),
+          lastReason: result.reason,
+          activeMint: persistedActiveMint,
+          lifecycleState: persistedLifecycleState,
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
