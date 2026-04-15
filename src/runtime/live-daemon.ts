@@ -55,11 +55,12 @@ function resolveLifecycleStateForPersist(input: {
     input.lastReason?.includes('pending-open:') ||
     input.lastReason?.includes('mint-position-already-active:')
   );
-  if (!input.pendingSubmission && !hasOpenInventory(input.accountState) && !unresolvedOpen) {
+  const keepOpen = unresolvedOpen && (input.pendingSubmission || hasOpenInventory(input.accountState));
+  if (!input.pendingSubmission && !hasOpenInventory(input.accountState) && !keepOpen) {
     return 'closed';
   }
 
-  if (unresolvedOpen) {
+  if (keepOpen) {
     return 'open';
   }
 

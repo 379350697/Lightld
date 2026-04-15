@@ -88,7 +88,7 @@ export async function resolveMintPositionAggregate(input: {
   const mintOrders = orders.filter((entry) => entry?.tokenMint === mint);
   const mintFills = fills.filter((entry) => entry?.mint === mint);
 
-  const hasPendingOpen = input.pendingSubmission?.tokenMint === mint && !isExitSide(input.pendingSubmission?.reason);
+  const hasPendingOpen = input.pendingSubmission?.tokenMint === mint && input.lifecycleState !== 'lp_exit_pending' && input.lifecycleState !== 'inventory_exit_pending';
   const hasPendingExit = input.pendingSubmission?.tokenMint === mint && (
     input.lifecycleState === 'lp_exit_pending' || input.lifecycleState === 'inventory_exit_pending'
   );
@@ -110,17 +110,20 @@ export async function resolveMintPositionAggregate(input: {
   } else if (hasPendingOpen) {
     state = 'open_pending';
     reason = `pending-open:${input.pendingSubmission?.confirmationStatus ?? 'unknown'}`;
-  } else if (hasInventory || hasEntryFill || (hasLpLikeOpenOrder && !hasExitFill)) {
+  } else if (hasInventory) {
     state = 'open_active';
-    reason = hasInventory ? 'inventory-present' : (hasEntryFill ? 'entry-fill-present' : 'journal-open-unresolved');
+    reason = 'inventory-present';
   } else if (hasExitFill) {
     state = 'closed';
     reason = 'exit-fill-present';
+  } else if (hasEntryFill || hasLpLikeOpenOrder) {
+    state = 'closed';
+    reason = 'historical-entry-only';
   }
 
   const canOpen = state === 'idle' || state === 'closed';
   const mustCleanupDust = state === 'dust_cleanup_pending';
-  const mustExit = state === 'open_active' || state === 'dust_cleanup_pending';
+  const mustExit = state === 'open_active' || state === 'dust_cleanup_pending' || state === 'exit_pending';
 
   return {
     mint,

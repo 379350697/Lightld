@@ -544,14 +544,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       synchronouslyResolved
     );
 
+    const hasLivePendingSubmission = result.liveOrderSubmitted || pendingSubmission !== null;
+
     if (activeMint) {
       const unresolved = result.reason.includes('journal-open-unresolved') || result.reason.includes('mint-position-already-active:') || result.reason.includes('pending-open:');
-      if (unresolved) {
+      if (unresolved && hasLivePendingSubmission) {
         nextLifecycleState = 'open';
-      } else if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
+      } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
         nextLifecycleState = 'closed';
       }
-    } else if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
+    } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
       nextLifecycleState = 'closed';
     }
 
