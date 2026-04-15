@@ -56,6 +56,17 @@ function hasMatchingFill(
   });
 }
 
+function hasWalletEvidenceOfMint(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (!pendingSubmission.tokenMint) {
+    return false;
+  }
+
+  return Boolean(accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0));
+}
+
 export async function recoverPendingSubmission(
   input: PendingSubmissionRecoveryInput
 ): Promise<PendingSubmissionRecoveryResult> {
@@ -122,13 +133,21 @@ export async function recoverPendingSubmission(
     };
   }
 
+  if (!nextPendingSubmission.submissionId && !hasWalletEvidenceOfMint(nextPendingSubmission, input.accountState)) {
+    return {
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
+    };
+  }
+
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
     return {
-      blocked: true,
-      resolved: false,
-      clearPending: false,
-      reason: 'pending-submission-timeout',
-      nextPendingSubmission
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
     };
   }
 
