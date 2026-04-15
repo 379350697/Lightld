@@ -6,10 +6,11 @@ import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
-import type { RuntimeMode } from './state-types.ts';
+import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
 import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
+import type { LiveAccountState } from './live-account-provider.ts';
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -28,6 +29,29 @@ function nowIso() {
 
 function wait(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function hasOpenInventory(accountState?: LiveAccountState) {
+  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0
+    && token.mint !== 'So11111111111111111111111111111111111111112'
+    && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'));
+}
+
+function resolveLifecycleStateForPersist(input: {
+  nextLifecycleState?: PositionLifecycleState;
+  previousLifecycleState?: PositionLifecycleState;
+  pendingSubmission: boolean;
+  accountState?: LiveAccountState;
+}): PositionLifecycleState {
+  if (input.nextLifecycleState) {
+    return input.nextLifecycleState;
+  }
+
+  if (!input.pendingSubmission && !hasOpenInventory(input.accountState)) {
+    return 'closed';
+  }
+
+  return input.previousLifecycleState ?? 'open';
 }
 
 export async function runLiveDaemon(options: LiveDaemonOptions) {
@@ -190,7 +214,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
-          lifecycleState: result.nextLifecycleState ?? positionState?.lifecycleState ?? 'open',
+          lifecycleState: resolveLifecycleStateForPersist({
+            nextLifecycleState: result.nextLifecycleState,
+            previousLifecycleState: positionState?.lifecycleState,
+            pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+            accountState: cycleInput.accountState
+          }),
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
@@ -272,7 +301,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
-          lifecycleState: positionState?.lifecycleState ?? 'open',
+          lifecycleState: resolveLifecycleStateForPersist({
+            previousLifecycleState: positionState?.lifecycleState,
+            pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+            accountState: cycleInput.accountState
+          }),
           updatedAt: now
         });
         await runtimeStateStore.writeHealthReport(report);

@@ -13,7 +13,7 @@
  *
  * Hard gates (reject regardless of score):
  *   - Holders > 1000
- *   - Bluechip > 0.8%
+ *   - GMGN whole-token 24h volume >= 500000 USD
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -32,7 +32,7 @@ const DEFAULT_TIMEOUT_MS = 15 * 60_000; // 15 minutes to safely wait for large b
 
 export type TokenSafetyResult = {
   mint: string;
-  /** Passes hard gates (holders > 1000, bluechip > 0.8%) */
+  /** Passes hard gates (holders > 1000, GMGN whole-token 24h volume >= 500000 USD) */
   safe: boolean;
   /** Composite safety score 0-120 */
   safetyScore: number;
@@ -52,6 +52,7 @@ export type TokenSafetyResult = {
   bluechipPct?: number;
   snipersPct?: number;
   rugPct?: number;
+  volume24hUsd?: number;
   isMintRenounced?: boolean;
   noBlacklist?: boolean;
   isLpBurned?: boolean;

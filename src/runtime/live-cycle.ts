@@ -76,6 +76,71 @@ const STRATEGY_CONFIGS = {
   'large-pool-v1': 'src/config/strategies/large-pool-v1.yaml'
 } as const;
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
+
+function hasNonStableInventory(accountState: LiveAccountState | undefined) {
+  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)));
+}
+
+function findLargestNonStableInventory(accountState: LiveAccountState | undefined) {
+  return (accountState?.walletTokens ?? [])
+    .filter((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
+    .sort((a, b) => b.amount - a.amount)[0];
+}
+
+type MintOccupancy = {
+  mint: string;
+  occupied: boolean;
+  reason?: string;
+};
+
+async function resolveMintOccupancy(input: {
+  mint: string;
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  accountState: LiveAccountState | undefined;
+  lifecycleState: PositionLifecycleState;
+  journals: LiveCycleJournals;
+}) : Promise<MintOccupancy> {
+  const mint = input.mint;
+  if (!mint) {
+    return { mint, occupied: false };
+  }
+
+  if (input.pendingSubmission?.tokenMint === mint) {
+    return { mint, occupied: true, reason: `pending-submission:${input.pendingSubmission.confirmationStatus}` };
+  }
+
+  if (input.accountState?.walletTokens?.some((token) => token.mint === mint && token.amount > 0)) {
+    return { mint, occupied: true, reason: 'wallet-token-present' };
+  }
+
+  if (input.accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0)) {
+    return { mint, occupied: true, reason: 'journal-token-present' };
+  }
+
+  if (input.lifecycleState === 'lp_exit_pending' || input.lifecycleState === 'inventory_exit_pending' || input.lifecycleState === 'inventory_exit_ready') {
+    return { mint, occupied: true, reason: `lifecycle:${input.lifecycleState}` };
+  }
+
+  const [orders, fills] = await Promise.all([
+    input.journals.orders.readAll(),
+    input.journals.fills.readAll()
+  ]);
+
+  const hasOpenOrderIntent = orders.some((entry: any) => entry?.tokenMint === mint && (entry?.side === 'add-lp' || entry?.side === 'deploy' || entry?.side === 'buy'));
+  const hasResolvedExitFill = fills.some((entry: any) => entry?.mint === mint && (entry?.side === 'withdraw-lp' || entry?.side === 'dca-out' || entry?.side === 'sell'));
+  const hasEntryFill = fills.some((entry: any) => entry?.mint === mint && (entry?.side === 'add-lp' || entry?.side === 'buy' || entry?.side === 'deploy'));
+
+  if ((hasOpenOrderIntent || hasEntryFill) && !hasResolvedExitFill) {
+    return { mint, occupied: true, reason: 'journal-open-unresolved' };
+  }
+
+  return { mint, occupied: false };
+}
+
 export type StrategyId = keyof typeof STRATEGY_CONFIGS;
 
 export type LiveCycleInput = {
@@ -418,19 +483,43 @@ async function appendIncident(
 }
 
 export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResult> {
-  let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'open';
+  let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'closed';
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
-  const context = buildDecisionContext(input.context ?? {});
+  let accountState = input.accountState;
+
+  if (!accountState && input.accountProvider) {
+    accountState = await input.accountProvider.readState();
+  }
+
+  const forcedExitToken = findLargestNonStableInventory(accountState);
+  const context = buildDecisionContext(
+    forcedExitToken
+      ? {
+          ...(input.context ?? {}),
+          token: {
+            ...((input.context?.token as Record<string, unknown> | undefined) ?? {}),
+            mint: forcedExitToken.mint,
+            symbol: forcedExitToken.symbol ?? ((input.context?.token as Record<string, unknown> | undefined)?.symbol as string | undefined) ?? '',
+            hasInventory: true
+          },
+          trader: {
+            ...((input.context?.trader as Record<string, unknown> | undefined) ?? {}),
+            hasInventory: true,
+            hasLpPosition: false,
+            lifecycleState: 'inventory_exit_ready'
+          }
+        }
+      : (input.context ?? {})
+  );
   const mirrorSink = input.mirrorSink;
   const killSwitch = input.killSwitch ?? new KillSwitch(false);
   const killSwitchState = killSwitch.isEngaged();
   const quoteProvider = input.quoteProvider ?? new StaticLiveQuoteProvider();
   const signer = input.signer ?? new TestLiveSigner();
   const broadcaster = input.broadcaster ?? new TestLiveBroadcaster();
-  let accountState = input.accountState;
-  
-  if (!accountState && input.accountProvider) {
-    accountState = await input.accountProvider.readState();
+
+  if (forcedExitToken) {
+    currentLifecycleState = 'inventory_exit_ready';
   }
 
   const snapshot = buildEngineSnapshot(config.poolClass, context);
@@ -495,12 +584,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   context.trader.lifecycleState = currentLifecycleState;
 
   const finalize = (result: Omit<LiveCycleResult, 'nextLifecycleState'>, synchronouslyResolved?: boolean): LiveCycleResult => {
-    const nextLifecycleState = resolveNextLifecycleState(
+    let nextLifecycleState = resolveNextLifecycleState(
       currentLifecycleState,
       result.action,
       result.liveOrderSubmitted,
       synchronouslyResolved
     );
+
+    if (!result.liveOrderSubmitted && !pendingSubmission && !hasNonStableInventory(accountState)) {
+      nextLifecycleState = 'closed';
+    }
 
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toCycleRunEvent(buildCycleRunMirrorPayload({
@@ -589,6 +682,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   };
   const pendingSubmission = await pendingSubmissionStore.read();
 
+  const activeMint = firstString(logContext.tokenMint, context.token.mint);
+
   if (pendingSubmission) {
     const recoveryGate = await runPendingRecoveryGate({
       pendingSubmissionStore,
@@ -638,14 +733,23 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
     }
   });
-  logContext.engineReason = engineResult.audit.reason;
+  const engineAuditReason = [
+    engineResult.audit.reason,
+    `score=${updatedSnapshot.score ?? 'n/a'}`,
+    `minDeployScore=${config.live.minDeployScore ?? 70}`,
+    `lpEnabled=${config.lpConfig?.enabled ?? false}`,
+    `hasLpPosition=${'hasLpPosition' in updatedSnapshot ? updatedSnapshot.hasLpPosition ?? false : false}`,
+    `hasInventory=${'hasInventory' in updatedSnapshot ? updatedSnapshot.hasInventory ?? false : false}`,
+    `lifecycleState=${'lifecycleState' in updatedSnapshot ? updatedSnapshot.lifecycleState ?? 'unknown' : 'n/a'}`
+  ].join(' | ');
+  logContext.engineReason = engineAuditReason;
 
   if (engineResult.action === 'hold') {
     await appendDecision(journals, logContext, {
       stage: 'engine',
       mode: 'BLOCKED',
       action: 'hold',
-      reason: engineResult.audit.reason,
+      reason: engineAuditReason,
       liveOrderSubmitted: false
     });
 
@@ -664,6 +768,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     mode: runtimeMode,
     action: engineResult.action
   });
+
+  const mintOccupancy = await resolveMintOccupancy({
+    mint: activeMint,
+    pendingSubmission,
+    accountState,
+    lifecycleState: currentLifecycleState,
+    journals
+  });
+
+  if (
+    activeMint &&
+    (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
+    mintOccupancy.occupied
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `mint-position-already-active:${activeMint}${mintOccupancy.reason ? `:${mintOccupancy.reason}` : ''}`,
+      audit: { reason: `mint-position-already-active:${activeMint}${mintOccupancy.reason ? `:${mintOccupancy.reason}` : ''}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
 
   if (runtimeAction.action === 'hold' && runtimeAction.blockedReason) {
     return blockCycle({

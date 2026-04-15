@@ -66,6 +66,22 @@ def _parse_count(text: str) -> int:
     return int(num)
 
 
+def _parse_money(text: str) -> float:
+    """Parse '$235.87', '$1.2M', '$42.5K' etc."""
+    m = re.search(r'\$\s*([\d,.]+)\s*([KkMmBb])?', text)
+    if not m:
+        return -1.0
+    num = float(m.group(1).replace(',', ''))
+    suffix = (m.group(2) or '').upper()
+    if suffix == 'K':
+        num *= 1_000
+    elif suffix == 'M':
+        num *= 1_000_000
+    elif suffix == 'B':
+        num *= 1_000_000_000
+    return num
+
+
 def parse_page_text(mint: str, text: str) -> dict:
     """Parse GMGN token page text into structured safety result with scoring."""
     lines = [l.strip() for l in text.split('\n') if l.strip()]
@@ -85,6 +101,7 @@ def parse_page_text(mint: str, text: str) -> dict:
         "bluechipHolders": 0,
         "snipersPct": -1.0,    # %
         "rugPct": -1.0,        # %
+        "volume24hUsd": -1.0,  # whole-token 24h volume in USD
     }
 
     for i, line in enumerate(lines):
@@ -166,6 +183,13 @@ def parse_page_text(mint: str, text: str) -> dict:
                 metrics["rugPct"] = p
             elif next_line in ('0', '0%'):
                 metrics["rugPct"] = 0.0
+
+        elif low in ('24h vol', '24h volume', '24h成交额', '24h 交易量', '24h交易量'):
+            amount = _parse_money(next_line)
+            if amount < 0 and i + 2 < len(lines):
+                amount = _parse_money(lines[i + 2])
+            if amount >= 0:
+                metrics["volume24hUsd"] = amount
 
         # Bluechip: may appear as English label or Chinese "蓝筹持有者" block.
         elif ('blue' in low and ('chip' in low or 'holder' in low)) or ('蓝筹' in line):
@@ -295,6 +319,11 @@ def parse_page_text(mint: str, text: str) -> dict:
         hard_gate_pass = False
         reject_reasons.append(f"holders={metrics['holders']}<=1000")
 
+    # Whole-token GMGN 24h volume >= 500000 USD
+    if metrics["volume24hUsd"] < 500000:
+        hard_gate_pass = False
+        reject_reasons.append(f"volume24hUsd={metrics['volume24hUsd']:.2f}<500000")
+
     return {
         "mint": mint,
         "safe": hard_gate_pass,
@@ -313,6 +342,7 @@ def parse_page_text(mint: str, text: str) -> dict:
         "bluechipHolders": metrics["bluechipHolders"],
         "snipersPct": metrics["snipersPct"],
         "rugPct": metrics["rugPct"],
+        "volume24hUsd": metrics["volume24hUsd"],
         "isMintRenounced": metrics["isMintRenounced"],
         "noBlacklist": metrics["noBlacklist"],
         "isLpBurned": metrics["isLpBurned"],

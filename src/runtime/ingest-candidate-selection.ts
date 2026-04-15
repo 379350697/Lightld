@@ -21,6 +21,9 @@ import type { StrategyConfig } from '../config/schema.ts';
 import { evaluateDlmmPool } from '../strategy/filtering/dlmm-pool-filter.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
 
 export type IngestCandidate = {
   address: string;
@@ -43,7 +46,7 @@ export type IngestCandidate = {
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
   return (accountState?.walletTokens ?? [])
-    .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT)
+    .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
     .length;
 }
 
