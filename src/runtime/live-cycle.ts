@@ -1101,7 +1101,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     await pendingSubmissionStore.clear();
   }
 
-  if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+  if (
+    spendingLimitsStore &&
+    actionableActionClass === 'open_risk' &&
+    isResolvedConfirmation(confirmation.status, confirmationFinality)
+  ) {
     await spendingLimitsStore.recordSpend(requestedPositionSol);
   }
   emitMirrorEvent(mirrorSink, () => {
