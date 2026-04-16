@@ -88,7 +88,7 @@ describe('ingest candidate helpers', () => {
       walletSol: 1,
       journalSol: 1,
       walletLpPositions: [
-        { poolAddress: 'pool-lp', positionAddress: 'pos-1', mint: 'mint-lp' }
+        { poolAddress: 'pool-lp', positionAddress: 'pos-1', mint: 'mint-lp', hasLiquidity: true }
       ],
       journalLpPositions: [],
       walletTokens: [
@@ -99,6 +99,20 @@ describe('ingest candidate helpers', () => {
       journalTokens: [],
       fills: []
     })).toBe(2);
+  });
+
+  it('does not count empty Meteora position accounts as active LP exposure', () => {
+    expect(countActiveInventoryPositions({
+      walletSol: 1,
+      journalSol: 1,
+      walletLpPositions: [
+        { poolAddress: 'pool-lp', positionAddress: 'pos-1', mint: 'mint-lp', hasLiquidity: false }
+      ],
+      journalLpPositions: [],
+      walletTokens: [],
+      journalTokens: [],
+      fills: []
+    })).toBe(0);
   });
 
   it('detects the configured scan windows', () => {

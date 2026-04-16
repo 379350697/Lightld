@@ -8,11 +8,23 @@ export type LiveAccountState = {
     poolAddress: string;
     positionAddress: string;
     mint: string;
+    lowerBinId?: number;
+    upperBinId?: number;
+    binCount?: number;
+    fundedBinCount?: number;
+    hasLiquidity?: boolean;
+    hasClaimableFees?: boolean;
   }>;
   journalLpPositions?: Array<{
     poolAddress: string;
     positionAddress: string;
     mint: string;
+    lowerBinId?: number;
+    upperBinId?: number;
+    binCount?: number;
+    fundedBinCount?: number;
+    hasLiquidity?: boolean;
+    hasClaimableFees?: boolean;
   }>;
   walletTokens?: Array<{
     mint: string;

@@ -7,6 +7,10 @@ export type LiveBroadcastResult =
       submissionId: string;
       idempotencyKey: string;
       confirmationSignature?: string;
+      submissionIds?: string[];
+      confirmationSignatures?: string[];
+      batchStatus?: 'complete' | 'partial';
+      reason?: string;
     }
   | {
       status: 'failed';

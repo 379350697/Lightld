@@ -65,6 +65,21 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   let server: Server | undefined;
   let origin = '';
   const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
+  const buildSubmittedBroadcastResult = (input: {
+    idempotencyKey: string;
+    signatures: string[];
+    batchStatus?: 'complete' | 'partial';
+    reason?: string;
+  }): LiveBroadcastResult => ({
+    status: 'submitted',
+    submissionId: input.signatures[input.signatures.length - 1] ?? '',
+    idempotencyKey: input.idempotencyKey,
+    confirmationSignature: input.signatures[input.signatures.length - 1],
+    submissionIds: input.signatures,
+    confirmationSignatures: input.signatures,
+    batchStatus: input.batchStatus ?? 'complete',
+    reason: input.reason
+  });
 
   return {
     get origin() {
@@ -197,38 +212,44 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               const { value: blockhash } = await rpcClient.getLatestBlockhash();
-              let txSignature = '';
+              const txSignatures: string[] = [];
 
               for (const txParams of txBatch) {
-                txParams.recentBlockhash = blockhash.blockhash;
-                txParams.feePayer = keypair.publicKey;
-                txParams.sign(...signers);
-                signedBase64 = txParams.serialize().toString('base64');
-                txSignature = await rpcClient.sendRawTransaction(signedBase64);
+                try {
+                  txParams.recentBlockhash = blockhash.blockhash;
+                  txParams.feePayer = keypair.publicKey;
+                  txParams.sign(...signers);
+                  signedBase64 = txParams.serialize().toString('base64');
+                  txSignatures.push(await rpcClient.sendRawTransaction(signedBase64));
+                } catch (error) {
+                  if (txSignatures.length === 0) {
+                    throw error;
+                  }
+
+                  writeJson(response, 200, buildSubmittedBroadcastResult({
+                    idempotencyKey: intent.idempotencyKey,
+                    signatures: txSignatures,
+                    batchStatus: 'partial',
+                    reason: error instanceof Error ? error.message : String(error)
+                  }));
+                  return;
+                }
               }
 
-              const result: LiveBroadcastResult = {
-                status: 'submitted',
-                submissionId: txSignature,
+              writeJson(response, 200, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
-                confirmationSignature: txSignature
-              };
-
-              writeJson(response, 200, result);
+                signatures: txSignatures
+              }));
               return;
             }
 
             // Send to Solana RPC
             const txSignature = await rpcClient.sendRawTransaction(signedBase64);
 
-            const result: LiveBroadcastResult = {
-              status: 'submitted',
-              submissionId: txSignature,
+            writeJson(response, 200, buildSubmittedBroadcastResult({
               idempotencyKey: intent.idempotencyKey,
-              confirmationSignature: txSignature
-            };
-
-            writeJson(response, 200, result);
+              signatures: [txSignature]
+            }));
             return;
           }
 
@@ -298,7 +319,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
             let walletTokens: { mint: string; symbol: string; amount: number }[] = [];
-            let walletLpPositions: { poolAddress: string; positionAddress: string; mint: string }[] = [];
+            let walletLpPositions: Array<{
+              poolAddress: string;
+              positionAddress: string;
+              mint: string;
+              lowerBinId: number;
+              upperBinId: number;
+              binCount: number;
+              fundedBinCount: number;
+              hasLiquidity: boolean;
+              hasClaimableFees: boolean;
+            }> = [];
 
             try {
               const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);

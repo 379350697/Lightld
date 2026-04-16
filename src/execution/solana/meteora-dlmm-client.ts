@@ -20,10 +20,72 @@ export type MeteoraLpPositionSnapshot = {
   poolAddress: string;
   positionAddress: string;
   mint: string;
+  lowerBinId: number;
+  upperBinId: number;
+  binCount: number;
+  fundedBinCount: number;
+  hasLiquidity: boolean;
+  hasClaimableFees: boolean;
 };
 
 function flattenTransactions<T>(transactions: Array<T | T[]>) {
   return transactions.flatMap((transaction) => Array.isArray(transaction) ? transaction : [transaction]);
+}
+
+function toNumericValue(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+
+  if (value && typeof value === 'object' && 'toString' in value) {
+    const parsed = Number(String(value));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
+}
+
+function isZeroLike(value: unknown) {
+  if (value && typeof value === 'object' && 'isZero' in value && typeof (value as { isZero: () => boolean }).isZero === 'function') {
+    return (value as { isZero: () => boolean }).isZero();
+  }
+
+  return toNumericValue(value) === 0;
+}
+
+function summarizePosition(positionInfo: any) {
+  const positionData = positionInfo?.positionData ?? {};
+  const lowerBinId = Number(positionData.lowerBinId ?? 0);
+  const upperBinId = Number(positionData.upperBinId ?? lowerBinId);
+  const positionBinData = Array.isArray(positionData.positionBinData) ? positionData.positionBinData : [];
+  const fundedBinCount = positionBinData.filter((bin: any) =>
+    toNumericValue(bin?.positionXAmount) > 0 ||
+    toNumericValue(bin?.positionYAmount) > 0 ||
+    toNumericValue(bin?.positionLiquidityShare) > 0
+  ).length;
+
+  return {
+    lowerBinId,
+    upperBinId,
+    binCount: Math.max(0, upperBinId - lowerBinId + 1),
+    fundedBinCount,
+    hasLiquidity: fundedBinCount > 0,
+    hasClaimableFees:
+      !isZeroLike(positionData.feeX) ||
+      !isZeroLike(positionData.feeY) ||
+      positionBinData.some((bin: any) =>
+        toNumericValue(bin?.positionFeeXAmount) > 0 || toNumericValue(bin?.positionFeeYAmount) > 0
+      )
+  };
 }
 
 export class MeteoraDlmmClient {
@@ -38,18 +100,13 @@ export class MeteoraDlmmClient {
     poolAddress: string,
     amountSol: number,
     strategyType: any = StrategyType.BidAsk
-  ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair: Keypair }> {
+  ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair?: Keypair }> {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
     const activeBin = await dlmmPool.getActiveBin();
-    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
-
-    if (userPositions.length > 0) {
-      throw new Error(`Existing Meteora position already present for pool ${poolAddress}; refusing to initialize a duplicate position`);
-    }
-
     const TOTAL_BINS = 69;
     const minBinId = activeBin.binId - Math.floor(TOTAL_BINS / 2);
     const maxBinId = activeBin.binId + Math.floor(TOTAL_BINS / 2);
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
 
     const amountInLamports = amountSol * LAMPORTS_PER_SOL;
     
@@ -57,6 +114,33 @@ export class MeteoraDlmmClient {
     
     const inAmountX = isTokenXSol ? new BN(amountInLamports) : new BN(0);
     const inAmountY = !isTokenXSol ? new BN(amountInLamports) : new BN(0);
+
+    const repairCandidate = userPositions.find((positionInfo: any) =>
+      Number(positionInfo?.positionData?.lowerBinId ?? Number.NaN) === minBinId &&
+      Number(positionInfo?.positionData?.upperBinId ?? Number.NaN) === maxBinId
+    );
+
+    if (repairCandidate) {
+      return {
+        newPositionKeypair: undefined,
+        transaction: await dlmmPool.addLiquidityByStrategy({
+          positionPubKey: repairCandidate.publicKey,
+          user: walletPublicKey,
+          totalXAmount: inAmountX,
+          totalYAmount: inAmountY,
+          strategy: {
+            maxBinId,
+            minBinId,
+            strategyType
+          },
+          slippage: 1
+        })
+      };
+    }
+
+    if (userPositions.length > 0) {
+      throw new Error(`Existing Meteora positions already present for pool ${poolAddress}; refusing to initialize a duplicate position without a matching repair target`);
+    }
 
     const positionKeypair = Keypair.generate();
 
@@ -124,22 +208,28 @@ export class MeteoraDlmmClient {
     const positionsByPool = await DLMM.getAllLbPairPositionsByUser(this.connection, walletPublicKey);
     const snapshots: MeteoraLpPositionSnapshot[] = [];
 
-    for (const [poolAddress, poolPositions] of positionsByPool.entries()) {
-      const lbPairPositionsData = (poolPositions as { lbPairPositionsData?: Array<{ publicKey: PublicKey }> } | undefined)?.lbPairPositionsData;
-      if (!lbPairPositionsData || lbPairPositionsData.length === 0) {
+    for (const [poolAddress] of positionsByPool.entries()) {
+      const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
+      if (!userPositions?.length) {
         continue;
       }
-
-      const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
       const tokenXMint = dlmmPool.tokenX.publicKey.toBase58();
       const tokenYMint = dlmmPool.tokenY.publicKey.toBase58();
       const mint = tokenXMint === SOL_MINT.toBase58() ? tokenYMint : tokenXMint;
 
-      for (const positionInfo of lbPairPositionsData) {
+      for (const positionInfo of userPositions) {
+        const summary = summarizePosition(positionInfo);
         snapshots.push({
           poolAddress,
           positionAddress: positionInfo.publicKey.toBase58(),
-          mint
+          mint,
+          lowerBinId: summary.lowerBinId,
+          upperBinId: summary.upperBinId,
+          binCount: summary.binCount,
+          fundedBinCount: summary.fundedBinCount,
+          hasLiquidity: summary.hasLiquidity,
+          hasClaimableFees: summary.hasClaimableFees
         });
       }
     }

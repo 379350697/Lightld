@@ -42,7 +42,7 @@ describe('createSolanaExecutionServer', () => {
     vi.restoreAllMocks();
   });
 
-  it('broadcasts every tx returned by Meteora open batches and returns the last signature', async () => {
+  it('broadcasts every tx returned by Meteora open batches and returns every tracked signature', async () => {
     const keypair = Keypair.generate();
     const newPositionKeypair = Keypair.generate();
     const transactions = [
@@ -91,7 +91,9 @@ describe('createSolanaExecutionServer', () => {
     expect(payload).toMatchObject({
       status: 'submitted',
       submissionId: 'sig-3',
-      confirmationSignature: 'sig-3'
+      confirmationSignature: 'sig-3',
+      submissionIds: ['sig-1', 'sig-2', 'sig-3'],
+      confirmationSignatures: ['sig-1', 'sig-2', 'sig-3']
     });
     expect(transactions[0].signedBy[0]).toEqual([
       keypair.publicKey.toBase58(),
@@ -145,9 +147,70 @@ describe('createSolanaExecutionServer', () => {
     expect(payload).toMatchObject({
       status: 'submitted',
       submissionId: 'sig-2',
-      confirmationSignature: 'sig-2'
+      confirmationSignature: 'sig-2',
+      submissionIds: ['sig-1', 'sig-2'],
+      confirmationSignatures: ['sig-1', 'sig-2']
     });
     expect(transactions[0].signedBy[0]).toEqual([keypair.publicKey.toBase58()]);
+
+    await server.stop();
+  });
+
+  it('preserves already accepted Meteora batch signatures when a later tx send fails', async () => {
+    const keypair = Keypair.generate();
+    const transactions = [
+      new FakeTransaction('batch-1'),
+      new FakeTransaction('batch-2'),
+      new FakeTransaction('batch-3')
+    ];
+    const sent: string[] = [];
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          if (sent.length === 2) {
+            throw new Error('rpc rejected tx 2');
+          }
+
+          return `sig-${sent.length}`;
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        removeLiquidity: async () => transactions as any
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp'))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(sent).toEqual(['batch-1', 'batch-2']);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-1',
+      confirmationSignature: 'sig-1',
+      submissionIds: ['sig-1'],
+      confirmationSignatures: ['sig-1'],
+      batchStatus: 'partial'
+    });
+    expect(String(payload.reason)).toContain('rpc rejected tx 2');
 
     await server.stop();
   });

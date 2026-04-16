@@ -350,6 +350,97 @@ function getBroadcastSubmissionId(result: LiveBroadcastResult | undefined) {
   return result.submissionId;
 }
 
+function getBroadcastTrackedSubmissions(result: LiveBroadcastResult | undefined) {
+  if (!result || result.status !== 'submitted') {
+    return [];
+  }
+
+  const submissionIds = result.submissionIds?.filter((submissionId) => submissionId.length > 0) ?? [];
+  const confirmationSignatures = result.confirmationSignatures ?? [];
+
+  if (submissionIds.length > 0) {
+    return submissionIds.map((submissionId, index) => ({
+      submissionId,
+      confirmationSignature:
+        confirmationSignatures[index] ??
+        (submissionId === result.submissionId ? result.confirmationSignature : undefined)
+    }));
+  }
+
+  return [{
+    submissionId: result.submissionId,
+    confirmationSignature: result.confirmationSignature
+  }];
+}
+
+function aggregateTrackedConfirmations(results: Array<{
+  status: ConfirmationStatus;
+  submissionId?: string;
+  reason?: string;
+  finality: ConfirmationFinality;
+  checkedAt: string;
+}>) {
+  const allConfirmed = results.every((result) =>
+    result.status === 'confirmed' && (result.finality === 'confirmed' || result.finality === 'finalized')
+  );
+  const allFailed = results.every((result) =>
+    result.status === 'failed' || result.finality === 'failed'
+  );
+  const anyFailed = results.some((result) =>
+    result.status === 'failed' || result.finality === 'failed'
+  );
+  const latestCheckedAt = results.reduce((latest, result) =>
+    result.checkedAt > latest ? result.checkedAt : latest,
+  results[0]?.checkedAt ?? new Date().toISOString());
+  const latestReason = results.find((result) => result.reason)?.reason;
+
+  if (allConfirmed) {
+    return {
+      confirmation: {
+        status: 'confirmed' as const,
+        submissionId: results[results.length - 1]?.submissionId,
+        reason: latestReason
+      },
+      finality: results.every((result) => result.finality === 'finalized') ? ('finalized' as const) : ('confirmed' as const),
+      checkedAt: latestCheckedAt
+    };
+  }
+
+  if (allFailed) {
+    return {
+      confirmation: {
+        status: 'failed' as const,
+        submissionId: results[results.length - 1]?.submissionId,
+        reason: latestReason
+      },
+      finality: 'failed' as const,
+      checkedAt: latestCheckedAt
+    };
+  }
+
+  if (anyFailed) {
+    return {
+      confirmation: {
+        status: 'unknown' as const,
+        submissionId: results[results.length - 1]?.submissionId,
+        reason: 'pending-submission-partial-failure'
+      },
+      finality: 'unknown' as const,
+      checkedAt: latestCheckedAt
+    };
+  }
+
+  return {
+    confirmation: {
+      status: 'submitted' as const,
+      submissionId: results[results.length - 1]?.submissionId,
+      reason: latestReason
+    },
+    finality: 'unknown' as const,
+    checkedAt: latestCheckedAt
+  };
+}
+
 async function appendDecision(
   journals: LiveCycleJournals,
   logContext: LiveCycleLogContext,
@@ -1135,28 +1226,38 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
   let confirmationFinality: ConfirmationFinality = 'unknown';
   let confirmationCheckedAt = new Date().toISOString();
+  const trackedBroadcastSubmissions = getBroadcastTrackedSubmissions(broadcastResult);
 
-  if (input.confirmationProvider) {
-    const polledConfirmation = await input.confirmationProvider.poll({
-      submissionId: broadcastResult.submissionId,
-      confirmationSignature: broadcastResult.confirmationSignature
-    });
-    const normalizedConfirmation = toConfirmationResult(polledConfirmation);
+  if (input.confirmationProvider && trackedBroadcastSubmissions.length > 0) {
+    const polledConfirmations = await Promise.all(
+      trackedBroadcastSubmissions.map((trackedSubmission) => input.confirmationProvider!.poll(trackedSubmission))
+    );
+    const normalizedConfirmations = polledConfirmations.map(toConfirmationResult);
+    const aggregateConfirmation = aggregateTrackedConfirmations(normalizedConfirmations);
 
+    confirmation = aggregateConfirmation.confirmation;
+    confirmationFinality = aggregateConfirmation.finality;
+    confirmationCheckedAt = aggregateConfirmation.checkedAt;
+  }
+
+  if (broadcastResult.batchStatus === 'partial') {
     confirmation = {
-      status: normalizedConfirmation.status,
-      submissionId: normalizedConfirmation.submissionId,
-      reason: normalizedConfirmation.reason
+      status: 'unknown',
+      submissionId: trackedBroadcastSubmissions[trackedBroadcastSubmissions.length - 1]?.submissionId ?? broadcastResult.submissionId,
+      reason: 'pending-submission-partial-failure'
     };
-    confirmationFinality = normalizedConfirmation.finality;
-    confirmationCheckedAt = normalizedConfirmation.checkedAt;
+    confirmationFinality = 'unknown';
   }
 
   pendingSubmission = buildTrackedPendingSubmissionSnapshot({
     strategyId: input.strategy,
     idempotencyKey: orderIntent.idempotencyKey,
     submissionId: broadcastResult.submissionId,
+    submissionIds: trackedBroadcastSubmissions.map((trackedSubmission) => trackedSubmission.submissionId),
     confirmationSignature: broadcastResult.confirmationSignature,
+    confirmationSignatures: trackedBroadcastSubmissions.map((trackedSubmission) =>
+      trackedSubmission.confirmationSignature ?? trackedSubmission.submissionId
+    ),
     confirmationStatus: confirmation.status,
     finality: confirmationFinality,
     createdAt: logContext.startedAt,
@@ -1165,7 +1266,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     tokenMint: logContext.tokenMint,
     tokenSymbol,
     orderAction: actionableAction,
-    reason: confirmation.reason
+    reason: confirmation.reason ?? broadcastResult.reason
   });
   await pendingSubmissionStore.write(pendingSubmission);
 

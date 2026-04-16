@@ -40,6 +40,8 @@ function hasOpenInventory(accountState?: LiveAccountState) {
       && token.mint !== 'So11111111111111111111111111111111111111112'
       && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') ||
     accountState?.walletLpPositions?.some((position) =>
+      (position.hasLiquidity ?? true)
+      &&
       position.mint !== 'So11111111111111111111111111111111111111112'
       && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
   );

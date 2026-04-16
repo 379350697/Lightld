@@ -54,8 +54,8 @@ function hasAnyBalance(accountState: LiveAccountState | undefined, mint: string)
   return Boolean(
     accountState?.walletTokens?.some((token) => token.mint === mint && token.amount > 0) ||
     accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0) ||
-    accountState?.walletLpPositions?.some((position) => position.mint === mint) ||
-    accountState?.journalLpPositions?.some((position) => position.mint === mint)
+    accountState?.walletLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true)) ||
+    accountState?.journalLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true))
   );
 }
 

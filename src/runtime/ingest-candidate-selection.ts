@@ -25,6 +25,10 @@ const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
 
+function hasActiveLpLiquidity(position: { hasLiquidity?: boolean }) {
+  return position.hasLiquidity ?? true;
+}
+
 export type IngestCandidate = {
   address: string;
   mint: string;
@@ -50,7 +54,7 @@ export function countActiveInventoryPositions(accountState: LiveAccountState | u
     .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
     .length;
   const lpPositions = (accountState?.walletLpPositions ?? [])
-    .filter((position) => position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint))
+    .filter((position) => hasActiveLpLiquidity(position) && position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint))
     .length;
 
   return inventoryPositions + lpPositions;

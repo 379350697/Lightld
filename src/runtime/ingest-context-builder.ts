@@ -289,11 +289,11 @@ function hasAccountInventory(accountState: LiveAccountState | undefined, mint: s
     return false;
   }
 
-  if (accountState.walletLpPositions?.some((position) => position.mint === mint)) {
+  if (accountState.walletLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true))) {
     return true;
   }
 
-  if (accountState.journalLpPositions?.some((position) => position.mint === mint)) {
+  if (accountState.journalLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true))) {
     return true;
   }
 
@@ -313,8 +313,8 @@ function hasAccountLpPosition(accountState: LiveAccountState | undefined, mint: 
   }
 
   return Boolean(
-    accountState.walletLpPositions?.some((position) => position.mint === mint) ||
-    accountState.journalLpPositions?.some((position) => position.mint === mint)
+    accountState.walletLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true)) ||
+    accountState.journalLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true))
   );
 }
 

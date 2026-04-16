@@ -113,7 +113,9 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
   strategyId: string;
   idempotencyKey: string;
   submissionId: string;
+  submissionIds?: string[];
   confirmationSignature?: string;
+  confirmationSignatures?: string[];
   confirmationStatus: ConfirmationStatus;
   finality: ConfirmationFinality;
   createdAt: string;
@@ -128,7 +130,9 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
     strategyId: input.strategyId,
     idempotencyKey: input.idempotencyKey,
     submissionId: input.submissionId,
+    submissionIds: input.submissionIds,
     confirmationSignature: input.confirmationSignature,
+    confirmationSignatures: input.confirmationSignatures,
     confirmationStatus: toPendingConfirmationStatus(input.confirmationStatus),
     finality: input.finality as PendingFinality,
     createdAt: input.createdAt,
