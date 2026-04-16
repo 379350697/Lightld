@@ -94,6 +94,7 @@ export async function resolveMintPositionAggregate(input: {
   );
   const hasLpLikeOpenOrder = mintOrders.some((entry) => isEntrySide(entry?.side));
   const hasEntryFill = mintFills.some((entry) => isEntrySide(entry?.side));
+  const hasConfirmedEntryFill = mintFills.some((entry) => isEntrySide(entry?.side) && entry?.confirmationStatus === 'confirmed');
   const hasExitFill = mintFills.some((entry) => isExitSide(entry?.side));
   const hasInventory = hasAnyBalance(input.accountState, mint);
   const hasDustInventory = hasNonStableBalance(input.accountState, mint);
@@ -116,9 +117,12 @@ export async function resolveMintPositionAggregate(input: {
   } else if (hasExitFill) {
     state = 'closed';
     reason = 'exit-fill-present';
+  } else if (hasConfirmedEntryFill) {
+    state = 'closed';
+    reason = 'historical-confirmed-entry-only';
   } else if (hasEntryFill || hasLpLikeOpenOrder) {
     state = 'closed';
-    reason = 'historical-entry-only';
+    reason = 'historical-unconfirmed-entry-only';
   }
 
   const canOpen = state === 'idle' || state === 'closed';
