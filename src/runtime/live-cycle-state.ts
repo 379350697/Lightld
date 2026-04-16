@@ -58,7 +58,7 @@ export function resolveNextLifecycleState(
   }
 
   if (action === 'deploy' || action === 'add-lp') {
-    return 'open';
+    return synchronouslyResolved ? 'open' : 'open_pending';
   }
 
   return currentLifecycleState;

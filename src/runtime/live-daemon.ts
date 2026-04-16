@@ -62,6 +62,12 @@ function resolveLifecycleStateForPersist(input: {
   const lastReason = input.lastReason ?? '';
   const historicalOnly = lastReason.includes('historical-unconfirmed-entry-only') ||
     lastReason.includes('historical-confirmed-entry-only');
+  const pendingOpen = input.pendingSubmission && !hasInventory && (
+    input.previousLifecycleState === 'open_pending' ||
+    input.lastAction === 'add-lp' ||
+    input.lastAction === 'deploy' ||
+    unresolvedOpen
+  );
 
   if (!input.pendingSubmission && !hasInventory) {
     return 'closed';
@@ -69,6 +75,10 @@ function resolveLifecycleStateForPersist(input: {
 
   if (historicalOnly) {
     return 'closed';
+  }
+
+  if (pendingOpen) {
+    return 'open_pending';
   }
 
   if (unresolvedOpen && (input.pendingSubmission || hasInventory)) {

@@ -55,6 +55,10 @@ function resolveLifecycleAfterRecovery(
   reason: 'clear' | 'pending-submission-confirmed' | 'pending-submission-failed' | 'pending-submission-filled' | 'pending-submission-recovery-required' | 'pending-submission-timeout'
 ): PositionLifecycleState {
   if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
+    if (currentLifecycleState === 'open_pending') {
+      return 'open';
+    }
+
     if (currentLifecycleState === 'lp_exit_pending') {
       return 'inventory_exit_ready';
     }
@@ -65,6 +69,10 @@ function resolveLifecycleAfterRecovery(
   }
 
   if (reason === 'pending-submission-failed') {
+    if (currentLifecycleState === 'open_pending') {
+      return 'closed';
+    }
+
     if (currentLifecycleState === 'lp_exit_pending' || currentLifecycleState === 'inventory_exit_pending') {
       return 'open';
     }

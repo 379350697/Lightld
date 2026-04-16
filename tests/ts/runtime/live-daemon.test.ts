@@ -185,6 +185,46 @@ describe('runLiveDaemon', () => {
     expect(health.mirror?.state).toBe('open');
   });
 
+  it('persists submitted open actions as open_pending until inventory or confirmation evidence exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-pending-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      lifecycleState: 'open_pending'
+    });
+  });
+
   it('runs mirror catch-up during a healthy tick and advances the journal cursor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-catchup-'));
     const stateRootDir = join(root, 'state');

@@ -78,6 +78,7 @@ export const PendingSubmissionSnapshotSchema = z.object({
 export type PendingSubmissionSnapshot = z.infer<typeof PendingSubmissionSnapshotSchema>;
 
 export const PositionLifecycleStateSchema = z.enum([
+  'open_pending',
   'open',
   'lp_exit_pending',
   'inventory_exit_pending',
