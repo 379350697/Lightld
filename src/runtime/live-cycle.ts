@@ -755,6 +755,32 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const mintAggregate = preEngineMintAggregate;
 
+  const recentCloseMint = input.positionState?.lastClosedMint ?? '';
+  const recentCloseAt = input.positionState?.lastClosedAt ?? '';
+  const reopenCooldownMs = 10 * 60 * 60 * 1000;
+  const isRecentlyClosedSameMint = Boolean(
+    activeMint &&
+    recentCloseMint === activeMint &&
+    recentCloseAt &&
+    (Date.now() - Date.parse(recentCloseAt)) < reopenCooldownMs
+  );
+
+  if (
+    activeMint &&
+    (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
+    isRecentlyClosedSameMint
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `recently-closed-mint:${activeMint}`,
+      audit: { reason: `recently-closed-mint:${activeMint}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
+
   if (
     activeMint &&
     (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&

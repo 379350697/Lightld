@@ -90,6 +90,8 @@ export const PositionStateSnapshotSchema = z.object({
   lastReason: z.string().optional(),
   activeMint: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
+  lastClosedMint: z.string().optional(),
+  lastClosedAt: z.string().optional(),
   updatedAt: z.string()
 });
 

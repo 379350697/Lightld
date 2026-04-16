@@ -7,6 +7,7 @@ import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
 import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
+import { isExposureReducingAction } from './action-semantics.ts';
 import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
@@ -260,6 +261,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activeMint: persistedActiveMint
         });
 
+        const closedMint = isExposureReducingAction(result.action) ? persistedActiveMint : (positionState?.lastClosedMint ?? '');
+        const closedAt = isExposureReducingAction(result.action) ? nowIso() : (positionState?.lastClosedAt ?? '');
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
@@ -267,6 +270,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lastReason: result.reason,
           activeMint: persistedActiveMint,
           lifecycleState: persistedLifecycleState,
+          lastClosedMint: closedMint,
+          lastClosedAt: closedAt,
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
@@ -353,6 +358,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             pendingSubmission: (await pendingSubmissionStore.read()) !== null,
             accountState: cycleInput.accountState
           }),
+          lastClosedMint: positionState?.lastClosedMint,
+          lastClosedAt: positionState?.lastClosedAt,
           updatedAt: now
         });
         await runtimeStateStore.writeHealthReport(report);
