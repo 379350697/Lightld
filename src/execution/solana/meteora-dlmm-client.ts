@@ -97,15 +97,28 @@ export class MeteoraDlmmClient {
   private readonly connectionIds: string[];
   private readonly connectionsById: Map<string, Connection>;
   private readonly endpointRegistry?: RpcEndpointRegistry;
+  private readonly positionSnapshotTtlMs: number;
+  private readonly nowMs: () => number;
+  private readonly positionSnapshotCache = new Map<string, {
+    expiresAt: number;
+    snapshots: MeteoraLpPositionSnapshot[];
+  }>();
+  private readonly positionSnapshotInflight = new Map<string, Promise<MeteoraLpPositionSnapshot[]>>();
 
   constructor(
     connection: Connection | Connection[],
-    options: { endpointRegistry?: RpcEndpointRegistry } = {}
+    options: {
+      endpointRegistry?: RpcEndpointRegistry;
+      positionSnapshotTtlMs?: number;
+      nowMs?: () => number;
+    } = {}
   ) {
     this.connections = Array.isArray(connection) ? connection : [connection];
     this.connectionIds = this.connections.map((item, index) => this.resolveConnectionId(item, index));
     this.connectionsById = new Map(this.connections.map((item, index) => [this.connectionIds[index], item]));
     this.endpointRegistry = options.endpointRegistry;
+    this.positionSnapshotTtlMs = Math.max(0, options.positionSnapshotTtlMs ?? 15_000);
+    this.nowMs = options.nowMs ?? (() => Date.now());
   }
 
   private async withConnection<T>(
@@ -149,6 +162,16 @@ export class MeteoraDlmmClient {
     }
 
     return `dlmm-connection-${index}`;
+  }
+
+  private getPositionSnapshotCacheKey(walletPublicKey: PublicKey) {
+    return walletPublicKey.toBase58();
+  }
+
+  invalidatePositionSnapshots(walletPublicKey: PublicKey) {
+    const cacheKey = this.getPositionSnapshotCacheKey(walletPublicKey);
+    this.positionSnapshotCache.delete(cacheKey);
+    this.positionSnapshotInflight.delete(cacheKey);
   }
 
   async addLiquidityByStrategy(
@@ -264,7 +287,20 @@ export class MeteoraDlmmClient {
   }
 
   async getPositionSnapshots(walletPublicKey: PublicKey): Promise<MeteoraLpPositionSnapshot[]> {
-    return this.withConnection(async (connection) => {
+    const cacheKey = this.getPositionSnapshotCacheKey(walletPublicKey);
+    const now = this.nowMs();
+    const cached = this.positionSnapshotCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > now) {
+      return cached.snapshots;
+    }
+
+    const inflight = this.positionSnapshotInflight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const loadSnapshots = this.withConnection(async (connection) => {
       const positionsByPool = await DLMM.getAllLbPairPositionsByUser(connection, walletPublicKey);
       const snapshots: MeteoraLpPositionSnapshot[] = [];
 
@@ -296,5 +332,20 @@ export class MeteoraDlmmClient {
 
       return snapshots;
     });
+
+    const guardedLoad = loadSnapshots
+      .then((snapshots) => {
+        this.positionSnapshotCache.set(cacheKey, {
+          expiresAt: this.nowMs() + this.positionSnapshotTtlMs,
+          snapshots
+        });
+        return snapshots;
+      })
+      .finally(() => {
+        this.positionSnapshotInflight.delete(cacheKey);
+      });
+
+    this.positionSnapshotInflight.set(cacheKey, guardedLoad);
+    return guardedLoad;
   }
 }

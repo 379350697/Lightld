@@ -226,6 +226,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     throw error;
                   }
 
+                  options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+
                   writeJson(response, 200, buildSubmittedBroadcastResult({
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
@@ -235,6 +237,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   return;
                 }
               }
+
+              options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
 
               writeJson(response, 200, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,

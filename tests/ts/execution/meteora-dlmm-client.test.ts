@@ -227,4 +227,95 @@ describe('MeteoraDlmmClient', () => {
     );
     expect(calls).toEqual(['primary', 'secondary']);
   });
+
+  it('reuses cached position snapshots for the same wallet within the ttl window', async () => {
+    const wallet = makePoolAddress(120);
+    const poolAddress = makePoolAddress(121).toBase58();
+    const getAll = vi.fn(async () => new Map([
+      [poolAddress, { lbPairPositionsData: [{ publicKey: makePoolAddress(122) }] }]
+    ]));
+    const getPositionsByUserAndLbPair = vi.fn(async () => ({
+      activeBin: { binId: 120, price: '1' },
+      userPositions: [{
+        publicKey: makePoolAddress(122),
+        positionData: {
+          lowerBinId: 100,
+          upperBinId: 168,
+          feeX: { isZero: () => true },
+          feeY: { isZero: () => true },
+          positionBinData: [{ positionXAmount: '1', positionYAmount: '0' }]
+        }
+      }]
+    }));
+
+    dlmmPkg.getAllLbPairPositionsByUser = getAll;
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: SOL_MINT },
+      tokenY: { publicKey: makePoolAddress(123) },
+      getPositionsByUserAndLbPair
+    }));
+
+    const client = new MeteoraDlmmClient({} as any, {
+      positionSnapshotTtlMs: 15_000,
+      nowMs: () => 1_000
+    });
+
+    const first = await client.getPositionSnapshots(wallet);
+    const second = await client.getPositionSnapshots(wallet);
+
+    expect(second).toEqual(first);
+    expect(getAll).toHaveBeenCalledTimes(1);
+    expect(getPositionsByUserAndLbPair).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates in-flight position snapshot reads for the same wallet', async () => {
+    const wallet = makePoolAddress(130);
+    const poolAddress = makePoolAddress(131).toBase58();
+    let resolveGetAll: ((value: Map<string, unknown>) => void) | undefined;
+    const getAll = vi.fn(() =>
+      new Promise<Map<string, unknown>>((resolve) => {
+        resolveGetAll = resolve;
+      })
+    );
+    const getPositionsByUserAndLbPair = vi.fn(async () => ({
+      activeBin: { binId: 120, price: '1' },
+      userPositions: [{
+        publicKey: makePoolAddress(132),
+        positionData: {
+          lowerBinId: 100,
+          upperBinId: 168,
+          feeX: { isZero: () => true },
+          feeY: { isZero: () => true },
+          positionBinData: [{ positionXAmount: '1', positionYAmount: '0' }]
+        }
+      }]
+    }));
+
+    dlmmPkg.getAllLbPairPositionsByUser = getAll;
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: SOL_MINT },
+      tokenY: { publicKey: makePoolAddress(133) },
+      getPositionsByUserAndLbPair
+    }));
+
+    const client = new MeteoraDlmmClient({} as any, {
+      positionSnapshotTtlMs: 15_000,
+      nowMs: () => 1_000
+    });
+
+    const firstPromise = client.getPositionSnapshots(wallet);
+    const secondPromise = client.getPositionSnapshots(wallet);
+
+    expect(getAll).toHaveBeenCalledTimes(1);
+
+    resolveGetAll?.(new Map([
+      [poolAddress, { lbPairPositionsData: [{ publicKey: makePoolAddress(132) }] }]
+    ]));
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(second).toEqual(first);
+    expect(getAll).toHaveBeenCalledTimes(1);
+    expect(getPositionsByUserAndLbPair).toHaveBeenCalledTimes(1);
+  });
 });

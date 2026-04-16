@@ -51,6 +51,7 @@ describe('createSolanaExecutionServer', () => {
       new FakeTransaction('open-3')
     ];
     const sent: string[] = [];
+    const invalidatePositionSnapshots = vi.fn();
 
     const server = createSolanaExecutionServer({
       host: '127.0.0.1',
@@ -68,7 +69,8 @@ describe('createSolanaExecutionServer', () => {
         addLiquidityByStrategy: async () => ({
           transaction: transactions as any,
           newPositionKeypair
-        })
+        }),
+        invalidatePositionSnapshots
       } as any,
       authToken: 'test-token'
     });
@@ -99,6 +101,7 @@ describe('createSolanaExecutionServer', () => {
       keypair.publicKey.toBase58(),
       newPositionKeypair.publicKey.toBase58()
     ]);
+    expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
 
     await server.stop();
   });
@@ -164,6 +167,7 @@ describe('createSolanaExecutionServer', () => {
       new FakeTransaction('batch-3')
     ];
     const sent: string[] = [];
+    const invalidatePositionSnapshots = vi.fn();
 
     const server = createSolanaExecutionServer({
       host: '127.0.0.1',
@@ -182,7 +186,8 @@ describe('createSolanaExecutionServer', () => {
       } as any,
       jupiterClient: {} as any,
       dlmmClient: {
-        removeLiquidity: async () => transactions as any
+        removeLiquidity: async () => transactions as any,
+        invalidatePositionSnapshots
       } as any,
       authToken: 'test-token'
     });
@@ -211,6 +216,7 @@ describe('createSolanaExecutionServer', () => {
       batchStatus: 'partial'
     });
     expect(String(payload.reason)).toContain('rpc rejected tx 2');
+    expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
 
     await server.stop();
   });
