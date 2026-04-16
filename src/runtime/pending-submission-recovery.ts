@@ -24,6 +24,8 @@ type PendingSubmissionRecoveryResult = {
   nextPendingSubmission?: PendingSubmissionSnapshot;
 };
 
+const FRESH_WALLET_EVIDENCE_RECOVERY_WINDOW_MS = 10 * 60_000;
+
 function nowIso(now?: Date) {
   return (now ?? new Date()).toISOString();
 }
@@ -77,6 +79,42 @@ function hasWalletEvidenceOfMint(
   );
 }
 
+function hasWalletTokenEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
+  if (!tokenMint) {
+    return false;
+  }
+
+  return Boolean(
+    accountState?.walletTokens?.some((token) => token.mint === tokenMint && token.amount > 0)
+  );
+}
+
+function hasWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
+  if (!tokenMint) {
+    return false;
+  }
+
+  return Boolean(
+    accountState?.walletLpPositions?.some((position) =>
+      position.mint === tokenMint && (position.hasLiquidity ?? true)
+    )
+  );
+}
+
+function hasFreshWalletEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  checkedAt: string
+) {
+  const createdAtMs = Date.parse(pendingSubmission.createdAt);
+  const checkedAtMs = Date.parse(checkedAt);
+
+  if (!Number.isFinite(createdAtMs) || !Number.isFinite(checkedAtMs)) {
+    return false;
+  }
+
+  return checkedAtMs - createdAtMs <= FRESH_WALLET_EVIDENCE_RECOVERY_WINDOW_MS;
+}
+
 function getTrackedSubmissions(pendingSubmission: PendingSubmissionSnapshot) {
   const submissionIds = pendingSubmission.submissionIds?.filter((submissionId) => submissionId.length > 0) ?? [];
   const confirmationSignatures = pendingSubmission.confirmationSignatures ?? [];
@@ -128,6 +166,58 @@ function isUnknownExitFill(
   }
 
   return classifyAction(pendingSubmission.orderAction) === 'reduce_risk';
+}
+
+function hasFreshOpenWalletEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined,
+  checkedAt: string
+) {
+  if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
+    return false;
+  }
+
+  if (classifyAction(pendingSubmission.orderAction) !== 'open_risk') {
+    return false;
+  }
+
+  if (!hasFreshWalletEvidence(pendingSubmission, checkedAt)) {
+    return false;
+  }
+
+  return hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState) ||
+    hasWalletLpEvidence(pendingSubmission.tokenMint, accountState);
+}
+
+function hasFreshReduceRiskWalletEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined,
+  checkedAt: string
+) {
+  if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
+    return false;
+  }
+
+  if (classifyAction(pendingSubmission.orderAction) !== 'reduce_risk') {
+    return false;
+  }
+
+  if (!hasFreshWalletEvidence(pendingSubmission, checkedAt)) {
+    return false;
+  }
+
+  const hasToken = hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState);
+  const hasLp = hasWalletLpEvidence(pendingSubmission.tokenMint, accountState);
+
+  if (pendingSubmission.orderAction === 'withdraw-lp') {
+    return !hasLp;
+  }
+
+  if (pendingSubmission.orderAction === 'dca-out') {
+    return !hasToken && !hasLp;
+  }
+
+  return false;
 }
 
 export async function recoverPendingSubmission(
@@ -239,6 +329,24 @@ export async function recoverPendingSubmission(
   }
 
   if (hasMatchingFill(nextPendingSubmission, input.accountState)) {
+    return {
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    };
+  }
+
+  if (hasFreshOpenWalletEvidence(nextPendingSubmission, input.accountState, checkedAt)) {
+    return {
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    };
+  }
+
+  if (hasFreshReduceRiskWalletEvidence(nextPendingSubmission, input.accountState, checkedAt)) {
     return {
       blocked: false,
       resolved: true,

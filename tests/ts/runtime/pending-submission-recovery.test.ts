@@ -153,7 +153,41 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
-  it('keeps an unknown open submission pending when a Meteora lp position proves the mint exists', async () => {
+  it('treats an unknown deploy submission as resolved when fresh wallet tokens prove the mint exists', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-deploy',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'deploy'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 42 }],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
+  it('treats an unknown open submission as resolved when a fresh Meteora lp position proves the mint exists', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
@@ -170,6 +204,82 @@ describe('recoverPendingSubmission', () => {
         orderAction: 'add-lp'
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [
+          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        journalLpPositions: [
+          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
+  it('treats a tracked withdraw-lp submission as resolved when the lp disappears and wallet tokens remain', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-withdraw',
+        submissionId: 'sub-withdraw',
+        confirmationSignature: 'tx-withdraw',
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'withdraw-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 12 }],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
+  it('keeps an unknown open submission pending when lp evidence only appears long after it was created', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-open-stale',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:30:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'add-lp'
+      },
+      now: new Date('2026-03-22T00:20:00.000Z'),
       accountState: {
         walletSol: 2,
         journalSol: 2,
