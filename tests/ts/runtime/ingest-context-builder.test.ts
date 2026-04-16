@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safety-client';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
@@ -18,6 +19,11 @@ describe('buildLiveCycleInputFromIngest', () => {
           baseSymbol: 'MEME',
           liquidityUsd: 90_000,
           volume_24h: 500,
+          created_at: new Date('2026-03-21T09:59:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
           updatedAt: '2026-03-22T09:59:00.000Z'
         },
         {
@@ -27,6 +33,11 @@ describe('buildLiveCycleInputFromIngest', () => {
           baseSymbol: 'SAFE',
           liquidityUsd: 65_000,
           volume_24h: 45_000,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
           updatedAt: '2026-03-22T09:58:00.000Z'
         }
       ],
@@ -95,6 +106,17 @@ describe('buildLiveCycleInputFromIngest', () => {
           quoteMint: 'So11111111111111111111111111111111111111112',
           baseSymbol: 'SAFE',
           liquidityUsd: 12_500,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
         }
@@ -145,6 +167,17 @@ describe('buildLiveCycleInputFromIngest', () => {
           quoteMint: 'So11111111111111111111111111111111111111112',
           baseSymbol: 'SAFE',
           liquidityUsd: 12_500,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
         }
@@ -195,8 +228,167 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.context.route).toMatchObject({
       poolAddress: '',
       expectedOutSol: 0.15,
-      hasSolRoute: false
+      hasSolRoute: false,
+      blockReason: 'no-prefiltered-candidate'
     });
+  });
+
+  it('returns a safety-specific fallback reason when all LP candidates fail due to GMGN script errors', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: false,
+          safetyScore: 0,
+          maxScore: 120,
+          error: 'script_error: ModuleNotFoundError: No module named scrapling'
+        }
+      ]
+    });
+
+    expect(result.context.route).toMatchObject({
+      blockReason: 'gmgn-safety-script-error'
+    });
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('ModuleNotFoundError');
+  });
+
+  it('continues through safety and selects a candidate outside the old scan window gate', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:20:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T10:19:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: true,
+          safetyScore: 90,
+          maxScore: 120,
+          holders: 50,
+          bluechipPct: 0.3
+        }
+      ]
+    });
+
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-safe'
+    });
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'SAFE'
+    });
+    expect(result.context.route).toMatchObject({
+      poolAddress: 'pool-safe',
+      token: 'SAFE'
+    });
+  });
+
+  it('still reports gmgn-safety-deferred when the safety client explicitly defers checks', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T09:59:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: false,
+          safetyScore: 0,
+          maxScore: 120,
+          error: GMGN_SAFETY_DEFERRED_ERROR
+        }
+      ]
+    });
+
+    expect(result.context.route).toMatchObject({
+      blockReason: 'gmgn-safety-deferred'
+    });
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('batch throttling');
   });
 
   it('applies LP selection thresholds from config before choosing a candidate', async () => {
@@ -212,6 +404,7 @@ describe('buildLiveCycleInputFromIngest', () => {
           quoteMint: 'So11111111111111111111111111111111111111112',
           baseSymbol: 'LOWVOL',
           liquidityUsd: 12_000,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
           updatedAt: '2026-03-22T09:58:00.000Z',
           pool_config: {
             bin_step: 120,
@@ -230,6 +423,7 @@ describe('buildLiveCycleInputFromIngest', () => {
           quoteMint: 'So11111111111111111111111111111111111111112',
           baseSymbol: 'GOOD',
           liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T09:57:00.000Z').getTime(),
           updatedAt: '2026-03-22T09:57:00.000Z',
           pool_config: {
             bin_step: 120,

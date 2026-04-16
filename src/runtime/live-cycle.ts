@@ -66,6 +66,7 @@ import {
   buildUnknownPendingSubmissionSnapshot,
   resolveFillMirrorSide
 } from './live-cycle-outcomes.ts';
+import { resolveMintPositionAggregate } from './mint-position-aggregate.ts';
 import {
   runAccountReconciliationGate,
   runPendingRecoveryGate
@@ -76,6 +77,22 @@ const STRATEGY_CONFIGS = {
   'new-token-v1': 'src/config/strategies/new-token-v1.yaml',
   'large-pool-v1': 'src/config/strategies/large-pool-v1.yaml'
 } as const;
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
+
+function hasNonStableInventory(accountState: LiveAccountState | undefined) {
+  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)));
+}
+
+function findLargestNonStableInventory(accountState: LiveAccountState | undefined) {
+  return (accountState?.walletTokens ?? [])
+    .filter((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
+    .sort((a, b) => b.amount - a.amount)[0];
+}
+
 
 export type StrategyId = keyof typeof STRATEGY_CONFIGS;
 
@@ -115,6 +132,7 @@ export type LiveCycleResult = {
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
   nextLifecycleState?: PositionLifecycleState;
+  aggregateLifecycleState?: PositionLifecycleState;
   failureKind?: ExecutionFailureKind;
   failureSource?: 'quote' | 'signer' | 'broadcast' | 'confirmation' | 'account' | 'recovery' | 'runtime-policy';
   journalPaths: {
@@ -190,7 +208,7 @@ function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string,
   if (!accountState || !accountState.fills || !mint) return 0;
   
   const mintFills = accountState.fills
-    .filter(f => f.mint === mint && f.side === 'buy' && f.recordedAt)
+    .filter(f => f.mint === mint && (f.side === 'buy' || f.side === 'add-lp') && f.recordedAt)
     .sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
 
   if (mintFills.length > 0) {
@@ -285,7 +303,6 @@ function createJournals(strategyId: StrategyId, journalRootDir?: string): LiveCy
     })
   };
 }
-
 function resolveStateRootDir(strategyId: StrategyId, stateRootDir?: string) {
   return stateRootDir ?? join('state', strategyId);
 }
@@ -297,7 +314,6 @@ function buildCycleId(strategyId: StrategyId, startedAt: string) {
 function durationMs(logContext: LiveCycleLogContext) {
   return Math.max(0, Date.now() - logContext.startedAtMs);
 }
-
 function toConfirmationResult(
   result: LiveConfirmationResult
 ): {
@@ -443,19 +459,43 @@ async function appendIncident(
 }
 
 export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResult> {
-  let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'open';
+  let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'closed';
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
-  const context = buildDecisionContext(input.context ?? {});
+  let accountState = input.accountState;
+
+  if (!accountState && input.accountProvider) {
+    accountState = await input.accountProvider.readState();
+  }
+
+  const forcedExitToken = findLargestNonStableInventory(accountState);
+  const context = buildDecisionContext(
+    forcedExitToken
+      ? {
+          ...(input.context ?? {}),
+          token: {
+            ...((input.context?.token as Record<string, unknown> | undefined) ?? {}),
+            mint: forcedExitToken.mint,
+            symbol: forcedExitToken.symbol ?? ((input.context?.token as Record<string, unknown> | undefined)?.symbol as string | undefined) ?? '',
+            hasInventory: true
+          },
+          trader: {
+            ...((input.context?.trader as Record<string, unknown> | undefined) ?? {}),
+            hasInventory: true,
+            hasLpPosition: false,
+            lifecycleState: 'inventory_exit_ready'
+          }
+        }
+      : (input.context ?? {})
+  );
   const mirrorSink = input.mirrorSink;
   const killSwitch = input.killSwitch ?? new KillSwitch(false);
   const killSwitchState = killSwitch.isEngaged();
   const quoteProvider = input.quoteProvider ?? new StaticLiveQuoteProvider();
   const signer = input.signer ?? new TestLiveSigner();
   const broadcaster = input.broadcaster ?? new TestLiveBroadcaster();
-  let accountState = input.accountState;
-  
-  if (!accountState && input.accountProvider) {
-    accountState = await input.accountProvider.readState();
+
+  if (forcedExitToken) {
+    currentLifecycleState = 'inventory_exit_ready';
   }
 
   const snapshot = buildEngineSnapshot(config.poolClass, context);
@@ -468,6 +508,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
   const tokenSymbol = firstString(context.token.symbol, context.route.token, context.token.mint);
   const poolAddress = firstString(context.pool.address, context.route.poolAddress, 'live-pool');
+  const ingestBlockReason = firstString(context.route.blockReason, context.pool.blockReason, context.token.blockReason);
   const journals = createJournals(input.strategy, input.journalRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(
     resolveStateRootDir(input.strategy, input.stateRootDir)
@@ -492,18 +533,52 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveEnabled: config.live.enabled
   };
 
+  if (ingestBlockReason) {
+    logContext.engineReason = ingestBlockReason;
+    await appendDecision(journals, logContext, {
+      stage: 'engine',
+      mode: 'BLOCKED',
+      action: 'hold',
+      reason: ingestBlockReason,
+      liveOrderSubmitted: false
+    });
+
+    return buildBlockedCycleResult({
+      action: 'hold',
+      reason: ingestBlockReason,
+      audit: { reason: ingestBlockReason },
+      context,
+      quoteCollected: false,
+      journalPaths: journals.paths,
+      killSwitchState
+    });
+  }
+
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;
 
   context.trader.lifecycleState = currentLifecycleState;
 
   const finalize = (result: Omit<LiveCycleResult, 'nextLifecycleState'>, synchronouslyResolved?: boolean): LiveCycleResult => {
-    const nextLifecycleState = resolveNextLifecycleState(
+    let nextLifecycleState = resolveNextLifecycleState(
       currentLifecycleState,
       result.action,
       result.liveOrderSubmitted,
       synchronouslyResolved
     );
+
+    const hasLivePendingSubmission = result.liveOrderSubmitted || pendingSubmission !== null;
+
+    if (activeMint) {
+      const unresolved = result.reason.includes('journal-open-unresolved') || result.reason.includes('mint-position-already-active:') || result.reason.includes('pending-open:');
+      if (unresolved && hasLivePendingSubmission) {
+        nextLifecycleState = 'open';
+      } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
+        nextLifecycleState = 'closed';
+      }
+    } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
+      nextLifecycleState = 'closed';
+    }
 
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toCycleRunEvent(buildCycleRunMirrorPayload({
@@ -592,6 +667,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   };
   const pendingSubmission = await pendingSubmissionStore.read();
 
+  const activeMint = firstString(logContext.tokenMint, context.token.mint);
+
   if (pendingSubmission) {
     const recoveryGate = await runPendingRecoveryGate({
       pendingSubmissionStore,
@@ -617,9 +694,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
+  const preEngineMintAggregate = await resolveMintPositionAggregate({
+    mint: activeMint,
+    pendingSubmission,
+    accountState,
+    lifecycleState: currentLifecycleState,
+    orders: journals.orders,
+    fills: journals.fills
+  });
+
+  if (preEngineMintAggregate.mustCleanupDust) {
+    currentLifecycleState = 'inventory_exit_ready';
+    context.trader.lifecycleState = currentLifecycleState;
+    context.trader.hasInventory = true;
+    context.trader.hasLpPosition = false;
+  }
+
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
   if (config.poolClass === 'new-token') {
     (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
+    if (preEngineMintAggregate.mustCleanupDust) {
+      (updatedSnapshot as any).hasInventory = true;
+      (updatedSnapshot as any).hasLpPosition = false;
+      (updatedSnapshot as any).lifecycleState = 'inventory_exit_ready';
+    }
   }
   const engineResult = runEngineCycle({
     engine: config.poolClass,
@@ -627,6 +725,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     config: {
       minScore: 70,
       minDeployScore: config.live.minDeployScore ?? 70,
+      maxHoldHours: config.live.maxHoldHours ?? 18,
       requireSolRoute: config.hardGates.requireSolRoute,
       minLiquidityUsd: config.hardGates.minLiquidityUsd,
       minPoolAgeMinutes: config.hardGates.minPoolAgeMinutes,
@@ -641,14 +740,23 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
     }
   });
-  logContext.engineReason = engineResult.audit.reason;
+  const engineAuditReason = [
+    engineResult.audit.reason,
+    `score=${updatedSnapshot.score ?? 'n/a'}`,
+    `minDeployScore=${config.live.minDeployScore ?? 70}`,
+    `lpEnabled=${config.lpConfig?.enabled ?? false}`,
+    `hasLpPosition=${'hasLpPosition' in updatedSnapshot ? updatedSnapshot.hasLpPosition ?? false : false}`,
+    `hasInventory=${'hasInventory' in updatedSnapshot ? updatedSnapshot.hasInventory ?? false : false}`,
+    `lifecycleState=${'lifecycleState' in updatedSnapshot ? updatedSnapshot.lifecycleState ?? 'unknown' : 'n/a'}`
+  ].join(' | ');
+  logContext.engineReason = engineAuditReason;
 
   if (engineResult.action === 'hold') {
     await appendDecision(journals, logContext, {
       stage: 'engine',
       mode: 'BLOCKED',
       action: 'hold',
-      reason: engineResult.audit.reason,
+      reason: engineAuditReason,
       liveOrderSubmitted: false
     });
 
@@ -667,6 +775,50 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     mode: runtimeMode,
     action: engineResult.action
   });
+
+  const mintAggregate = preEngineMintAggregate;
+
+  const recentCloseMint = input.positionState?.lastClosedMint ?? '';
+  const recentCloseAt = input.positionState?.lastClosedAt ?? '';
+  const reopenCooldownMs = 1 * 60 * 60 * 1000;
+  const isRecentlyClosedSameMint = Boolean(
+    activeMint &&
+    recentCloseMint === activeMint &&
+    recentCloseAt &&
+    (Date.now() - Date.parse(recentCloseAt)) < reopenCooldownMs
+  );
+
+  if (
+    activeMint &&
+    (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
+    isRecentlyClosedSameMint
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `recently-closed-mint:${activeMint}`,
+      audit: { reason: `recently-closed-mint:${activeMint}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
+
+  if (
+    activeMint &&
+    (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
+    !mintAggregate.canOpen
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `mint-position-already-active:${activeMint}:${mintAggregate.reason}`,
+      audit: { reason: `mint-position-already-active:${activeMint}:${mintAggregate.reason}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
 
   if (runtimeAction.action === 'hold' && runtimeAction.blockedReason) {
     return blockCycle({
@@ -999,7 +1151,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     await pendingSubmissionStore.clear();
   }
 
-  if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+  if (
+    spendingLimitsStore &&
+    actionableActionClass === 'open_risk' &&
+    isResolvedConfirmation(confirmation.status, confirmationFinality)
+  ) {
     await spendingLimitsStore.recordSpend(requestedPositionSol);
   }
   emitMirrorEvent(mirrorSink, () => {

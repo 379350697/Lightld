@@ -9,7 +9,7 @@ lpConfig:
   stopLossNetPnlPct: 20
   takeProfitNetPnlPct: 30
   minBinStep: 100
-  minVolume24hUsd: 200000
+  minVolume24hUsd: 100000
   minFeeTvlRatio24h: 0
   claimFeeThresholdUsd: 25
   rebalanceOnOutOfRange: false
@@ -21,8 +21,8 @@ filters:
   minLiquidityUsd: 1000
 scoringWeights:
   holders: 0.0
-  liquidity: 0.5
-  momentum: 0.5
+  liquidity: 0.0
+  momentum: 0.0
 riskThresholds:
   maxPositionSol: 0.5
   maxDailyLossSol: 1
@@ -37,3 +37,4 @@ live:
   maxLivePositionSol: 0.15
   autoFlattenRequired: true
   minDeployScore: 70
+  maxHoldHours: 10

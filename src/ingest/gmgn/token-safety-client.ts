@@ -13,15 +13,17 @@
  *
  * Hard gates (reject regardless of score):
  *   - Holders > 1000
- *   - Bluechip > 0.8%
+ *   - GMGN whole-token 24h volume >= 500000 USD
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SCRIPT_PATH = resolve(__dirname, '../../../scripts/gmgn-token-safety.py');
-const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? 'python';
+const PROJECT_VENV_PYTHON = resolve(__dirname, '../../../.venv/bin/python');
+const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? (existsSync(PROJECT_VENV_PYTHON) ? PROJECT_VENV_PYTHON : 'python');
 const DEFAULT_TIMEOUT_MS = 15 * 60_000; // 15 minutes to safely wait for large batch 4s delays
 
 // ---------------------------------------------------------------------------
@@ -30,7 +32,7 @@ const DEFAULT_TIMEOUT_MS = 15 * 60_000; // 15 minutes to safely wait for large b
 
 export type TokenSafetyResult = {
   mint: string;
-  /** Passes hard gates (holders > 1000, bluechip > 0.8%) */
+  /** Passes hard gates (holders > 1000, GMGN whole-token 24h volume >= 500000 USD) */
   safe: boolean;
   /** Composite safety score 0-120 */
   safetyScore: number;
@@ -50,6 +52,7 @@ export type TokenSafetyResult = {
   bluechipPct?: number;
   snipersPct?: number;
   rugPct?: number;
+  volume24hUsd?: number;
   isMintRenounced?: boolean;
   noBlacklist?: boolean;
   isLpBurned?: boolean;
@@ -109,6 +112,8 @@ type CachedSafetyResult = {
   result: TokenSafetyResult;
   cachedAt: number;
 };
+
+export const GMGN_SAFETY_DEFERRED_ERROR = 'fetch_skipped:max_batch_size_zero';
 
 const safetyCache = new Map<string, CachedSafetyResult>();
 // Keep safety data for 24 hours to minimize repetitive GMGN requests
@@ -225,9 +230,25 @@ export async function fetchTokenSafetyBatch(
   // Pre-condition risk control: limit fetches to maxBatchSize
   const mintsToFetch = uncachedMints.slice(0, maxBatchSize);
 
-  if (mintsToFetch.length === 0) {
+  if (uncachedMints.length === 0) {
     console.log(`[GmgnSafety] All ${mints.length} mints loaded from cache.`);
     return finalResults;
+  }
+
+  if (mintsToFetch.length === 0) {
+    console.warn(
+      `[GmgnSafety] Deferred ${uncachedMints.length} uncached mints because maxBatchSize=0; returning cached results only.`
+    );
+    return [
+      ...finalResults,
+      ...uncachedMints.map((mint) => ({
+        mint,
+        safe: false,
+        safetyScore: 0,
+        maxScore: 120,
+        error: GMGN_SAFETY_DEFERRED_ERROR
+      }))
+    ];
   }
 
   console.log(`[GmgnSafety] Requesting ${mintsToFetch.length} new mints from GMGN (${uncachedMints.length - mintsToFetch.length} omitted this cycle to avoid rate limits).`);

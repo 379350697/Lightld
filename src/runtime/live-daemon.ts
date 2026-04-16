@@ -6,7 +6,9 @@ import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
-import type { RuntimeMode } from './state-types.ts';
+import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
+import { isExposureReducingAction } from './action-semantics.ts';
+import type { LiveAccountState } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
 import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
@@ -30,6 +32,54 @@ function nowIso() {
 
 function wait(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function hasOpenInventory(accountState?: LiveAccountState) {
+  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0
+    && token.mint !== 'So11111111111111111111111111111111111111112'
+    && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'));
+}
+
+function resolveLifecycleStateForPersist(input: {
+  nextLifecycleState?: PositionLifecycleState;
+  previousLifecycleState?: PositionLifecycleState;
+  pendingSubmission: boolean;
+  accountState?: LiveAccountState;
+  lastAction?: string;
+  lastReason?: string;
+  activeMint?: string;
+}): PositionLifecycleState {
+  if (input.nextLifecycleState) {
+    return input.nextLifecycleState;
+  }
+
+  const hasInventory = hasOpenInventory(input.accountState);
+  const unresolvedOpen = Boolean(input.activeMint) && (
+    input.lastReason?.includes('journal-open-unresolved') ||
+    input.lastReason?.includes('pending-open:') ||
+    input.lastReason?.includes('mint-position-already-active:')
+  );
+  const lastReason = input.lastReason ?? '';
+  const historicalOnly = lastReason.includes('historical-unconfirmed-entry-only') ||
+    lastReason.includes('historical-confirmed-entry-only');
+
+  if (!input.pendingSubmission && !hasInventory) {
+    return 'closed';
+  }
+
+  if (historicalOnly) {
+    return 'closed';
+  }
+
+  if (unresolvedOpen && (input.pendingSubmission || hasInventory)) {
+    return 'open';
+  }
+
+  if (hasInventory) {
+    return 'open';
+  }
+
+  return input.previousLifecycleState ?? 'closed';
 }
 
 export async function runLiveDaemon(options: LiveDaemonOptions) {
@@ -65,23 +115,28 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       const cycleInput = await buildCycleInput(tickCount);
       const pendingSubmission = await pendingSubmissionStore.read();
       const positionState = await runtimeStateStore.readPositionState() ?? undefined;
+      const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
       const derived = deriveRuntimeMode({
         currentMode: runtimeState.mode,
         quoteFailures: dependencyHealth.quote.consecutiveFailures,
         reconcileFailures: dependencyHealth.account.consecutiveFailures,
         hasUnknownSubmissionOutcome: pendingSubmission?.confirmationStatus === 'unknown',
-        cooldownActive: runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso(),
+        cooldownActive,
         flattenOnlyRequested: runtimeState.mode === 'flatten_only'
       });
       const previousMode = runtimeState.mode;
 
+      const hasPendingSubmission = pendingSubmission !== null;
+      const shouldKeepCooldown = hasPendingSubmission || derived.mode === 'circuit_open';
       runtimeState = {
         mode: derived.mode,
         circuitReason: derived.reason === 'healthy' ? '' : derived.reason,
         cooldownUntil:
           derived.mode === 'circuit_open'
             ? new Date(Date.now() + 5 * 60_000).toISOString()
-            : runtimeState.cooldownUntil,
+            : shouldKeepCooldown
+              ? runtimeState.cooldownUntil
+              : '',
         lastHealthyAt:
           derived.mode === 'healthy'
             ? nowIso()
@@ -134,14 +189,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         }
 
         if (result.failureSource === 'recovery') {
+          const hasPendingSubmission = (await pendingSubmissionStore.read()) !== null;
           runtimeState = {
             ...runtimeState,
-            mode: result.reason === 'pending-submission-timeout' ? 'circuit_open' : 'recovering',
-            circuitReason: result.reason,
+            mode:
+              result.reason === 'pending-submission-timeout' && hasPendingSubmission
+                ? 'circuit_open'
+                : hasPendingSubmission
+                  ? 'recovering'
+                  : 'healthy',
+            circuitReason: hasPendingSubmission ? result.reason : '',
             cooldownUntil:
-              result.reason === 'pending-submission-timeout'
+              result.reason === 'pending-submission-timeout' && hasPendingSubmission
                 ? new Date(Date.now() + 5 * 60_000).toISOString()
-                : runtimeState.cooldownUntil,
+                : hasPendingSubmission
+                  ? runtimeState.cooldownUntil
+                  : '',
+            lastHealthyAt: !hasPendingSubmission ? nowIso() : runtimeState.lastHealthyAt,
             updatedAt: nowIso()
           };
         }
@@ -194,11 +258,28 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         await runtimeStateStore.writeRuntimeState(runtimeState);
         await runtimeStateStore.writeDependencyHealth(dependencyHealth);
+        const persistedActiveMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        const persistedLifecycleState = resolveLifecycleStateForPersist({
+          nextLifecycleState: result.nextLifecycleState,
+          previousLifecycleState: positionState?.lifecycleState,
+          pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+          accountState: cycleInput.accountState,
+          lastAction: result.action,
+          lastReason: result.reason,
+          activeMint: persistedActiveMint
+        });
+
+        const closedMint = isExposureReducingAction(result.action) ? persistedActiveMint : (positionState?.lastClosedMint ?? '');
+        const closedAt = isExposureReducingAction(result.action) ? nowIso() : (positionState?.lastClosedAt ?? '');
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
-          lifecycleState: result.nextLifecycleState ?? positionState?.lifecycleState ?? 'open',
+          lastReason: result.reason,
+          activeMint: persistedActiveMint,
+          lifecycleState: persistedLifecycleState,
+          lastClosedMint: closedMint,
+          lastClosedAt: closedAt,
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
@@ -281,7 +362,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
-          lifecycleState: positionState?.lifecycleState ?? 'open',
+          lifecycleState: resolveLifecycleStateForPersist({
+            previousLifecycleState: positionState?.lifecycleState,
+            pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+            accountState: cycleInput.accountState
+          }),
+          lastClosedMint: positionState?.lastClosedMint,
+          lastClosedAt: positionState?.lastClosedAt,
           updatedAt: now
         });
         await runtimeStateStore.writeHealthReport(report);

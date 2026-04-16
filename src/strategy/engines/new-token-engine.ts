@@ -23,6 +23,7 @@ type NewTokenConfig = {
   minDeployScore: number;
   takeProfitPct?: number;
   stopLossPct?: number;
+  maxHoldHours?: number;
   /** Enable LP mode (bid-ask single-sided SOL) */
   lpEnabled?: boolean;
   /** LP stop-loss threshold (net PnL %) */
@@ -42,24 +43,24 @@ export type NewTokenAction = 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | '
 export function buildNewTokenDecision(
   snapshot: NewTokenSnapshot,
   config: NewTokenConfig = { minDeployScore: 70 }
-): { action: NewTokenAction } {
+): { action: NewTokenAction; reason?: string } {
   if (!snapshot.inSession) {
-    return { action: 'hold' };
+    return { action: 'hold', reason: 'out-of-session' };
   }
 
   // ===== Explicit Exit State Machine =====
   if (snapshot.lifecycleState === 'inventory_exit_ready') {
-    return { action: 'dca-out' };
+    return { action: 'dca-out', reason: 'inventory-exit-ready' };
   }
 
   // ===== 18-Hour Force Exit =====
-  const maxHoldMs = 18 * 60 * 60 * 1000;
+  const maxHoldMs = (config.maxHoldHours ?? 18) * 60 * 60 * 1000;
   if (typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs) {
     if (snapshot.hasLpPosition) {
-      return { action: 'withdraw-lp' };
+      return { action: 'withdraw-lp', reason: 'max-hold-with-lp-position' };
     }
     if (snapshot.hasInventory) {
-      return { action: 'dca-out' };
+      return { action: 'dca-out', reason: 'max-hold-with-inventory' };
     }
   }
 
@@ -71,39 +72,39 @@ export function buildNewTokenDecision(
         const takeProfit = config.lpTakeProfitNetPnlPct ?? 30;
 
         if (snapshot.lpNetPnlPct <= -stopLoss) {
-          return { action: 'withdraw-lp' };
+          return { action: 'withdraw-lp', reason: 'lp-stop-loss' };
         }
 
         if (snapshot.lpNetPnlPct >= takeProfit) {
-          return { action: 'withdraw-lp' };
+          return { action: 'withdraw-lp', reason: 'lp-take-profit' };
         }
       }
 
-      if (typeof config.lpMaxImpermanentLossPct === 'number' && 
-          typeof snapshot.lpImpermanentLossPct === 'number' && 
-          snapshot.lpImpermanentLossPct >= config.lpMaxImpermanentLossPct) {
-        return { action: 'withdraw-lp' };
+      if (
+        typeof config.lpMaxImpermanentLossPct === 'number' &&
+        typeof snapshot.lpImpermanentLossPct === 'number' &&
+        snapshot.lpImpermanentLossPct >= config.lpMaxImpermanentLossPct
+      ) {
+        return { action: 'withdraw-lp', reason: 'lp-max-impermanent-loss' };
       }
 
-      if (typeof config.lpClaimFeeThresholdUsd === 'number' && 
-          typeof snapshot.lpUnclaimedFeeUsd === 'number' && 
-          snapshot.lpUnclaimedFeeUsd >= config.lpClaimFeeThresholdUsd) {
-        return { action: 'claim-fee' };
+      if (
+        typeof config.lpClaimFeeThresholdUsd === 'number' &&
+        typeof snapshot.lpUnclaimedFeeUsd === 'number' &&
+        snapshot.lpUnclaimedFeeUsd >= config.lpClaimFeeThresholdUsd
+      ) {
+        return { action: 'claim-fee', reason: 'lp-claim-fee-threshold' };
       }
 
       if (config.lpRebalanceOnOutOfRange && snapshot.lpActiveBinStatus === 'out-of-range') {
-        return { action: 'rebalance-lp' };
+        return { action: 'rebalance-lp', reason: 'lp-out-of-range' };
       }
 
-      return { action: 'hold' };
+      return { action: 'hold', reason: 'lp-position-maintain' };
     }
 
-    // No LP position — check score to open one
-    if (snapshot.score >= config.minDeployScore) {
-      return { action: 'add-lp' };
-    }
-
-    return { action: 'hold' };
+    // No LP position, open directly. Safety/LP filters already gated candidate quality upstream.
+    return { action: 'add-lp', reason: 'lp-open-approved' };
   }
 
   // ===== Original swap mode (unchanged) =====
@@ -111,21 +112,16 @@ export function buildNewTokenDecision(
     if (typeof snapshot.unrealizedPct === 'number') {
       const takeProfit = config.takeProfitPct ?? 50;
       const stopLoss = config.stopLossPct ?? 20;
-      
+
       if (snapshot.unrealizedPct >= takeProfit || snapshot.unrealizedPct <= -stopLoss) {
-        return { action: 'dca-out' };
+        return { action: 'dca-out', reason: 'spot-tp-or-sl' };
       }
-      
-      return { action: 'hold' };
+
+      return { action: 'hold', reason: 'spot-position-maintain' };
     }
-    
-    return { action: 'dca-out' };
+
+    return { action: 'dca-out', reason: 'spot-has-inventory-no-pnl' };
   }
 
-  if (snapshot.score >= config.minDeployScore) {
-    return { action: 'deploy' };
-  }
-
-  return { action: 'hold' };
+  return { action: 'deploy', reason: 'spot-open-approved' };
 }
-

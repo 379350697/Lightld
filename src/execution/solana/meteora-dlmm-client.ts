@@ -27,12 +27,12 @@ export class MeteoraDlmmClient {
     walletPublicKey: PublicKey,
     poolAddress: string,
     amountSol: number,
-    strategyType: any = StrategyType.Spot
+    strategyType: any = StrategyType.BidAsk
   ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair: Keypair }> {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
     const activeBin = await dlmmPool.getActiveBin();
 
-    const TOTAL_BINS = 11;
+    const TOTAL_BINS = 69;
     const minBinId = activeBin.binId - Math.floor(TOTAL_BINS / 2);
     const maxBinId = activeBin.binId + Math.floor(TOTAL_BINS / 2);
 

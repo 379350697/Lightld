@@ -3,12 +3,27 @@ import type {
   TokenSafetyResult
 } from '../ingest/gmgn/token-safety-client.ts';
 import { isTokenSafe } from '../ingest/gmgn/token-safety-client.ts';
+
+export type SafetyFilterDiagnostics = {
+  checkedMints: string[];
+  results: TokenSafetyResult[];
+  rejected: Array<{
+    symbol: string;
+    mint: string;
+    rejectReasons: string[];
+    safetyScore: number;
+    error?: string;
+  }>;
+};
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { StrategyId } from './live-cycle.ts';
 import type { StrategyConfig } from '../config/schema.ts';
 import { evaluateDlmmPool } from '../strategy/filtering/dlmm-pool-filter.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
 
 export type IngestCandidate = {
   address: string;
@@ -31,7 +46,7 @@ export type IngestCandidate = {
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
   return (accountState?.walletTokens ?? [])
-    .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT)
+    .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
     .length;
 }
 
@@ -46,12 +61,14 @@ export function selectCandidate(
   inScanWindow: boolean,
   activePositionsCount: number
 ) {
+  void inScanWindow;
+
   const filtered = candidates.filter((candidate) => {
     if (candidate.address.length === 0 || candidate.symbol.length === 0) {
       return false;
     }
 
-    if (!candidate.hasInventory && (!inScanWindow || activePositionsCount >= 5)) {
+    if (!candidate.hasInventory && activePositionsCount >= 5) {
       return false;
     }
 
@@ -133,9 +150,15 @@ export async function applySafetyFilter(
     maxBatchSize: number;
     fetchSafety(mints: string[]): Promise<TokenSafetyResult[]>;
     logger?: Pick<Console, 'log' | 'warn'>;
+    onDiagnostics?(diagnostics: SafetyFilterDiagnostics): void;
   }
 ) {
   if (options.safetyConfig.disabled) {
+    options.onDiagnostics?.({
+      checkedMints: [],
+      results: [],
+      rejected: []
+    });
     return candidates;
   }
 
@@ -143,6 +166,11 @@ export async function applySafetyFilter(
   const uniqueMints = [...new Set(solMints)];
 
   if (uniqueMints.length === 0) {
+    options.onDiagnostics?.({
+      checkedMints: [],
+      results: [],
+      rejected: []
+    });
     return candidates;
   }
 
@@ -171,7 +199,8 @@ export async function applySafetyFilter(
           symbol: candidate.symbol,
           mint: candidate.mint,
           rejectReasons: result?.rejectReasons ?? [],
-          safetyScore: result?.safetyScore ?? 0
+          safetyScore: result?.safetyScore ?? 0,
+          error: result?.error
         };
       });
 
@@ -183,11 +212,22 @@ export async function applySafetyFilter(
       options.logger?.log(`[Ingest] Safety rejected: ${JSON.stringify(rejected)}`);
     }
 
+    options.onDiagnostics?.({
+      checkedMints: uniqueMints,
+      results: safetyResults,
+      rejected
+    });
+
     return filtered;
   } catch (error) {
     options.logger?.warn(
-      `[Ingest] Safety check failed, skipping filter: ${(error as Error).message}`
+      `[Ingest] Safety filter failed, preserving ${candidates.length} original candidates: ${error instanceof Error ? error.message : String(error)}`
     );
+    options.onDiagnostics?.({
+      checkedMints: uniqueMints,
+      results: [],
+      rejected: []
+    });
     return candidates;
   }
 }
