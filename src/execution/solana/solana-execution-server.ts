@@ -283,6 +283,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
             let walletTokens: { mint: string; symbol: string; amount: number }[] = [];
+            let walletLpPositions: { poolAddress: string; positionAddress: string; mint: string }[] = [];
 
             try {
               const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
@@ -298,9 +299,19 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               // Token accounts query may fail on free RPC
             }
 
+            try {
+              if (options.dlmmClient) {
+                walletLpPositions = await options.dlmmClient.getPositionSnapshots(keypair.publicKey);
+              }
+            } catch {
+              // Meteora positions query may fail on free RPC
+            }
+
             writeJson(response, 200, {
               walletSol,
               journalSol: walletSol,
+              walletLpPositions,
+              journalLpPositions: walletLpPositions,
               walletTokens,
               journalTokens: walletTokens,
               fills: []

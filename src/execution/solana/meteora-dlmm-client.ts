@@ -16,6 +16,12 @@ import { LAMPORTS_PER_SOL } from './jupiter-client.ts';
 
 export const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 
+export type MeteoraLpPositionSnapshot = {
+  poolAddress: string;
+  positionAddress: string;
+  mint: string;
+};
+
 export class MeteoraDlmmClient {
   private connection: Connection;
 
@@ -113,5 +119,32 @@ export class MeteoraDlmmClient {
 
   async getPositions(walletPublicKey: PublicKey): Promise<Map<string, PositionInfo>> {
     return DLMM.getAllLbPairPositionsByUser(this.connection, walletPublicKey);
+  }
+
+  async getPositionSnapshots(walletPublicKey: PublicKey): Promise<MeteoraLpPositionSnapshot[]> {
+    const positionsByPool = await DLMM.getAllLbPairPositionsByUser(this.connection, walletPublicKey);
+    const snapshots: MeteoraLpPositionSnapshot[] = [];
+
+    for (const [poolAddress, poolPositions] of positionsByPool.entries()) {
+      const lbPairPositionsData = (poolPositions as { lbPairPositionsData?: Array<{ publicKey: PublicKey }> } | undefined)?.lbPairPositionsData;
+      if (!lbPairPositionsData || lbPairPositionsData.length === 0) {
+        continue;
+      }
+
+      const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
+      const tokenXMint = dlmmPool.tokenX.publicKey.toBase58();
+      const tokenYMint = dlmmPool.tokenY.publicKey.toBase58();
+      const mint = tokenXMint === SOL_MINT.toBase58() ? tokenYMint : tokenXMint;
+
+      for (const positionInfo of lbPairPositionsData) {
+        snapshots.push({
+          poolAddress,
+          positionAddress: positionInfo.publicKey.toBase58(),
+          mint
+        });
+      }
+    }
+
+    return snapshots;
   }
 }

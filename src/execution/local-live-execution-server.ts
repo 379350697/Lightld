@@ -46,6 +46,16 @@ const ConfirmationRequestSchema = z.object({
 const AccountStateSchema = z.object({
   walletSol: z.number().finite(),
   journalSol: z.number().finite(),
+  walletLpPositions: z.array(z.object({
+    poolAddress: z.string(),
+    positionAddress: z.string(),
+    mint: z.string()
+  })).optional(),
+  journalLpPositions: z.array(z.object({
+    poolAddress: z.string(),
+    positionAddress: z.string(),
+    mint: z.string()
+  })).optional(),
   walletTokens: z.array(z.object({
     mint: z.string(),
     symbol: z.string().optional(),
@@ -139,6 +149,8 @@ async function readAccountState(path: string | undefined): Promise<LiveAccountSt
     return {
       walletSol: 0,
       journalSol: 0,
+      walletLpPositions: [],
+      journalLpPositions: [],
       walletTokens: [],
       journalTokens: [],
       fills: []
@@ -153,6 +165,8 @@ async function readAccountState(path: string | undefined): Promise<LiveAccountSt
       return {
         walletSol: 0,
         journalSol: 0,
+        walletLpPositions: [],
+        journalLpPositions: [],
         walletTokens: [],
         journalTokens: [],
         fills: []

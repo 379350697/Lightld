@@ -115,6 +115,46 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('keeps an unknown open submission pending when a Meteora lp position proves the mint exists', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-open',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'add-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [
+          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        journalLpPositions: [
+          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
+    });
+  });
+
   it('keeps the runtime blocked when an unresolved submission times out', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {

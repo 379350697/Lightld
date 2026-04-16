@@ -19,6 +19,7 @@ describe('reconcileLiveState', () => {
       ok: true,
       deltaSol: 0,
       tokenDeltas: [],
+      lpPositionDeltas: [],
       reason: 'matched'
     });
   });
@@ -35,6 +36,7 @@ describe('reconcileLiveState', () => {
       ok: false,
       deltaSol: 0.25,
       tokenDeltas: [],
+      lpPositionDeltas: [],
       reason: 'balance-mismatch'
     });
   });
@@ -61,6 +63,34 @@ describe('reconcileLiveState', () => {
           walletAmount: 2,
           journalAmount: 1.5,
           deltaAmount: 0.5
+        }
+      ],
+      lpPositionDeltas: [],
+      reason: 'balance-mismatch'
+    });
+  });
+
+  it('returns a balance mismatch when lp positions diverge', () => {
+    expect(
+      reconcileLiveState({
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          { poolAddress: 'pool-safe', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        journalLpPositions: []
+      })
+    ).toEqual({
+      ok: false,
+      deltaSol: 0,
+      tokenDeltas: [],
+      lpPositionDeltas: [
+        {
+          positionAddress: 'pos-1',
+          mint: 'mint-safe',
+          walletPresent: true,
+          journalPresent: false,
+          poolAddress: 'pool-safe'
         }
       ],
       reason: 'balance-mismatch'

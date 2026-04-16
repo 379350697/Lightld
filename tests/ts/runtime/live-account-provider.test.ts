@@ -13,6 +13,12 @@ describe('HttpLiveAccountStateProvider', () => {
           JSON.stringify({
             walletSol: 1.25,
             journalSol: 1.25,
+            walletLpPositions: [
+              { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+            ],
+            journalLpPositions: [
+              { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+            ],
             walletTokens: [
               { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }
             ],
@@ -39,6 +45,12 @@ describe('HttpLiveAccountStateProvider', () => {
     await expect(provider.readState()).resolves.toEqual({
       walletSol: 1.25,
       journalSol: 1.25,
+      walletLpPositions: [
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+      ],
+      journalLpPositions: [
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+      ],
       walletTokens: [
         { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }
       ],

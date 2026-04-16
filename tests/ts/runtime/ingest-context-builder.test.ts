@@ -146,6 +146,65 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
   });
 
+  it('derives lp position state from Meteora positions even without token inventory', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      traderWallet: 'wallet-1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          { poolAddress: 'pool-safe', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        journalLpPositions: [
+          { poolAddress: 'pool-safe', positionAddress: 'pos-1', mint: 'mint-safe' }
+        ],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 12_500,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          volume_5m: 4_000,
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 48,
+          timestamp: '2026-03-22T09:57:00.000Z'
+        }
+      ]
+    });
+
+    expect(result.context.trader).toMatchObject({
+      wallet: 'wallet-1',
+      hasInventory: true,
+      hasLpPosition: true
+    });
+  });
+
   it('does not infer inventory from pump wallet flow when real holdings are empty', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

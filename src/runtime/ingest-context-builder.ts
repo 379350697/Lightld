@@ -289,6 +289,14 @@ function hasAccountInventory(accountState: LiveAccountState | undefined, mint: s
     return false;
   }
 
+  if (accountState.walletLpPositions?.some((position) => position.mint === mint)) {
+    return true;
+  }
+
+  if (accountState.journalLpPositions?.some((position) => position.mint === mint)) {
+    return true;
+  }
+
   const walletPosition = accountState.walletTokens?.find((token) => token.mint === mint);
 
   if (accountState.walletTokens) {
@@ -297,6 +305,17 @@ function hasAccountInventory(accountState: LiveAccountState | undefined, mint: s
 
   const journalPosition = accountState.journalTokens?.find((token) => token.mint === mint);
   return (journalPosition?.amount ?? 0) > 0;
+}
+
+function hasAccountLpPosition(accountState: LiveAccountState | undefined, mint: string) {
+  if (!accountState || mint.length === 0) {
+    return false;
+  }
+
+  return Boolean(
+    accountState.walletLpPositions?.some((position) => position.mint === mint) ||
+    accountState.journalLpPositions?.some((position) => position.mint === mint)
+  );
 }
 
 function isPlaceholderEndpoint(url: string) {
@@ -515,6 +534,7 @@ function buildCandidate(
     holders,
     momentum,
     hasInventory: hasAccountInventory(accountState, mint),
+    hasLpPosition: hasAccountLpPosition(accountState, mint),
     score,
     binStep: readNumber(poolConfig, ['bin_step', 'binStep']),
     baseFeePct: readNumber(poolConfig, ['base_fee_pct', 'baseFeePct']),
@@ -645,6 +665,7 @@ export async function buildLiveCycleInputFromIngest(
     trader: {
       wallet: input.traderWallet ?? '',
       hasInventory: candidate.hasInventory,
+      hasLpPosition: candidate.hasLpPosition,
       labels: traderSnapshot?.labels ?? [],
       pnlUsd: traderSnapshot?.pnlUsd ?? 0,
       score: traderSnapshot ? clamp(traderSnapshot.pnlUsd / 10, 0, 100) : 0,

@@ -53,7 +53,9 @@ function hasNonStableBalance(accountState: LiveAccountState | undefined, mint: s
 function hasAnyBalance(accountState: LiveAccountState | undefined, mint: string) {
   return Boolean(
     accountState?.walletTokens?.some((token) => token.mint === mint && token.amount > 0) ||
-    accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0)
+    accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0) ||
+    accountState?.walletLpPositions?.some((position) => position.mint === mint) ||
+    accountState?.journalLpPositions?.some((position) => position.mint === mint)
   );
 }
 

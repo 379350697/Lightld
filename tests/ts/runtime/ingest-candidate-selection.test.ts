@@ -22,6 +22,7 @@ function makeCandidate(overrides: Partial<IngestCandidate> = {}): IngestCandidat
     holders: 100,
     momentum: 50,
     hasInventory: false,
+    hasLpPosition: false,
     score: 80,
     binStep: 120,
     baseFeePct: 1,
@@ -82,10 +83,14 @@ function makeConfig(): StrategyConfig {
 }
 
 describe('ingest candidate helpers', () => {
-  it('counts only active non-SOL inventory positions', () => {
+  it('counts active non-SOL inventory positions and Meteora LP positions', () => {
     expect(countActiveInventoryPositions({
       walletSol: 1,
       journalSol: 1,
+      walletLpPositions: [
+        { poolAddress: 'pool-lp', positionAddress: 'pos-1', mint: 'mint-lp' }
+      ],
+      journalLpPositions: [],
       walletTokens: [
         { mint: 'mint-a', symbol: 'AAA', amount: 1 },
         { mint: 'So11111111111111111111111111111111111111112', symbol: 'SOL', amount: 2 },
@@ -93,7 +98,7 @@ describe('ingest candidate helpers', () => {
       ],
       journalTokens: [],
       fills: []
-    })).toBe(1);
+    })).toBe(2);
   });
 
   it('detects the configured scan windows', () => {

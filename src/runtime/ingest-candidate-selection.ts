@@ -36,6 +36,7 @@ export type IngestCandidate = {
   holders: number;
   momentum: number;
   hasInventory: boolean;
+  hasLpPosition: boolean;
   score: number;
   binStep: number;
   baseFeePct: number;
@@ -45,9 +46,14 @@ export type IngestCandidate = {
 };
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
-  return (accountState?.walletTokens ?? [])
+  const inventoryPositions = (accountState?.walletTokens ?? [])
     .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
     .length;
+  const lpPositions = (accountState?.walletLpPositions ?? [])
+    .filter((position) => position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint))
+    .length;
+
+  return inventoryPositions + lpPositions;
 }
 
 export function isInScanWindow(now: Date) {

@@ -4,6 +4,16 @@ import { executeWithRetry } from '../execution/request-resilience.ts';
 export type LiveAccountState = {
   walletSol: number;
   journalSol: number;
+  walletLpPositions?: Array<{
+    poolAddress: string;
+    positionAddress: string;
+    mint: string;
+  }>;
+  journalLpPositions?: Array<{
+    poolAddress: string;
+    positionAddress: string;
+    mint: string;
+  }>;
   walletTokens?: Array<{
     mint: string;
     symbol?: string;

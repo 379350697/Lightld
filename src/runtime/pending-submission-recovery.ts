@@ -71,7 +71,10 @@ function hasWalletEvidenceOfMint(
     return false;
   }
 
-  return Boolean(accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0));
+  return Boolean(
+    accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0) ||
+    accountState?.walletLpPositions?.some((position) => position.mint === pendingSubmission.tokenMint)
+  );
 }
 
 function isUnknownOpenFailure(

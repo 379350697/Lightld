@@ -35,9 +35,14 @@ function wait(delayMs: number) {
 }
 
 function hasOpenInventory(accountState?: LiveAccountState) {
-  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0
-    && token.mint !== 'So11111111111111111111111111111111111111112'
-    && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'));
+  return Boolean(
+    accountState?.walletTokens?.some((token) => token.amount > 0
+      && token.mint !== 'So11111111111111111111111111111111111111112'
+      && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') ||
+    accountState?.walletLpPositions?.some((position) =>
+      position.mint !== 'So11111111111111111111111111111111111111112'
+      && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+  );
 }
 
 function resolveLifecycleStateForPersist(input: {
