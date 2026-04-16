@@ -757,7 +757,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const recentCloseMint = input.positionState?.lastClosedMint ?? '';
   const recentCloseAt = input.positionState?.lastClosedAt ?? '';
-  const reopenCooldownMs = 10 * 60 * 60 * 1000;
+  const reopenCooldownMs = 1 * 60 * 60 * 1000;
   const isRecentlyClosedSameMint = Boolean(
     activeMint &&
     recentCloseMint === activeMint &&
