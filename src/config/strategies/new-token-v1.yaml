@@ -17,12 +17,7 @@ hardGates:
   requireSolRoute: true
   minLiquidityUsd: 1000
 filters:
-  minHolders: 0
   minLiquidityUsd: 1000
-scoringWeights:
-  holders: 0.0
-  liquidity: 0.0
-  momentum: 0.0
 riskThresholds:
   maxPositionSol: 0.5
   maxDailyLossSol: 1
@@ -36,5 +31,4 @@ live:
   enabled: true
   maxLivePositionSol: 0.15
   autoFlattenRequired: true
-  minDeployScore: 70
   maxHoldHours: 10

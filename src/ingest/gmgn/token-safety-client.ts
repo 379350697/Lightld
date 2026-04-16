@@ -1,7 +1,7 @@
 /**
  * GMGN Token Safety Client — calls the Python Scrapling script as a subprocess.
  *
- * Scoring system (max 120 pts):
+ * Safety scoring system (max 120 pts):
  *   +20  Mint renounced
  *   +20  No Blacklist
  *   +20  LP Burned 100%
@@ -11,7 +11,7 @@
  *   +10  Phishing <= 5%  (+5 if 5-10%)
  *   +10  Bundler < 5%  (+5 if 5-10%)
  *
- * Hard gates (reject regardless of score):
+ * Hard gates (reject regardless of safety score):
  *   - Holders > 1000
  *   - GMGN whole-token 24h volume >= 500000 USD
  */
@@ -34,11 +34,11 @@ export type TokenSafetyResult = {
   mint: string;
   /** Passes hard gates (holders > 1000, GMGN whole-token 24h volume >= 500000 USD) */
   safe: boolean;
-  /** Composite safety score 0-120 */
+  /** Composite safety score (0-120) */
   safetyScore: number;
-  /** Maximum possible score */
+  /** Maximum possible safety score */
   maxScore: number;
-  /** Per-item score breakdown */
+  /** Per-item safety score breakdown */
   scoreBreakdown?: Record<string, number>;
   /** Reasons token was rejected (hard gate failures) */
   rejectReasons?: string[];
@@ -66,7 +66,7 @@ export type TokenSafetyConfig = {
   minHolders: number;
   /** Hard gate: minimum bluechip holder % (default: 0.8) */
   minBluechipPct: number;
-  /** Minimum total safety score to pass (default: 0 = any score accepted if hard gates pass) */
+  /** Minimum total safety score to pass (default: 0 = any safety score accepted if hard gates pass) */
   minSafetyScore: number;
 };
 
@@ -82,7 +82,7 @@ export const DEFAULT_SAFETY_CONFIG: TokenSafetyConfig = {
 // ---------------------------------------------------------------------------
 
 /**
- * Check if a token passes hard gates and minimum score threshold.
+ * Check if a token passes hard gates and the configured minimum safety score threshold.
  */
 export function isTokenSafe(
   result: TokenSafetyResult,
@@ -92,7 +92,7 @@ export function isTokenSafe(
   if (result.error) return false;
   // Python script already evaluates hard gates → result.safe
   if (!result.safe) return false;
-  // Additional min-score gate applied from config
+  // Additional minimum safety score gate applied from config
   if (result.safetyScore < config.minSafetyScore) return false;
   return true;
 }

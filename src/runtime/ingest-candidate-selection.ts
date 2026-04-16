@@ -38,10 +38,8 @@ export type IngestCandidate = {
   hasSolRoute: boolean;
   capturedAt: string;
   holders: number;
-  momentum: number;
   hasInventory: boolean;
   hasLpPosition: boolean;
-  score: number;
   binStep: number;
   baseFeePct: number;
   volume24h: number;
@@ -68,11 +66,8 @@ export function isInScanWindow(now: Date) {
 export function selectCandidate(
   candidates: IngestCandidate[],
   strategy: StrategyId,
-  inScanWindow: boolean,
   activePositionsCount: number
 ) {
-  void inScanWindow;
-
   const filtered = candidates.filter((candidate) => {
     if (candidate.address.length === 0 || candidate.symbol.length === 0) {
       return false;
@@ -106,8 +101,10 @@ export function selectCandidate(
       }
     }
 
-    if (right.score !== left.score) {
-      return right.score - left.score;
+    const leftSafety = left.safetyScore ?? 0;
+    const rightSafety = right.safetyScore ?? 0;
+    if (rightSafety !== leftSafety) {
+      return rightSafety - leftSafety;
     }
 
     return right.liquidityUsd - left.liquidityUsd;

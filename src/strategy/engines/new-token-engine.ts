@@ -1,7 +1,6 @@
 type NewTokenSnapshot = {
   inSession: boolean;
   hasInventory: boolean;
-  score: number;
   unrealizedPct?: number;
   /** LP mode: whether an LP position already exists */
   hasLpPosition?: boolean;
@@ -20,7 +19,6 @@ type NewTokenSnapshot = {
 };
 
 type NewTokenConfig = {
-  minDeployScore: number;
   takeProfitPct?: number;
   stopLossPct?: number;
   maxHoldHours?: number;
@@ -42,7 +40,7 @@ export type NewTokenAction = 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | '
 
 export function buildNewTokenDecision(
   snapshot: NewTokenSnapshot,
-  config: NewTokenConfig = { minDeployScore: 70 }
+  config: NewTokenConfig = {}
 ): { action: NewTokenAction; reason?: string } {
   if (!snapshot.inSession) {
     return { action: 'hold', reason: 'out-of-session' };
@@ -103,12 +101,9 @@ export function buildNewTokenDecision(
       return { action: 'hold', reason: 'lp-position-maintain' };
     }
 
-    if (snapshot.score >= config.minDeployScore) {
-      // No LP position, open directly once the candidate clears the deploy threshold.
-      return { action: 'add-lp', reason: 'lp-open-approved' };
-    }
-
-    return { action: 'hold', reason: 'lp-score-below-min-deploy' };
+    // LP opens are gated upstream by LP pool eligibility checks. Once a candidate
+    // reaches this stage without an existing LP position, open the LP directly.
+    return { action: 'add-lp', reason: 'lp-open-approved' };
   }
 
   // ===== Original swap mode (unchanged) =====
@@ -127,9 +122,5 @@ export function buildNewTokenDecision(
     return { action: 'dca-out', reason: 'spot-has-inventory-no-pnl' };
   }
 
-  if (snapshot.score >= config.minDeployScore) {
-    return { action: 'deploy', reason: 'spot-open-approved' };
-  }
-
-  return { action: 'hold', reason: 'spot-score-below-min-deploy' };
+  return { action: 'deploy', reason: 'spot-open-approved' };
 }

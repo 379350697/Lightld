@@ -49,11 +49,10 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
   }
 
   const decision = input.engine === 'new-token'
-    ? buildNewTokenDecision(
+      ? buildNewTokenDecision(
         {
           inSession: Boolean(input.snapshot.inSession),
           hasInventory: Boolean(input.snapshot.hasInventory),
-          score: Number(input.snapshot.score ?? 0),
           unrealizedPct: typeof input.snapshot.unrealizedPct === 'number' ? input.snapshot.unrealizedPct : undefined,
           hasLpPosition: Boolean(input.snapshot.hasLpPosition),
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
@@ -63,7 +62,6 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lifecycleState: typeof input.snapshot.lifecycleState === 'string' ? input.snapshot.lifecycleState : undefined
         },
         {
-          minDeployScore: Number(input.config.minDeployScore ?? 70),
           takeProfitPct: typeof input.config.takeProfitPct === 'number' ? input.config.takeProfitPct : undefined,
           stopLossPct: typeof input.config.stopLossPct === 'number' ? input.config.stopLossPct : undefined,
           lpEnabled: Boolean(input.config.lpEnabled),
@@ -74,14 +72,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpMaxImpermanentLossPct: typeof input.config.lpMaxImpermanentLossPct === 'number' ? input.config.lpMaxImpermanentLossPct : undefined
         }
       )
-    : buildLargePoolDecision(
-        {
-          score: Number(input.snapshot.score ?? 0)
-        },
-        {
-          minScore: Number(input.config.minScore ?? 0)
-        }
-      );
+    : buildLargePoolDecision();
 
   return {
     action: decision.action,

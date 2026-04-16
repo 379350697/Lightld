@@ -238,7 +238,6 @@ function buildEngineSnapshot(
       ...shared,
       inSession: firstBoolean(context.token.inSession, context.trader.inSession),
       hasInventory: firstBoolean(context.trader.hasInventory, context.pool.hasInventory),
-      score: firstNumber(context.pool.score, context.token.score, context.trader.score),
       unrealizedPct: typeof context.trader.unrealizedPct === 'number' ? context.trader.unrealizedPct : undefined,
       hasLpPosition: firstBoolean(context.trader.hasLpPosition),
       lpNetPnlPct: typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct : undefined,
@@ -250,10 +249,7 @@ function buildEngineSnapshot(
   }
 
   return {
-    ...shared,
-    score: firstNumber(context.pool.score, context.token.score, context.trader.score),
-    feeTvlRatio: typeof context.pool.feeTvlRatio === 'number' ? context.pool.feeTvlRatio : undefined,
-    fees24h: typeof context.pool.fees24h === 'number' ? context.pool.fees24h : undefined
+    ...shared
   };
 }
 
@@ -832,8 +828,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     engine: config.poolClass,
     snapshot: updatedSnapshot,
     config: {
-      minScore: 70,
-      minDeployScore: config.live.minDeployScore ?? 70,
       maxHoldHours: config.live.maxHoldHours ?? 18,
       requireSolRoute: config.hardGates.requireSolRoute,
       minLiquidityUsd: config.hardGates.minLiquidityUsd,
@@ -849,15 +843,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
     }
   });
-  const engineAuditReason = [
+  const lpEnabled = config.lpConfig?.enabled ?? false;
+  const engineAuditParts = [
     engineResult.audit.reason,
-    `score=${updatedSnapshot.score ?? 'n/a'}`,
-    `minDeployScore=${config.live.minDeployScore ?? 70}`,
-    `lpEnabled=${config.lpConfig?.enabled ?? false}`,
+    `lpEnabled=${lpEnabled}`,
     `hasLpPosition=${'hasLpPosition' in updatedSnapshot ? updatedSnapshot.hasLpPosition ?? false : false}`,
     `hasInventory=${'hasInventory' in updatedSnapshot ? updatedSnapshot.hasInventory ?? false : false}`,
     `lifecycleState=${'lifecycleState' in updatedSnapshot ? updatedSnapshot.lifecycleState ?? 'unknown' : 'n/a'}`
-  ].join(' | ');
+  ];
+
+  const engineAuditReason = engineAuditParts.join(' | ');
   logContext.engineReason = engineAuditReason;
 
   if (engineResult.action === 'hold') {

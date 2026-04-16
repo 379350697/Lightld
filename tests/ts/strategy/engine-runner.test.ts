@@ -10,14 +10,11 @@ describe('runEngineCycle', () => {
         inSession: true,
         hasInventory: true,
         hasSolRoute: true,
-        liquidityUsd: 10_000,
-        score: 80
+        liquidityUsd: 10_000
       },
       config: {
         requireSolRoute: true,
-        minLiquidityUsd: 5_000,
-        minScore: 70,
-        minDeployScore: 70
+        minLiquidityUsd: 5_000
       }
     });
 
@@ -25,21 +22,18 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('spot-has-inventory-no-pnl');
   });
 
-  it('returns deploy for new-token when no inventory and score meets threshold', () => {
+  it('returns deploy for new-token when no inventory and hard gates pass', () => {
     const result = runEngineCycle({
       engine: 'new-token',
       snapshot: {
         inSession: true,
         hasInventory: false,
         hasSolRoute: true,
-        liquidityUsd: 15_000,
-        score: 85
+        liquidityUsd: 15_000
       },
       config: {
         requireSolRoute: true,
-        minLiquidityUsd: 5_000,
-        minScore: 70,
-        minDeployScore: 70
+        minLiquidityUsd: 5_000
       }
     });
 
@@ -51,14 +45,12 @@ describe('runEngineCycle', () => {
     const result = runEngineCycle({
       engine: 'large-pool',
       snapshot: {
-        score: 80,
         hasSolRoute: false,
         liquidityUsd: 1_000
       },
       config: {
         requireSolRoute: true,
-        minLiquidityUsd: 5_000,
-        minScore: 70
+        minLiquidityUsd: 5_000
       }
     });
 

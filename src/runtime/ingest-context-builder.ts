@@ -12,7 +12,6 @@ import { fetchMeteoraPools } from '../ingest/meteora/client.ts';
 import { fetchPumpTrades } from '../ingest/pump/client.ts';
 import { normalizePumpTokenEvent } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
-import { computeWeightedScore } from '../strategy/filtering/scoring.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import {
   applySafetyFilter,
@@ -138,22 +137,6 @@ function readBoolean(payload: Record<string, unknown>, keys: string[]) {
   return false;
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function roundScore(value: number) {
-  return Number(value.toFixed(2));
-}
-
-function normalizeRatio(value: number, threshold: number) {
-  if (threshold <= 0) {
-    return 0;
-  }
-
-  return clamp((value / threshold) * 100, 0, 100);
-}
-
 function parseMinutes(value: string) {
   const [hours, minutes] = value.split(':').map((part) => Number(part));
 
@@ -211,38 +194,6 @@ function resolveHasSolRoute(payload: Record<string, unknown>) {
   const tokenXSymbol = resolveNestedString(payload, ['token_x', 'tokenX'], ['symbol']);
 
   return quoteMint === SOL_MINT || quoteSymbol === 'SOL' || baseSymbol === 'SOL' || tokenYMint === SOL_MINT || tokenYSymbol === 'SOL' || tokenXSymbol === 'SOL';
-}
-
-function resolveMomentum(
-  payload: Record<string, unknown>,
-  liquidityUsd: number,
-  tokenEvent: ReturnType<typeof normalizePumpTokenEvent> | undefined,
-  now: Date
-) {
-  const explicitMomentum = readNumber(payload, ['momentum']);
-
-  if (explicitMomentum > 0) {
-    return clamp(explicitMomentum, 0, 100);
-  }
-
-  const recentVolume = [
-    readNumber(payload, ['volume_5m', 'volume5m']),
-    readNumber(payload, ['volume_30m', 'volume30m']),
-    readNumber(payload, ['volume_1h', 'volume1h']),
-    readNumber(payload, ['volume_24h', 'volume24h'])
-  ].find((value) => value > 0) ?? 0;
-
-  if (recentVolume > 0 && liquidityUsd > 0) {
-    return clamp((recentVolume / liquidityUsd) * 100, 0, 100);
-  }
-
-  if (tokenEvent) {
-    const ageMs = Math.max(0, now.getTime() - Date.parse(tokenEvent.capturedAt));
-
-    return clamp(100 - ageMs / 60_000, 0, 100);
-  }
-
-  return 0;
 }
 
 function buildPumpIndexes(
@@ -442,7 +393,6 @@ function buildFallbackContext(
       address: '',
       liquidityUsd: 0,
       hasSolRoute: false,
-      score: 0,
       candidateCount: 0,
       blockReason: diagnostics?.blockReason ?? '',
       blockDetails: diagnostics?.blockDetails ?? ''
@@ -453,7 +403,6 @@ function buildFallbackContext(
       liquidityUsd: 0,
       hasSolRoute: false,
       inSession: sessionActive,
-      score: 0,
       holders: 0,
       blockReason: diagnostics?.blockReason ?? ''
     },
@@ -493,11 +442,7 @@ function isRecentPool(payload: Record<string, unknown>, now: Date, maxAgeMs: num
 function buildCandidate(
   row: Record<string, unknown>,
   pumpIndexes: PumpIndexes,
-  accountState: LiveAccountState | undefined,
-  now: Date,
-  minHolders: number,
-  minLiquidityUsd: number,
-  scoringWeights: { holders: number; liquidity: number; momentum: number }
+  accountState: LiveAccountState | undefined
 ) {
   const payload = rawRecord(row);
   const mint = readString(payload, ['baseMint', 'base_mint', 'mint', 'token_x_mint']) || resolveNestedString(payload, ['token_x', 'tokenX'], ['address', 'mint']);
@@ -505,19 +450,6 @@ function buildCandidate(
   const liquidityUsd = readNumber(payload, ['liquidityUsd', 'liquidity', 'tvl', 'tvlUsd']);
   const tokenEvent = mint.length > 0 ? pumpIndexes.tokenByMint.get(mint) : undefined;
   const holders = tokenEvent?.holders ?? readNumber(payload, ['holders']);
-  const momentum = resolveMomentum(payload, liquidityUsd, tokenEvent, now);
-  const holdersScore = normalizeRatio(holders, minHolders);
-  const liquidityScore = normalizeRatio(liquidityUsd, minLiquidityUsd);
-  const score = roundScore(
-    computeWeightedScore(
-      {
-        holders: holdersScore,
-        liquidity: liquidityScore,
-        momentum
-      },
-      scoringWeights
-    )
-  );
 
   const poolConfig = isRecord(payload.pool_config) ? payload.pool_config : {};
   const volumeObj = isRecord(payload.volume) ? payload.volume : {};
@@ -532,10 +464,8 @@ function buildCandidate(
     hasSolRoute: resolveHasSolRoute(payload),
     capturedAt: readString(payload, ['capturedAt', 'updatedAt', 'pool_created_at']),
     holders,
-    momentum,
     hasInventory: hasAccountInventory(accountState, mint),
     hasLpPosition: hasAccountLpPosition(accountState, mint),
-    score,
     binStep: readNumber(poolConfig, ['bin_step', 'binStep']),
     baseFeePct: readNumber(poolConfig, ['base_fee_pct', 'baseFeePct']),
     volume24h: readNumber(volumeObj, ['24h']),
@@ -574,11 +504,7 @@ export async function buildLiveCycleInputFromIngest(
     buildCandidate(
       row,
       pumpIndexes,
-      input.accountState,
-      now,
-      config.filters.minHolders,
-      config.filters.minLiquidityUsd,
-      config.scoringWeights
+      input.accountState
     )
   );
   const preLpCount = candidates.length;
@@ -603,7 +529,7 @@ export async function buildLiveCycleInputFromIngest(
 
   console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
 
-  const candidate = selectCandidate(candidates, input.strategy, inScanWindow, activePositionsCount);
+  const candidate = selectCandidate(candidates, input.strategy, activePositionsCount);
   const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || activePositionsCount < 5).length;
 
   if (!candidate) {
@@ -643,7 +569,6 @@ export async function buildLiveCycleInputFromIngest(
       address: candidate.address,
       liquidityUsd: candidate.liquidityUsd,
       hasSolRoute: candidate.hasSolRoute,
-      score: candidate.score,
       capturedAt: candidate.capturedAt,
       candidateCount: candidates.length,
       binStep: candidate.binStep,
@@ -658,7 +583,6 @@ export async function buildLiveCycleInputFromIngest(
       hasSolRoute: candidate.hasSolRoute,
       inSession: sessionActive,
       holders: candidate.holders,
-      score: candidate.score,
       expectedOutSol: requestedPositionSol,
       capturedAt: candidate.capturedAt
     },
@@ -668,7 +592,6 @@ export async function buildLiveCycleInputFromIngest(
       hasLpPosition: candidate.hasLpPosition,
       labels: traderSnapshot?.labels ?? [],
       pnlUsd: traderSnapshot?.pnlUsd ?? 0,
-      score: traderSnapshot ? clamp(traderSnapshot.pnlUsd / 10, 0, 100) : 0,
       freshnessMs: traderSnapshot?.freshnessMs ?? 0
     },
     route: {

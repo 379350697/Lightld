@@ -20,10 +20,8 @@ function makeCandidate(overrides: Partial<IngestCandidate> = {}): IngestCandidat
     hasSolRoute: true,
     capturedAt: '2026-03-22T10:00:00.000Z',
     holders: 100,
-    momentum: 50,
     hasInventory: false,
     hasLpPosition: false,
-    score: 80,
     binStep: 120,
     baseFeePct: 1,
     volume24h: 2_000_000,
@@ -54,13 +52,7 @@ function makeConfig(): StrategyConfig {
       minLiquidityUsd: 1000
     },
     filters: {
-      minHolders: 0,
       minLiquidityUsd: 1000
-    },
-    scoringWeights: {
-      holders: 0,
-      liquidity: 0.5,
-      momentum: 0.5
     },
     riskThresholds: {
       maxPositionSol: 0.5,
@@ -75,7 +67,6 @@ function makeConfig(): StrategyConfig {
       enabled: true,
       maxLivePositionSol: 0.15,
       autoFlattenRequired: true,
-      minDeployScore: 70,
       maxHoldHours: 10,
       requireMintAuthorityRevoked: false
     }
@@ -134,7 +125,7 @@ describe('ingest candidate helpers', () => {
     const result = selectCandidate([
       makeCandidate({ address: 'pool-a', hasInventory: false, safetyScore: 80 }),
       makeCandidate({ address: 'pool-b', hasInventory: true, safetyScore: 10 })
-    ], 'new-token-v1', true, 0);
+    ], 'new-token-v1', 0);
 
     expect(result?.address).toBe('pool-b');
   });
@@ -143,9 +134,18 @@ describe('ingest candidate helpers', () => {
     const result = selectCandidate([
       makeCandidate({ address: 'pool-a', hasInventory: false, safetyScore: 80 }),
       makeCandidate({ address: 'pool-b', hasInventory: false, safetyScore: 70 })
-    ], 'new-token-v1', false, 0);
+    ], 'new-token-v1', 0);
 
     expect(result?.address).toBe('pool-a');
+  });
+
+  it('falls back to higher liquidity when safety scores are tied', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'pool-a', safetyScore: 80, liquidityUsd: 20_000 }),
+      makeCandidate({ address: 'pool-b', safetyScore: 80, liquidityUsd: 30_000 })
+    ], 'large-pool-v1', 0);
+
+    expect(result?.address).toBe('pool-b');
   });
 
   it('applies safety results and fee/tvl bonus without mutating on failure', async () => {

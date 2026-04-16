@@ -4,7 +4,7 @@ import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safet
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
-  it('builds a scored large-pool context selecting highest-score candidate', async () => {
+  it('builds a large-pool context selecting the highest-liquidity candidate after safety filtering', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
       traderWallet: 'wallet-1',
@@ -60,23 +60,24 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.requestedPositionSol).toBe(0.1);
     expect(result.sessionPhase).toBe('active');
     expect(result.context.pool).toMatchObject({
-      address: 'pool-safe',
-      liquidityUsd: 65_000,
+      address: 'pool-meme',
+      liquidityUsd: 90_000,
       hasSolRoute: true
     });
     expect(result.context.token).toMatchObject({
-      mint: 'mint-safe',
-      symbol: 'SAFE',
+      mint: 'mint-meme',
+      symbol: 'MEME',
       hasSolRoute: true
     });
     expect(result.context.trader).toMatchObject({
       wallet: 'wallet-1',
       labels: ['smart-money']
     });
-    expect(Number((result.context.pool as { score: number }).score)).toBeGreaterThanOrEqual(70);
+    expect(result.context.pool).not.toHaveProperty('score');
+    expect(result.context.token).not.toHaveProperty('score');
     expect(result.context.route).toMatchObject({
-      poolAddress: 'pool-safe',
-      token: 'SAFE',
+      poolAddress: 'pool-meme',
+      token: 'MEME',
       expectedOutSol: 0.1
     });
   });

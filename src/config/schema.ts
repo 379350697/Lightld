@@ -9,7 +9,6 @@ export const LiveConfigSchema = z.object({
   enabled: z.boolean(),
   maxLivePositionSol: z.number().positive(),
   autoFlattenRequired: z.boolean(),
-  minDeployScore: z.number().nonnegative().default(70),
   maxHoldHours: z.number().positive().default(18),
   
   // Strict Rug Guards
@@ -54,13 +53,7 @@ export const StrategyConfigSchema = z.object({
     maxPoolAgeMinutes: z.number().nonnegative().optional()
   }),
   filters: z.object({
-    minHolders: z.number().int().nonnegative(),
     minLiquidityUsd: z.number().nonnegative()
-  }),
-  scoringWeights: z.object({
-    holders: z.number(),
-    liquidity: z.number(),
-    momentum: z.number()
   }),
   riskThresholds: z.object({
     maxPositionSol: z.number().positive(),

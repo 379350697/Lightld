@@ -7,42 +7,29 @@ describe('buildNewTokenDecision', () => {
     expect(
       buildNewTokenDecision({
         inSession: true,
-        hasInventory: true,
-        score: 80
+        hasInventory: true
       })
     ).toMatchObject({
       action: 'dca-out'
     });
   });
 
-  it('returns deploy when in session, no inventory, and score meets threshold', () => {
+  it('returns deploy when in session and no inventory', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 75 },
-        { minDeployScore: 70 }
+        { inSession: true, hasInventory: false },
+        {}
       )
     ).toMatchObject({
       action: 'deploy'
     });
   });
 
-  it('returns hold when in session, no inventory, but score is below threshold', () => {
-    expect(
-      buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 50 },
-        { minDeployScore: 70 }
-      )
-    ).toMatchObject({
-      action: 'hold'
-    });
-  });
-
-  it('returns hold when out of session regardless of score or inventory', () => {
+  it('returns hold when out of session regardless of inventory state', () => {
     expect(
       buildNewTokenDecision({
         inSession: false,
-        hasInventory: true,
-        score: 99
+        hasInventory: true
       })
     ).toMatchObject({
       action: 'hold'
@@ -52,8 +39,8 @@ describe('buildNewTokenDecision', () => {
   it('prioritizes dca-out over deploy when has inventory', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: true, score: 99 },
-        { minDeployScore: 50 }
+        { inSession: true, hasInventory: true },
+        {}
       )
     ).toMatchObject({
       action: 'dca-out'
@@ -63,34 +50,24 @@ describe('buildNewTokenDecision', () => {
 
 describe('buildNewTokenDecision — LP mode', () => {
   const lpConfig = {
-    minDeployScore: 70,
     lpEnabled: true,
     lpStopLossNetPnlPct: 20,
     lpTakeProfitNetPnlPct: 30
   };
 
-  it('returns add-lp when no LP position and score meets threshold', () => {
+  it('returns add-lp when no LP position and LP mode is enabled', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 75, hasLpPosition: false },
+        { inSession: true, hasInventory: false, hasLpPosition: false },
         lpConfig
       )
     ).toMatchObject({ action: 'add-lp' });
   });
 
-  it('returns hold when no LP position and score below threshold', () => {
-    expect(
-      buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 50, hasLpPosition: false },
-        lpConfig
-      )
-    ).toMatchObject({ action: 'hold' });
-  });
-
   it('returns withdraw-lp on stop-loss (netPnlPct <= -20%)', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: -20 },
+        { inSession: true, hasInventory: false, hasLpPosition: true, lpNetPnlPct: -20 },
         lpConfig
       )
     ).toMatchObject({ action: 'withdraw-lp' });
@@ -99,7 +76,7 @@ describe('buildNewTokenDecision — LP mode', () => {
   it('returns withdraw-lp on take-profit (netPnlPct >= +30%)', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: 30 },
+        { inSession: true, hasInventory: false, hasLpPosition: true, lpNetPnlPct: 30 },
         lpConfig
       )
     ).toMatchObject({ action: 'withdraw-lp' });
@@ -108,7 +85,7 @@ describe('buildNewTokenDecision — LP mode', () => {
   it('returns hold when LP position PnL within thresholds', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: 10 },
+        { inSession: true, hasInventory: false, hasLpPosition: true, lpNetPnlPct: 10 },
         lpConfig
       )
     ).toMatchObject({ action: 'hold' });
@@ -117,7 +94,7 @@ describe('buildNewTokenDecision — LP mode', () => {
   it('returns hold when LP position exists but no PnL data', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, score: 80, hasLpPosition: true },
+        { inSession: true, hasInventory: false, hasLpPosition: true },
         lpConfig
       )
     ).toMatchObject({ action: 'hold' });
@@ -126,7 +103,7 @@ describe('buildNewTokenDecision — LP mode', () => {
   it('returns hold when out of session even in LP mode', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: false, hasInventory: false, score: 99, hasLpPosition: false },
+        { inSession: false, hasInventory: false, hasLpPosition: false },
         lpConfig
       )
     ).toMatchObject({ action: 'hold' });
@@ -138,7 +115,6 @@ describe('buildNewTokenDecision — LP mode', () => {
         {
           inSession: true,
           hasInventory: false,
-          score: 80,
           hasLpPosition: true,
           lpNetPnlPct: 10,
           lpUnclaimedFeeUsd: 30
@@ -154,7 +130,6 @@ describe('buildNewTokenDecision — LP mode', () => {
         {
           inSession: true,
           hasInventory: false,
-          score: 80,
           hasLpPosition: true,
           lpNetPnlPct: 10,
           lpActiveBinStatus: 'out-of-range'

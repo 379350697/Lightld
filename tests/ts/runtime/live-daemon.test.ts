@@ -135,7 +135,7 @@ describe('runLiveDaemon', () => {
 
     expect(result.tickCount).toBe(1);
     expect(health.mode).toBe('healthy');
-    expect(health.pendingSubmission).toBe(false);
+    expect(health.pendingSubmission).toBe(true);
   });
 
   it('keeps the daemon ticking when the mirror runtime degrades', async () => {
@@ -242,8 +242,8 @@ describe('runLiveDaemon', () => {
             fills: []
           },
           context: {
-            pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
-            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+            pool: { address: 'pool-1', liquidityUsd: 10_000 },
+            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
             trader: { hasInventory: false, hasLpPosition: false },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
           }
@@ -286,8 +286,8 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
-          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
@@ -522,8 +522,8 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
-          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         },

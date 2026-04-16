@@ -87,7 +87,7 @@ describe('runLiveCycle', () => {
       stateRootDir: TEST_STATE_DIR,
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { inSession: false, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -179,8 +179,8 @@ describe('runLiveCycle', () => {
       requestedPositionSol: 0.1,
       runtimeMode: 'flatten_only',
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -206,6 +206,30 @@ describe('runLiveCycle', () => {
     expect(allowedExit.action).toBe('withdraw-lp');
   });
 
+  it('opens LP positions once LP eligibility passed', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: {
+          mint: 'mint-safe',
+          inSession: true,
+          hasSolRoute: true,
+          symbol: 'SAFE'
+        },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('add-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+  });
+
   it('does not count exits toward daily spend limits', async () => {
     const stateDir = `${TEST_STATE_DIR}-spending`;
 
@@ -221,8 +245,8 @@ describe('runLiveCycle', () => {
         maxDailySpendSol: 1
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
