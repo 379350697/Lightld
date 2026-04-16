@@ -168,14 +168,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         }
 
         if (result.failureSource === 'recovery') {
+          const hasPendingSubmission = (await pendingSubmissionStore.read()) !== null;
           runtimeState = {
             ...runtimeState,
-            mode: result.reason === 'pending-submission-timeout' ? 'circuit_open' : 'recovering',
-            circuitReason: result.reason,
+            mode:
+              result.reason === 'pending-submission-timeout' && hasPendingSubmission
+                ? 'circuit_open'
+                : hasPendingSubmission
+                  ? 'recovering'
+                  : 'healthy',
+            circuitReason: hasPendingSubmission ? result.reason : '',
             cooldownUntil:
-              result.reason === 'pending-submission-timeout'
+              result.reason === 'pending-submission-timeout' && hasPendingSubmission
                 ? new Date(Date.now() + 5 * 60_000).toISOString()
-                : runtimeState.cooldownUntil,
+                : hasPendingSubmission
+                  ? runtimeState.cooldownUntil
+                  : '',
+            lastHealthyAt: !hasPendingSubmission ? nowIso() : runtimeState.lastHealthyAt,
             updatedAt: nowIso()
           };
         }
