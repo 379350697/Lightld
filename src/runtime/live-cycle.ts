@@ -764,6 +764,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const activeMint = firstString(logContext.tokenMint, context.token.mint);
 
+  if (
+    activeMint &&
+    currentLifecycleState === 'open_pending' &&
+    pendingSubmission?.tokenMint === activeMint &&
+    accountState
+  ) {
+    const hasWalletEvidence = Boolean(
+      accountState.walletTokens?.some((token) => token.mint === activeMint && token.amount > 0) ||
+      accountState.walletLpPositions?.some((position) => position.mint === activeMint)
+    );
+
+    if (!hasWalletEvidence) {
+      return blockCycle({
+        stage: 'runtime-policy',
+        action: 'hold',
+        reason: `mint-open-pending-recovery:${activeMint}`,
+        audit: { reason: `mint-open-pending-recovery:${activeMint}` },
+        severity: 'warning',
+        failureSource: 'runtime-policy',
+        quoteCollected: false
+      });
+    }
+  }
+
   if (pendingSubmission) {
     const lifecycleBeforeRecovery = currentLifecycleState;
     const recoveryGate = await runPendingRecoveryGate({

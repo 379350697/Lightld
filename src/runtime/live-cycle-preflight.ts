@@ -6,12 +6,27 @@ import { reconcileLiveState } from './reconcile-live-state.ts';
 import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-types.ts';
 import { classifyAction } from './action-semantics.ts';
 
+function hasWalletEvidenceOfMint(
+  pendingSubmission: PendingSubmissionSnapshot | null,
+  accountState: LiveAccountState | undefined
+) {
+  if (!pendingSubmission?.tokenMint) {
+    return false;
+  }
+
+  return Boolean(
+    accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0) ||
+    accountState?.walletLpPositions?.some((position) => position.mint === pendingSubmission.tokenMint)
+  );
+}
+
 export async function runPendingRecoveryGate(input: {
   pendingSubmissionStore: PendingSubmissionStore;
   pendingSubmission: PendingSubmissionSnapshot | null;
   confirmationProvider?: LiveConfirmationProvider;
   accountState?: LiveAccountState;
   currentLifecycleState: PositionLifecycleState;
+  now?: Date;
 }) {
   if (!input.pendingSubmission) {
     return {
@@ -21,10 +36,27 @@ export async function runPendingRecoveryGate(input: {
     };
   }
 
+  if (
+    input.currentLifecycleState === 'open_pending' &&
+    input.accountState &&
+    !hasWalletEvidenceOfMint(input.pendingSubmission, input.accountState) &&
+    input.pendingSubmission.orderAction &&
+    input.pendingSubmission.createdAt &&
+    (input.now ?? new Date()).getTime() - Date.parse(input.pendingSubmission.createdAt) >= 5_000
+  ) {
+    await input.pendingSubmissionStore.clear();
+    return {
+      blocked: false as const,
+      reason: 'pending-submission-failed' as const,
+      lifecycleState: 'closed' as const
+    };
+  }
+
   const recovery = await recoverPendingSubmission({
     pendingSubmission: input.pendingSubmission,
     confirmationProvider: input.confirmationProvider,
-    accountState: input.accountState
+    accountState: input.accountState,
+    now: input.now
   });
 
   let lifecycleState = input.currentLifecycleState;

@@ -106,6 +106,47 @@ describe('live-cycle preflight helpers', () => {
     expect(result.lifecycleState).toBe('closed');
   });
 
+  it('drops stale open_pending back to closed when no wallet evidence exists', async () => {
+    let cleared = false;
+    const store = {
+      clear: async () => {
+        cleared = true;
+      },
+      write: async () => {}
+    } as unknown as PendingSubmissionStore;
+
+    const result = await runPendingRecoveryGate({
+      pendingSubmissionStore: store,
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-stale',
+        submissionId: 'sub-stale',
+        confirmationSignature: 'tx-stale',
+        confirmationStatus: 'submitted',
+        finality: 'unknown',
+        tokenMint: 'mint-stale',
+        orderAction: 'add-lp',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
+      now: new Date('2026-03-22T00:00:10.000Z'),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      currentLifecycleState: 'open_pending'
+    });
+
+    expect(cleared).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(result.lifecycleState).toBe('closed');
+  });
+
   it('returns reconciliation result when account state is present', () => {
     const result = runAccountReconciliationGate({
       walletSol: 1,

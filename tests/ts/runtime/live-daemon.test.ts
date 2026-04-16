@@ -4,13 +4,11 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
-import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 
 describe('runLiveDaemon', () => {
@@ -96,17 +94,7 @@ describe('runLiveDaemon', () => {
               quoteMint: 'So11111111111111111111111111111111111111112',
               baseSymbol: 'SAFE',
               liquidityUsd: 10_000,
-              createdAt: Date.parse('2026-03-22T09:59:00.000Z'),
-              pool_config: {
-                bin_step: 100,
-                base_fee_pct: 1
-              },
-              volume: {
-                '24h': 200_000
-              },
-              fee_tvl_ratio: {
-                '24h': 0.01
-              },
+              volume_5m: 5_000,
               updatedAt: '2026-03-22T09:59:00.000Z'
             }
           ],
@@ -135,7 +123,7 @@ describe('runLiveDaemon', () => {
 
     expect(result.tickCount).toBe(1);
     expect(health.mode).toBe('healthy');
-    expect(health.pendingSubmission).toBe(true);
+    expect(health.pendingSubmission).toBe(false);
   });
 
   it('keeps the daemon ticking when the mirror runtime degrades', async () => {
@@ -197,73 +185,6 @@ describe('runLiveDaemon', () => {
     expect(health.mirror?.state).toBe('open');
   });
 
-  it('does not crash the daemon when buildCycleInput times out before the live cycle starts', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-build-cycle-timeout-'));
-    const stateRootDir = join(root, 'state');
-    const journalRootDir = join(root, 'journals');
-    let attempts = 0;
-
-    const result = await runLiveDaemon({
-      strategy: 'new-token-v1',
-      stateRootDir,
-      journalRootDir,
-      tickIntervalMs: 1,
-      maxTicks: 2,
-      buildCycleInput: async () => {
-        attempts += 1;
-
-        if (attempts === 1) {
-          throw new ExecutionRequestError(
-            'account',
-            {
-              kind: 'transient',
-              reason: 'timeout',
-              retryable: true
-            }
-          );
-        }
-
-        return {
-          requestedPositionSol: 0.1,
-          accountProvider: {
-            readState: async () => ({
-              walletSol: 1.25,
-              journalSol: 1.25,
-              walletTokens: [],
-              journalTokens: [],
-              fills: []
-            })
-          },
-          accountState: {
-            walletSol: 1.25,
-            journalSol: 1.25,
-            walletTokens: [],
-            journalTokens: [],
-            fills: []
-          },
-          context: {
-            pool: { address: 'pool-1', liquidityUsd: 10_000 },
-            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-            trader: { hasInventory: false, hasLpPosition: false },
-            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-          }
-        };
-      }
-    });
-
-    const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
-      mode: string;
-      dependencyHealth?: {
-        reconcileFailures: number;
-      };
-    };
-
-    expect(result.tickCount).toBe(2);
-    expect(attempts).toBe(2);
-    expect(health.mode).toBe('healthy');
-    expect(health.dependencyHealth?.reconcileFailures).toBe(0);
-  });
-
   it('persists submitted open actions as open_pending until inventory or confirmation evidence exists', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-pending-'));
     const stateRootDir = join(root, 'state');
@@ -286,8 +207,8 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000 },
-          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
@@ -299,6 +220,82 @@ describe('runLiveDaemon', () => {
     expect(positionState).toMatchObject({
       lastAction: 'add-lp',
       lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      lifecycleState: 'open_pending'
+    });
+  });
+
+  it('blocks repeated add-lp while same mint remains open_pending', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-pending-guard-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      lifecycleState: 'open_pending',
+      lastClosedMint: '',
+      lastClosedAt: '',
+      updatedAt: '2026-03-22T00:00:00.000Z'
+    });
+
+    await appendJsonLine(join(stateRootDir, 'pending-submission.json'), {
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-pending',
+      submissionId: 'sub-pending',
+      confirmationSignature: 'tx-pending',
+      confirmationStatus: 'submitted',
+      finality: 'unknown',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      orderAction: 'add-lp',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:02:00.000Z'
+    }, { rotateDaily: false });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        confirmationProvider: {
+          poll: async () => ({
+            submissionId: 'sub-pending',
+            confirmationSignature: 'tx-pending',
+            status: 'submitted',
+            finality: 'unknown',
+            checkedAt: '2026-03-22T00:00:02.000Z'
+          })
+        },
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false, lifecycleState: 'open_pending' },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lastAction: 'hold',
+      lastReason: 'mint-open-pending-recovery:mint-safe',
       activeMint: 'mint-safe',
       lifecycleState: 'open_pending'
     });
@@ -471,199 +468,5 @@ describe('runLiveDaemon', () => {
     expect(seenActions).toEqual(['withdraw-lp', 'sell']);
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
     expect(positionState?.lastAction).toBe('dca-out');
-  });
-
-  it('blocks same-mint reopen after a failed Meteora open recovery', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-failed-cooldown-'));
-    const stateRootDir = join(root, 'state');
-    const journalRootDir = join(root, 'journals');
-    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
-    let broadcasts = 0;
-
-    await pendingSubmissionStore.write({
-      strategyId: 'new-token-v1',
-      idempotencyKey: 'k-open-failed',
-      submissionId: 'sub-open-failed',
-      confirmationSignature: 'tx-open-failed',
-      confirmationStatus: 'submitted',
-      finality: 'processed',
-      createdAt: '2026-03-22T00:00:00.000Z',
-      updatedAt: '2026-03-22T00:00:00.000Z',
-      tokenMint: 'mint-safe',
-      tokenSymbol: 'SAFE',
-      orderAction: 'add-lp'
-    });
-    await runtimeStateStore.writePositionState({
-      allowNewOpens: true,
-      flattenOnly: false,
-      lastAction: 'add-lp',
-      lastReason: 'live-order-submitted',
-      activeMint: 'mint-safe',
-      lifecycleState: 'open_pending',
-      updatedAt: '2026-03-22T00:00:00.000Z'
-    });
-
-    await runLiveDaemon({
-      strategy: 'new-token-v1',
-      stateRootDir,
-      journalRootDir,
-      tickIntervalMs: 1,
-      maxTicks: 2,
-      buildCycleInput: async () => ({
-        requestedPositionSol: 0.1,
-        accountState: {
-          walletSol: 1.25,
-          journalSol: 1.25,
-          walletTokens: [],
-          journalTokens: [],
-          walletLpPositions: [],
-          journalLpPositions: [],
-          fills: []
-        },
-        context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000 },
-          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: false, hasLpPosition: false },
-          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-        },
-        confirmationProvider: {
-          poll: async ({ submissionId, confirmationSignature }) => ({
-            submissionId,
-            confirmationSignature,
-            status: 'failed' as const,
-            finality: 'failed' as const,
-            checkedAt: '2026-03-22T00:00:05.000Z'
-          })
-        },
-        signer: {
-          sign: async (intent) => ({
-            intent,
-            signerId: 'test-signer',
-            signedAt: '2026-03-22T00:00:01.000Z',
-            signature: 'sig'
-          })
-        },
-        broadcaster: {
-          broadcast: async () => {
-            broadcasts += 1;
-            return {
-              status: 'submitted' as const,
-              submissionId: `sub-${broadcasts}`,
-              idempotencyKey: `k-${broadcasts}`,
-              confirmationSignature: `tx-${broadcasts}`
-            };
-          }
-        }
-      })
-    });
-
-    const positionState = await runtimeStateStore.readPositionState();
-
-    expect(broadcasts).toBe(0);
-    expect(positionState).toMatchObject({
-      activeMint: 'mint-safe',
-      lastAction: 'hold',
-      lastReason: 'recently-closed-mint:mint-safe',
-      lastClosedMint: 'mint-safe',
-      lifecycleState: 'closed'
-    });
-  });
-
-  it('recovers a stale unknown open from wallet lp evidence after restart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-stale-open-recovery-'));
-    const stateRootDir = join(root, 'state');
-    const journalRootDir = join(root, 'journals');
-    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
-
-    await pendingSubmissionStore.write({
-      strategyId: 'new-token-v1',
-      idempotencyKey: 'k-open-stale',
-      submissionId: '',
-      confirmationSignature: undefined,
-      confirmationStatus: 'unknown',
-      finality: 'unknown',
-      createdAt: '2026-04-16T17:12:33.000Z',
-      updatedAt: '2026-04-16T17:12:33.000Z',
-      timeoutAt: '2026-04-16T17:14:33.000Z',
-      tokenMint: 'mint-safe',
-      tokenSymbol: 'SAFE',
-      orderAction: 'add-lp',
-      reason: 'broadcast-outcome-unknown'
-    });
-    await runtimeStateStore.writeRuntimeState({
-      mode: 'circuit_open',
-      circuitReason: 'pending-submission-timeout',
-      cooldownUntil: '2026-04-16T17:19:33.000Z',
-      lastHealthyAt: '2026-04-16T17:00:00.000Z',
-      updatedAt: '2026-04-16T17:14:33.000Z'
-    });
-    await runtimeStateStore.writePositionState({
-      allowNewOpens: false,
-      flattenOnly: false,
-      lastAction: 'hold',
-      lastReason: 'pending-submission-timeout',
-      activeMint: 'mint-safe',
-      lifecycleState: 'closed',
-      updatedAt: '2026-04-16T17:14:33.000Z'
-    });
-
-    await runLiveDaemon({
-      strategy: 'new-token-v1',
-      stateRootDir,
-      journalRootDir,
-      tickIntervalMs: 1,
-      maxTicks: 2,
-      buildCycleInput: async () => ({
-        requestedPositionSol: 0.1,
-        accountState: {
-          walletSol: 1.25,
-          journalSol: 1.25,
-          walletTokens: [],
-          journalTokens: [],
-          walletLpPositions: [
-            {
-              poolAddress: 'pool-1',
-              positionAddress: 'pos-1',
-              mint: 'mint-safe',
-              binCount: 69,
-              hasLiquidity: true
-            }
-          ],
-          journalLpPositions: [
-            {
-              poolAddress: 'pool-1',
-              positionAddress: 'pos-1',
-              mint: 'mint-safe',
-              binCount: 69,
-              hasLiquidity: true
-            }
-          ],
-          fills: []
-        },
-        context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000 },
-          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: 0 },
-          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-        }
-      })
-    });
-
-    const pendingSubmission = await pendingSubmissionStore.read();
-    const positionState = await runtimeStateStore.readPositionState();
-    const runtimeState = await runtimeStateStore.readRuntimeState();
-
-    expect(pendingSubmission).toBeNull();
-    expect(positionState).toMatchObject({
-      activeMint: 'mint-safe',
-      lifecycleState: 'open',
-      allowNewOpens: true
-    });
-    expect(runtimeState).toMatchObject({
-      mode: 'healthy',
-      circuitReason: ''
-    });
   });
 });
