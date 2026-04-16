@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
@@ -95,7 +96,17 @@ describe('runLiveDaemon', () => {
               quoteMint: 'So11111111111111111111111111111111111111112',
               baseSymbol: 'SAFE',
               liquidityUsd: 10_000,
-              volume_5m: 5_000,
+              createdAt: Date.parse('2026-03-22T09:59:00.000Z'),
+              pool_config: {
+                bin_step: 100,
+                base_fee_pct: 1
+              },
+              volume: {
+                '24h': 200_000
+              },
+              fee_tvl_ratio: {
+                '24h': 0.01
+              },
               updatedAt: '2026-03-22T09:59:00.000Z'
             }
           ],
@@ -124,7 +135,7 @@ describe('runLiveDaemon', () => {
 
     expect(result.tickCount).toBe(1);
     expect(health.mode).toBe('healthy');
-    expect(health.pendingSubmission).toBe(true);
+    expect(health.pendingSubmission).toBe(false);
   });
 
   it('keeps the daemon ticking when the mirror runtime degrades', async () => {
@@ -184,6 +195,73 @@ describe('runLiveDaemon', () => {
     expect(flushes).toBe(1);
     expect(health.mode).toBe('healthy');
     expect(health.mirror?.state).toBe('open');
+  });
+
+  it('does not crash the daemon when buildCycleInput times out before the live cycle starts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-build-cycle-timeout-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    let attempts = 0;
+
+    const result = await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => {
+        attempts += 1;
+
+        if (attempts === 1) {
+          throw new ExecutionRequestError(
+            'account',
+            {
+              kind: 'transient',
+              reason: 'timeout',
+              retryable: true
+            }
+          );
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountProvider: {
+            readState: async () => ({
+              walletSol: 1.25,
+              journalSol: 1.25,
+              walletTokens: [],
+              journalTokens: [],
+              fills: []
+            })
+          },
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            fills: []
+          },
+          context: {
+            pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
+      mode: string;
+      dependencyHealth?: {
+        reconcileFailures: number;
+      };
+    };
+
+    expect(result.tickCount).toBe(2);
+    expect(attempts).toBe(2);
+    expect(health.mode).toBe('healthy');
+    expect(health.dependencyHealth?.reconcileFailures).toBe(0);
   });
 
   it('persists submitted open actions as open_pending until inventory or confirmation evidence exists', async () => {

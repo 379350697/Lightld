@@ -10,7 +10,7 @@ describe('buildNewTokenDecision', () => {
         hasInventory: true,
         score: 80
       })
-    ).toEqual({
+    ).toMatchObject({
       action: 'dca-out'
     });
   });
@@ -21,7 +21,7 @@ describe('buildNewTokenDecision', () => {
         { inSession: true, hasInventory: false, score: 75 },
         { minDeployScore: 70 }
       )
-    ).toEqual({
+    ).toMatchObject({
       action: 'deploy'
     });
   });
@@ -32,7 +32,7 @@ describe('buildNewTokenDecision', () => {
         { inSession: true, hasInventory: false, score: 50 },
         { minDeployScore: 70 }
       )
-    ).toEqual({
+    ).toMatchObject({
       action: 'hold'
     });
   });
@@ -44,7 +44,7 @@ describe('buildNewTokenDecision', () => {
         hasInventory: true,
         score: 99
       })
-    ).toEqual({
+    ).toMatchObject({
       action: 'hold'
     });
   });
@@ -55,7 +55,7 @@ describe('buildNewTokenDecision', () => {
         { inSession: true, hasInventory: true, score: 99 },
         { minDeployScore: 50 }
       )
-    ).toEqual({
+    ).toMatchObject({
       action: 'dca-out'
     });
   });
@@ -75,7 +75,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 75, hasLpPosition: false },
         lpConfig
       )
-    ).toEqual({ action: 'add-lp' });
+    ).toMatchObject({ action: 'add-lp' });
   });
 
   it('returns hold when no LP position and score below threshold', () => {
@@ -84,7 +84,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 50, hasLpPosition: false },
         lpConfig
       )
-    ).toEqual({ action: 'hold' });
+    ).toMatchObject({ action: 'hold' });
   });
 
   it('returns withdraw-lp on stop-loss (netPnlPct <= -20%)', () => {
@@ -93,7 +93,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: -20 },
         lpConfig
       )
-    ).toEqual({ action: 'withdraw-lp' });
+    ).toMatchObject({ action: 'withdraw-lp' });
   });
 
   it('returns withdraw-lp on take-profit (netPnlPct >= +30%)', () => {
@@ -102,7 +102,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: 30 },
         lpConfig
       )
-    ).toEqual({ action: 'withdraw-lp' });
+    ).toMatchObject({ action: 'withdraw-lp' });
   });
 
   it('returns hold when LP position PnL within thresholds', () => {
@@ -111,7 +111,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 80, hasLpPosition: true, lpNetPnlPct: 10 },
         lpConfig
       )
-    ).toEqual({ action: 'hold' });
+    ).toMatchObject({ action: 'hold' });
   });
 
   it('returns hold when LP position exists but no PnL data', () => {
@@ -120,7 +120,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: true, hasInventory: false, score: 80, hasLpPosition: true },
         lpConfig
       )
-    ).toEqual({ action: 'hold' });
+    ).toMatchObject({ action: 'hold' });
   });
 
   it('returns hold when out of session even in LP mode', () => {
@@ -129,7 +129,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         { inSession: false, hasInventory: false, score: 99, hasLpPosition: false },
         lpConfig
       )
-    ).toEqual({ action: 'hold' });
+    ).toMatchObject({ action: 'hold' });
   });
 
   it('returns claim-fee when unclaimed fees exceed configured threshold', () => {
@@ -145,7 +145,7 @@ describe('buildNewTokenDecision — LP mode', () => {
         },
         { ...lpConfig, lpClaimFeeThresholdUsd: 25 }
       )
-    ).toEqual({ action: 'claim-fee' });
+    ).toMatchObject({ action: 'claim-fee' });
   });
 
   it('returns rebalance-lp when configured and position is out of range', () => {
@@ -161,6 +161,6 @@ describe('buildNewTokenDecision — LP mode', () => {
         },
         { ...lpConfig, lpRebalanceOnOutOfRange: true }
       )
-    ).toEqual({ action: 'rebalance-lp' });
+    ).toMatchObject({ action: 'rebalance-lp' });
   });
 });

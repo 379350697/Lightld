@@ -1,4 +1,8 @@
 import type { FetchImpl } from '../../ingest/shared/http-client.ts';
+import {
+  classifyRetryableRpcError,
+  type RpcEndpointRegistry
+} from '../rpc-endpoint-registry.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -52,6 +56,7 @@ type JupiterClientOptions = {
   apiKey?: string;
   fetchImpl?: FetchImpl;
   timeoutMs?: number;
+  endpointRegistry?: RpcEndpointRegistry;
 };
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -63,6 +68,7 @@ export class JupiterClient {
   private readonly apiKey?: string;
   private readonly fetchImpl: FetchImpl;
   private readonly timeoutMs: number;
+  private readonly endpointRegistry?: RpcEndpointRegistry;
 
   constructor(options: JupiterClientOptions = {}) {
     this.apiUrl = (options.apiUrl ?? 'https://api.jup.ag').replace(/\/$/, '');
@@ -73,6 +79,7 @@ export class JupiterClient {
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 15_000;
+    this.endpointRegistry = options.endpointRegistry;
   }
 
   private buildHeaders(): Record<string, string> {
@@ -95,31 +102,15 @@ export class JupiterClient {
       slippageBps: String(params.slippageBps ?? 50),
       swapMode: params.swapMode ?? 'ExactIn'
     });
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const response = await this.fetchImpl(
-        `${this.apiUrl}/swap/v1/quote?${searchParams.toString()}`,
+    return this.runAgainstEndpoint((apiUrl) =>
+      this.executeJsonRequest<JupiterQuoteResponse>(
+        `${apiUrl}/swap/v1/quote?${searchParams.toString()}`,
         {
           method: 'GET',
-          headers: this.buildHeaders(),
-          signal: controller.signal
+          headers: this.buildHeaders()
         }
-      );
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(
-          `Jupiter quote failed: ${response.status} ${response.statusText} ${body}`.trim()
-        );
-      }
-
-      return response.json() as Promise<JupiterQuoteResponse>;
-    } finally {
-      clearTimeout(timeout);
-    }
+      )
+    );
   }
 
   async getSwapTransaction(
@@ -127,9 +118,6 @@ export class JupiterClient {
     userPublicKey: string,
     options: { jitoTipLamports?: number } = {}
   ): Promise<JupiterSwapResponse> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
     const swapBody: Record<string, unknown> = {
       userPublicKey,
       quoteResponse,
@@ -143,29 +131,16 @@ export class JupiterClient {
         jitoTipLamports: options.jitoTipLamports
       };
     }
-
-    try {
-      const response = await this.fetchImpl(
-        `${this.apiUrl}/swap/v1/swap`,
+    return this.runAgainstEndpoint((apiUrl) =>
+      this.executeJsonRequest<JupiterSwapResponse>(
+        `${apiUrl}/swap/v1/swap`,
         {
           method: 'POST',
           headers: this.buildHeaders(),
-          body: JSON.stringify(swapBody),
-          signal: controller.signal
+          body: JSON.stringify(swapBody)
         }
-      );
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(
-          `Jupiter swap failed: ${response.status} ${response.statusText} ${body}`.trim()
-        );
-      }
-
-      return response.json() as Promise<JupiterSwapResponse>;
-    } finally {
-      clearTimeout(timeout);
-    }
+      )
+    );
   }
 
   buildBuyQuoteParams(tokenMint: string, solAmount: number, slippageBps = 50): JupiterQuoteParams {
@@ -186,5 +161,51 @@ export class JupiterClient {
       slippageBps,
       swapMode: 'ExactIn'
     };
+  }
+
+  private async runAgainstEndpoint<T>(operation: (apiUrl: string) => Promise<T>) {
+    const registry = this.endpointRegistry;
+    if (!registry) {
+      return operation(this.apiUrl);
+    }
+
+    return registry.runWithEndpoint({
+      kind: 'jupiter',
+      candidates: [this.apiUrl],
+      execute: operation,
+      classifyError: (error) => classifyRetryableRpcError(error)
+    });
+  }
+
+  private async executeJsonRequest<T>(url: string, init: RequestInit): Promise<T> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const response = await this.fetchImpl(url, {
+        ...init,
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw Object.assign(
+          new Error(
+            `${init.method === 'POST' ? 'Jupiter swap' : 'Jupiter quote'} failed: ${response.status} ${response.statusText} ${body}`.trim()
+          ),
+          { status: response.status }
+        );
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error('timeout');
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }

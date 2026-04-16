@@ -129,9 +129,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   try {
     while (tickCount < maxTicks) {
       tickCount += 1;
-      const cycleInput = await buildCycleInput(tickCount);
-      const pendingSubmission = await pendingSubmissionStore.read();
-      const positionState = await runtimeStateStore.readPositionState() ?? undefined;
+      let cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined;
+      let pendingSubmission = await pendingSubmissionStore.read();
+      let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
       const derived = deriveRuntimeMode({
         currentMode: runtimeState.mode,
@@ -162,6 +162,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       };
 
       try {
+        cycleInput = await buildCycleInput(tickCount);
+        pendingSubmission = await pendingSubmissionStore.read();
+        positionState = await runtimeStateStore.readPositionState() ?? undefined;
+
         const result = await runLiveCycle({
           strategy: options.strategy,
           journalRootDir,
@@ -388,7 +392,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lifecycleState: resolveLifecycleStateForPersist({
             previousLifecycleState: positionState?.lifecycleState,
             pendingSubmission: (await pendingSubmissionStore.read()) !== null,
-            accountState: cycleInput.accountState
+            accountState: cycleInput?.accountState
           }),
           lastClosedMint: positionState?.lastClosedMint,
           lastClosedAt: positionState?.lastClosedAt,

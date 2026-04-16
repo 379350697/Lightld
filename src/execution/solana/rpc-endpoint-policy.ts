@@ -1,6 +1,7 @@
 type RpcEndpointPolicy = {
   writeRpcUrls: string[];
   readRpcUrls: string[];
+  dlmmRpcUrls: string[];
   dlmmRpcUrl: string;
 };
 
@@ -70,7 +71,7 @@ export function resolveRpcEndpointPolicy(
   const explicitReadUrls = splitUrls(env.SOLANA_RPC_READ_URLS);
   const explicitTradeRpc = normalizeUrl(env.SOLANA_RPC_URL);
   const explicitQueryRpc = normalizeUrl(env.SOLANA_QUERY_RPC_URL);
-  const explicitDlmmRpc = normalizeUrl(env.SOLANA_DLMM_RPC_URL);
+  const explicitDlmmUrls = splitUrls(env.SOLANA_DLMM_RPC_URLS ?? env.SOLANA_DLMM_RPC_URL);
 
   const defaultWriteUrls = getDefaultTradeRpcUrls();
   const defaultReadUrls = getDefaultReadRpcUrls();
@@ -88,11 +89,18 @@ export function resolveRpcEndpointPolicy(
     ...writeRpcUrls
   ]);
 
-  const dlmmRpcUrl = explicitDlmmRpc || explicitQueryRpc || readRpcUrls[0] || writeRpcUrls[0] || PUBLIC_MAINNET_RPC;
+  const dlmmRpcUrls = uniqueUrls([
+    ...explicitDlmmUrls,
+    ...(explicitQueryRpc ? [explicitQueryRpc] : []),
+    ...readRpcUrls,
+    ...writeRpcUrls
+  ]);
+  const dlmmRpcUrl = dlmmRpcUrls[0] ?? PUBLIC_MAINNET_RPC;
 
   return {
     writeRpcUrls,
     readRpcUrls,
+    dlmmRpcUrls,
     dlmmRpcUrl
   };
 }

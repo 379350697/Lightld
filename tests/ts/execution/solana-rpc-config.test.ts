@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { RpcEndpointRegistry } from '../../../src/execution/rpc-endpoint-registry';
 import { loadSolanaExecutionConfig } from '../../../src/execution/solana/solana-execution-config';
 import { SolanaRpcClient } from '../../../src/execution/solana/solana-rpc-client';
 
@@ -19,6 +20,8 @@ describe('solana rpc config policy', () => {
     expect(config.writeRpcUrls[0]).toContain('mainnet.helius-rpc.com');
     expect(config.readRpcUrls[0]).toContain('alchemy.com');
     expect(config.dlmmRpcUrl).toContain('alchemy.com');
+    expect(config.dlmmRpcUrls[0]).toContain('alchemy.com');
+    expect(config.dlmmRpcUrls).toContain(config.readRpcUrls[0]);
   });
 
   it('accepts explicit write/read/query overrides', () => {
@@ -42,20 +45,47 @@ describe('solana rpc config policy', () => {
     ]);
     expect(config.rpcUrl).toBe('https://trade-a.example');
     expect(config.dlmmRpcUrl).toBe('https://dlmm.example');
+    expect(config.dlmmRpcUrls.slice(0, 4)).toEqual([
+      'https://dlmm.example',
+      'https://query-primary.example',
+      'https://read-a.example',
+      'https://read-b.example'
+    ]);
+  });
+
+  it('keeps dlmm explicit rpc first but appends the read pool as fallback endpoints', () => {
+    const config = loadSolanaExecutionConfig(envBase({
+      SOLANA_RPC_READ_URLS: 'https://read-a.example,https://read-b.example',
+      SOLANA_DLMM_RPC_URL: 'https://dlmm-primary.example'
+    }));
+
+    expect(config.dlmmRpcUrls.slice(0, 3)).toEqual([
+      'https://dlmm-primary.example',
+      'https://read-a.example',
+      'https://read-b.example'
+    ]);
   });
 
   it('rpc client retries write and read urls in order', async () => {
     const calls: string[] = [];
+    const registry = new RpcEndpointRegistry({ maxWaitMs: 0 });
+    registry.registerMany([
+      { url: 'https://write-1.example', kind: 'solana-write', maxConcurrency: 1 },
+      { url: 'https://write-2.example', kind: 'solana-write', maxConcurrency: 1 },
+      { url: 'https://read-1.example', kind: 'solana-read', maxConcurrency: 1 },
+      { url: 'https://read-2.example', kind: 'solana-read', maxConcurrency: 1 }
+    ]);
     const client = new SolanaRpcClient({
       writeRpcUrls: ['https://write-1.example', 'https://write-2.example'],
       readRpcUrls: ['https://read-1.example', 'https://read-2.example'],
+      endpointRegistry: registry,
       fetchImpl: async (input, init) => {
         const url = String(input);
         calls.push(url);
         const payload = JSON.parse(String(init?.body ?? '{}')) as { method: string };
 
         if (url.includes('write-1') || url.includes('read-1')) {
-          throw new Error('boom');
+          throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
         }
 
         if (payload.method === 'sendTransaction') {

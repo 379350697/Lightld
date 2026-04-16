@@ -5,6 +5,7 @@ import { SolanaRpcClient } from '../execution/solana/solana-rpc-client.ts';
 import { loadSolanaKeypair } from '../execution/solana/solana-transaction-signer.ts';
 import { createSolanaExecutionServer } from '../execution/solana/solana-execution-server.ts';
 import { MeteoraDlmmClient } from '../execution/solana/meteora-dlmm-client.ts';
+import { RpcEndpointRegistry } from '../execution/rpc-endpoint-registry.ts';
 
 async function main() {
   const config = loadSolanaExecutionConfig();
@@ -16,21 +17,54 @@ async function main() {
   process.stdout.write(`Wallet: ${keypair.publicKey.toBase58()}\n`);
   process.stdout.write(`Trade RPCs: ${config.writeRpcUrls.join(', ')}\n`);
   process.stdout.write(`Read RPCs: ${config.readRpcUrls.join(', ')}\n`);
-  process.stdout.write(`DLMM RPC: ${config.dlmmRpcUrl}\n`);
+  process.stdout.write(`DLMM RPCs: ${config.dlmmRpcUrls.join(', ')}\n`);
   process.stdout.write(`Jupiter: ${config.jupiterApiUrl}\n`);
+
+  const endpointRegistry = new RpcEndpointRegistry({
+    rateLimitedCooldownMs: config.rpc429CooldownMs,
+    timeoutCooldownMs: config.rpcTimeoutCooldownMs,
+    serverErrorCooldownMs: config.rpc5xxCooldownMs,
+    maxWaitMs: config.rpcEndpointMaxWaitMs
+  });
+  endpointRegistry.registerMany([
+    ...config.writeRpcUrls.map((url) => ({
+      url,
+      kind: 'solana-write' as const,
+      maxConcurrency: config.solanaWriteConcurrency
+    })),
+    ...config.readRpcUrls.map((url) => ({
+      url,
+      kind: 'solana-read' as const,
+      maxConcurrency: config.solanaReadConcurrency
+    })),
+    ...config.dlmmRpcUrls.map((url) => ({
+      url,
+      kind: 'dlmm' as const,
+      maxConcurrency: config.dlmmConcurrency
+    })),
+    {
+      url: config.jupiterApiUrl,
+      kind: 'jupiter' as const,
+      maxConcurrency: config.jupiterConcurrency
+    }
+  ]);
 
   const rpcClient = new SolanaRpcClient({
     rpcUrl: config.rpcUrl,
     writeRpcUrls: config.writeRpcUrls,
-    readRpcUrls: config.readRpcUrls
+    readRpcUrls: config.readRpcUrls,
+    endpointRegistry
   });
   const jupiterClient = new JupiterClient({
     apiUrl: config.jupiterApiUrl,
-    apiKey: config.jupiterApiKey
+    apiKey: config.jupiterApiKey,
+    endpointRegistry
   });
 
-  const connection = new Connection(config.dlmmRpcUrl);
-  const dlmmClient = new MeteoraDlmmClient(connection);
+  const dlmmClient = new MeteoraDlmmClient(
+    config.dlmmRpcUrls.map((url) => new Connection(url)),
+    { endpointRegistry }
+  );
 
   const server = createSolanaExecutionServer({
     host: config.host,

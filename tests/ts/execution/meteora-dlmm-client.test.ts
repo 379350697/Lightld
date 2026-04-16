@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { RpcEndpointRegistry } from '../../../src/execution/rpc-endpoint-registry';
 import { MeteoraDlmmClient, SOL_MINT } from '../../../src/execution/solana/meteora-dlmm-client';
 
 const require = createRequire(import.meta.url);
@@ -194,5 +195,36 @@ describe('MeteoraDlmmClient', () => {
         hasClaimableFees: false
       })
     ]);
+  });
+
+  it('falls back to later DLMM connections when the first rpc is rate limited', async () => {
+    const poolAddress = makePoolAddress(110).toBase58();
+    const calls: string[] = [];
+    const registry = new RpcEndpointRegistry({ maxWaitMs: 0 });
+    registry.registerMany([
+      { url: 'primary', kind: 'dlmm', maxConcurrency: 1 },
+      { url: 'secondary', kind: 'dlmm', maxConcurrency: 1 }
+    ]);
+
+    dlmmPkg.getAllLbPairPositionsByUser = vi.fn(async (connection: { label: string }) => {
+      calls.push(connection.label);
+      if (connection.label === 'primary') {
+        throw new Error('429 Too Many Requests');
+      }
+
+      return new Map([[poolAddress, { lbPairPositionsData: [] }]]);
+    });
+
+    const client = new MeteoraDlmmClient([
+      { label: 'primary' } as any,
+      { label: 'secondary' } as any
+    ], {
+      endpointRegistry: registry
+    });
+
+    await expect(client.getPositions(makePoolAddress(1))).resolves.toEqual(
+      new Map([[poolAddress, { lbPairPositionsData: [] }]])
+    );
+    expect(calls).toEqual(['primary', 'secondary']);
   });
 });

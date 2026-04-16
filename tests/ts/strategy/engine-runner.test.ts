@@ -22,7 +22,7 @@ describe('runEngineCycle', () => {
     });
 
     expect(result.action).toBe('dca-out');
-    expect(result.audit.reason).toBe('decision-generated');
+    expect(result.audit.reason).toBe('spot-has-inventory-no-pnl');
   });
 
   it('returns deploy for new-token when no inventory and score meets threshold', () => {
@@ -44,7 +44,7 @@ describe('runEngineCycle', () => {
     });
 
     expect(result.action).toBe('deploy');
-    expect(result.audit.reason).toBe('decision-generated');
+    expect(result.audit.reason).toBe('spot-open-approved');
   });
 
   it('returns hold when hard gates reject the snapshot', () => {

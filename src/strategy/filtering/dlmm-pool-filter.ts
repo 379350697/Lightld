@@ -69,6 +69,10 @@ export function evaluateDlmmPool(
     reasons.push('not-sol-paired');
   }
 
+  if (candidate.binStep < config.minBinStep) {
+    reasons.push('bin-step-too-low');
+  }
+
   if (candidate.tvl < config.minTvlUsd) {
     reasons.push('insufficient-tvl');
   }

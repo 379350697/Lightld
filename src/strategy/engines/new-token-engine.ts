@@ -103,8 +103,12 @@ export function buildNewTokenDecision(
       return { action: 'hold', reason: 'lp-position-maintain' };
     }
 
-    // No LP position, open directly. Safety/LP filters already gated candidate quality upstream.
-    return { action: 'add-lp', reason: 'lp-open-approved' };
+    if (snapshot.score >= config.minDeployScore) {
+      // No LP position, open directly once the candidate clears the deploy threshold.
+      return { action: 'add-lp', reason: 'lp-open-approved' };
+    }
+
+    return { action: 'hold', reason: 'lp-score-below-min-deploy' };
   }
 
   // ===== Original swap mode (unchanged) =====
@@ -123,5 +127,9 @@ export function buildNewTokenDecision(
     return { action: 'dca-out', reason: 'spot-has-inventory-no-pnl' };
   }
 
-  return { action: 'deploy', reason: 'spot-open-approved' };
+  if (snapshot.score >= config.minDeployScore) {
+    return { action: 'deploy', reason: 'spot-open-approved' };
+  }
+
+  return { action: 'hold', reason: 'spot-score-below-min-deploy' };
 }
