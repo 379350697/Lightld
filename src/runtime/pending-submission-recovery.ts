@@ -36,6 +36,12 @@ function hasMatchingFill(
   }
 
   return accountState.fills.some((fill) => {
+    const fillAmount = typeof fill.amount === 'number' ? fill.amount : 0;
+    const hasExecutedAmount = fillAmount > 0;
+    if (!hasExecutedAmount) {
+      return false;
+    }
+
     if (
       pendingSubmission.confirmationSignature &&
       fill.confirmationSignature &&
