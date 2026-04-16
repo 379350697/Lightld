@@ -207,7 +207,7 @@ function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string,
   if (!accountState || !accountState.fills || !mint) return 0;
   
   const mintFills = accountState.fills
-    .filter(f => f.mint === mint && f.side === 'buy' && f.recordedAt)
+    .filter(f => f.mint === mint && (f.side === 'buy' || f.side === 'add-lp') && f.recordedAt)
     .sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
 
   if (mintFills.length > 0) {
@@ -702,6 +702,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     config: {
       minScore: 70,
       minDeployScore: config.live.minDeployScore ?? 70,
+      maxHoldHours: config.live.maxHoldHours ?? 18,
       requireSolRoute: config.hardGates.requireSolRoute,
       minLiquidityUsd: config.hardGates.minLiquidityUsd,
       minPoolAgeMinutes: config.hardGates.minPoolAgeMinutes,

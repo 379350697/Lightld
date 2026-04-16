@@ -10,6 +10,7 @@ export const LiveConfigSchema = z.object({
   maxLivePositionSol: z.number().positive(),
   autoFlattenRequired: z.boolean(),
   minDeployScore: z.number().nonnegative().default(70),
+  maxHoldHours: z.number().positive().default(18),
   
   // Strict Rug Guards
   requireMintAuthorityRevoked: z.boolean().default(false),

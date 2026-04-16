@@ -23,6 +23,7 @@ type NewTokenConfig = {
   minDeployScore: number;
   takeProfitPct?: number;
   stopLossPct?: number;
+  maxHoldHours?: number;
   /** Enable LP mode (bid-ask single-sided SOL) */
   lpEnabled?: boolean;
   /** LP stop-loss threshold (net PnL %) */
@@ -53,7 +54,7 @@ export function buildNewTokenDecision(
   }
 
   // ===== 18-Hour Force Exit =====
-  const maxHoldMs = 18 * 60 * 60 * 1000;
+  const maxHoldMs = (config.maxHoldHours ?? 18) * 60 * 60 * 1000;
   if (typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs) {
     if (snapshot.hasLpPosition) {
       return { action: 'withdraw-lp', reason: 'max-hold-with-lp-position' };

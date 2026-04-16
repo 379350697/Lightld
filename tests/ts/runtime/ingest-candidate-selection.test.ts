@@ -75,6 +75,7 @@ function makeConfig(): StrategyConfig {
       maxLivePositionSol: 0.15,
       autoFlattenRequired: true,
       minDeployScore: 70,
+      maxHoldHours: 10,
       requireMintAuthorityRevoked: false
     }
   };
