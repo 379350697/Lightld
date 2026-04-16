@@ -111,12 +111,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       const cycleInput = await buildCycleInput(tickCount);
       const pendingSubmission = await pendingSubmissionStore.read();
       const positionState = await runtimeStateStore.readPositionState() ?? undefined;
+      const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
       const derived = deriveRuntimeMode({
         currentMode: runtimeState.mode,
         quoteFailures: dependencyHealth.quote.consecutiveFailures,
         reconcileFailures: dependencyHealth.account.consecutiveFailures,
         hasUnknownSubmissionOutcome: pendingSubmission?.confirmationStatus === 'unknown',
-        cooldownActive: runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso(),
+        cooldownActive,
         flattenOnlyRequested: runtimeState.mode === 'flatten_only'
       });
       const previousMode = runtimeState.mode;
