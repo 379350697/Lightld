@@ -9,6 +9,7 @@ import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
+import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 
 describe('runLiveDaemon', () => {
@@ -392,5 +393,102 @@ describe('runLiveDaemon', () => {
     expect(seenActions).toEqual(['withdraw-lp', 'sell']);
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
     expect(positionState?.lastAction).toBe('dca-out');
+  });
+
+  it('blocks same-mint reopen after a failed Meteora open recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-failed-cooldown-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+    let broadcasts = 0;
+
+    await pendingSubmissionStore.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-open-failed',
+      submissionId: 'sub-open-failed',
+      confirmationSignature: 'tx-open-failed',
+      confirmationStatus: 'submitted',
+      finality: 'processed',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      orderAction: 'add-lp'
+    });
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      lifecycleState: 'open_pending',
+      updatedAt: '2026-03-22T00:00:00.000Z'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'failed' as const,
+            finality: 'failed' as const,
+            checkedAt: '2026-03-22T00:00:05.000Z'
+          })
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'test-signer',
+            signedAt: '2026-03-22T00:00:01.000Z',
+            signature: 'sig'
+          })
+        },
+        broadcaster: {
+          broadcast: async () => {
+            broadcasts += 1;
+            return {
+              status: 'submitted' as const,
+              submissionId: `sub-${broadcasts}`,
+              idempotencyKey: `k-${broadcasts}`,
+              confirmationSignature: `tx-${broadcasts}`
+            };
+          }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(broadcasts).toBe(0);
+    expect(positionState).toMatchObject({
+      activeMint: 'mint-safe',
+      lastAction: 'hold',
+      lastReason: 'recently-closed-mint:mint-safe',
+      lastClosedMint: 'mint-safe',
+      lifecycleState: 'closed'
+    });
   });
 });

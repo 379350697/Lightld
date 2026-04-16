@@ -22,6 +22,10 @@ export type MeteoraLpPositionSnapshot = {
   mint: string;
 };
 
+function flattenTransactions<T>(transactions: Array<T | T[]>) {
+  return transactions.flatMap((transaction) => Array.isArray(transaction) ? transaction : [transaction]);
+}
+
 export class MeteoraDlmmClient {
   private connection: Connection;
 
@@ -37,6 +41,11 @@ export class MeteoraDlmmClient {
   ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair: Keypair }> {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
     const activeBin = await dlmmPool.getActiveBin();
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
+
+    if (userPositions.length > 0) {
+      throw new Error(`Existing Meteora position already present for pool ${poolAddress}; refusing to initialize a duplicate position`);
+    }
 
     const TOTAL_BINS = 69;
     const minBinId = activeBin.binId - Math.floor(TOTAL_BINS / 2);
@@ -72,49 +81,39 @@ export class MeteoraDlmmClient {
 
   async removeLiquidity(walletPublicKey: PublicKey, poolAddress: string) {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
-    
-    const positionsByPool = await DLMM.getAllLbPairPositionsByUser(this.connection, walletPublicKey);
-    const poolPositions = positionsByPool.get(poolAddress);
-    if (!poolPositions || poolPositions.lbPairPositionsData.length === 0) {
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
+
+    if (userPositions.length === 0) {
       throw new Error('Position not found for pool');
     }
 
-    const positionInfo = poolPositions.lbPairPositionsData[0];
-    const positionPubKey = positionInfo.publicKey;
+    const transactions = await Promise.all(
+      userPositions.map((positionInfo: any) => dlmmPool.removeLiquidity({
+        user: walletPublicKey,
+        position: positionInfo.publicKey,
+        fromBinId: positionInfo.positionData.lowerBinId,
+        toBinId: positionInfo.positionData.upperBinId,
+        bps: new BN(10000), // 100%
+        shouldClaimAndClose: true,
+        skipUnwrapSOL: false,
+      }))
+    );
 
-    const removeLiquidityIxs = await dlmmPool.removeLiquidity({
-      user: walletPublicKey,
-      position: positionPubKey,
-      fromBinId: positionInfo.positionData.lowerBinId,
-      toBinId: positionInfo.positionData.upperBinId,
-      bps: new BN(10000), // 100%
-      shouldClaimAndClose: true,
-      skipUnwrapSOL: false,
-    });
-    
-    return removeLiquidityIxs;
+    return flattenTransactions(transactions);
   }
 
   async claimFee(walletPublicKey: PublicKey, poolAddress: string) {
     const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
 
-    const positionsByPool = await DLMM.getAllLbPairPositionsByUser(this.connection, walletPublicKey);
-    const poolPositions = positionsByPool.get(poolAddress);
-    if (!poolPositions || poolPositions.lbPairPositionsData.length === 0) {
+    if (userPositions.length === 0) {
       throw new Error('Position not found for pool');
     }
-    const positionInfo = poolPositions.lbPairPositionsData[0];
-    const positionPubKey = positionInfo.publicKey;
 
-    return await dlmmPool.removeLiquidity({
-      user: walletPublicKey,
-      position: positionPubKey,
-      fromBinId: positionInfo.positionData.lowerBinId,
-      toBinId: positionInfo.positionData.upperBinId,
-      bps: new BN(0), // 0% means just claim fee and keep liquidity
-      shouldClaimAndClose: false,
-      skipUnwrapSOL: false,
-    });
+    return flattenTransactions(await dlmmPool.claimAllSwapFee({
+      owner: walletPublicKey,
+      positions: userPositions
+    }));
   }
 
   async getPositions(walletPublicKey: PublicKey): Promise<Map<string, PositionInfo>> {

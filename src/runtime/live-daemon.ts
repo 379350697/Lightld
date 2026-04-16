@@ -284,8 +284,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activeMint: persistedActiveMint
         });
 
-        const closedMint = isExposureReducingAction(result.action) ? persistedActiveMint : (positionState?.lastClosedMint ?? '');
-        const closedAt = isExposureReducingAction(result.action) ? nowIso() : (positionState?.lastClosedAt ?? '');
+        const failedOpenCooldownMint = result.reason.startsWith('failed-open-cooldown:')
+          ? result.reason.slice('failed-open-cooldown:'.length)
+          : '';
+        const shouldRecordClosedMint = isExposureReducingAction(result.action) || failedOpenCooldownMint.length > 0;
+        const closedMint = shouldRecordClosedMint
+          ? (failedOpenCooldownMint || persistedActiveMint)
+          : (positionState?.lastClosedMint ?? '');
+        const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',

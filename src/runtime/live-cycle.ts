@@ -670,6 +670,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const activeMint = firstString(logContext.tokenMint, context.token.mint);
 
   if (pendingSubmission) {
+    const lifecycleBeforeRecovery = currentLifecycleState;
     const recoveryGate = await runPendingRecoveryGate({
       pendingSubmissionStore,
       pendingSubmission,
@@ -689,6 +690,22 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         audit: { reason: recoveryGate.reason },
         severity: recoveryGate.reason === 'pending-submission-timeout' ? 'error' : 'warning',
         failureKind: recoveryGate.reason === 'pending-submission-timeout' ? 'unknown' : undefined,
+        failureSource: 'recovery',
+        quoteCollected: false
+      });
+    }
+
+    if (
+      activeMint &&
+      lifecycleBeforeRecovery === 'open_pending' &&
+      recoveryGate.reason === 'pending-submission-failed'
+    ) {
+      return blockCycle({
+        stage: 'recovery',
+        action: 'hold',
+        reason: `failed-open-cooldown:${activeMint}`,
+        audit: { reason: `failed-open-cooldown:${activeMint}` },
+        severity: 'warning',
         failureSource: 'recovery',
         quoteCollected: false
       });

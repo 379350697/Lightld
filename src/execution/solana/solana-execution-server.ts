@@ -64,6 +64,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
+  const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
 
   return {
     get origin() {
@@ -170,8 +171,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 throw new Error('DLMM client not configured');
               }
 
-              let txParams: any;
-
+              let txBatch: any[] = [];
               let signers: Keypair[] = [keypair];
 
               if (side === 'add-lp') {
@@ -180,27 +180,42 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   intent.poolAddress,
                   intent.outputSol
                 );
-                txParams = Array.isArray(result.transaction) ? result.transaction[0] : result.transaction;
+                txBatch = toTransactionBatch(result.transaction);
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
                 }
               } else if (side === 'withdraw-lp') {
-                txParams = await options.dlmmClient.removeLiquidity(keypair.publicKey, intent.poolAddress);
+                txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(keypair.publicKey, intent.poolAddress));
               } else if (side === 'claim-fee') {
-                txParams = await options.dlmmClient.claimFee(keypair.publicKey, intent.poolAddress);
+                txBatch = toTransactionBatch(await options.dlmmClient.claimFee(keypair.publicKey, intent.poolAddress));
               } else {
                 throw new Error(`Unsupported side: ${side}`);
               }
 
-              if (Array.isArray(txParams)) {
-                txParams = txParams[0]; // just take first
+              if (txBatch.length === 0) {
+                throw new Error(`No Meteora transactions returned for side ${side}`);
               }
 
               const { value: blockhash } = await rpcClient.getLatestBlockhash();
-              txParams.recentBlockhash = blockhash.blockhash;
-              txParams.feePayer = keypair.publicKey;
-              txParams.sign(...signers); 
-              signedBase64 = txParams.serialize().toString('base64');
+              let txSignature = '';
+
+              for (const txParams of txBatch) {
+                txParams.recentBlockhash = blockhash.blockhash;
+                txParams.feePayer = keypair.publicKey;
+                txParams.sign(...signers);
+                signedBase64 = txParams.serialize().toString('base64');
+                txSignature = await rpcClient.sendRawTransaction(signedBase64);
+              }
+
+              const result: LiveBroadcastResult = {
+                status: 'submitted',
+                submissionId: txSignature,
+                idempotencyKey: intent.idempotencyKey,
+                confirmationSignature: txSignature
+              };
+
+              writeJson(response, 200, result);
+              return;
             }
 
             // Send to Solana RPC
