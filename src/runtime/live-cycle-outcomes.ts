@@ -88,6 +88,7 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
   timeoutAt: string;
   tokenMint: string;
   tokenSymbol: string;
+  orderAction: LiveAction;
   reason: string;
 }): PendingSubmissionSnapshot {
   return {
@@ -103,6 +104,7 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
     timeoutAt: input.timeoutAt,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
+    orderAction: input.orderAction,
     reason: input.reason
   };
 }
@@ -119,6 +121,7 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
   timeoutAt: string;
   tokenMint: string;
   tokenSymbol: string;
+  orderAction: LiveAction;
   reason?: string;
 }): PendingSubmissionSnapshot {
   return {
@@ -134,6 +137,7 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
     timeoutAt: input.timeoutAt,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
+    orderAction: input.orderAction,
     reason: input.reason
   };
 }

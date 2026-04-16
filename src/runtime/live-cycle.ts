@@ -1021,6 +1021,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
         tokenMint: logContext.tokenMint,
         tokenSymbol,
+        orderAction: actionableAction,
         reason: error.reason
       }));
       emitMirrorEvent(mirrorSink, () => {
@@ -1144,6 +1145,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
     tokenMint: logContext.tokenMint,
     tokenSymbol,
+    orderAction: actionableAction,
     reason: confirmation.reason
   }));
 
@@ -1184,6 +1186,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     cycleId: logContext.cycleId,
     submissionId: broadcastResult.submissionId,
     strategyId: input.strategy,
+    mint: logContext.tokenMint,
+    symbol: tokenSymbol,
+    side: actionableAction,
     filledSol: 0,
     status: 'submitted',
     confirmationStatus: confirmation.status,

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { readJsonLines } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
+import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { KillSwitch } from '../../../src/runtime/kill-switch';
 import { runLiveCycle } from '../../../src/runtime/live-cycle';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
@@ -26,7 +27,7 @@ describe('runLiveCycle', () => {
       requestedPositionSol: 0.1,
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -61,9 +62,11 @@ describe('runLiveCycle', () => {
     });
     expect(fillJournal[0]).toMatchObject({
       strategyId: 'new-token-v1',
+      side: 'withdraw-lp',
       status: 'submitted',
       confirmationStatus: 'submitted'
     });
+    expect(fillJournal[0]).toHaveProperty('mint');
     expect(decisionJournal[0]).toMatchObject({
       strategyId: 'new-token-v1',
       stage: 'broadcast',
@@ -250,6 +253,44 @@ describe('runLiveCycle', () => {
     expect(exitResult.action).toBe('withdraw-lp');
     expect(spendingState.dailySpendSol).toBe(0.1);
     expect(spendingState.orderCount).toBe(1);
+  });
+
+  it('records the pending action for unknown exit submissions', async () => {
+    const stateDir = `${TEST_STATE_DIR}-unknown-exit`;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async () => {
+          throw new ExecutionRequestError('broadcast', {
+            kind: 'unknown',
+            reason: 'broadcast-outcome-unknown',
+            retryable: false
+          });
+        }
+      }
+    });
+
+    const pendingSubmission = await new PendingSubmissionStore(stateDir).read();
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('broadcast-outcome-unknown');
+    expect(pendingSubmission).toMatchObject({
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      orderAction: 'withdraw-lp'
+    });
   });
 
   it('allows exits even when the requested position exceeds the live cap', async () => {

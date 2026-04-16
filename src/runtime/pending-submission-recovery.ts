@@ -1,6 +1,7 @@
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot } from './state-types.ts';
+import { classifyAction } from './action-semantics.ts';
 
 type PendingSubmissionRecoveryInput = {
   pendingSubmission: PendingSubmissionSnapshot | null;
@@ -73,6 +74,36 @@ function hasWalletEvidenceOfMint(
   return Boolean(accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0));
 }
 
+function isUnknownOpenFailure(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (pendingSubmission.submissionId || hasWalletEvidenceOfMint(pendingSubmission, accountState)) {
+    return false;
+  }
+
+  if (!pendingSubmission.orderAction) {
+    return false;
+  }
+
+  return classifyAction(pendingSubmission.orderAction) === 'open_risk';
+}
+
+function isUnknownExitFill(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (pendingSubmission.submissionId || hasWalletEvidenceOfMint(pendingSubmission, accountState)) {
+    return false;
+  }
+
+  if (!pendingSubmission.orderAction) {
+    return false;
+  }
+
+  return classifyAction(pendingSubmission.orderAction) === 'reduce_risk';
+}
+
 export async function recoverPendingSubmission(
   input: PendingSubmissionRecoveryInput
 ): Promise<PendingSubmissionRecoveryResult> {
@@ -139,7 +170,16 @@ export async function recoverPendingSubmission(
     };
   }
 
-  if (!nextPendingSubmission.submissionId && !hasWalletEvidenceOfMint(nextPendingSubmission, input.accountState)) {
+  if (isUnknownExitFill(nextPendingSubmission, input.accountState)) {
+    return {
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    };
+  }
+
+  if (isUnknownOpenFailure(nextPendingSubmission, input.accountState)) {
     return {
       blocked: false,
       resolved: true,
@@ -150,10 +190,11 @@ export async function recoverPendingSubmission(
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
     return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-failed'
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-timeout',
+      nextPendingSubmission
     };
   }
 

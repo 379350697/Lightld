@@ -5,6 +5,7 @@ import {
   MirrorMetricsSnapshotSchema,
   type MirrorMetricsSnapshot
 } from '../observability/mirror-types.ts';
+import { LIVE_ACTIONS } from './action-semantics.ts';
 
 export const RuntimeModeSchema = z.enum([
   'healthy',
@@ -54,6 +55,8 @@ export type PendingConfirmationStatus = z.infer<typeof PendingConfirmationStatus
 
 export const PendingFinalitySchema = z.enum(['processed', 'confirmed', 'finalized', 'failed', 'unknown']);
 export type PendingFinality = z.infer<typeof PendingFinalitySchema>;
+export const PendingOrderActionSchema = z.enum(LIVE_ACTIONS);
+export type PendingOrderAction = z.infer<typeof PendingOrderActionSchema>;
 
 export const PendingSubmissionSnapshotSchema = z.object({
   strategyId: z.string(),
@@ -68,6 +71,7 @@ export const PendingSubmissionSnapshotSchema = z.object({
   timeoutAt: z.string().optional(),
   tokenMint: z.string().optional(),
   tokenSymbol: z.string().optional(),
+  orderAction: PendingOrderActionSchema.optional(),
   reason: z.string().optional()
 });
 

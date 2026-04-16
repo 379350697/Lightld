@@ -81,6 +81,40 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('treats unknown exit submissions without remaining wallet inventory as resolved exits', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-exit',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'withdraw-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
   it('keeps the runtime blocked when an unresolved submission times out', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
