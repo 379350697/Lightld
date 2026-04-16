@@ -252,6 +252,64 @@ describe('runLiveCycle production adapters', () => {
     expect(result.confirmationStatus).toBe('confirmed');
   });
 
+  it('does not reuse a cleared pending snapshot as mint-open evidence later in the same tick', async () => {
+    const stateDir = 'tmp/tests/runtime-live-cycle-production-state';
+    const store = new PendingSubmissionStore(stateDir);
+    await store.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-old',
+      submissionId: 'sub-old',
+      confirmationSignature: 'tx-old',
+      confirmationStatus: 'submitted',
+      finality: 'processed',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:05:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE'
+    });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      confirmationProvider: new HttpLiveConfirmationProvider({
+        url: 'https://confirm.example/api',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              submissionId: 'sub-old',
+              confirmationSignature: 'tx-old',
+              status: 'confirmed',
+              finality: 'finalized',
+              checkedAt: '2026-03-22T00:01:00.000Z'
+            }),
+            { status: 200 }
+          )
+      }),
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    await expect(store.read()).resolves.toBeNull();
+    expect(result.reason).not.toContain('mint-position-already-active:mint-safe:pending-open:submitted');
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('add-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+  });
+
   it('blocks and surfaces timeout when pending recovery cannot resolve in time', async () => {
     const store = new PendingSubmissionStore('tmp/tests/runtime-live-cycle-production-state');
     await store.write({

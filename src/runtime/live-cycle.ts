@@ -665,7 +665,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       killSwitchState
     }));
   };
-  const pendingSubmission = await pendingSubmissionStore.read();
+  let pendingSubmission = await pendingSubmissionStore.read();
 
   const activeMint = firstString(logContext.tokenMint, context.token.mint);
 
@@ -679,6 +679,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
     currentLifecycleState = recoveryGate.lifecycleState;
     context.trader.lifecycleState = currentLifecycleState;
+    pendingSubmission = await pendingSubmissionStore.read();
 
     if (recoveryGate.blocked) {
       return blockCycle({
@@ -1013,7 +1014,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   } catch (error) {
     if (error instanceof ExecutionRequestError && error.kind === 'unknown') {
       const updatedAt = new Date().toISOString();
-      await pendingSubmissionStore.write(buildUnknownPendingSubmissionSnapshot({
+      pendingSubmission = buildUnknownPendingSubmissionSnapshot({
         strategyId: input.strategy,
         idempotencyKey: orderIntent.idempotencyKey,
         createdAt: logContext.startedAt,
@@ -1023,7 +1024,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         tokenSymbol,
         orderAction: actionableAction,
         reason: error.reason
-      }));
+      });
+      await pendingSubmissionStore.write(pendingSubmission);
       emitMirrorEvent(mirrorSink, () => {
         mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
           idempotencyKey: orderIntent.idempotencyKey,
@@ -1133,7 +1135,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationCheckedAt = normalizedConfirmation.checkedAt;
   }
 
-  await pendingSubmissionStore.write(buildTrackedPendingSubmissionSnapshot({
+  pendingSubmission = buildTrackedPendingSubmissionSnapshot({
     strategyId: input.strategy,
     idempotencyKey: orderIntent.idempotencyKey,
     submissionId: broadcastResult.submissionId,
@@ -1147,10 +1149,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     tokenSymbol,
     orderAction: actionableAction,
     reason: confirmation.reason
-  }));
+  });
+  await pendingSubmissionStore.write(pendingSubmission);
 
   if (isResolvedConfirmation(confirmation.status, confirmationFinality)) {
     await pendingSubmissionStore.clear();
+    pendingSubmission = null;
   }
 
   if (
