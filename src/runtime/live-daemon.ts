@@ -50,21 +50,33 @@ function resolveLifecycleStateForPersist(input: {
     return input.nextLifecycleState;
   }
 
+  const hasInventory = hasOpenInventory(input.accountState);
   const unresolvedOpen = Boolean(input.activeMint) && (
     input.lastReason?.includes('journal-open-unresolved') ||
     input.lastReason?.includes('pending-open:') ||
     input.lastReason?.includes('mint-position-already-active:')
   );
-  const keepOpen = unresolvedOpen && (input.pendingSubmission || hasOpenInventory(input.accountState));
-  if (!input.pendingSubmission && !hasOpenInventory(input.accountState) && !keepOpen) {
+  const lastReason = input.lastReason ?? '';
+  const historicalOnly = lastReason.includes('historical-unconfirmed-entry-only') ||
+    lastReason.includes('historical-confirmed-entry-only');
+
+  if (!input.pendingSubmission && !hasInventory) {
     return 'closed';
   }
 
-  if (keepOpen) {
+  if (historicalOnly) {
+    return 'closed';
+  }
+
+  if (unresolvedOpen && (input.pendingSubmission || hasInventory)) {
     return 'open';
   }
 
-  return input.previousLifecycleState ?? 'open';
+  if (hasInventory) {
+    return 'open';
+  }
+
+  return input.previousLifecycleState ?? 'closed';
 }
 
 export async function runLiveDaemon(options: LiveDaemonOptions) {
