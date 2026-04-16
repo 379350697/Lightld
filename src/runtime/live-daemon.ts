@@ -121,13 +121,17 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       });
       const previousMode = runtimeState.mode;
 
+      const hasPendingSubmission = pendingSubmission !== null;
+      const shouldKeepCooldown = hasPendingSubmission || derived.mode === 'circuit_open';
       runtimeState = {
         mode: derived.mode,
         circuitReason: derived.reason === 'healthy' ? '' : derived.reason,
         cooldownUntil:
           derived.mode === 'circuit_open'
             ? new Date(Date.now() + 5 * 60_000).toISOString()
-            : runtimeState.cooldownUntil,
+            : shouldKeepCooldown
+              ? runtimeState.cooldownUntil
+              : '',
         lastHealthyAt:
           derived.mode === 'healthy'
             ? nowIso()
