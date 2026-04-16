@@ -24,8 +24,6 @@ type PendingSubmissionRecoveryResult = {
   nextPendingSubmission?: PendingSubmissionSnapshot;
 };
 
-const FRESH_WALLET_EVIDENCE_RECOVERY_WINDOW_MS = 10 * 60_000;
-
 function nowIso(now?: Date) {
   return (now ?? new Date()).toISOString();
 }
@@ -101,20 +99,6 @@ function hasWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAc
   );
 }
 
-function hasFreshWalletEvidence(
-  pendingSubmission: PendingSubmissionSnapshot,
-  checkedAt: string
-) {
-  const createdAtMs = Date.parse(pendingSubmission.createdAt);
-  const checkedAtMs = Date.parse(checkedAt);
-
-  if (!Number.isFinite(createdAtMs) || !Number.isFinite(checkedAtMs)) {
-    return false;
-  }
-
-  return checkedAtMs - createdAtMs <= FRESH_WALLET_EVIDENCE_RECOVERY_WINDOW_MS;
-}
-
 function getTrackedSubmissions(pendingSubmission: PendingSubmissionSnapshot) {
   const submissionIds = pendingSubmission.submissionIds?.filter((submissionId) => submissionId.length > 0) ?? [];
   const confirmationSignatures = pendingSubmission.confirmationSignatures ?? [];
@@ -170,8 +154,7 @@ function isUnknownExitFill(
 
 function hasFreshOpenWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
-  accountState: LiveAccountState | undefined,
-  checkedAt: string
+  accountState: LiveAccountState | undefined
 ) {
   if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
     return false;
@@ -181,28 +164,19 @@ function hasFreshOpenWalletEvidence(
     return false;
   }
 
-  if (!hasFreshWalletEvidence(pendingSubmission, checkedAt)) {
-    return false;
-  }
-
   return hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState) ||
     hasWalletLpEvidence(pendingSubmission.tokenMint, accountState);
 }
 
 function hasFreshReduceRiskWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
-  accountState: LiveAccountState | undefined,
-  checkedAt: string
+  accountState: LiveAccountState | undefined
 ) {
   if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
     return false;
   }
 
   if (classifyAction(pendingSubmission.orderAction) !== 'reduce_risk') {
-    return false;
-  }
-
-  if (!hasFreshWalletEvidence(pendingSubmission, checkedAt)) {
     return false;
   }
 
@@ -337,7 +311,7 @@ export async function recoverPendingSubmission(
     };
   }
 
-  if (hasFreshOpenWalletEvidence(nextPendingSubmission, input.accountState, checkedAt)) {
+  if (hasFreshOpenWalletEvidence(nextPendingSubmission, input.accountState)) {
     return {
       blocked: false,
       resolved: true,
@@ -346,7 +320,7 @@ export async function recoverPendingSubmission(
     };
   }
 
-  if (hasFreshReduceRiskWalletEvidence(nextPendingSubmission, input.accountState, checkedAt)) {
+  if (hasFreshReduceRiskWalletEvidence(nextPendingSubmission, input.accountState)) {
     return {
       blocked: false,
       resolved: true,

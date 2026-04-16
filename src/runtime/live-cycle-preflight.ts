@@ -4,6 +4,7 @@ import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { reconcileLiveState } from './reconcile-live-state.ts';
 import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-types.ts';
+import { classifyAction } from './action-semantics.ts';
 
 export async function runPendingRecoveryGate(input: {
   pendingSubmissionStore: PendingSubmissionStore;
@@ -30,7 +31,7 @@ export async function runPendingRecoveryGate(input: {
 
   if (recovery.clearPending) {
     await input.pendingSubmissionStore.clear();
-    lifecycleState = resolveLifecycleAfterRecovery(lifecycleState, recovery.reason);
+    lifecycleState = resolveLifecycleAfterRecovery(lifecycleState, recovery.reason, input.pendingSubmission);
   } else if (recovery.nextPendingSubmission) {
     await input.pendingSubmissionStore.write(recovery.nextPendingSubmission);
   }
@@ -52,9 +53,18 @@ export function runAccountReconciliationGate(accountState: LiveAccountState | un
 
 function resolveLifecycleAfterRecovery(
   currentLifecycleState: PositionLifecycleState,
-  reason: 'clear' | 'pending-submission-confirmed' | 'pending-submission-failed' | 'pending-submission-filled' | 'pending-submission-recovery-required' | 'pending-submission-timeout'
+  reason: 'clear' | 'pending-submission-confirmed' | 'pending-submission-failed' | 'pending-submission-filled' | 'pending-submission-recovery-required' | 'pending-submission-timeout',
+  pendingSubmission: PendingSubmissionSnapshot | null
 ): PositionLifecycleState {
   if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
+    if (
+      currentLifecycleState === 'closed'
+      && pendingSubmission?.orderAction
+      && classifyAction(pendingSubmission.orderAction) === 'open_risk'
+    ) {
+      return 'open';
+    }
+
     if (currentLifecycleState === 'open_pending') {
       return 'open';
     }

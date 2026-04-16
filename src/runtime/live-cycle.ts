@@ -84,7 +84,15 @@ const STABLE_MINTS = new Set([
 ]);
 
 function hasNonStableInventory(accountState: LiveAccountState | undefined) {
-  return Boolean(accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)));
+  return Boolean(
+    accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)) ||
+    accountState?.walletLpPositions?.some((position) =>
+      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && (position.hasLiquidity ?? true)
+    ) ||
+    accountState?.journalLpPositions?.some((position) =>
+      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && (position.hasLiquidity ?? true)
+    )
+  );
 }
 
 function findLargestNonStableInventory(accountState: LiveAccountState | undefined) {

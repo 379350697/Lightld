@@ -263,7 +263,7 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
-  it('keeps an unknown open submission pending when lp evidence only appears long after it was created', async () => {
+  it('treats an unknown open submission as resolved even when lp evidence appears long after it was created', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
@@ -295,11 +295,11 @@ describe('recoverPendingSubmission', () => {
       }
     });
 
-    expect(result).toMatchObject({
-      blocked: true,
-      resolved: false,
-      clearPending: false,
-      reason: 'pending-submission-recovery-required'
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
     });
   });
 
