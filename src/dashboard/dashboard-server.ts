@@ -30,7 +30,7 @@ function getDb() {
   }
 }
 
-function queryAll<T>(sql: string, ...params: unknown[]): T[] {
+function queryAll<T>(sql: string, ...params: Array<string | number | bigint | Uint8Array | null>): T[] {
   try {
     const db = getDb();
     if (!db) return [];

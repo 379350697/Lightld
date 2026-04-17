@@ -28,7 +28,8 @@ const BroadcastRequestSchema = z.object({
       idempotencyKey: z.string().min(1),
       side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).optional(),
       tokenMint: z.string().min(1).optional(),
-      fullPositionExit: z.boolean().optional()
+      fullPositionExit: z.boolean().optional(),
+      liquidateResidualTokenToSol: z.boolean().optional()
     }),
     signerId: z.string().min(1),
     signedAt: z.string().min(1),
@@ -235,6 +236,32 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     reason: error instanceof Error ? error.message : String(error)
                   }));
                   return;
+                }
+              }
+
+              if (side === 'withdraw-lp' && intent.liquidateResidualTokenToSol && intent.tokenMint) {
+                const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
+                const tokenAccount = tokenAccounts.find(
+                  (a) => a.account.data.parsed.info.mint === intent.tokenMint
+                );
+                const tokenLamports = tokenAccount
+                  ? Number(tokenAccount.account.data.parsed.info.tokenAmount.amount)
+                  : 0;
+
+                if (tokenLamports > 0) {
+                  const quoteResponse = await jupiterClient.getQuote(
+                    jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
+                  );
+                  const swapResponse = await jupiterClient.getSwapTransaction(
+                    quoteResponse,
+                    walletPublicKey,
+                    { jitoTipLamports: options.jitoTipLamports }
+                  );
+                  const residualSignedBase64 = signSwapTransaction(
+                    swapResponse.swapTransaction,
+                    keypair
+                  );
+                  txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
                 }
               }
 

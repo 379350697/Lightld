@@ -20,7 +20,8 @@ const SignIntentRequestSchema = z.object({
     idempotencyKey: z.string().min(1),
     side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
     tokenMint: z.string().default(''),
-    fullPositionExit: z.boolean().default(false)
+    fullPositionExit: z.boolean().default(false),
+    liquidateResidualTokenToSol: z.boolean().default(false)
   })
 });
 

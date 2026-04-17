@@ -410,7 +410,7 @@ async function maybeFetchTraderSnapshot(input: IngestContextBuilderInput) {
 }
 
 function defaultRequestedPositionSol(maxLivePositionSol: number) {
-  return Math.min(0.1, maxLivePositionSol);
+  return Math.min(0.05, maxLivePositionSol);
 }
 
 function resolveNoCandidateBlockReason(input: {
@@ -701,10 +701,7 @@ export async function buildLiveCycleInputFromIngest(
     );
   }
 
-  const requestedPositionSol = computeDynamicPositionSol(
-    candidate.liquidityUsd,
-    input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol)
-  );
+  const requestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
   const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
     mint: candidate.mint,
     poolAddress: candidate.address

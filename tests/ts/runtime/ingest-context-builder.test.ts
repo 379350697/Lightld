@@ -61,7 +61,7 @@ describe('buildLiveCycleInputFromIngest', () => {
       })
     });
 
-    expect(result.requestedPositionSol).toBe(0.1);
+    expect(result.requestedPositionSol).toBe(0.2);
     expect(result.sessionPhase).toBe('active');
     expect(result.context.pool).toMatchObject({
       address: 'pool-meme',
@@ -82,7 +82,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.context.route).toMatchObject({
       poolAddress: 'pool-meme',
       token: 'MEME',
-      expectedOutSol: 0.1
+      expectedOutSol: 0.2
     });
   });
 

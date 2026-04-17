@@ -1153,7 +1153,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     outputSol: requestedPositionSol,
     side: resolveOrderIntentSide(actionableAction),
     tokenMint: logContext.tokenMint,
-    fullPositionExit: isFullPositionExitAction(actionableAction)
+    fullPositionExit: isFullPositionExitAction(actionableAction),
+    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp'
   });
   await journals.orders.append({
     cycleId: logContext.cycleId,
