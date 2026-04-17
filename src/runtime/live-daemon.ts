@@ -350,6 +350,51 @@ function hasOpenInventory(accountState?: LiveAccountState) {
   );
 }
 
+function inferOpenPositionMetadata(input: {
+  accountState?: LiveAccountState;
+  activeMint?: string;
+  activePoolAddress?: string;
+  existingEntrySol?: number;
+  existingOpenedAt?: string;
+  fallbackOpenedAt?: string;
+}) {
+  let entrySol = typeof input.existingEntrySol === 'number' ? input.existingEntrySol : undefined;
+  let openedAt = input.existingOpenedAt;
+
+  if ((entrySol !== undefined && openedAt) || !input.accountState) {
+    return { entrySol, openedAt };
+  }
+
+  const lpPosition = (input.accountState.walletLpPositions ?? []).find((position) => {
+    if (!(position.hasLiquidity ?? true)) {
+      return false;
+    }
+
+    return (input.activeMint && position.mint === input.activeMint)
+      || (input.activePoolAddress && position.poolAddress === input.activePoolAddress);
+  });
+
+  if (lpPosition) {
+    if (entrySol === undefined) {
+      const currentValueSol = typeof lpPosition.currentValueSol === 'number' ? lpPosition.currentValueSol : undefined;
+      const unclaimedFeeSol = typeof lpPosition.unclaimedFeeSol === 'number' ? lpPosition.unclaimedFeeSol : 0;
+      const inferredEntrySol = typeof currentValueSol === 'number'
+        ? Math.max(0, currentValueSol - unclaimedFeeSol)
+        : undefined;
+
+      if (typeof inferredEntrySol === 'number' && inferredEntrySol > 0) {
+        entrySol = inferredEntrySol;
+      }
+    }
+
+    if (!openedAt) {
+      openedAt = input.fallbackOpenedAt;
+    }
+  }
+
+  return { entrySol, openedAt };
+}
+
 function resolveLifecycleStateForPersist(input: {
   nextLifecycleState?: PositionLifecycleState;
   previousLifecycleState?: PositionLifecycleState;
@@ -712,6 +757,16 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           : isExposureReducingAction(result.action)
             ? undefined
             : positionState?.openedAt;
+        const inferredPositionMetadata = persistedLifecycleState === 'open'
+          ? inferOpenPositionMetadata({
+              accountState: effectiveAccountState,
+              activeMint: persistedActiveMint,
+              activePoolAddress: persistedPoolAddress,
+              existingEntrySol: persistedEntrySol,
+              existingOpenedAt: persistedOpenedAt,
+              fallbackOpenedAt: nowIso()
+            })
+          : { entrySol: persistedEntrySol, openedAt: persistedOpenedAt };
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
@@ -720,8 +775,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activeMint: persistedActiveMint,
           activePoolAddress: persistedPoolAddress,
           lifecycleState: persistedLifecycleState,
-          entrySol: persistedEntrySol,
-          openedAt: persistedOpenedAt,
+          entrySol: inferredPositionMetadata.entrySol,
+          openedAt: inferredPositionMetadata.openedAt,
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,
           walletSol: effectiveAccountState?.walletSol,

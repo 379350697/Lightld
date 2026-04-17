@@ -11,6 +11,8 @@ const STATE_ROOT_DIR = process.env.LIVE_STATE_DIR ?? 'state';
 const JOURNAL_ROOT_DIR = process.env.LIVE_JOURNAL_DIR ?? join('tmp', 'journals');
 const MIRROR_DB_PATH = process.env.LIVE_DB_MIRROR_PATH ?? join(STATE_ROOT_DIR, 'lightld-observability.sqlite');
 const STRATEGY_ID = process.env.LIVE_STRATEGY_ID ?? 'new-token-v1';
+const ACCOUNT_STATE_URL = process.env.LIVE_ACCOUNT_STATE_URL ?? 'http://127.0.0.1:8791/account-state';
+const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
 
 // ── SQLite helpers (lazy, read-only) ──
 
@@ -53,6 +55,20 @@ async function readJsonSafe<T>(path: string): Promise<T | null> {
   }
 }
 
+async function fetchJsonSafe<T>(url: string): Promise<T | null> {
+  try {
+    const response = await fetch(url, {
+      headers: LIVE_AUTH_TOKEN ? { authorization: `Bearer ${LIVE_AUTH_TOKEN}` } : undefined,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json() as T;
+  } catch {
+    return null;
+  }
+}
+
 async function readJsonlTail(path: string, maxLines: number): Promise<Record<string, unknown>[]> {
   try {
     const content = await readFile(path, 'utf8');
@@ -87,6 +103,25 @@ async function readLatestJournalEntries(prefix: string, maxLines: number) {
 // ── API handlers ──
 
 type StatusResponse = Record<string, unknown>;
+
+type AccountStateSnapshot = {
+  walletLpPositions?: Array<{
+    poolAddress: string;
+    positionAddress: string;
+    mint: string;
+    lowerBinId?: number;
+    upperBinId?: number;
+    activeBinId?: number;
+    binCount?: number;
+    fundedBinCount?: number;
+    solSide?: string;
+    solDepletedBins?: number;
+    currentValueSol?: number;
+    unclaimedFeeSol?: number;
+    hasLiquidity?: boolean;
+    hasClaimableFees?: boolean;
+  }>;
+};
 
 type PositionFallbackOrderRow = {
   token_mint: string;
@@ -196,6 +231,49 @@ async function handleStatus(): Promise<StatusResponse> {
 
     walletSol,
   };
+}
+
+type PositionResponse = Array<{
+  mint: string;
+  poolAddress: string;
+  positionAddress: string;
+  currentValueSol: number | null;
+  unclaimedFeeSol: number | null;
+  binCount: number | null;
+  fundedBinCount: number | null;
+  lowerBinId: number | null;
+  upperBinId: number | null;
+  activeBinId: number | null;
+  solSide: string;
+  solDepletedBins: number | null;
+  hasLiquidity: boolean;
+  hasClaimableFees: boolean;
+}>;
+
+async function handlePositions(): Promise<PositionResponse> {
+  const accountState =
+    await readJsonSafe<AccountStateSnapshot>(join(STATE_ROOT_DIR, 'account-state.json'))
+    ?? await fetchJsonSafe<AccountStateSnapshot>(ACCOUNT_STATE_URL);
+  const walletLpPositions = accountState?.walletLpPositions ?? [];
+
+  return walletLpPositions
+    .filter((position) => position.hasLiquidity ?? true)
+    .map((position) => ({
+      mint: position.mint,
+      poolAddress: position.poolAddress,
+      positionAddress: position.positionAddress,
+      currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
+      unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
+      binCount: typeof position.binCount === 'number' ? position.binCount : null,
+      fundedBinCount: typeof position.fundedBinCount === 'number' ? position.fundedBinCount : null,
+      lowerBinId: typeof position.lowerBinId === 'number' ? position.lowerBinId : null,
+      upperBinId: typeof position.upperBinId === 'number' ? position.upperBinId : null,
+      activeBinId: typeof position.activeBinId === 'number' ? position.activeBinId : null,
+      solSide: position.solSide ?? '',
+      solDepletedBins: typeof position.solDepletedBins === 'number' ? position.solDepletedBins : null,
+      hasLiquidity: Boolean(position.hasLiquidity ?? true),
+      hasClaimableFees: Boolean(position.hasClaimableFees ?? false),
+    }));
 }
 
 type PnlResponse = {
@@ -476,11 +554,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (url === '/api/overview') {
       return sendJson(res, {
         status: await handleStatus(),
+        positions: await handlePositions(),
         pnl: handlePnl(),
         orders: await handleOrders(),
         fills: await handleFills(),
         incidents: await handleIncidents(),
       });
+    }
+
+    if (url === '/api/positions') {
+      return sendJson(res, await handlePositions());
     }
 
     if (url === '/api/orders') {
