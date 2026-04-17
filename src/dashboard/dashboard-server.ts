@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
-import { join, extname, basename } from 'node:path';
+import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
 
@@ -21,11 +21,12 @@ function getDb() {
 
   try {
     const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
-    const db = new DatabaseSync(MIRROR_DB_PATH, { open: true } as any);
-    db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 500;');
+    const db = new DatabaseSync(MIRROR_DB_PATH);
+    db.exec('PRAGMA busy_timeout = 500;');
     dbInstance = db;
     return db;
-  } catch {
+  } catch (error) {
+    console.error('[dashboard] failed to open sqlite mirror', error);
     return null;
   }
 }
@@ -35,7 +36,8 @@ function queryAll<T>(sql: string, ...params: Array<string | number | bigint | Ui
     const db = getDb();
     if (!db) return [];
     return db.prepare(sql).all(...params) as T[];
-  } catch {
+  } catch (error) {
+    console.error('[dashboard] sqlite query failed', { sql, error });
     return [];
   }
 }
@@ -69,17 +71,31 @@ async function findLatestJournalFile(prefix: string): Promise<string | null> {
     const files = await readdir(JOURNAL_ROOT_DIR);
     const matching = files
       .filter(f => f.startsWith(prefix) && f.endsWith('.jsonl'))
-      .sort()
-      .reverse();
+      .sort((a, b) => b.localeCompare(a));
     return matching.length > 0 ? join(JOURNAL_ROOT_DIR, matching[0]) : null;
   } catch {
     return null;
   }
 }
 
+async function readLatestJournalEntries(prefix: string, maxLines: number) {
+  const path = await findLatestJournalFile(prefix);
+  if (!path) return [];
+  return readJsonlTail(path, maxLines);
+}
+
 // ── API handlers ──
 
 type StatusResponse = Record<string, unknown>;
+
+type PositionFallbackOrderRow = {
+  token_mint: string;
+  pool_address: string;
+  token_symbol: string;
+  requested_position_sol: number;
+  created_at: string;
+  updated_at: string;
+};
 
 async function handleStatus(): Promise<StatusResponse> {
   const [health, position, runtime] = await Promise.all([
@@ -99,6 +115,63 @@ async function handleStatus(): Promise<StatusResponse> {
     }
   }
 
+  const activeMint = typeof position?.activeMint === 'string' ? position.activeMint : '';
+  const activePoolAddress = typeof position?.activePoolAddress === 'string' ? position.activePoolAddress : '';
+
+  let entrySol = typeof position?.entrySol === 'number' ? position.entrySol : null;
+  let openedAt = typeof position?.openedAt === 'string' ? position.openedAt : null;
+  let activeSymbol = '';
+
+  if (activeMint || activePoolAddress) {
+    const fallbackOrder = queryAll<PositionFallbackOrderRow>(`
+      SELECT
+        token_mint,
+        pool_address,
+        token_symbol,
+        requested_position_sol,
+        created_at,
+        updated_at
+      FROM orders
+      WHERE token_mint = ? OR pool_address = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `, activeMint, activePoolAddress)[0];
+
+    if (fallbackOrder) {
+      activeSymbol = fallbackOrder.token_symbol ?? '';
+      if (entrySol === null && typeof fallbackOrder.requested_position_sol === 'number') {
+        entrySol = fallbackOrder.requested_position_sol;
+      }
+      if (!openedAt) {
+        openedAt = fallbackOrder.updated_at || fallbackOrder.created_at || null;
+      }
+    }
+
+    if (entrySol === null || !openedAt || !activeSymbol) {
+      const orderJournalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
+      const matchedJournalOrder = [...orderJournalRows].reverse().find(row => {
+        const tokenMint = String(row.tokenMint ?? '');
+        const poolAddress = String(row.poolAddress ?? '');
+        return (activeMint && tokenMint === activeMint) || (activePoolAddress && poolAddress === activePoolAddress);
+      });
+
+      if (matchedJournalOrder) {
+        if (!activeSymbol) {
+          activeSymbol = String(matchedJournalOrder.tokenSymbol ?? '');
+        }
+        if (entrySol === null) {
+          const journalEntrySol = Number(matchedJournalOrder.requestedPositionSol ?? matchedJournalOrder.outputSol ?? 0);
+          if (Number.isFinite(journalEntrySol) && journalEntrySol > 0) {
+            entrySol = journalEntrySol;
+          }
+        }
+        if (!openedAt) {
+          openedAt = String(matchedJournalOrder.createdAt ?? '') || null;
+        }
+      }
+    }
+  }
+
   return {
     mode: health?.mode ?? runtime?.mode ?? 'unknown',
     circuitReason: health?.circuitReason ?? runtime?.circuitReason ?? '',
@@ -113,10 +186,11 @@ async function handleStatus(): Promise<StatusResponse> {
     lifecycleState: position?.lifecycleState ?? 'closed',
     lastAction: position?.lastAction ?? '',
     lastReason: position?.lastReason ?? '',
-    activeMint: position?.activeMint ?? '',
-    activePoolAddress: position?.activePoolAddress ?? '',
-    entrySol: position?.entrySol ?? null,
-    openedAt: position?.openedAt ?? null,
+    activeMint,
+    activePoolAddress,
+    activeSymbol,
+    entrySol,
+    openedAt,
     lastClosedMint: position?.lastClosedMint ?? '',
     lastClosedAt: position?.lastClosedAt ?? '',
 
@@ -202,8 +276,8 @@ type OrderRow = {
   updated_at: string;
 };
 
-function handleOrders() {
-  return queryAll<OrderRow>(`
+async function handleOrders() {
+  const rows = queryAll<OrderRow>(`
     SELECT
       idempotency_key, submission_id, token_mint,
       token_symbol, action, requested_position_sol,
@@ -211,17 +285,35 @@ function handleOrders() {
     FROM orders
     ORDER BY updated_at DESC
     LIMIT 50
-  `).map(r => ({
-    idempotencyKey: r.idempotency_key,
-    submissionId: r.submission_id,
-    tokenMint: r.token_mint,
-    tokenSymbol: r.token_symbol,
-    action: r.action,
-    requestedPositionSol: r.requested_position_sol,
-    confirmationStatus: r.confirmation_status,
-    finality: r.finality,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
+  `);
+
+  if (rows.length > 0) {
+    return rows.map(r => ({
+      idempotencyKey: r.idempotency_key,
+      submissionId: r.submission_id,
+      tokenMint: r.token_mint,
+      tokenSymbol: r.token_symbol,
+      action: r.action,
+      requestedPositionSol: r.requested_position_sol,
+      confirmationStatus: r.confirmation_status,
+      finality: r.finality,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
+  return journalRows.reverse().map(r => ({
+    idempotencyKey: String(r.idempotencyKey ?? ''),
+    submissionId: String(r.submissionId ?? ''),
+    tokenMint: String(r.tokenMint ?? ''),
+    tokenSymbol: String(r.tokenSymbol ?? ''),
+    action: String(r.side ?? r.action ?? 'unknown'),
+    requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
+    confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
+    finality: String(r.finality ?? 'unknown'),
+    createdAt: String(r.createdAt ?? ''),
+    updatedAt: String(r.updatedAt ?? r.createdAt ?? ''),
   }));
 }
 
@@ -236,23 +328,39 @@ type FillRow = {
   recorded_at: string;
 };
 
-function handleFills() {
-  return queryAll<FillRow>(`
+async function handleFills() {
+  const rows = queryAll<FillRow>(`
     SELECT
       fill_id, submission_id, token_mint, token_symbol,
       side, amount, filled_sol, recorded_at
     FROM fills
     ORDER BY recorded_at DESC
     LIMIT 50
-  `).map(r => ({
-    fillId: r.fill_id,
-    submissionId: r.submission_id,
-    tokenMint: r.token_mint,
-    tokenSymbol: r.token_symbol,
-    side: r.side,
-    amount: r.amount,
-    filledSol: r.filled_sol,
-    recordedAt: r.recorded_at,
+  `);
+
+  if (rows.length > 0) {
+    return rows.map(r => ({
+      fillId: r.fill_id,
+      submissionId: r.submission_id,
+      tokenMint: r.token_mint,
+      tokenSymbol: r.token_symbol,
+      side: r.side,
+      amount: r.amount,
+      filledSol: r.filled_sol,
+      recordedAt: r.recorded_at,
+    }));
+  }
+
+  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
+  return journalRows.reverse().map(r => ({
+    fillId: String(r.fillId ?? r.submissionId ?? r.cycleId ?? ''),
+    submissionId: String(r.submissionId ?? ''),
+    tokenMint: String(r.tokenMint ?? ''),
+    tokenSymbol: String(r.tokenSymbol ?? ''),
+    side: String(r.side ?? 'unknown'),
+    amount: Number(r.amount ?? 0),
+    filledSol: Number(r.filledSol ?? 0),
+    recordedAt: String(r.recordedAt ?? ''),
   }));
 }
 
@@ -267,23 +375,39 @@ type IncidentRow = {
   recorded_at: string;
 };
 
-function handleIncidents() {
-  return queryAll<IncidentRow>(`
+async function handleIncidents() {
+  const rows = queryAll<IncidentRow>(`
     SELECT
       incident_id, cycle_id, stage, severity,
       reason, runtime_mode, token_symbol, recorded_at
     FROM incidents
     ORDER BY recorded_at DESC
     LIMIT 50
-  `).map(r => ({
-    incidentId: r.incident_id,
-    cycleId: r.cycle_id,
-    stage: r.stage,
-    severity: r.severity,
-    reason: r.reason,
-    runtimeMode: r.runtime_mode,
-    tokenSymbol: r.token_symbol,
-    recordedAt: r.recorded_at,
+  `);
+
+  if (rows.length > 0) {
+    return rows.map(r => ({
+      incidentId: r.incident_id,
+      cycleId: r.cycle_id,
+      stage: r.stage,
+      severity: r.severity,
+      reason: r.reason,
+      runtimeMode: r.runtime_mode,
+      tokenSymbol: r.token_symbol,
+      recordedAt: r.recorded_at,
+    }));
+  }
+
+  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-incidents`, 200);
+  return journalRows.reverse().map(r => ({
+    incidentId: String(r.incidentId ?? r.cycleId ?? ''),
+    cycleId: String(r.cycleId ?? ''),
+    stage: String(r.stage ?? ''),
+    severity: String(r.severity ?? 'warning'),
+    reason: String(r.reason ?? ''),
+    runtimeMode: String(r.runtimeMode ?? ''),
+    tokenSymbol: String(r.tokenSymbol ?? ''),
+    recordedAt: String(r.recordedAt ?? ''),
   }));
 }
 
@@ -349,16 +473,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return sendJson(res, handlePnl());
     }
 
+    if (url === '/api/overview') {
+      return sendJson(res, {
+        status: await handleStatus(),
+        pnl: handlePnl(),
+        orders: await handleOrders(),
+        fills: await handleFills(),
+        incidents: await handleIncidents(),
+      });
+    }
+
     if (url === '/api/orders') {
-      return sendJson(res, handleOrders());
+      return sendJson(res, await handleOrders());
     }
 
     if (url === '/api/fills') {
-      return sendJson(res, handleFills());
+      return sendJson(res, await handleFills());
     }
 
     if (url === '/api/incidents') {
-      return sendJson(res, handleIncidents());
+      return sendJson(res, await handleIncidents());
     }
 
     if (url === '/api/logs') {
