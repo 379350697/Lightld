@@ -60,7 +60,9 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
           lpActiveBinStatus: typeof input.snapshot.lpActiveBinStatus === 'string' ? (input.snapshot.lpActiveBinStatus as any) : undefined,
           lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined,
-          lifecycleState: typeof input.snapshot.lifecycleState === 'string' ? input.snapshot.lifecycleState : undefined
+          lifecycleState: typeof input.snapshot.lifecycleState === 'string' ? input.snapshot.lifecycleState : undefined,
+          holdTimeMs: typeof input.snapshot.holdTimeMs === 'number' ? input.snapshot.holdTimeMs : undefined,
+          pendingConfirmationStatus: typeof input.snapshot.pendingConfirmationStatus === 'string' ? input.snapshot.pendingConfirmationStatus as any : undefined
         },
         {
           takeProfitPct: typeof input.config.takeProfitPct === 'number' ? input.config.takeProfitPct : undefined,
@@ -68,6 +70,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpEnabled: Boolean(input.config.lpEnabled),
           lpStopLossNetPnlPct: typeof input.config.lpStopLossNetPnlPct === 'number' ? input.config.lpStopLossNetPnlPct : undefined,
           lpTakeProfitNetPnlPct: typeof input.config.lpTakeProfitNetPnlPct === 'number' ? input.config.lpTakeProfitNetPnlPct : undefined,
+          lpMinHoldMinutesBeforeTakeProfit: typeof input.config.lpMinHoldMinutesBeforeTakeProfit === 'number' ? input.config.lpMinHoldMinutesBeforeTakeProfit : undefined,
           lpSolDepletionExitBins: typeof input.config.lpSolDepletionExitBins === 'number' ? input.config.lpSolDepletionExitBins : undefined,
           lpClaimFeeThresholdUsd: typeof input.config.lpClaimFeeThresholdUsd === 'number' ? input.config.lpClaimFeeThresholdUsd : undefined,
           lpRebalanceOnOutOfRange: Boolean(input.config.lpRebalanceOnOutOfRange),

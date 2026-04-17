@@ -22,6 +22,8 @@ type NewTokenSnapshot = {
   lifecycleState?: string;
   /** Time elapsed in ms since the first buy fill */
   holdTimeMs?: number;
+  /** Pending submission confirmation status for this mint/pool */
+  pendingConfirmationStatus?: 'submitted' | 'confirmed' | 'failed' | 'unknown';
 };
 
 type NewTokenConfig = {
@@ -34,6 +36,8 @@ type NewTokenConfig = {
   lpStopLossNetPnlPct?: number;
   /** LP take-profit threshold (net PnL %) */
   lpTakeProfitNetPnlPct?: number;
+  /** Minimum LP hold minutes before allowing take-profit */
+  lpMinHoldMinutesBeforeTakeProfit?: number;
   /** LP hard exit threshold when the SOL side is nearly exhausted */
   lpSolDepletionExitBins?: number;
   /** LP claim fee threshold in USD */
@@ -76,12 +80,16 @@ export function buildNewTokenDecision(
       if (typeof snapshot.lpNetPnlPct === 'number') {
         const stopLoss = config.lpStopLossNetPnlPct ?? 20;
         const takeProfit = config.lpTakeProfitNetPnlPct ?? 30;
+        const minHoldMsBeforeTakeProfit = (config.lpMinHoldMinutesBeforeTakeProfit ?? 5) * 60 * 1000;
+        const canTakeProfit = snapshot.pendingConfirmationStatus === 'confirmed'
+          && typeof snapshot.holdTimeMs === 'number'
+          && snapshot.holdTimeMs >= minHoldMsBeforeTakeProfit;
 
         if (snapshot.lpNetPnlPct <= -stopLoss) {
           return { action: 'withdraw-lp', reason: 'lp-stop-loss' };
         }
 
-        if (snapshot.lpNetPnlPct >= takeProfit) {
+        if (snapshot.lpNetPnlPct >= takeProfit && canTakeProfit) {
           return { action: 'withdraw-lp', reason: 'lp-take-profit' };
         }
       }

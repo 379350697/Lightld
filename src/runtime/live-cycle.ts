@@ -779,6 +779,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }));
   };
   let pendingSubmission = await pendingSubmissionStore.read();
+  if (config.poolClass === 'new-token') {
+    (snapshot as any).pendingConfirmationStatus = pendingSubmission?.confirmationStatus;
+  }
 
   const activeMint = firstString(logContext.tokenMint, context.token.mint);
 
@@ -889,6 +892,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
   if (config.poolClass === 'new-token') {
     (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
+    (updatedSnapshot as any).pendingConfirmationStatus = (snapshot as any).pendingConfirmationStatus;
     if (preEngineMintAggregate.mustCleanupDust) {
       (updatedSnapshot as any).hasInventory = true;
       (updatedSnapshot as any).hasLpPosition = false;
@@ -909,6 +913,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       lpEnabled: config.lpConfig?.enabled ?? false,
       lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
       lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
+      lpMinHoldMinutesBeforeTakeProfit: 5,
       lpSolDepletionExitBins: config.lpConfig?.solDepletionExitBins,
       lpClaimFeeThresholdUsd: config.lpConfig?.claimFeeThresholdUsd,
       lpRebalanceOnOutOfRange: config.lpConfig?.rebalanceOnOutOfRange ?? false,
