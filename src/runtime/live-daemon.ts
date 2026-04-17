@@ -45,6 +45,44 @@ function isTransientAutoHealableError(error: unknown) {
   return error instanceof Error && isTransientAutoHealableCircuitReason(error.message);
 }
 
+function shouldBootstrapTransientAutoHealEligibility(input: {
+  runtimeState: {
+    mode: RuntimeMode;
+    circuitReason: string;
+    transientAutoHealEligible?: boolean;
+  };
+  dependencyHealth: {
+    account: {
+      consecutiveFailures: number;
+      lastFailureReason: string;
+    };
+  };
+  pendingSubmission: boolean;
+}) {
+  if (input.pendingSubmission) {
+    return false;
+  }
+
+  if (
+    input.runtimeState.mode !== 'circuit_open' &&
+    input.runtimeState.mode !== 'recovering'
+  ) {
+    return false;
+  }
+
+  if (input.runtimeState.transientAutoHealEligible) {
+    return true;
+  }
+
+  if (input.runtimeState.circuitReason === 'fetch failed') {
+    return true;
+  }
+
+  return input.runtimeState.circuitReason === 'timeout'
+    && input.dependencyHealth.account.lastFailureReason === 'timeout'
+    && input.dependencyHealth.account.consecutiveFailures > 0;
+}
+
 async function resolveEffectiveAccountState(
   cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined,
   fallback?: LiveAccountState
@@ -115,6 +153,18 @@ function nowIso() {
 
 function wait(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function warmAccountProvider(accountProvider?: LiveAccountStateProvider) {
+  if (!accountProvider) {
+    return;
+  }
+
+  try {
+    await accountProvider.readState();
+  } catch {
+    // Best-effort warmup only; normal tick handling still owns real failures.
+  }
 }
 
 function applyDerivedRuntimeState(input: {
@@ -330,6 +380,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   let tickCount = 0;
 
   await mirrorRuntime?.start();
+  await warmAccountProvider(options.accountProvider);
 
   try {
     while (tickCount < maxTicks) {
@@ -341,7 +392,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let previousMode = runtimeState.mode;
       const tickStartRuntimeState = {
         ...runtimeState,
-        transientAutoHealEligible: runtimeState.transientAutoHealEligible ?? false,
+        transientAutoHealEligible: shouldBootstrapTransientAutoHealEligibility({
+          runtimeState,
+          dependencyHealth,
+          pendingSubmission: pendingSubmission !== null
+        }),
         transientRecoverySuccessTicks: runtimeState.transientRecoverySuccessTicks ?? 0
       };
 

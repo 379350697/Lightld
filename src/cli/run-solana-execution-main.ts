@@ -81,6 +81,12 @@ async function main() {
 
   await server.start();
   process.stdout.write(`solana-execution listening on ${server.origin}\n`);
+  void dlmmClient.warmPositionSnapshots(keypair.publicKey).then(() => {
+    process.stdout.write(`DLMM position snapshots warmed for ${keypair.publicKey.toBase58()}\n`);
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`DLMM position snapshot warmup failed: ${message}\n`);
+  });
 
   const stop = async () => {
     await server.stop();

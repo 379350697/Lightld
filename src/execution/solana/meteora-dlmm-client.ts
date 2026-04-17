@@ -183,6 +183,10 @@ export class MeteoraDlmmClient {
     this.positionSnapshotInflight.delete(cacheKey);
   }
 
+  async warmPositionSnapshots(walletPublicKey: PublicKey) {
+    await this.getPositionSnapshots(walletPublicKey);
+  }
+
   async addLiquidityByStrategy(
     walletPublicKey: PublicKey,
     poolAddress: string,

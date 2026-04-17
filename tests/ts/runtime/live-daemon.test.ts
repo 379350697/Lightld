@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
@@ -58,6 +58,39 @@ describe('runLiveDaemon', () => {
     expect(health.mode).toBe('healthy');
     expect(health.housekeeping?.journalCleanupDeletedFiles).toBe(2);
     expect(health.housekeeping?.mirrorPruneDeletedRows).toBe(3);
+  });
+
+  it('warms the account provider once before the first tick', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-account-warmup-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const readState = vi.fn(async () => ({
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      fills: []
+    }));
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      accountProvider: { readState },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    expect(readState).toHaveBeenCalledTimes(1);
   });
 
   it('can drive a tick from ingest-backed context building', async () => {
@@ -773,6 +806,62 @@ describe('runLiveDaemon', () => {
       mode: 'healthy',
       circuitReason: '',
       cooldownUntil: '',
+      transientRecoverySuccessTicks: 0
+    });
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      allowNewOpens: true
+    });
+  });
+
+  it('auto-heals legacy fetch-failed circuit state even when eligibility flag was not persisted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-legacy-fetch-auto-heal-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'fetch failed',
+      cooldownUntil: '2026-03-22T00:10:00.000Z',
+      transientAutoHealEligible: false,
+      transientRecoverySuccessTicks: 0,
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          token: { mint: '', symbol: '', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+        }
+      })
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: '',
+      cooldownUntil: '',
+      transientAutoHealEligible: false,
       transientRecoverySuccessTicks: 0
     });
     expect(health).toMatchObject({

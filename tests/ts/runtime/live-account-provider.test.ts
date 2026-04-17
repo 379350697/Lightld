@@ -76,7 +76,7 @@ describe('HttpLiveAccountStateProvider', () => {
       url: 'https://account.example/api'
     });
 
-    expect((provider as unknown as { timeoutMs: number }).timeoutMs).toBe(6_000);
+    expect((provider as unknown as { timeoutMs: number }).timeoutMs).toBe(15_000);
     expect((provider as unknown as { maxRetries: number }).maxRetries).toBe(2);
   });
 });

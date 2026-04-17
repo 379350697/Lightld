@@ -70,7 +70,7 @@ export class HttpLiveAccountStateProvider implements LiveAccountStateProvider {
     this.url = options.url;
     this.authToken = options.authToken;
     this.fetchImpl = options.fetchImpl;
-    this.timeoutMs = options.timeoutMs ?? 6_000;
+    this.timeoutMs = options.timeoutMs ?? 15_000;
     this.maxRetries = options.maxRetries ?? 2;
   }
 
