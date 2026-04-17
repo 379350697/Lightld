@@ -70,4 +70,13 @@ describe('HttpLiveAccountStateProvider', () => {
       ]
     });
   });
+
+  it('uses a longer default timeout for cold account-state reads', () => {
+    const provider = new HttpLiveAccountStateProvider({
+      url: 'https://account.example/api'
+    });
+
+    expect((provider as unknown as { timeoutMs: number }).timeoutMs).toBe(6_000);
+    expect((provider as unknown as { maxRetries: number }).maxRetries).toBe(2);
+  });
 });

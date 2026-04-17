@@ -349,6 +349,17 @@ export class MeteoraDlmmClient {
         });
         return snapshots;
       })
+      .catch((error) => {
+        if (cached) {
+          this.positionSnapshotCache.set(cacheKey, {
+            expiresAt: this.nowMs() + this.positionSnapshotTtlMs,
+            snapshots: cached.snapshots
+          });
+          return cached.snapshots;
+        }
+
+        throw error;
+      })
       .finally(() => {
         this.positionSnapshotInflight.delete(cacheKey);
       });

@@ -346,4 +346,48 @@ describe('MeteoraDlmmClient', () => {
     expect(getAll).toHaveBeenCalledTimes(1);
     expect(getPositionsByUserAndLbPair).toHaveBeenCalledTimes(1);
   });
+
+  it('falls back to the most recent cached snapshots when a refresh fails after the ttl expires', async () => {
+    const wallet = makePoolAddress(140);
+    const poolAddress = makePoolAddress(141).toBase58();
+    const getAll = vi.fn(async () => new Map([
+      [poolAddress, { lbPairPositionsData: [{ publicKey: makePoolAddress(142) }] }]
+    ]));
+    const getPositionsByUserAndLbPair = vi.fn(async () => ({
+      activeBin: { binId: 120, price: '1' },
+      userPositions: [{
+        publicKey: makePoolAddress(142),
+        positionData: {
+          lowerBinId: 100,
+          upperBinId: 168,
+          feeX: { isZero: () => true },
+          feeY: { isZero: () => true },
+          positionBinData: [{ positionXAmount: '1', positionYAmount: '0' }]
+        }
+      }]
+    }));
+
+    dlmmPkg.getAllLbPairPositionsByUser = getAll;
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: SOL_MINT },
+      tokenY: { publicKey: makePoolAddress(143) },
+      getPositionsByUserAndLbPair
+    }));
+
+    let now = 1_000;
+    const client = new MeteoraDlmmClient({} as any, {
+      positionSnapshotTtlMs: 15_000,
+      nowMs: () => now
+    });
+
+    const first = await client.getPositionSnapshots(wallet);
+
+    now = 20_000;
+    getAll.mockRejectedValueOnce(new Error('rpc timeout'));
+
+    const second = await client.getPositionSnapshots(wallet);
+
+    expect(second).toEqual(first);
+    expect(getAll).toHaveBeenCalledTimes(2);
+  });
 });
