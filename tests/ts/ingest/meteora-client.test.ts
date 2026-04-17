@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { fetchMeteoraOhlcv, fetchMeteoraPools } from '../../../src/ingest/meteora/client';
 
@@ -24,6 +24,20 @@ describe('fetchMeteoraPools', () => {
     expect(requestedUrl).toContain('sort_by=tvl%3Adesc');
     expect(requestedUrl).toContain('filter_by=is_blacklisted%3Dfalse');
     expect(result[0].source).toBe('meteora');
+    expect(result[0].raw).toEqual({ address: 'POOL123' });
+  });
+
+  it('retries a transient Meteora pool fetch failure before succeeding', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ address: 'POOL123' }]), { status: 200 }));
+
+    const result = await fetchMeteoraPools({
+      fetchImpl
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(result[0].raw).toEqual({ address: 'POOL123' });
   });
 });

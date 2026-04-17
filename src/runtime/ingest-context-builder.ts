@@ -71,8 +71,51 @@ type PumpIndexes = {
   tokenByMint: Map<string, ReturnType<typeof normalizePumpTokenEvent>>;
 };
 
+type IngestSource = 'meteora-pools' | 'pump-trades' | 'gmgn-trader';
+
+type TaggedIngestSourceError = Error & {
+  ingestSource?: IngestSource;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function tagIngestSourceError(source: IngestSource, error: unknown): TaggedIngestSourceError {
+  const tagged = error instanceof Error ? error as TaggedIngestSourceError : new Error(String(error)) as TaggedIngestSourceError;
+  tagged.ingestSource = source;
+  return tagged;
+}
+
+function resolveIngestSourceFailure(error: unknown) {
+  const tagged = error instanceof Error ? error as TaggedIngestSourceError : undefined;
+  const source = tagged?.ingestSource ?? 'meteora-pools';
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (source === 'pump-trades') {
+    return {
+      source,
+      blockReason: 'pump-trades-fetch-failed',
+      logLabel: 'Pump trades',
+      message
+    };
+  }
+
+  if (source === 'gmgn-trader') {
+    return {
+      source,
+      blockReason: 'gmgn-trader-fetch-failed',
+      logLabel: 'GMGN trader',
+      message
+    };
+  }
+
+  return {
+    source: 'meteora-pools' as const,
+    blockReason: 'meteora-pools-fetch-failed',
+    logLabel: 'Meteora pools',
+    message
+  };
 }
 
 function rawRecord(value: Record<string, unknown>) {
@@ -274,17 +317,19 @@ function isPlaceholderEndpoint(url: string) {
 }
 
 async function maybeFetchPumpTradesRows(input: IngestContextBuilderInput) {
-  if (input.fetchPumpTradesImpl) {
-    return input.fetchPumpTradesImpl();
-  }
-
-  if (isPlaceholderEndpoint(SOURCE_ENDPOINTS.pumpTrades)) {
-    return [];
-  }
-
   try {
+    if (input.fetchPumpTradesImpl) {
+      return await input.fetchPumpTradesImpl();
+    }
+
+    if (isPlaceholderEndpoint(SOURCE_ENDPOINTS.pumpTrades)) {
+      return [];
+    }
+
     return await fetchPumpTrades();
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[Ingest] Pump trades fetch failed; continuing without pump context: ${message}`);
     return [];
   }
 }
@@ -294,17 +339,19 @@ async function maybeFetchTraderSnapshot(input: IngestContextBuilderInput) {
     return null;
   }
 
-  if (input.fetchGmgnTraderImpl) {
-    return normalizeGmgnTrader(await input.fetchGmgnTraderImpl(input.traderWallet));
-  }
-
-  if (isPlaceholderEndpoint(SOURCE_ENDPOINTS.gmgnTraderBase)) {
-    return null;
-  }
-
   try {
+    if (input.fetchGmgnTraderImpl) {
+      return normalizeGmgnTrader(await input.fetchGmgnTraderImpl(input.traderWallet));
+    }
+
+    if (isPlaceholderEndpoint(SOURCE_ENDPOINTS.gmgnTraderBase)) {
+      return null;
+    }
+
     return normalizeGmgnTrader(await fetchGmgnTrader(input.traderWallet));
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[Ingest] GMGN trader fetch failed; continuing without trader context: ${message}`);
     return null;
   }
 }
@@ -485,20 +532,38 @@ export async function buildLiveCycleInputFromIngest(
 
   try {
     [poolRows, pumpRows, traderSnapshot] = await Promise.all([
-      (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
-        pageSize: input.meteoraPageSize ?? 500,
-        query: input.meteoraQuery,
-        sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
-        filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
-      }),
-      maybeFetchPumpTradesRows(input),
-      maybeFetchTraderSnapshot(input)
+      (async () => {
+        try {
+          return await (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
+            pageSize: input.meteoraPageSize ?? 500,
+            query: input.meteoraQuery,
+            sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
+            filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
+          });
+        } catch (error) {
+          throw tagIngestSourceError('meteora-pools', error);
+        }
+      })(),
+      (async () => {
+        try {
+          return await maybeFetchPumpTradesRows(input);
+        } catch (error) {
+          throw tagIngestSourceError('pump-trades', error);
+        }
+      })(),
+      (async () => {
+        try {
+          return await maybeFetchTraderSnapshot(input);
+        } catch (error) {
+          throw tagIngestSourceError('gmgn-trader', error);
+        }
+      })()
     ]);
   } catch (error) {
     const requestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
-    const message = error instanceof Error ? error.message : String(error);
+    const failure = resolveIngestSourceFailure(error);
 
-    console.warn(`[Ingest] Source fetch failed; falling back to hold-only context: ${message}`);
+    console.warn(`[Ingest] ${failure.logLabel} fetch failed; falling back to hold-only context: ${failure.message}`);
 
     return buildFallbackContext(
       input,
@@ -507,8 +572,8 @@ export async function buildLiveCycleInputFromIngest(
       config.solRouteLimits.maxSlippageBps,
       null,
       {
-        blockReason: 'ingest-source-fetch-failed',
-        blockDetails: message
+        blockReason: failure.blockReason,
+        blockDetails: failure.message
       }
     );
   }

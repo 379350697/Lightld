@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safety-client';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('builds a large-pool context selecting the highest-liquidity candidate after safety filtering', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
@@ -353,6 +357,8 @@ describe('buildLiveCycleInputFromIngest', () => {
   });
 
   it('degrades to a fallback context when Meteora pool fetch throws instead of bubbling the daemon into circuit open', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
       requestedPositionSol: 0.15,
@@ -374,9 +380,12 @@ describe('buildLiveCycleInputFromIngest', () => {
       poolAddress: '',
       expectedOutSol: 0.15,
       hasSolRoute: false,
-      blockReason: 'ingest-source-fetch-failed'
+      blockReason: 'meteora-pools-fetch-failed'
     });
     expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('fetch failed');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[Ingest] Meteora pools fetch failed')
+    );
   });
 
   it('returns a safety-specific fallback reason when all LP candidates fail due to GMGN script errors', async () => {
