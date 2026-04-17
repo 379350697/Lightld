@@ -628,27 +628,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveEnabled: config.live.enabled
   };
 
-  if (ingestBlockReason) {
-    logContext.engineReason = ingestBlockReason;
-    await appendDecision(journals, logContext, {
-      stage: 'engine',
-      mode: 'BLOCKED',
-      action: 'hold',
-      reason: ingestBlockReason,
-      liveOrderSubmitted: false
-    });
-
-    return buildBlockedCycleResult({
-      action: 'hold',
-      reason: ingestBlockReason,
-      audit: { reason: ingestBlockReason },
-      context,
-      quoteCollected: false,
-      journalPaths: journals.paths,
-      killSwitchState
-    });
-  }
-
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;
 
@@ -829,6 +808,27 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         quoteCollected: false
       });
     }
+  }
+
+  if (ingestBlockReason) {
+    logContext.engineReason = ingestBlockReason;
+    await appendDecision(journals, logContext, {
+      stage: 'engine',
+      mode: 'BLOCKED',
+      action: 'hold',
+      reason: ingestBlockReason,
+      liveOrderSubmitted: false
+    });
+
+    return finalize(buildBlockedCycleResult({
+      action: 'hold',
+      reason: ingestBlockReason,
+      audit: { reason: ingestBlockReason },
+      context,
+      quoteCollected: false,
+      journalPaths: journals.paths,
+      killSwitchState
+    }));
   }
 
   const preEngineMintAggregate = await resolveMintPositionAggregate({

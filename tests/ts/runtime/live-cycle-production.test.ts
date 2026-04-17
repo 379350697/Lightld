@@ -358,6 +358,66 @@ describe('runLiveCycle production adapters', () => {
     expect(result.failureSource).toBe('recovery');
   });
 
+  it('clears stale pending recovery before returning an ingest block fallback', async () => {
+    const stateDir = 'tmp/tests/runtime-live-cycle-production-state';
+    const store = new PendingSubmissionStore(stateDir);
+    await store.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-old',
+      submissionId: '',
+      confirmationSignature: undefined,
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:05:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      orderAction: 'add-lp',
+      reason: 'broadcast-outcome-unknown'
+    });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            hasLiquidity: true
+          }
+        ],
+        fills: []
+      }
+    });
+
+    await expect(store.read()).resolves.toBeNull();
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('no-selected-candidate');
+  });
+
   it('only records spending for exposure-increasing actions', async () => {
     const stateDir = 'tmp/tests/runtime-live-cycle-production-state';
 
