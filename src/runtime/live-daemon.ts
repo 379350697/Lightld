@@ -34,6 +34,37 @@ function wait(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function applyDerivedRuntimeState(input: {
+  currentState: {
+    mode: RuntimeMode;
+    circuitReason: string;
+    cooldownUntil: string;
+    lastHealthyAt: string;
+    updatedAt: string;
+  };
+  derived: ReturnType<typeof deriveRuntimeMode>;
+  pendingSubmission: boolean;
+  now: string;
+}) {
+  const shouldKeepCooldown = input.pendingSubmission || input.derived.mode === 'circuit_open';
+
+  return {
+    mode: input.derived.mode,
+    circuitReason: input.derived.reason === 'healthy' ? '' : input.derived.reason,
+    cooldownUntil:
+      input.derived.mode === 'circuit_open'
+        ? new Date(Date.now() + 5 * 60_000).toISOString()
+        : shouldKeepCooldown
+          ? input.currentState.cooldownUntil
+          : '',
+    lastHealthyAt:
+      input.derived.mode === 'healthy'
+        ? input.now
+        : input.currentState.lastHealthyAt,
+    updatedAt: input.now
+  };
+}
+
 function hasOpenInventory(accountState?: LiveAccountState) {
   return Boolean(
     accountState?.walletTokens?.some((token) => token.amount > 0
@@ -144,27 +175,18 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       const previousMode = runtimeState.mode;
 
       const hasPendingSubmission = pendingSubmission !== null;
-      const shouldKeepCooldown = hasPendingSubmission || derived.mode === 'circuit_open';
-      runtimeState = {
-        mode: derived.mode,
-        circuitReason: derived.reason === 'healthy' ? '' : derived.reason,
-        cooldownUntil:
-          derived.mode === 'circuit_open'
-            ? new Date(Date.now() + 5 * 60_000).toISOString()
-            : shouldKeepCooldown
-              ? runtimeState.cooldownUntil
-              : '',
-        lastHealthyAt:
-          derived.mode === 'healthy'
-            ? nowIso()
-            : runtimeState.lastHealthyAt,
-        updatedAt: nowIso()
-      };
+      runtimeState = applyDerivedRuntimeState({
+        currentState: runtimeState,
+        derived,
+        pendingSubmission: hasPendingSubmission,
+        now: nowIso()
+      });
 
       try {
         cycleInput = await buildCycleInput(tickCount);
         pendingSubmission = await pendingSubmissionStore.read();
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
+        let runtimeStateExplicitlySet = false;
 
         const result = await runLiveCycle({
           strategy: options.strategy,
@@ -206,6 +228,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
               updatedAt: nowIso()
             };
+            runtimeStateExplicitlySet = true;
           }
         }
 
@@ -229,6 +252,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             lastHealthyAt: !hasPendingSubmission ? nowIso() : runtimeState.lastHealthyAt,
             updatedAt: nowIso()
           };
+          runtimeStateExplicitlySet = true;
         }
 
         if (result.quoteCollected) {
@@ -255,6 +279,28 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             result.reason,
             nowIso()
           );
+        }
+
+        if (!runtimeStateExplicitlySet) {
+          const nextPendingSubmission = await pendingSubmissionStore.read();
+          const postTickDerived = deriveRuntimeMode({
+            currentMode: runtimeState.mode,
+            quoteFailures: dependencyHealth.quote.consecutiveFailures,
+            reconcileFailures: dependencyHealth.account.consecutiveFailures,
+            hasUnknownSubmissionOutcome: nextPendingSubmission?.confirmationStatus === 'unknown',
+            cooldownActive:
+              nextPendingSubmission !== null &&
+              runtimeState.cooldownUntil !== '' &&
+              runtimeState.cooldownUntil > nowIso(),
+            flattenOnlyRequested: runtimeState.mode === 'flatten_only'
+          });
+
+          runtimeState = applyDerivedRuntimeState({
+            currentState: runtimeState,
+            derived: postTickDerived,
+            pendingSubmission: nextPendingSubmission !== null,
+            now: nowIso()
+          });
         }
 
         const housekeeping = housekeepingRunner

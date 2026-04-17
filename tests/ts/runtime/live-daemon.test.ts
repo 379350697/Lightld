@@ -126,6 +126,82 @@ describe('runLiveDaemon', () => {
     expect(health.pendingSubmission).toBe(false);
   });
 
+  it('recomputes runtime mode after a successful account tick clears reconcile failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-reconcile-recovery-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'reconcile-failures',
+      cooldownUntil: '2026-03-22T00:10:00.000Z',
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await runtimeStateStore.writeDependencyHealth({
+      quote: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      signer: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      broadcaster: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      account: {
+        consecutiveFailures: 2,
+        lastSuccessAt: '',
+        lastFailureAt: '2026-03-22T00:04:00.000Z',
+        lastFailureReason: 'balance-mismatch'
+      },
+      confirmation: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' }
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountProvider: {
+          readState: async () => ({
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            fills: []
+          })
+        },
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false },
+          token: { mint: '', symbol: '', inSession: true, hasSolRoute: false },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: '',
+      cooldownUntil: ''
+    });
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      allowNewOpens: true,
+      dependencyHealth: {
+        reconcileFailures: 0
+      }
+    });
+  });
+
   it('keeps the daemon ticking when the mirror runtime degrades', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-mirror-'));
     const stateRootDir = join(root, 'state');
