@@ -352,6 +352,33 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
   });
 
+  it('degrades to a fallback context when Meteora pool fetch throws instead of bubbling the daemon into circuit open', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'large-pool-v1',
+      requestedPositionSol: 0.15,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
+      fetchMeteoraPoolsImpl: async () => {
+        throw new TypeError('fetch failed');
+      },
+      fetchPumpTradesImpl: async () => []
+    });
+
+    expect(result.requestedPositionSol).toBe(0.15);
+    expect(result.context.pool).toMatchObject({
+      address: '',
+      liquidityUsd: 0,
+      hasSolRoute: false
+    });
+    expect(result.context.route).toMatchObject({
+      poolAddress: '',
+      expectedOutSol: 0.15,
+      hasSolRoute: false,
+      blockReason: 'ingest-source-fetch-failed'
+    });
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('fetch failed');
+  });
+
   it('returns a safety-specific fallback reason when all LP candidates fail due to GMGN script errors', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

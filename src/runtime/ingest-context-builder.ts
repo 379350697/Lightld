@@ -479,16 +479,40 @@ export async function buildLiveCycleInputFromIngest(
   const now = input.now ?? new Date();
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
-  const [poolRows, pumpRows, traderSnapshot] = await Promise.all([
-    (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
-      pageSize: input.meteoraPageSize ?? 500,
-      query: input.meteoraQuery,
-      sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
-      filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
-    }),
-    maybeFetchPumpTradesRows(input),
-    maybeFetchTraderSnapshot(input)
-  ]);
+  let poolRows: Record<string, unknown>[];
+  let pumpRows: Record<string, unknown>[];
+  let traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null;
+
+  try {
+    [poolRows, pumpRows, traderSnapshot] = await Promise.all([
+      (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
+        pageSize: input.meteoraPageSize ?? 500,
+        query: input.meteoraQuery,
+        sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
+        filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
+      }),
+      maybeFetchPumpTradesRows(input),
+      maybeFetchTraderSnapshot(input)
+    ]);
+  } catch (error) {
+    const requestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.warn(`[Ingest] Source fetch failed; falling back to hold-only context: ${message}`);
+
+    return buildFallbackContext(
+      input,
+      requestedPositionSol,
+      sessionActive,
+      config.solRouteLimits.maxSlippageBps,
+      null,
+      {
+        blockReason: 'ingest-source-fetch-failed',
+        blockDetails: message
+      }
+    );
+  }
+
   const pumpIndexes = buildPumpIndexes(pumpRows, input.traderWallet);
   const maxPoolAgeMs = 3 * 24 * 60 * 60 * 1000;
   const prefilteredRows = poolRows.filter((row) => {
