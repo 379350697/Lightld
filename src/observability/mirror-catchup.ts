@@ -106,6 +106,8 @@ function toOrderCatchupEvent(
     return null;
   }
 
+  const action = readString(value, ['action', 'side']);
+
   return {
     type: 'order',
     priority: 'low',
@@ -116,13 +118,13 @@ function toOrderCatchupEvent(
       submissionId: readString(value, ['submissionId']),
       confirmationSignature: readString(value, ['confirmationSignature']),
       poolAddress: readString(value, ['poolAddress']),
-      tokenMint: readString(value, ['tokenMint']),
-      tokenSymbol: readString(value, ['tokenSymbol']),
-      action: 'unknown',
+      tokenMint: readString(value, ['tokenMint', 'mint']),
+      tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
+      action: action === 'hold' || action === 'deploy' || action === 'dca-out' || action === 'add-lp' || action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp' ? action : 'unknown',
       requestedPositionSol: readNumber(value, ['requestedPositionSol', 'outputSol']),
       quotedOutputSol: readNumber(value, ['quotedOutputSol', 'outputSol']),
-      broadcastStatus: 'pending',
-      confirmationStatus: toConfirmationStatus(readString(value, ['confirmationStatus'])),
+      broadcastStatus: readString(value, ['broadcastStatus', 'status']) === 'submitted' ? 'submitted' : readString(value, ['broadcastStatus', 'status']) === 'failed' ? 'failed' : 'pending',
+      confirmationStatus: toConfirmationStatus(readString(value, ['confirmationStatus', 'status'])),
       finality: toFinality(readString(value, ['finality'])),
       createdAt: readString(value, ['createdAt', 'recordedAt']),
       updatedAt: readString(value, ['updatedAt', 'recordedAt', 'createdAt'])
@@ -146,6 +148,8 @@ function toFillCatchupEvent(
     return null;
   }
 
+  const side = readString(value, ['side']);
+
   return {
     type: 'fill',
     priority: 'low',
@@ -154,9 +158,9 @@ function toFillCatchupEvent(
       submissionId,
       confirmationSignature: readString(value, ['confirmationSignature']),
       cycleId: readString(value, ['cycleId']),
-      tokenMint: readString(value, ['tokenMint']),
-      tokenSymbol: readString(value, ['tokenSymbol']),
-      side: 'unknown',
+      tokenMint: readString(value, ['tokenMint', 'mint']),
+      tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
+      side: side === 'buy' || side === 'sell' ? side : 'unknown',
       amount: readNumber(value, ['amount']),
       filledSol: readNumber(value, ['filledSol']),
       recordedAt: recordedAt || new Date(0).toISOString()

@@ -1374,6 +1374,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
 
   const fillRecordedAt = new Date().toISOString();
+  const isConfirmedFill = isResolvedConfirmation(confirmation.status, confirmationFinality);
+  const mirroredFilledSol = isConfirmedFill ? requestedPositionSol : 0;
+  const mirroredFillStatus = isConfirmedFill ? 'confirmed' : 'submitted';
   await journals.fills.append({
     cycleId: logContext.cycleId,
     submissionId: broadcastResult.submissionId,
@@ -1381,8 +1384,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     mint: logContext.tokenMint,
     symbol: tokenSymbol,
     side: actionableAction,
-    filledSol: 0,
-    status: 'submitted',
+    filledSol: mirroredFilledSol,
+    status: mirroredFillStatus,
     confirmationStatus: confirmation.status,
     requestedPositionSol,
     recordedAt: fillRecordedAt
@@ -1397,7 +1400,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       tokenSymbol,
       side: resolveFillMirrorSide(actionableAction),
       amount: 0,
-      filledSol: 0,
+      filledSol: mirroredFilledSol,
       recordedAt: fillRecordedAt
     }));
   });
