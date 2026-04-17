@@ -42,6 +42,7 @@ function makeConfig(): StrategyConfig {
       downsideCoveragePct: 66,
       stopLossNetPnlPct: 20,
       takeProfitNetPnlPct: 30,
+      solDepletionExitBins: 67,
       minBinStep: 100,
       minVolume24hUsd: 1_000_000,
       minFeeTvlRatio24h: 0,
