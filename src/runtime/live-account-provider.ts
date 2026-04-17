@@ -17,6 +17,10 @@ export type LiveAccountState = {
     solDepletedBins?: number;
     currentValueSol?: number;
     unclaimedFeeSol?: number;
+    currentPrice?: number;
+    lowerPrice?: number;
+    upperPrice?: number;
+    priceProgress?: number;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
   }>;
@@ -33,6 +37,10 @@ export type LiveAccountState = {
     solDepletedBins?: number;
     currentValueSol?: number;
     unclaimedFeeSol?: number;
+    currentPrice?: number;
+    lowerPrice?: number;
+    upperPrice?: number;
+    priceProgress?: number;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
   }>;

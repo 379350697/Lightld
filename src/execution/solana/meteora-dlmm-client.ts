@@ -33,6 +33,10 @@ export type MeteoraLpPositionSnapshot = {
   solDepletedBins: number;
   currentValueSol?: number;
   unclaimedFeeSol?: number;
+  currentPrice?: number;
+  lowerPrice?: number;
+  upperPrice?: number;
+  priceProgress?: number;
   hasLiquidity: boolean;
   hasClaimableFees: boolean;
 };
@@ -156,6 +160,33 @@ function resolveTokenDecimals(tokenReserve: unknown) {
   return typeof decimals === 'number' && Number.isInteger(decimals) && decimals >= 0
     ? decimals
     : undefined;
+}
+
+function priceFromBinId(binId: number, binStep: number, tokenXDecimals: number, tokenYDecimals: number) {
+  if (!Number.isFinite(binId) || !Number.isFinite(binStep)) {
+    return undefined;
+  }
+
+  const base = 1 + (binStep / 10_000);
+  const decimalFactor = 10 ** (tokenYDecimals - tokenXDecimals);
+  const price = (base ** binId) * decimalFactor;
+  return Number.isFinite(price) ? price : undefined;
+}
+
+function computePriceProgress(currentPrice: number | undefined, lowerPrice: number | undefined, upperPrice: number | undefined) {
+  if (
+    typeof currentPrice !== 'number' ||
+    typeof lowerPrice !== 'number' ||
+    typeof upperPrice !== 'number' ||
+    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(lowerPrice) ||
+    !Number.isFinite(upperPrice) ||
+    upperPrice <= lowerPrice
+  ) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.min(1, (currentPrice - lowerPrice) / (upperPrice - lowerPrice)));
 }
 
 export class MeteoraDlmmClient {
@@ -387,6 +418,7 @@ export class MeteoraDlmmClient {
         const activePricePerToken = Number(activeBin?.pricePerToken ?? activeBin?.price ?? 0);
         const tokenXDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenX);
         const tokenYDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenY);
+        const binStep = Number((dlmmPool.lbPair as { binStep?: { toString?: () => string } } | undefined)?.binStep?.toString?.() ?? 0);
 
         for (const position of userPositions) {
           const summary = summarizePosition(position);
@@ -410,6 +442,16 @@ export class MeteoraDlmmClient {
               tokenYDecimals
             })
             : undefined;
+          const lowerPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+            ? priceFromBinId(summary.lowerBinId, binStep, tokenXDecimals, tokenYDecimals)
+            : undefined;
+          const upperPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+            ? priceFromBinId(summary.upperBinId, binStep, tokenXDecimals, tokenYDecimals)
+            : undefined;
+          const currentPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+            ? priceFromBinId(activeBinId, binStep, tokenXDecimals, tokenYDecimals)
+            : (Number.isFinite(activePricePerToken) && activePricePerToken > 0 ? activePricePerToken : undefined);
+
           snapshots.push({
             poolAddress,
             positionAddress: position.publicKey.toBase58(),
@@ -428,6 +470,10 @@ export class MeteoraDlmmClient {
             }),
             currentValueSol,
             unclaimedFeeSol,
+            currentPrice,
+            lowerPrice,
+            upperPrice,
+            priceProgress: computePriceProgress(currentPrice, lowerPrice, upperPrice),
             hasLiquidity: summary.hasLiquidity,
             hasClaimableFees: summary.hasClaimableFees
           });

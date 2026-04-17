@@ -118,6 +118,10 @@ type AccountStateSnapshot = {
     solDepletedBins?: number;
     currentValueSol?: number;
     unclaimedFeeSol?: number;
+    currentPrice?: number;
+    lowerPrice?: number;
+    upperPrice?: number;
+    priceProgress?: number;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
   }>;
@@ -239,6 +243,10 @@ type PositionResponse = Array<{
   positionAddress: string;
   currentValueSol: number | null;
   unclaimedFeeSol: number | null;
+  currentPrice: number | null;
+  lowerPrice: number | null;
+  upperPrice: number | null;
+  priceProgress: number | null;
   binCount: number | null;
   fundedBinCount: number | null;
   lowerBinId: number | null;
@@ -264,6 +272,10 @@ async function handlePositions(): Promise<PositionResponse> {
       positionAddress: position.positionAddress,
       currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
       unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
+      currentPrice: typeof position.currentPrice === 'number' ? position.currentPrice : null,
+      lowerPrice: typeof position.lowerPrice === 'number' ? position.lowerPrice : null,
+      upperPrice: typeof position.upperPrice === 'number' ? position.upperPrice : null,
+      priceProgress: typeof position.priceProgress === 'number' ? position.priceProgress : null,
       binCount: typeof position.binCount === 'number' ? position.binCount : null,
       fundedBinCount: typeof position.fundedBinCount === 'number' ? position.fundedBinCount : null,
       lowerBinId: typeof position.lowerBinId === 'number' ? position.lowerBinId : null,

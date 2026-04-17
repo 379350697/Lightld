@@ -254,9 +254,9 @@ export function buildDashboardHtml(): string {
               <th>Position/Pool</th>
               <th>Value</th>
               <th>Unclaimed Fee</th>
-              <th>Active Bin</th>
+              <th>Current Price</th>
               <th>Coverage</th>
-              <th>Range</th>
+              <th>Price Range</th>
               <th>SOL Side</th>
               <th>Action</th>
             </tr>
@@ -291,6 +291,7 @@ export function buildDashboardHtml(): string {
     function escHtml(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
     function truncAddr(a) { if (!a || a.length < 12) return a || '--'; return a.slice(0, 6) + '...' + a.slice(-4); }
     function fmtSol(v) { return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : '--'; }
+    function fmtPrice(v) { return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : '--'; }
     function fmtTime(iso) { if (!iso) return '--'; try { return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false }); } catch { return '--'; } }
     function timeAgo(iso) {
       if (!iso) return '--';
@@ -357,18 +358,21 @@ export function buildDashboardHtml(): string {
         var mint = p.mint || '--';
         var pool = p.poolAddress || '--';
         var coverage = (typeof p.fundedBinCount === 'number' && typeof p.binCount === 'number') ? (p.fundedBinCount + '/' + p.binCount) : '--';
-        var range = (typeof p.lowerBinId === 'number' && typeof p.upperBinId === 'number') ? (p.lowerBinId + ' → ' + p.upperBinId) : '--';
-        var activeBin = typeof p.activeBinId === 'number' ? String(p.activeBinId) : '--';
-        var leftPct = (typeof p.fundedBinCount === 'number' && typeof p.binCount === 'number' && p.binCount > 0) ? Math.round((p.fundedBinCount / p.binCount) * 100) : 50;
+        var rawRange = (typeof p.lowerBinId === 'number' && typeof p.upperBinId === 'number') ? (p.lowerBinId + ' → ' + p.upperBinId) : '--';
+        var currentPrice = typeof p.currentPrice === 'number' ? p.currentPrice : null;
+        var lowerPrice = typeof p.lowerPrice === 'number' ? p.lowerPrice : null;
+        var upperPrice = typeof p.upperPrice === 'number' ? p.upperPrice : null;
+        var priceProgress = typeof p.priceProgress === 'number' ? p.priceProgress : null;
+        var leftPct = priceProgress !== null ? Math.round(priceProgress * 100) : ((typeof p.fundedBinCount === 'number' && typeof p.binCount === 'number' && p.binCount > 0) ? Math.round((p.fundedBinCount / p.binCount) * 100) : 50);
         var av = mint.charAt(0).toUpperCase() || '?';
         return '<tr>' +
           '<td style="width:20px;color:var(--text-dim);font-size:14px;">↗</td>' +
           '<td><div class="token-cell"><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(truncAddr(mint)) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(pool)) + '</span></div></div></div></td>' +
           '<td><div class="cell-main">' + fmtSol(Number(p.currentValueSol)) + '</div><div class="cell-sub">SOL</div></td>' +
           '<td><span class="fee-unclaim">' + fmtSol(Number(p.unclaimedFeeSol)) + ' SOL</span></td>' +
-          '<td><span class="cell-main">' + escHtml(activeBin) + '</span></td>' +
+          '<td><div class="cell-main">' + fmtPrice(currentPrice) + '</div><div class="cell-sub">SOL/token</div></td>' +
           '<td><span class="cell-main">' + escHtml(coverage) + '</span></td>' +
-          '<td><div class="range-labels"><span>' + escHtml(range) + '</span></div><div class="range-bar"><div class="range-fill blue" style="width:' + leftPct + '%"></div><div class="range-fill yellow" style="width:' + (100 - leftPct) + '%"></div></div></td>' +
+          '<td><div class="range-labels"><span>' + fmtPrice(lowerPrice) + '</span><span>' + fmtPrice(upperPrice) + '</span></div><div class="range-bar"><div class="range-fill blue" style="width:' + leftPct + '%"></div><div class="range-fill yellow" style="width:' + (100 - leftPct) + '%"></div></div><div class="cell-sub">raw bins ' + escHtml(rawRange) + '</div></td>' +
           '<td><span class="cell-sub">' + escHtml(p.solSide || '--') + '</span></td>' +
           '<td><button class="action-btn" title="position address">↗</button></td>' +
         '</tr>';

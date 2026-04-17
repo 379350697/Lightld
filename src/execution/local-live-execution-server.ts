@@ -60,6 +60,10 @@ const AccountStateSchema = z.object({
     solDepletedBins: z.number().int().nonnegative().optional(),
     currentValueSol: z.number().finite().nonnegative().optional(),
     unclaimedFeeSol: z.number().finite().nonnegative().optional(),
+    currentPrice: z.number().finite().positive().optional(),
+    lowerPrice: z.number().finite().positive().optional(),
+    upperPrice: z.number().finite().positive().optional(),
+    priceProgress: z.number().finite().min(0).max(1).optional(),
     hasLiquidity: z.boolean().optional(),
     hasClaimableFees: z.boolean().optional()
   })).optional(),
@@ -76,6 +80,10 @@ const AccountStateSchema = z.object({
     solDepletedBins: z.number().int().nonnegative().optional(),
     currentValueSol: z.number().finite().nonnegative().optional(),
     unclaimedFeeSol: z.number().finite().nonnegative().optional(),
+    currentPrice: z.number().finite().positive().optional(),
+    lowerPrice: z.number().finite().positive().optional(),
+    upperPrice: z.number().finite().positive().optional(),
+    priceProgress: z.number().finite().min(0).max(1).optional(),
     hasLiquidity: z.boolean().optional(),
     hasClaimableFees: z.boolean().optional()
   })).optional(),
