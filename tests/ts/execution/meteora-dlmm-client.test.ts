@@ -27,8 +27,8 @@ describe('MeteoraDlmmClient', () => {
     const existingPosition = {
       publicKey: makePoolAddress(10),
       positionData: {
-        lowerBinId: 86,
-        upperBinId: 154,
+        lowerBinId: 120,
+        upperBinId: 188,
         positionBinData: []
       }
     };
@@ -60,8 +60,36 @@ describe('MeteoraDlmmClient', () => {
     expect(addLiquidityByStrategy).toHaveBeenCalledWith(expect.objectContaining({
       positionPubKey: existingPosition.publicKey,
       strategy: expect.objectContaining({
-        minBinId: 86,
-        maxBinId: 154
+        minBinId: 120,
+        maxBinId: 188,
+        singleSidedX: true
+      })
+    }));
+  });
+
+  it('initializes a single-sided SOL position across 69 bins on the SOL side when SOL is token Y', async () => {
+    const initializePositionAndAddLiquidityByStrategy = vi.fn(async () => ({ id: 'init-tx' }));
+
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: makePoolAddress(31) },
+      tokenY: { publicKey: SOL_MINT },
+      getActiveBin: async () => ({ binId: 120 }),
+      getPositionsByUserAndLbPair: async () => ({
+        activeBin: { binId: 120, price: '1' },
+        userPositions: []
+      }),
+      initializePositionAndAddLiquidityByStrategy
+    }));
+
+    const client = new MeteoraDlmmClient({} as any);
+
+    await client.addLiquidityByStrategy(makePoolAddress(1), makePoolAddress(2).toBase58(), 0.1);
+
+    expect(initializePositionAndAddLiquidityByStrategy).toHaveBeenCalledWith(expect.objectContaining({
+      strategy: expect.objectContaining({
+        minBinId: 52,
+        maxBinId: 120,
+        singleSidedX: false
       })
     }));
   });

@@ -32,6 +32,8 @@ export type MeteoraLpPositionSnapshot = {
   hasClaimableFees: boolean;
 };
 
+const TARGET_SINGLE_SIDED_BIN_COUNT = 69;
+
 function flattenTransactions<T>(transactions: Array<T | T[]>) {
   return transactions.flatMap((transaction) => Array.isArray(transaction) ? transaction : [transaction]);
 }
@@ -90,6 +92,13 @@ function summarizePosition(positionInfo: any) {
         toNumericValue(bin?.positionFeeXAmount) > 0 || toNumericValue(bin?.positionFeeYAmount) > 0
       )
   };
+}
+
+function resolveSingleSidedBinRange(activeBinId: number, singleSidedX: boolean) {
+  const width = TARGET_SINGLE_SIDED_BIN_COUNT - 1;
+  return singleSidedX
+    ? { minBinId: activeBinId, maxBinId: activeBinId + width }
+    : { minBinId: activeBinId - width, maxBinId: activeBinId };
 }
 
 export class MeteoraDlmmClient {
@@ -183,13 +192,10 @@ export class MeteoraDlmmClient {
     return this.withConnection(async (connection) => {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const activeBin = await dlmmPool.getActiveBin();
-      const TOTAL_BINS = 69;
-      const minBinId = activeBin.binId - Math.floor(TOTAL_BINS / 2);
-      const maxBinId = activeBin.binId + Math.floor(TOTAL_BINS / 2);
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
-
-      const amountInLamports = amountSol * LAMPORTS_PER_SOL;
       const isTokenXSol = dlmmPool.tokenX.publicKey.equals(SOL_MINT);
+      const { minBinId, maxBinId } = resolveSingleSidedBinRange(activeBin.binId, isTokenXSol);
+      const amountInLamports = amountSol * LAMPORTS_PER_SOL;
       const inAmountX = isTokenXSol ? new BN(amountInLamports) : new BN(0);
       const inAmountY = !isTokenXSol ? new BN(amountInLamports) : new BN(0);
 
@@ -209,7 +215,8 @@ export class MeteoraDlmmClient {
             strategy: {
               maxBinId,
               minBinId,
-              strategyType
+              strategyType,
+              singleSidedX: isTokenXSol
             },
             slippage: 1
           })
@@ -230,6 +237,7 @@ export class MeteoraDlmmClient {
           maxBinId,
           minBinId,
           strategyType,
+          singleSidedX: isTokenXSol,
         },
         slippage: 1, // 1%
       });

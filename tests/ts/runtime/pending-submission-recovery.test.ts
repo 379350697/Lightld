@@ -208,10 +208,24 @@ describe('recoverPendingSubmission', () => {
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
-          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
         ],
         journalLpPositions: [
-          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
         ],
         walletTokens: [],
         journalTokens: [],
@@ -224,6 +238,60 @@ describe('recoverPendingSubmission', () => {
       resolved: true,
       clearPending: true,
       reason: 'pending-submission-filled'
+    });
+  });
+
+  it('keeps an add-lp submission blocked when the chain only shows a partially funded LP range', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-open-partial',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'add-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 35,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 35,
+            hasLiquidity: true
+          }
+        ],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
     });
   });
 
@@ -284,10 +352,24 @@ describe('recoverPendingSubmission', () => {
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
-          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
         ],
         journalLpPositions: [
-          { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
         ],
         walletTokens: [],
         journalTokens: [],

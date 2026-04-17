@@ -99,6 +99,26 @@ function hasWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAc
   );
 }
 
+function hasFullyFundedWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
+  if (!tokenMint) {
+    return false;
+  }
+
+  return Boolean(
+    accountState?.walletLpPositions?.some((position) => {
+      if (position.mint !== tokenMint || !(position.hasLiquidity ?? true)) {
+        return false;
+      }
+
+      if (typeof position.binCount === 'number' && typeof position.fundedBinCount === 'number' && position.binCount > 0) {
+        return position.fundedBinCount >= position.binCount;
+      }
+
+      return true;
+    })
+  );
+}
+
 function getTrackedSubmissions(pendingSubmission: PendingSubmissionSnapshot) {
   const submissionIds = pendingSubmission.submissionIds?.filter((submissionId) => submissionId.length > 0) ?? [];
   const confirmationSignatures = pendingSubmission.confirmationSignatures ?? [];
@@ -162,6 +182,10 @@ function hasFreshOpenWalletEvidence(
 
   if (classifyAction(pendingSubmission.orderAction) !== 'open_risk') {
     return false;
+  }
+
+  if (pendingSubmission.orderAction === 'add-lp') {
+    return hasFullyFundedWalletLpEvidence(pendingSubmission.tokenMint, accountState);
   }
 
   return hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState) ||
