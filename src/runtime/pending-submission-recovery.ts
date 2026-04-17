@@ -2,6 +2,12 @@ import type { LiveConfirmationProvider } from '../execution/live-confirmation-pr
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot } from './state-types.ts';
 import { classifyAction } from './action-semantics.ts';
+import {
+  hasAnyWalletEvidenceForPendingSubmission,
+  hasFullyFundedWalletLpEvidence,
+  hasWalletLpEvidence,
+  hasWalletTokenEvidence
+} from './pending-submission-wallet-evidence.ts';
 
 type PendingSubmissionRecoveryInput = {
   pendingSubmission: PendingSubmissionSnapshot | null;
@@ -63,84 +69,6 @@ function hasMatchingFill(
   });
 }
 
-function hasWalletEvidenceOfMint(
-  pendingSubmission: PendingSubmissionSnapshot,
-  accountState: LiveAccountState | undefined
-) {
-  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
-    return false;
-  }
-
-  return Boolean(
-    (pendingSubmission.tokenMint &&
-      accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0)) ||
-    accountState?.walletLpPositions?.some((position) =>
-      (pendingSubmission.tokenMint && position.mint === pendingSubmission.tokenMint) ||
-      (pendingSubmission.poolAddress && position.poolAddress === pendingSubmission.poolAddress)
-    )
-  );
-}
-
-function hasWalletTokenEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
-  if (!tokenMint) {
-    return false;
-  }
-
-  return Boolean(
-    accountState?.walletTokens?.some((token) => token.mint === tokenMint && token.amount > 0)
-  );
-}
-
-function matchesPendingLpEvidence(
-  pendingSubmission: PendingSubmissionSnapshot,
-  position: { mint: string; poolAddress: string }
-) {
-  if (pendingSubmission.tokenMint && position.mint === pendingSubmission.tokenMint) {
-    return true;
-  }
-
-  if (pendingSubmission.poolAddress && position.poolAddress === pendingSubmission.poolAddress) {
-    return true;
-  }
-
-  return false;
-}
-
-function hasWalletLpEvidence(pendingSubmission: PendingSubmissionSnapshot, accountState: LiveAccountState | undefined) {
-  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
-    return false;
-  }
-
-  return Boolean(
-    accountState?.walletLpPositions?.some((position) =>
-      matchesPendingLpEvidence(pendingSubmission, position) && (position.hasLiquidity ?? true)
-    )
-  );
-}
-
-function hasFullyFundedWalletLpEvidence(
-  pendingSubmission: PendingSubmissionSnapshot,
-  accountState: LiveAccountState | undefined
-) {
-  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
-    return false;
-  }
-
-  return Boolean(
-    accountState?.walletLpPositions?.some((position) => {
-      if (!matchesPendingLpEvidence(pendingSubmission, position) || !(position.hasLiquidity ?? true)) {
-        return false;
-      }
-
-      if (typeof position.binCount === 'number' && typeof position.fundedBinCount === 'number' && position.binCount > 0) {
-        return position.fundedBinCount >= position.binCount;
-      }
-
-      return true;
-    })
-  );
-}
-
 function getTrackedSubmissions(pendingSubmission: PendingSubmissionSnapshot) {
   const submissionIds = pendingSubmission.submissionIds?.filter((submissionId) => submissionId.length > 0) ?? [];
   const confirmationSignatures = pendingSubmission.confirmationSignatures ?? [];
@@ -168,7 +96,7 @@ function isUnknownOpenFailure(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (pendingSubmission.submissionId || hasWalletEvidenceOfMint(pendingSubmission, accountState)) {
+  if (pendingSubmission.submissionId || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
     return false;
   }
 
@@ -183,7 +111,7 @@ function isUnknownExitFill(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (pendingSubmission.submissionId || hasWalletEvidenceOfMint(pendingSubmission, accountState)) {
+  if (pendingSubmission.submissionId || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
     return false;
   }
 

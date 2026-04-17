@@ -5,20 +5,7 @@ import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { reconcileLiveState } from './reconcile-live-state.ts';
 import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-types.ts';
 import { classifyAction } from './action-semantics.ts';
-
-function hasWalletEvidenceOfMint(
-  pendingSubmission: PendingSubmissionSnapshot | null,
-  accountState: LiveAccountState | undefined
-) {
-  if (!pendingSubmission?.tokenMint) {
-    return false;
-  }
-
-  return Boolean(
-    accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0) ||
-    accountState?.walletLpPositions?.some((position) => position.mint === pendingSubmission.tokenMint)
-  );
-}
+import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 
 export async function runPendingRecoveryGate(input: {
   pendingSubmissionStore: PendingSubmissionStore;
@@ -39,7 +26,7 @@ export async function runPendingRecoveryGate(input: {
   if (
     input.currentLifecycleState === 'open_pending' &&
     input.accountState &&
-    !hasWalletEvidenceOfMint(input.pendingSubmission, input.accountState) &&
+    !hasAnyWalletEvidenceForPendingSubmission(input.pendingSubmission, input.accountState) &&
     input.pendingSubmission.orderAction &&
     input.pendingSubmission.createdAt &&
     (input.now ?? new Date()).getTime() - Date.parse(input.pendingSubmission.createdAt) >= 5_000

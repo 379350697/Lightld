@@ -147,6 +147,55 @@ describe('live-cycle preflight helpers', () => {
     expect(result.lifecycleState).toBe('closed');
   });
 
+  it('treats pool-matched LP evidence as a successful open recovery', async () => {
+    let cleared = false;
+    const store = {
+      clear: async () => {
+        cleared = true;
+      },
+      write: async () => {}
+    } as unknown as PendingSubmissionStore;
+
+    const result = await runPendingRecoveryGate({
+      pendingSubmissionStore: store,
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-pool',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        tokenMint: '',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-1',
+        orderAction: 'add-lp',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
+      now: new Date('2026-03-22T00:00:10.000Z'),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          mint: 'mint-safe',
+          binCount: 69,
+          fundedBinCount: 69,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      currentLifecycleState: 'open_pending'
+    });
+
+    expect(cleared).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(result.lifecycleState).toBe('open');
+  });
+
   it('returns reconciliation result when account state is present', () => {
     const result = runAccountReconciliationGate({
       walletSol: 1,

@@ -71,6 +71,7 @@ import {
   runAccountReconciliationGate,
   runPendingRecoveryGate
 } from './live-cycle-preflight.ts';
+import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
@@ -744,22 +745,22 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const activeMint = firstString(logContext.tokenMint, context.token.mint);
 
   if (
-    activeMint &&
     currentLifecycleState === 'open_pending' &&
-    pendingSubmission?.tokenMint === activeMint &&
+    pendingSubmission &&
     accountState
   ) {
-    const hasWalletEvidence = Boolean(
-      accountState.walletTokens?.some((token) => token.mint === activeMint && token.amount > 0) ||
-      accountState.walletLpPositions?.some((position) => position.mint === activeMint)
-    );
+    const pendingMatchesActiveContext =
+      !activeMint ||
+      pendingSubmission.tokenMint === activeMint ||
+      pendingSubmission.poolAddress === logContext.poolAddress;
 
-    if (!hasWalletEvidence) {
+    if (pendingMatchesActiveContext && !hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
+      const evidenceKey = activeMint || pendingSubmission.tokenMint || pendingSubmission.poolAddress || 'unknown';
       return blockCycle({
         stage: 'runtime-policy',
         action: 'hold',
-        reason: `mint-open-pending-recovery:${activeMint}`,
-        audit: { reason: `mint-open-pending-recovery:${activeMint}` },
+        reason: `mint-open-pending-recovery:${evidenceKey}`,
+        audit: { reason: `mint-open-pending-recovery:${evidenceKey}` },
         severity: 'warning',
         failureSource: 'runtime-policy',
         quoteCollected: false

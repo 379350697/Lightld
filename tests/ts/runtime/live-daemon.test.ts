@@ -335,6 +335,112 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('recovers unknown pending from provider-fetched account state and clears timeout circuit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-provider-open-recovery-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'timeout',
+      cooldownUntil: '2026-03-22T00:10:00.000Z',
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: false,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lastReason: 'pending-submission-timeout',
+      activeMint: '',
+      lifecycleState: 'closed',
+      lastClosedMint: '',
+      lastClosedAt: '',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await pendingSubmissionStore.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-provider-open',
+      submissionId: '',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:30:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      poolAddress: 'pool-1',
+      orderAction: 'add-lp',
+      reason: 'broadcast-outcome-unknown'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        accountProvider: {
+          readState: async () => ({
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            walletLpPositions: [
+              {
+                poolAddress: 'pool-1',
+                positionAddress: 'pos-1',
+                mint: 'mint-safe',
+                binCount: 69,
+                fundedBinCount: 69,
+                hasLiquidity: true
+              }
+            ],
+            journalLpPositions: [
+              {
+                poolAddress: 'pool-1',
+                positionAddress: 'pos-1',
+                mint: 'mint-safe',
+                binCount: 69,
+                fundedBinCount: 69,
+                hasLiquidity: true
+              }
+            ],
+            fills: []
+          })
+        },
+        requestedPositionSol: 0.1,
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          token: { mint: 'mint-safe', symbol: 'SAFE', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+        }
+      })
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const positionState = await runtimeStateStore.readPositionState();
+    const health = await runtimeStateStore.readHealthReport();
+
+    await expect(pendingSubmissionStore.read()).resolves.toBeNull();
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: ''
+    });
+    expect(positionState).toMatchObject({
+      allowNewOpens: true,
+      lifecycleState: 'open'
+    });
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      pendingSubmission: false
+    });
+  });
+
   it('recovers unknown LP pending from pool-address evidence even when token mint is missing locally', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-pool-recovery-'));
     const stateRootDir = join(root, 'state');

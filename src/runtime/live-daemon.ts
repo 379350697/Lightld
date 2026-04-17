@@ -27,6 +27,18 @@ type LiveDaemonOptions = {
   housekeepingRunner?: HousekeepingRunner;
 };
 
+async function resolveEffectiveAccountState(cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined) {
+  if (cycleInput?.accountState) {
+    return cycleInput.accountState;
+  }
+
+  if (cycleInput?.accountProvider) {
+    return cycleInput.accountProvider.readState();
+  }
+
+  return undefined;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -162,6 +174,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
     while (tickCount < maxTicks) {
       tickCount += 1;
       let cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined;
+      let effectiveAccountState: LiveAccountState | undefined;
       let pendingSubmission = await pendingSubmissionStore.read();
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
@@ -185,6 +198,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
       try {
         cycleInput = await buildCycleInput(tickCount);
+        effectiveAccountState = await resolveEffectiveAccountState(cycleInput);
         pendingSubmission = await pendingSubmissionStore.read();
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
         let runtimeStateExplicitlySet = false;
@@ -196,7 +210,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           runtimeMode: runtimeState.mode,
           mirrorSink: mirrorRuntime,
           positionState,
-          ...cycleInput
+          ...cycleInput,
+          accountState: effectiveAccountState
         });
 
         if (result.failureKind && result.failureSource) {
@@ -269,7 +284,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'confirmation', nowIso());
         }
 
-        if (cycleInput.accountProvider && result.reason !== 'balance-mismatch') {
+        if ((cycleInput.accountProvider || effectiveAccountState) && result.reason !== 'balance-mismatch') {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'account', nowIso());
         }
 
@@ -283,11 +298,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         }
 
         let postTickPendingSubmission = await pendingSubmissionStore.read();
-        if (postTickPendingSubmission && cycleInput.accountState) {
+        if (postTickPendingSubmission && effectiveAccountState) {
           const postTickRecovery = await recoverPendingSubmission({
             pendingSubmission: postTickPendingSubmission,
             confirmationProvider: cycleInput.confirmationProvider,
-            accountState: cycleInput.accountState
+            accountState: effectiveAccountState
           });
 
           if (postTickRecovery.clearPending) {
@@ -347,7 +362,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           nextLifecycleState: result.nextLifecycleState,
           previousLifecycleState: positionState?.lifecycleState,
           pendingSubmission: (await pendingSubmissionStore.read()) !== null,
-          accountState: cycleInput.accountState,
+          accountState: effectiveAccountState,
           lastAction: result.action,
           lastReason: result.reason,
           activeMint: persistedActiveMint
@@ -455,7 +470,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lifecycleState: resolveLifecycleStateForPersist({
             previousLifecycleState: positionState?.lifecycleState,
             pendingSubmission: (await pendingSubmissionStore.read()) !== null,
-            accountState: cycleInput?.accountState
+            accountState: effectiveAccountState
           }),
           lastClosedMint: positionState?.lastClosedMint,
           lastClosedAt: positionState?.lastClosedAt,
