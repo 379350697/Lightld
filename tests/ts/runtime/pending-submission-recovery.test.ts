@@ -296,6 +296,60 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('treats a legacy unknown lp submission without orderAction as resolved when a fully funded LP matches by mint', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'legacy-k-open',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:30:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: new Date('2026-03-22T00:20:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            binCount: 69,
+            fundedBinCount: 69,
+            hasLiquidity: true
+          }
+        ],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
   it('keeps an add-lp submission blocked when the chain only shows a partially funded LP range', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {

@@ -50,7 +50,12 @@ export async function runPendingRecoveryGate(input: {
 
   if (recovery.clearPending) {
     await input.pendingSubmissionStore.clear();
-    lifecycleState = resolveLifecycleAfterRecovery(lifecycleState, recovery.reason, input.pendingSubmission);
+    lifecycleState = resolveLifecycleAfterRecovery(
+      lifecycleState,
+      recovery.reason,
+      input.pendingSubmission,
+      input.accountState
+    );
   } else if (recovery.nextPendingSubmission) {
     await input.pendingSubmissionStore.write(recovery.nextPendingSubmission);
   }
@@ -73,13 +78,22 @@ export function runAccountReconciliationGate(accountState: LiveAccountState | un
 function resolveLifecycleAfterRecovery(
   currentLifecycleState: PositionLifecycleState,
   reason: 'clear' | 'pending-submission-confirmed' | 'pending-submission-failed' | 'pending-submission-filled' | 'pending-submission-recovery-required' | 'pending-submission-timeout',
-  pendingSubmission: PendingSubmissionSnapshot | null
+  pendingSubmission: PendingSubmissionSnapshot | null,
+  accountState?: LiveAccountState
 ): PositionLifecycleState {
   if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
     if (
       currentLifecycleState === 'closed'
       && pendingSubmission?.orderAction
       && classifyAction(pendingSubmission.orderAction) === 'open_risk'
+    ) {
+      return 'open';
+    }
+
+    if (
+      currentLifecycleState === 'closed' &&
+      pendingSubmission &&
+      hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)
     ) {
       return 'open';
     }

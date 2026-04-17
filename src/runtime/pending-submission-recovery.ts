@@ -168,6 +168,17 @@ function hasFreshReduceRiskWalletEvidence(
   return false;
 }
 
+function hasLegacyFullyFundedLpEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (pendingSubmission.orderAction) {
+    return false;
+  }
+
+  return hasFullyFundedWalletLpEvidence(pendingSubmission, accountState);
+}
+
 export async function recoverPendingSubmission(
   input: PendingSubmissionRecoveryInput
 ): Promise<PendingSubmissionRecoveryResult> {
@@ -295,6 +306,15 @@ export async function recoverPendingSubmission(
   }
 
   if (hasFreshReduceRiskWalletEvidence(nextPendingSubmission, input.accountState)) {
+    return {
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    };
+  }
+
+  if (hasLegacyFullyFundedLpEvidence(nextPendingSubmission, input.accountState)) {
     return {
       blocked: false,
       resolved: true,
