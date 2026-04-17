@@ -309,7 +309,19 @@ export function buildDashboardHtml(): string {
       var watermark = container.querySelector('.chart-watermark');
       container.innerHTML = '';
       if (watermark) container.appendChild(watermark);
-      if (!data.length) return;
+      if (!data.length) {
+        var empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.style.position = 'absolute';
+        empty.style.inset = '0';
+        empty.style.display = 'flex';
+        empty.style.alignItems = 'center';
+        empty.style.justifyContent = 'center';
+        empty.style.paddingBottom = '28px';
+        empty.textContent = 'No realized PnL data yet';
+        container.appendChild(empty);
+        return;
+      }
       var maxAbs = Math.max.apply(null, data.map(function(d) { return Math.abs(Number(d.pnl) || 0); }).concat([0.001]));
       var yAxis = document.createElement('div');
       yAxis.className = 'chart-y-axis';

@@ -286,8 +286,9 @@ type PnlResponse = {
 function handlePnl(): PnlResponse {
   const today = new Date().toISOString().slice(0, 10);
   const month = new Date().toISOString().slice(0, 7);
+  const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  // Total PnL: sum of exit fills minus entry fills
+  // Primary source: fills
   const totalEntry = queryAll<{ total: number }>(
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp')"
   );
@@ -295,11 +296,6 @@ function handlePnl(): PnlResponse {
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee')"
   );
 
-  const entryTotal = totalEntry[0]?.total ?? 0;
-  const exitTotal = totalExit[0]?.total ?? 0;
-  const totalPnl = exitTotal - entryTotal;
-
-  // Today PnL
   const todayEntry = queryAll<{ total: number }>(
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp') AND recorded_at >= ?",
     today + 'T00:00:00.000Z'
@@ -308,9 +304,7 @@ function handlePnl(): PnlResponse {
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee') AND recorded_at >= ?",
     today + 'T00:00:00.000Z'
   );
-  const todayPnl = (todayExit[0]?.total ?? 0) - (todayEntry[0]?.total ?? 0);
 
-  // Month PnL
   const monthEntry = queryAll<{ total: number }>(
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp') AND recorded_at >= ?",
     month + '-01T00:00:00.000Z'
@@ -319,10 +313,12 @@ function handlePnl(): PnlResponse {
     "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee') AND recorded_at >= ?",
     month + '-01T00:00:00.000Z'
   );
-  const monthPnl = (monthExit[0]?.total ?? 0) - (monthEntry[0]?.total ?? 0);
 
-  // Daily PnL for last 30 days
-  const dailyRows = queryAll<{ date: string; entry_sol: number; exit_sol: number }>(`
+  let totalPnl = (totalExit[0]?.total ?? 0) - (totalEntry[0]?.total ?? 0);
+  let todayPnl = (todayExit[0]?.total ?? 0) - (todayEntry[0]?.total ?? 0);
+  let monthPnl = (monthExit[0]?.total ?? 0) - (monthEntry[0]?.total ?? 0);
+
+  let dailyPnl = queryAll<{ date: string; entry_sol: number; exit_sol: number }>(`
     SELECT
       SUBSTR(recorded_at, 1, 10) AS date,
       COALESCE(SUM(CASE WHEN side IN ('buy', 'add-lp') THEN filled_sol ELSE 0 END), 0) AS entry_sol,
@@ -331,12 +327,37 @@ function handlePnl(): PnlResponse {
     WHERE recorded_at >= ?
     GROUP BY SUBSTR(recorded_at, 1, 10)
     ORDER BY date ASC
-  `, new Date(Date.now() - 30 * 86400000).toISOString());
-
-  const dailyPnl = dailyRows.map(r => ({
+  `, since30d).map(r => ({
     date: r.date,
-    pnl: r.exit_sol - r.entry_sol
+    pnl: r.exit_sol - r.entry_sol,
   }));
+
+  // Fallback: use orders when fills are missing/incomplete.
+  if (dailyPnl.length === 0) {
+    const orderRows = queryAll<{ date: string; entry_sol: number }>(`
+      SELECT
+        SUBSTR(COALESCE(updated_at, created_at), 1, 10) AS date,
+        COALESCE(SUM(CASE WHEN action = 'add-lp' THEN requested_position_sol ELSE 0 END), 0) AS entry_sol
+      FROM orders
+      WHERE COALESCE(updated_at, created_at) >= ?
+      GROUP BY SUBSTR(COALESCE(updated_at, created_at), 1, 10)
+      ORDER BY date ASC
+    `, since30d);
+
+    dailyPnl = orderRows
+      .map(r => ({ date: r.date, pnl: -(r.entry_sol ?? 0) }))
+      .filter(r => Number.isFinite(r.pnl) && r.pnl !== 0);
+
+    if (dailyPnl.length > 0 && totalPnl === 0 && todayPnl === 0 && monthPnl === 0) {
+      totalPnl = dailyPnl.reduce((sum, row) => sum + row.pnl, 0);
+      todayPnl = dailyPnl
+        .filter(row => row.date >= today)
+        .reduce((sum, row) => sum + row.pnl, 0);
+      monthPnl = dailyPnl
+        .filter(row => row.date >= month + '-01')
+        .reduce((sum, row) => sum + row.pnl, 0);
+    }
+  }
 
   return { totalPnl, todayPnl, monthPnl, dailyPnl };
 }
