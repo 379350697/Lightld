@@ -22,6 +22,8 @@ export const RuntimeStateSnapshotSchema = z.object({
   mode: RuntimeModeSchema,
   circuitReason: z.string(),
   cooldownUntil: z.string(),
+  transientAutoHealEligible: z.boolean().optional(),
+  transientRecoverySuccessTicks: z.number().int().nonnegative().optional(),
   lastHealthyAt: z.string(),
   updatedAt: z.string()
 });

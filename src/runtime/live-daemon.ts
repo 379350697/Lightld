@@ -30,6 +30,21 @@ type LiveDaemonOptions = {
   confirmationProvider?: LiveConfirmationProvider;
 };
 
+const TRANSIENT_CIRCUIT_RECOVERY_SUCCESS_TICKS = 2;
+
+function isTransientAutoHealableCircuitReason(reason: string) {
+  const normalized = reason.trim().toLowerCase();
+  return normalized === 'fetch failed' || normalized === 'timeout';
+}
+
+function isTransientAutoHealableError(error: unknown) {
+  if (error instanceof ExecutionRequestError) {
+    return error.operation === 'account' && error.reason === 'timeout';
+  }
+
+  return error instanceof Error && isTransientAutoHealableCircuitReason(error.message);
+}
+
 async function resolveEffectiveAccountState(
   cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined,
   fallback?: LiveAccountState
@@ -107,6 +122,7 @@ function applyDerivedRuntimeState(input: {
     mode: RuntimeMode;
     circuitReason: string;
     cooldownUntil: string;
+    transientRecoverySuccessTicks?: number;
     lastHealthyAt: string;
     updatedAt: string;
   };
@@ -125,11 +141,94 @@ function applyDerivedRuntimeState(input: {
         : shouldKeepCooldown
           ? input.currentState.cooldownUntil
           : '',
+    transientAutoHealEligible: false,
+    transientRecoverySuccessTicks: input.derived.mode === 'healthy'
+      ? 0
+      : input.currentState.transientRecoverySuccessTicks ?? 0,
     lastHealthyAt:
       input.derived.mode === 'healthy'
         ? input.now
         : input.currentState.lastHealthyAt,
     updatedAt: input.now
+  };
+}
+
+function applyTransientCircuitAutoHeal(input: {
+  tickStartState: {
+    mode: RuntimeMode;
+    circuitReason: string;
+    cooldownUntil: string;
+    transientAutoHealEligible?: boolean;
+    transientRecoverySuccessTicks?: number;
+    lastHealthyAt: string;
+    updatedAt: string;
+  };
+  nextState: {
+    mode: RuntimeMode;
+    circuitReason: string;
+    cooldownUntil: string;
+    transientRecoverySuccessTicks?: number;
+    lastHealthyAt: string;
+    updatedAt: string;
+  };
+  pendingSubmission: boolean;
+  now: string;
+}) {
+  if (input.pendingSubmission) {
+    return {
+      ...input.nextState,
+      transientAutoHealEligible: false,
+      transientRecoverySuccessTicks: 0
+    };
+  }
+
+  if (
+    input.nextState.mode === 'flatten_only' ||
+    input.nextState.mode === 'paused' ||
+    input.nextState.mode === 'degraded'
+  ) {
+    return {
+      ...input.nextState,
+      transientAutoHealEligible: false,
+      transientRecoverySuccessTicks: 0
+    };
+  }
+
+  if (
+    input.tickStartState.transientAutoHealEligible &&
+    (input.tickStartState.mode === 'circuit_open' || input.tickStartState.mode === 'recovering') &&
+    isTransientAutoHealableCircuitReason(input.tickStartState.circuitReason)
+  ) {
+    const successTicks = (input.tickStartState.transientRecoverySuccessTicks ?? 0) + 1;
+
+    if (successTicks >= TRANSIENT_CIRCUIT_RECOVERY_SUCCESS_TICKS) {
+      return {
+        ...input.nextState,
+        mode: 'healthy' as const,
+        circuitReason: '',
+        cooldownUntil: '',
+        transientAutoHealEligible: false,
+        transientRecoverySuccessTicks: 0,
+        lastHealthyAt: input.now,
+        updatedAt: input.now
+      };
+    }
+
+    return {
+      ...input.nextState,
+      mode: 'recovering' as const,
+      circuitReason: input.tickStartState.circuitReason,
+      cooldownUntil: '',
+      transientAutoHealEligible: true,
+      transientRecoverySuccessTicks: successTicks,
+      updatedAt: input.now
+    };
+  }
+
+  return {
+    ...input.nextState,
+    transientAutoHealEligible: false,
+    transientRecoverySuccessTicks: 0
   };
 }
 
@@ -223,6 +322,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
     mode: 'healthy' as RuntimeMode,
     circuitReason: '',
     cooldownUntil: '',
+    transientAutoHealEligible: false,
+    transientRecoverySuccessTicks: 0,
     lastHealthyAt: '',
     updatedAt: nowIso()
   };
@@ -238,6 +339,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let pendingSubmission = await pendingSubmissionStore.read();
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       let previousMode = runtimeState.mode;
+      const tickStartRuntimeState = {
+        ...runtimeState,
+        transientAutoHealEligible: runtimeState.transientAutoHealEligible ?? false,
+        transientRecoverySuccessTicks: runtimeState.transientRecoverySuccessTicks ?? 0
+      };
 
       try {
         const preRecovery = await runPreIngestPendingRecovery({
@@ -334,6 +440,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               mode: 'circuit_open',
               circuitReason: result.reason,
               cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+              transientAutoHealEligible: false,
+              transientRecoverySuccessTicks: 0,
               updatedAt: nowIso()
             };
             runtimeStateExplicitlySet = true;
@@ -357,6 +465,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
                 : hasPendingSubmission
                   ? runtimeState.cooldownUntil
                   : '',
+            transientAutoHealEligible: false,
+            transientRecoverySuccessTicks: 0,
             lastHealthyAt: !hasPendingSubmission ? nowIso() : runtimeState.lastHealthyAt,
             updatedAt: nowIso()
           };
@@ -426,6 +536,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             now: nowIso()
           });
         }
+
+        runtimeState = applyTransientCircuitAutoHeal({
+          tickStartState: tickStartRuntimeState,
+          nextState: runtimeState,
+          pendingSubmission: postTickPendingSubmission !== null,
+          now: nowIso()
+        });
 
         const housekeeping = housekeepingRunner
           ? await housekeepingRunner.runIfDue()
@@ -529,11 +646,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           );
         }
 
+        const transientAutoHealEligible = isTransientAutoHealableError(error);
         runtimeState = {
           ...runtimeState,
           mode: 'circuit_open',
           circuitReason: error instanceof Error ? error.message : String(error),
           cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+          transientAutoHealEligible,
+          transientRecoverySuccessTicks: 0,
           updatedAt: now
         };
 

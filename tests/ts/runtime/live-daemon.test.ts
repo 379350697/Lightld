@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
+import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
@@ -724,6 +725,129 @@ describe('runLiveDaemon', () => {
     });
     expect(health).toMatchObject({
       pendingSubmission: false
+    });
+  });
+
+  it('auto-heals transient fetch-failed circuit state after two consecutive successful ticks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-fetch-auto-heal-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    let buildAttempts = 0;
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 3,
+      buildCycleInput: async () => {
+        buildAttempts += 1;
+        if (buildAttempts === 1) {
+          throw new Error('fetch failed');
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            fills: []
+          },
+          context: {
+            pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            token: { mint: '', symbol: '', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+          }
+        };
+      }
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: '',
+      cooldownUntil: '',
+      transientRecoverySuccessTicks: 0
+    });
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      allowNewOpens: true
+    });
+  });
+
+  it('auto-heals transient account timeout circuit state after two consecutive successful ticks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-account-timeout-auto-heal-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    let buildAttempts = 0;
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 3,
+      buildCycleInput: async () => {
+        buildAttempts += 1;
+        if (buildAttempts === 1) {
+          throw new ExecutionRequestError(
+            'account',
+            { kind: 'transient', reason: 'timeout', retryable: true }
+          );
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountProvider: {
+            readState: async () => ({
+              walletSol: 1.25,
+              journalSol: 1.25,
+              walletTokens: [],
+              journalTokens: [],
+              fills: []
+            })
+          },
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            fills: []
+          },
+          context: {
+            pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            token: { mint: '', symbol: '', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+          }
+        };
+      }
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const dependencyHealth = await runtimeStateStore.readDependencyHealth();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: '',
+      cooldownUntil: '',
+      transientRecoverySuccessTicks: 0
+    });
+    expect(dependencyHealth?.account.consecutiveFailures).toBe(0);
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      allowNewOpens: true,
+      dependencyHealth: {
+        reconcileFailures: 0
+      }
     });
   });
 
