@@ -67,13 +67,17 @@ function hasWalletEvidenceOfMint(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!pendingSubmission.tokenMint) {
+  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
     return false;
   }
 
   return Boolean(
-    accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0) ||
-    accountState?.walletLpPositions?.some((position) => position.mint === pendingSubmission.tokenMint)
+    (pendingSubmission.tokenMint &&
+      accountState?.walletTokens?.some((token) => token.mint === pendingSubmission.tokenMint && token.amount > 0)) ||
+    accountState?.walletLpPositions?.some((position) =>
+      (pendingSubmission.tokenMint && position.mint === pendingSubmission.tokenMint) ||
+      (pendingSubmission.poolAddress && position.poolAddress === pendingSubmission.poolAddress)
+    )
   );
 }
 
@@ -87,26 +91,44 @@ function hasWalletTokenEvidence(tokenMint: string | undefined, accountState: Liv
   );
 }
 
-function hasWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
-  if (!tokenMint) {
+function matchesPendingLpEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  position: { mint: string; poolAddress: string }
+) {
+  if (pendingSubmission.tokenMint && position.mint === pendingSubmission.tokenMint) {
+    return true;
+  }
+
+  if (pendingSubmission.poolAddress && position.poolAddress === pendingSubmission.poolAddress) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasWalletLpEvidence(pendingSubmission: PendingSubmissionSnapshot, accountState: LiveAccountState | undefined) {
+  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
     return false;
   }
 
   return Boolean(
     accountState?.walletLpPositions?.some((position) =>
-      position.mint === tokenMint && (position.hasLiquidity ?? true)
+      matchesPendingLpEvidence(pendingSubmission, position) && (position.hasLiquidity ?? true)
     )
   );
 }
 
-function hasFullyFundedWalletLpEvidence(tokenMint: string | undefined, accountState: LiveAccountState | undefined) {
-  if (!tokenMint) {
+function hasFullyFundedWalletLpEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) {
     return false;
   }
 
   return Boolean(
     accountState?.walletLpPositions?.some((position) => {
-      if (position.mint !== tokenMint || !(position.hasLiquidity ?? true)) {
+      if (!matchesPendingLpEvidence(pendingSubmission, position) || !(position.hasLiquidity ?? true)) {
         return false;
       }
 
@@ -176,7 +198,7 @@ function hasFreshOpenWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
+  if ((!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) || !pendingSubmission.orderAction) {
     return false;
   }
 
@@ -185,11 +207,11 @@ function hasFreshOpenWalletEvidence(
   }
 
   if (pendingSubmission.orderAction === 'add-lp') {
-    return hasFullyFundedWalletLpEvidence(pendingSubmission.tokenMint, accountState);
+    return hasFullyFundedWalletLpEvidence(pendingSubmission, accountState);
   }
 
   return hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState) ||
-    hasWalletLpEvidence(pendingSubmission.tokenMint, accountState);
+    hasWalletLpEvidence(pendingSubmission, accountState);
 }
 
 function hasFreshReduceRiskWalletEvidence(
@@ -205,7 +227,7 @@ function hasFreshReduceRiskWalletEvidence(
   }
 
   const hasToken = hasWalletTokenEvidence(pendingSubmission.tokenMint, accountState);
-  const hasLp = hasWalletLpEvidence(pendingSubmission.tokenMint, accountState);
+  const hasLp = hasWalletLpEvidence(pendingSubmission, accountState);
 
   if (pendingSubmission.orderAction === 'withdraw-lp') {
     return !hasLp;

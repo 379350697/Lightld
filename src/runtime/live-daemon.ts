@@ -6,6 +6,7 @@ import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
+import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
 import { isExposureReducingAction } from './action-semantics.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
@@ -281,15 +282,31 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           );
         }
 
+        let postTickPendingSubmission = await pendingSubmissionStore.read();
+        if (postTickPendingSubmission && cycleInput.accountState) {
+          const postTickRecovery = await recoverPendingSubmission({
+            pendingSubmission: postTickPendingSubmission,
+            confirmationProvider: cycleInput.confirmationProvider,
+            accountState: cycleInput.accountState
+          });
+
+          if (postTickRecovery.clearPending) {
+            await pendingSubmissionStore.clear();
+            postTickPendingSubmission = null;
+          } else if (postTickRecovery.nextPendingSubmission) {
+            await pendingSubmissionStore.write(postTickRecovery.nextPendingSubmission);
+            postTickPendingSubmission = postTickRecovery.nextPendingSubmission;
+          }
+        }
+
         if (!runtimeStateExplicitlySet) {
-          const nextPendingSubmission = await pendingSubmissionStore.read();
           const postTickDerived = deriveRuntimeMode({
             currentMode: runtimeState.mode,
             quoteFailures: dependencyHealth.quote.consecutiveFailures,
             reconcileFailures: dependencyHealth.account.consecutiveFailures,
-            hasUnknownSubmissionOutcome: nextPendingSubmission?.confirmationStatus === 'unknown',
+            hasUnknownSubmissionOutcome: postTickPendingSubmission?.confirmationStatus === 'unknown',
             cooldownActive:
-              nextPendingSubmission !== null &&
+              postTickPendingSubmission !== null &&
               runtimeState.cooldownUntil !== '' &&
               runtimeState.cooldownUntil > nowIso(),
             flattenOnlyRequested: runtimeState.mode === 'flatten_only'
@@ -298,7 +315,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           runtimeState = applyDerivedRuntimeState({
             currentState: runtimeState,
             derived: postTickDerived,
-            pendingSubmission: nextPendingSubmission !== null,
+            pendingSubmission: postTickPendingSubmission !== null,
             now: nowIso()
           });
         }

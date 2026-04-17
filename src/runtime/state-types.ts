@@ -73,6 +73,7 @@ export const PendingSubmissionSnapshotSchema = z.object({
   timeoutAt: z.string().optional(),
   tokenMint: z.string().optional(),
   tokenSymbol: z.string().optional(),
+  poolAddress: z.string().optional(),
   orderAction: PendingOrderActionSchema.optional(),
   reason: z.string().optional()
 });

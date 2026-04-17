@@ -86,6 +86,7 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
   createdAt: string;
   updatedAt: string;
   timeoutAt: string;
+  poolAddress: string;
   tokenMint: string;
   tokenSymbol: string;
   orderAction: LiveAction;
@@ -102,6 +103,7 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
     updatedAt: input.updatedAt,
     lastCheckedAt: input.updatedAt,
     timeoutAt: input.timeoutAt,
+    poolAddress: input.poolAddress,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
     orderAction: input.orderAction,
@@ -121,6 +123,7 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
   createdAt: string;
   updatedAt: string;
   timeoutAt: string;
+  poolAddress: string;
   tokenMint: string;
   tokenSymbol: string;
   orderAction: LiveAction;
@@ -139,6 +142,7 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
     updatedAt: input.updatedAt,
     lastCheckedAt: input.updatedAt,
     timeoutAt: input.timeoutAt,
+    poolAddress: input.poolAddress,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
     orderAction: input.orderAction,
