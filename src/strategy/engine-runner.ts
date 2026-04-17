@@ -56,6 +56,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           unrealizedPct: typeof input.snapshot.unrealizedPct === 'number' ? input.snapshot.unrealizedPct : undefined,
           hasLpPosition: Boolean(input.snapshot.hasLpPosition),
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
+          lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
           lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
           lpActiveBinStatus: typeof input.snapshot.lpActiveBinStatus === 'string' ? (input.snapshot.lpActiveBinStatus as any) : undefined,
           lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined,
@@ -67,6 +68,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpEnabled: Boolean(input.config.lpEnabled),
           lpStopLossNetPnlPct: typeof input.config.lpStopLossNetPnlPct === 'number' ? input.config.lpStopLossNetPnlPct : undefined,
           lpTakeProfitNetPnlPct: typeof input.config.lpTakeProfitNetPnlPct === 'number' ? input.config.lpTakeProfitNetPnlPct : undefined,
+          lpSolDepletionExitBins: typeof input.config.lpSolDepletionExitBins === 'number' ? input.config.lpSolDepletionExitBins : undefined,
           lpClaimFeeThresholdUsd: typeof input.config.lpClaimFeeThresholdUsd === 'number' ? input.config.lpClaimFeeThresholdUsd : undefined,
           lpRebalanceOnOutOfRange: Boolean(input.config.lpRebalanceOnOutOfRange),
           lpMaxImpermanentLossPct: typeof input.config.lpMaxImpermanentLossPct === 'number' ? input.config.lpMaxImpermanentLossPct : undefined

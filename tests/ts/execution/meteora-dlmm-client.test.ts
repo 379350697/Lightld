@@ -169,6 +169,10 @@ describe('MeteoraDlmmClient', () => {
         upperBinId: 168,
         feeX: { isZero: () => false },
         feeY: { isZero: () => true },
+        totalXAmount: '1000000000',
+        totalYAmount: '250000',
+        feeXExcludeTransferFee: '50000000',
+        feeYExcludeTransferFee: '100000',
         positionBinData: [
           { binId: 100, positionXAmount: '10', positionYAmount: '0' },
           { binId: 101, positionXAmount: '0', positionYAmount: '5' }
@@ -187,13 +191,17 @@ describe('MeteoraDlmmClient', () => {
     };
 
     dlmmPkg.getAllLbPairPositionsByUser = vi.fn(async () => new Map([
-      [poolAddress, { lbPairPositionsData: [{ publicKey: fundedPosition.publicKey }, { publicKey: emptyPosition.publicKey }] }]
+      [poolAddress, {
+        tokenX: { mint: { decimals: 9 } },
+        tokenY: { mint: { decimals: 6 } },
+        lbPairPositionsData: [{ publicKey: fundedPosition.publicKey }, { publicKey: emptyPosition.publicKey }]
+      }]
     ]));
     dlmmPkg.create = vi.fn(async () => ({
       tokenX: { publicKey: SOL_MINT },
       tokenY: { publicKey: makePoolAddress(90) },
       getPositionsByUserAndLbPair: async () => ({
-        activeBin: { binId: 120, price: '1' },
+        activeBin: { binId: 167, price: '1' },
         userPositions: [fundedPosition, emptyPosition]
       })
     }));
@@ -207,20 +215,67 @@ describe('MeteoraDlmmClient', () => {
         positionAddress: fundedPosition.publicKey.toBase58(),
         lowerBinId: 100,
         upperBinId: 168,
+        activeBinId: 167,
         binCount: 69,
         fundedBinCount: 2,
         hasLiquidity: true,
-        hasClaimableFees: true
+        hasClaimableFees: true,
+        solSide: 'tokenX',
+        solDepletedBins: 67
       }),
       expect.objectContaining({
         poolAddress,
         positionAddress: emptyPosition.publicKey.toBase58(),
         lowerBinId: 200,
         upperBinId: 268,
+        activeBinId: 167,
         binCount: 69,
         fundedBinCount: 0,
         hasLiquidity: false,
-        hasClaimableFees: false
+        hasClaimableFees: false,
+        solSide: 'tokenX',
+        solDepletedBins: 0
+      })
+    ]);
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(1.25, 10);
+    expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.15, 10);
+  });
+
+  it('computes SOL depletion from the upper edge when SOL is token Y', async () => {
+    const poolAddress = makePoolAddress(91).toBase58();
+    const position = {
+      publicKey: makePoolAddress(92),
+      positionData: {
+        lowerBinId: 52,
+        upperBinId: 120,
+        feeX: { isZero: () => true },
+        feeY: { isZero: () => true },
+        positionBinData: [{ binId: 120, positionXAmount: '0', positionYAmount: '1' }]
+      }
+    };
+
+    dlmmPkg.getAllLbPairPositionsByUser = vi.fn(async () => new Map([
+      [poolAddress, { lbPairPositionsData: [{ publicKey: position.publicKey }] }]
+    ]));
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: makePoolAddress(93) },
+      tokenY: { publicKey: SOL_MINT },
+      getPositionsByUserAndLbPair: async () => ({
+        activeBin: { binId: 53, price: '1' },
+        userPositions: [position]
+      })
+    }));
+
+    const client = new MeteoraDlmmClient({} as any);
+    const snapshots = await client.getPositionSnapshots(makePoolAddress(1));
+
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        lowerBinId: 52,
+        upperBinId: 120,
+        activeBinId: 53,
+        solSide: 'tokenY',
+        solDepletedBins: 67
       })
     ]);
   });

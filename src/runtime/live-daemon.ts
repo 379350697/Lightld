@@ -21,6 +21,8 @@ type LiveDaemonOptions = {
   stateRootDir?: string;
   journalRootDir?: string;
   tickIntervalMs?: number;
+  hotTickIntervalMs?: number;
+  rateLimitBackoffIntervalMs?: number;
   maxTicks?: number;
   buildCycleInput?: (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'>;
   alertSink?: AlertSink;
@@ -28,6 +30,7 @@ type LiveDaemonOptions = {
   housekeepingRunner?: HousekeepingRunner;
   accountProvider?: LiveAccountStateProvider;
   confirmationProvider?: LiveConfirmationProvider;
+  sleep?: (delayMs: number) => Promise<void>;
 };
 
 const TRANSIENT_CIRCUIT_RECOVERY_SUCCESS_TICKS = 2;
@@ -153,6 +156,58 @@ function nowIso() {
 
 function wait(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function hasHotLpSignal(input: {
+  cycleInput?: Omit<LiveCycleInput, 'strategy'>;
+  accountState?: LiveAccountState;
+}) {
+  const trader = input.cycleInput?.context?.trader ?? {};
+  const lpNetPnlPct = typeof trader.lpNetPnlPct === 'number' ? trader.lpNetPnlPct : undefined;
+  const lpSolDepletedBins = typeof trader.lpSolDepletedBins === 'number' ? trader.lpSolDepletedBins : undefined;
+  const accountLpPositions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ];
+
+  const hotPnl = typeof lpNetPnlPct === 'number'
+    && (lpNetPnlPct >= 25 || lpNetPnlPct <= -15);
+  const hotBinFromContext = typeof lpSolDepletedBins === 'number' && lpSolDepletedBins >= 63;
+  const hotBinFromAccount = accountLpPositions.some((position) =>
+    (position.hasLiquidity ?? true) && typeof position.solDepletedBins === 'number' && position.solDepletedBins >= 63
+  );
+
+  return hotPnl || hotBinFromContext || hotBinFromAccount;
+}
+
+function resolveNextTickDelayMs(input: {
+  baseTickIntervalMs: number;
+  hotTickIntervalMs: number;
+  rateLimitBackoffIntervalMs: number;
+  cycleInput?: Omit<LiveCycleInput, 'strategy'>;
+  accountState?: LiveAccountState;
+  error?: unknown;
+}) {
+  if (
+    input.error instanceof ExecutionRequestError &&
+    input.error.operation === 'account' &&
+    input.error.reason === 'rate-limited'
+  ) {
+    return input.rateLimitBackoffIntervalMs;
+  }
+
+  if (input.error instanceof Error && /429|rate-limit/i.test(input.error.message)) {
+    return input.rateLimitBackoffIntervalMs;
+  }
+
+  if (hasHotLpSignal({
+    cycleInput: input.cycleInput,
+    accountState: input.accountState
+  })) {
+    return input.hotTickIntervalMs;
+  }
+
+  return input.baseTickIntervalMs;
 }
 
 async function warmAccountProvider(accountProvider?: LiveAccountStateProvider) {
@@ -356,6 +411,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const stateRootDir = options.stateRootDir ?? 'state';
   const journalRootDir = options.journalRootDir ?? 'tmp/journals';
   const tickIntervalMs = options.tickIntervalMs ?? 30_000;
+  const hotTickIntervalMs = Math.min(options.hotTickIntervalMs ?? 10_000, tickIntervalMs);
+  const rateLimitBackoffIntervalMs = options.rateLimitBackoffIntervalMs ?? Math.max(60_000, tickIntervalMs * 2);
+  const sleep = options.sleep ?? wait;
   const maxTicks = options.maxTicks ?? Number.POSITIVE_INFINITY;
   const buildCycleInput:
     (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'> =
@@ -387,6 +445,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       tickCount += 1;
       let cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined;
       let effectiveAccountState: LiveAccountState | undefined;
+      let tickError: unknown;
       let pendingSubmission = await pendingSubmissionStore.read();
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       let previousMode = runtimeState.mode;
@@ -640,13 +699,29 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ? (failedOpenCooldownMint || persistedActiveMint)
           : (positionState?.lastClosedMint ?? '');
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
+        const persistedPoolAddress = typeof result.context?.pool?.address === 'string' && result.context.pool.address.length > 0
+          ? result.context.pool.address
+          : (positionState?.activePoolAddress ?? '');
+        const persistedEntrySol = result.action === 'add-lp' && result.liveOrderSubmitted
+          ? cycleInput?.requestedPositionSol
+          : isExposureReducingAction(result.action)
+            ? undefined
+            : positionState?.entrySol;
+        const persistedOpenedAt = result.action === 'add-lp' && result.liveOrderSubmitted
+          ? nowIso()
+          : isExposureReducingAction(result.action)
+            ? undefined
+            : positionState?.openedAt;
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
           lastReason: result.reason,
           activeMint: persistedActiveMint,
+          activePoolAddress: persistedPoolAddress,
           lifecycleState: persistedLifecycleState,
+          entrySol: persistedEntrySol,
+          openedAt: persistedOpenedAt,
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,
           updatedAt: nowIso()
@@ -680,6 +755,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           });
         }
       } catch (error) {
+        tickError = error;
         const now = nowIso();
 
         if (error instanceof ExecutionRequestError) {
@@ -734,11 +810,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
+          activePoolAddress: positionState?.activePoolAddress,
           lifecycleState: resolveLifecycleStateForPersist({
             previousLifecycleState: positionState?.lifecycleState,
             pendingSubmission: (await pendingSubmissionStore.read()) !== null,
             accountState: effectiveAccountState
           }),
+          entrySol: positionState?.entrySol,
+          openedAt: positionState?.openedAt,
           lastClosedMint: positionState?.lastClosedMint,
           lastClosedAt: positionState?.lastClosedAt,
           updatedAt: now
@@ -761,7 +840,15 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       }
 
       if (tickCount < maxTicks) {
-        await wait(tickIntervalMs);
+        const delayMs = resolveNextTickDelayMs({
+          baseTickIntervalMs: tickIntervalMs,
+          hotTickIntervalMs,
+          rateLimitBackoffIntervalMs,
+          cycleInput,
+          accountState: effectiveAccountState,
+          error: tickError
+        });
+        await sleep(delayMs);
       }
     }
   } finally {

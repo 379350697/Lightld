@@ -329,8 +329,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               mint: string;
               lowerBinId: number;
               upperBinId: number;
+              activeBinId: number;
               binCount: number;
               fundedBinCount: number;
+              solSide: 'tokenX' | 'tokenY';
+              solDepletedBins: number;
+              currentValueSol?: number;
+              unclaimedFeeSol?: number;
               hasLiquidity: boolean;
               hasClaimableFees: boolean;
             }> = [];

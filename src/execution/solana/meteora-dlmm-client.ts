@@ -26,8 +26,13 @@ export type MeteoraLpPositionSnapshot = {
   mint: string;
   lowerBinId: number;
   upperBinId: number;
+  activeBinId: number;
   binCount: number;
   fundedBinCount: number;
+  solSide: 'tokenX' | 'tokenY';
+  solDepletedBins: number;
+  currentValueSol?: number;
+  unclaimedFeeSol?: number;
   hasLiquidity: boolean;
   hasClaimableFees: boolean;
 };
@@ -99,6 +104,58 @@ function resolveSingleSidedBinRange(activeBinId: number, singleSidedX: boolean) 
   return singleSidedX
     ? { minBinId: activeBinId, maxBinId: activeBinId + width }
     : { minBinId: activeBinId - width, maxBinId: activeBinId };
+}
+
+function computeSolDepletedBins(input: {
+  lowerBinId: number;
+  upperBinId: number;
+  activeBinId: number;
+  solSide: 'tokenX' | 'tokenY';
+}) {
+  if (input.solSide === 'tokenX') {
+    return Math.max(0, input.activeBinId - input.lowerBinId);
+  }
+
+  return Math.max(0, input.upperBinId - input.activeBinId);
+}
+
+function toUiAmount(rawAmount: unknown, decimals: number) {
+  const numeric = toNumericValue(rawAmount);
+  if (!Number.isFinite(numeric) || decimals < 0) {
+    return 0;
+  }
+
+  return numeric / (10 ** decimals);
+}
+
+function computeSolValueFromPairAmounts(input: {
+  solSide: 'tokenX' | 'tokenY';
+  pricePerToken: number;
+  tokenXAmountRaw: unknown;
+  tokenYAmountRaw: unknown;
+  tokenXDecimals: number;
+  tokenYDecimals: number;
+}) {
+  const tokenXAmount = toUiAmount(input.tokenXAmountRaw, input.tokenXDecimals);
+  const tokenYAmount = toUiAmount(input.tokenYAmountRaw, input.tokenYDecimals);
+  const pricePerToken = input.pricePerToken;
+
+  if (!Number.isFinite(pricePerToken) || pricePerToken <= 0) {
+    return input.solSide === 'tokenX' ? tokenXAmount : tokenYAmount;
+  }
+
+  if (input.solSide === 'tokenX') {
+    return tokenXAmount + (tokenYAmount / pricePerToken);
+  }
+
+  return tokenYAmount + (tokenXAmount * pricePerToken);
+}
+
+function resolveTokenDecimals(tokenReserve: unknown) {
+  const decimals = (tokenReserve as { mint?: { decimals?: unknown } } | undefined)?.mint?.decimals;
+  return typeof decimals === 'number' && Number.isInteger(decimals) && decimals >= 0
+    ? decimals
+    : undefined;
 }
 
 export class MeteoraDlmmClient {
@@ -316,26 +373,61 @@ export class MeteoraDlmmClient {
       const positionsByPool = await DLMM.getAllLbPairPositionsByUser(connection, walletPublicKey);
       const snapshots: MeteoraLpPositionSnapshot[] = [];
 
-      for (const [poolAddress] of positionsByPool.entries()) {
+      for (const [poolAddress, poolPositionInfo] of positionsByPool.entries()) {
         const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
-        const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
+        const { activeBin, userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
         if (!userPositions?.length) {
           continue;
         }
         const tokenXMint = dlmmPool.tokenX.publicKey.toBase58();
         const tokenYMint = dlmmPool.tokenY.publicKey.toBase58();
         const mint = tokenXMint === SOL_MINT.toBase58() ? tokenYMint : tokenXMint;
+        const solSide = tokenXMint === SOL_MINT.toBase58() ? 'tokenX' as const : 'tokenY' as const;
+        const activeBinId = Number(activeBin?.binId ?? 0);
+        const activePricePerToken = Number(activeBin?.pricePerToken ?? activeBin?.price ?? 0);
+        const tokenXDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenX);
+        const tokenYDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenY);
 
-        for (const positionInfo of userPositions) {
-          const summary = summarizePosition(positionInfo);
+        for (const position of userPositions) {
+          const summary = summarizePosition(position);
+          const currentValueSol = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+            ? computeSolValueFromPairAmounts({
+              solSide,
+              pricePerToken: activePricePerToken,
+              tokenXAmountRaw: (position.positionData as any).totalXAmountExcludeTransferFee ?? (position.positionData as any).totalXAmount,
+              tokenYAmountRaw: (position.positionData as any).totalYAmountExcludeTransferFee ?? (position.positionData as any).totalYAmount,
+              tokenXDecimals,
+              tokenYDecimals
+            })
+            : undefined;
+          const unclaimedFeeSol = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+            ? computeSolValueFromPairAmounts({
+              solSide,
+              pricePerToken: activePricePerToken,
+              tokenXAmountRaw: (position.positionData as any).feeXExcludeTransferFee ?? (position.positionData as any).feeX,
+              tokenYAmountRaw: (position.positionData as any).feeYExcludeTransferFee ?? (position.positionData as any).feeY,
+              tokenXDecimals,
+              tokenYDecimals
+            })
+            : undefined;
           snapshots.push({
             poolAddress,
-            positionAddress: positionInfo.publicKey.toBase58(),
+            positionAddress: position.publicKey.toBase58(),
             mint,
             lowerBinId: summary.lowerBinId,
             upperBinId: summary.upperBinId,
+            activeBinId,
             binCount: summary.binCount,
             fundedBinCount: summary.fundedBinCount,
+            solSide,
+            solDepletedBins: computeSolDepletedBins({
+              lowerBinId: summary.lowerBinId,
+              upperBinId: summary.upperBinId,
+              activeBinId,
+              solSide
+            }),
+            currentValueSol,
+            unclaimedFeeSol,
             hasLiquidity: summary.hasLiquidity,
             hasClaimableFees: summary.hasClaimableFees
           });

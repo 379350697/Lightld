@@ -363,4 +363,39 @@ describe('runLiveCycle', () => {
     expect(events.some((event) => event.type === 'fill')).toBe(true);
     expect(events.some((event) => event.type === 'cycle_run')).toBe(true);
   });
+
+  it('derives lpNetPnlPct from live position value and recorded entry cost', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        lifecycleState: 'open',
+        lastClosedMint: '',
+        lastClosedAt: '',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        entrySol: 1
+      } as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: 0.72,
+          lpUnclaimedFeeSol: 0.03
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+  });
 });

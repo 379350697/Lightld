@@ -40,6 +40,7 @@ import { LiveOrderJournal } from '../journals/live-order-journal.ts';
 import { QuoteJournal } from '../journals/quote-journal.ts';
 import { resolveActiveJsonlPath } from '../journals/jsonl-writer.ts';
 import { evaluateLiveGuards } from '../risk/live-guards.ts';
+import { evaluateLpPnl } from '../risk/lp-pnl.ts';
 import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { SpendingLimitsStore } from '../risk/spending-limits.ts';
 import { runEngineCycle } from '../strategy/engine-runner.ts';
@@ -250,6 +251,9 @@ function buildEngineSnapshot(
       unrealizedPct: typeof context.trader.unrealizedPct === 'number' ? context.trader.unrealizedPct : undefined,
       hasLpPosition: firstBoolean(context.trader.hasLpPosition),
       lpNetPnlPct: typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct : undefined,
+      lpCurrentValueSol: typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol : undefined,
+      lpUnclaimedFeeSol: typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol : undefined,
+      lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
       lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
       lpActiveBinStatus: context.trader.lpActiveBinStatus as any,
@@ -260,6 +264,35 @@ function buildEngineSnapshot(
   return {
     ...shared
   };
+}
+
+function maybePopulateLpNetPnlPct(input: {
+  context: ReturnType<typeof buildDecisionContext>;
+  positionState?: PositionStateSnapshot;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+}) {
+  if (typeof input.context.trader.lpNetPnlPct === 'number') {
+    return;
+  }
+
+  const entrySol = input.positionState?.entrySol;
+  const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
+    ? input.context.trader.lpCurrentValueSol
+    : undefined;
+  const unclaimedFeeSol = typeof input.context.trader.lpUnclaimedFeeSol === 'number'
+    ? input.context.trader.lpUnclaimedFeeSol
+    : 0;
+
+  if (typeof entrySol !== 'number' || typeof currentValueSol !== 'number') {
+    return;
+  }
+
+  const result = evaluateLpPnl(entrySol, currentValueSol, unclaimedFeeSol, {
+    stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
+    takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
+  });
+
+  input.context.trader.lpNetPnlPct = result.unrealizedPct;
 }
 
 function createJournalPaths(strategyId: StrategyId, journalRootDir = join('tmp', 'journals')): LiveCycleJournalPaths {
@@ -595,6 +628,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const snapshot = buildEngineSnapshot(config.poolClass, context);
+  maybePopulateLpNetPnlPct({
+    context,
+    positionState: input.positionState,
+    config
+  });
   
   if (config.poolClass === 'new-token') {
     (snapshot as any).holdTimeMs = getHoldTimeMs(accountState, firstString(context.token.mint), Date.now());
@@ -871,6 +909,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       lpEnabled: config.lpConfig?.enabled ?? false,
       lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
       lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
+      lpSolDepletionExitBins: config.lpConfig?.solDepletionExitBins,
       lpClaimFeeThresholdUsd: config.lpConfig?.claimFeeThresholdUsd,
       lpRebalanceOnOutOfRange: config.lpConfig?.rebalanceOnOutOfRange ?? false,
       lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct

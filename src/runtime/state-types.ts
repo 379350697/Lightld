@@ -99,7 +99,10 @@ export const PositionStateSnapshotSchema = z.object({
   lastAction: z.string(),
   lastReason: z.string().optional(),
   activeMint: z.string().optional(),
+  activePoolAddress: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
+  entrySol: z.number().positive().optional(),
+  openedAt: z.string().optional(),
   lastClosedMint: z.string().optional(),
   lastClosedAt: z.string().optional(),
   updatedAt: z.string()

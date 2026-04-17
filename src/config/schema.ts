@@ -27,6 +27,8 @@ export const LpConfigSchema = z.object({
   stopLossNetPnlPct: z.number().positive().default(20),
   /** Net PnL take-profit threshold (%) — fees + principal gain */
   takeProfitNetPnlPct: z.number().positive().default(30),
+  /** Withdraw when the single-sided SOL leg has been consumed across this many bins */
+  solDepletionExitBins: z.number().int().nonnegative().default(67),
   /** Minimum bin step for pool selection (default 100) */
   minBinStep: z.number().int().positive().default(100),
   /** Minimum 24h volume in USD */

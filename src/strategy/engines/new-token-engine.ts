@@ -6,6 +6,12 @@ type NewTokenSnapshot = {
   hasLpPosition?: boolean;
   /** LP mode: net PnL percentage (fees + principal change) */
   lpNetPnlPct?: number;
+  /** LP mode: current LP value measured in SOL */
+  lpCurrentValueSol?: number;
+  /** LP mode: unclaimed fee value measured in SOL */
+  lpUnclaimedFeeSol?: number;
+  /** LP mode: how many bins the SOL side has already been consumed across */
+  lpSolDepletedBins?: number;
   /** LP mode: unclimed fees in USD */
   lpUnclaimedFeeUsd?: number;
   /** LP mode: whether current price is within the position's bin range */
@@ -28,6 +34,8 @@ type NewTokenConfig = {
   lpStopLossNetPnlPct?: number;
   /** LP take-profit threshold (net PnL %) */
   lpTakeProfitNetPnlPct?: number;
+  /** LP hard exit threshold when the SOL side is nearly exhausted */
+  lpSolDepletionExitBins?: number;
   /** LP claim fee threshold in USD */
   lpClaimFeeThresholdUsd?: number;
   /** LP whether to rebalance if out of range */
@@ -84,6 +92,14 @@ export function buildNewTokenDecision(
         snapshot.lpImpermanentLossPct >= config.lpMaxImpermanentLossPct
       ) {
         return { action: 'withdraw-lp', reason: 'lp-max-impermanent-loss' };
+      }
+
+      if (
+        typeof config.lpSolDepletionExitBins === 'number' &&
+        typeof snapshot.lpSolDepletedBins === 'number' &&
+        snapshot.lpSolDepletedBins >= config.lpSolDepletionExitBins
+      ) {
+        return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
       }
 
       if (

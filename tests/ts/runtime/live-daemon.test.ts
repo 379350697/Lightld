@@ -1283,4 +1283,101 @@ describe('runLiveDaemon', () => {
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
     expect(positionState?.lastAction).toBe('dca-out');
   });
+
+  it('uses the hot polling interval when LP exit signals are near thresholds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-hot-interval-'));
+    const waits: number[] = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir: join(root, 'state'),
+      journalRootDir: join(root, 'journals'),
+      tickIntervalMs: 30_000,
+      hotTickIntervalMs: 10_000,
+      maxTicks: 2,
+      sleep: async (delayMs) => {
+        waits.push(delayMs);
+      },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [{
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            hasLiquidity: true,
+            solDepletedBins: 64
+          }],
+          journalLpPositions: [{
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            hasLiquidity: true,
+            solDepletedBins: 64
+          }],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: 27 },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    expect(waits).toEqual([10_000]);
+  });
+
+  it('backs off polling when the tick fails with a rate-limited account error', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-rate-limit-backoff-'));
+    const waits: number[] = [];
+    let attempts = 0;
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir: join(root, 'state'),
+      journalRootDir: join(root, 'journals'),
+      tickIntervalMs: 30_000,
+      hotTickIntervalMs: 10_000,
+      rateLimitBackoffIntervalMs: 60_000,
+      maxTicks: 2,
+      sleep: async (delayMs) => {
+        waits.push(delayMs);
+      },
+      buildCycleInput: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new ExecutionRequestError('account', {
+            kind: 'transient',
+            reason: 'rate-limited',
+            retryable: true
+          });
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            fills: []
+          },
+          context: {
+            pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            token: { mint: '', symbol: '', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+          }
+        };
+      }
+    });
+
+    expect(waits).toEqual([60_000]);
+  });
 });

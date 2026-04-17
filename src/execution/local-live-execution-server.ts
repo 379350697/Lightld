@@ -49,12 +49,34 @@ const AccountStateSchema = z.object({
   walletLpPositions: z.array(z.object({
     poolAddress: z.string(),
     positionAddress: z.string(),
-    mint: z.string()
+    mint: z.string(),
+    lowerBinId: z.number().int().optional(),
+    upperBinId: z.number().int().optional(),
+    activeBinId: z.number().int().optional(),
+    binCount: z.number().int().optional(),
+    fundedBinCount: z.number().int().optional(),
+    solSide: z.enum(['tokenX', 'tokenY']).optional(),
+    solDepletedBins: z.number().int().nonnegative().optional(),
+    currentValueSol: z.number().finite().nonnegative().optional(),
+    unclaimedFeeSol: z.number().finite().nonnegative().optional(),
+    hasLiquidity: z.boolean().optional(),
+    hasClaimableFees: z.boolean().optional()
   })).optional(),
   journalLpPositions: z.array(z.object({
     poolAddress: z.string(),
     positionAddress: z.string(),
-    mint: z.string()
+    mint: z.string(),
+    lowerBinId: z.number().int().optional(),
+    upperBinId: z.number().int().optional(),
+    activeBinId: z.number().int().optional(),
+    binCount: z.number().int().optional(),
+    fundedBinCount: z.number().int().optional(),
+    solSide: z.enum(['tokenX', 'tokenY']).optional(),
+    solDepletedBins: z.number().int().nonnegative().optional(),
+    currentValueSol: z.number().finite().nonnegative().optional(),
+    unclaimedFeeSol: z.number().finite().nonnegative().optional(),
+    hasLiquidity: z.boolean().optional(),
+    hasClaimableFees: z.boolean().optional()
   })).optional(),
   walletTokens: z.array(z.object({
     mint: z.string(),

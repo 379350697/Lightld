@@ -100,6 +100,20 @@ describe('buildNewTokenDecision — LP mode', () => {
     ).toMatchObject({ action: 'hold' });
   });
 
+  it('returns withdraw-lp when SOL has been depleted across 67 bins', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          hasLpPosition: true,
+          lpSolDepletedBins: 67
+        },
+        { ...lpConfig, lpSolDepletionExitBins: 67 }
+      )
+    ).toMatchObject({ action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' });
+  });
+
   it('returns hold when out of session even in LP mode', () => {
     expect(
       buildNewTokenDecision(

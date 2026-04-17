@@ -312,6 +312,59 @@ function hasAccountLpPosition(accountState: LiveAccountState | undefined, mint: 
   );
 }
 
+function resolveLpPositionSignal(
+  accountState: LiveAccountState | undefined,
+  input: { mint: string; poolAddress: string }
+) {
+  if (!accountState || input.mint.length === 0) {
+    return {};
+  }
+
+  const positions = [
+    ...(accountState.walletLpPositions ?? []),
+    ...(accountState.journalLpPositions ?? [])
+  ].filter((position) =>
+    position.mint === input.mint && (position.hasLiquidity ?? true)
+  );
+
+  const exactPoolMatches = positions.filter((position) => position.poolAddress === input.poolAddress);
+  const relevantPositions = exactPoolMatches.length > 0 ? exactPoolMatches : positions;
+
+  if (relevantPositions.length === 0) {
+    return {};
+  }
+
+  const lpSolDepletedBins = relevantPositions.reduce<number | undefined>((maxBins, position) => {
+    if (typeof position.solDepletedBins !== 'number') {
+      return maxBins;
+    }
+
+    return typeof maxBins === 'number'
+      ? Math.max(maxBins, position.solDepletedBins)
+      : position.solDepletedBins;
+  }, undefined);
+  const lpCurrentValueSol = relevantPositions.reduce<number | undefined>((sum, position) => {
+    if (typeof position.currentValueSol !== 'number') {
+      return sum;
+    }
+
+    return (sum ?? 0) + position.currentValueSol;
+  }, undefined);
+  const lpUnclaimedFeeSol = relevantPositions.reduce<number | undefined>((sum, position) => {
+    if (typeof position.unclaimedFeeSol !== 'number') {
+      return sum;
+    }
+
+    return (sum ?? 0) + position.unclaimedFeeSol;
+  }, undefined);
+
+  return {
+    lpSolDepletedBins,
+    lpCurrentValueSol,
+    lpUnclaimedFeeSol
+  };
+}
+
 function isPlaceholderEndpoint(url: string) {
   return url.includes('example.invalid');
 }
@@ -652,6 +705,10 @@ export async function buildLiveCycleInputFromIngest(
     candidate.liquidityUsd,
     input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol)
   );
+  const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
+    mint: candidate.mint,
+    poolAddress: candidate.address
+  });
 
   const context: DecisionContextInput = {
     pool: {
@@ -679,6 +736,15 @@ export async function buildLiveCycleInputFromIngest(
       wallet: input.traderWallet ?? '',
       hasInventory: candidate.hasInventory,
       hasLpPosition: candidate.hasLpPosition,
+      ...(typeof lpPositionSignal.lpSolDepletedBins === 'number'
+        ? { lpSolDepletedBins: lpPositionSignal.lpSolDepletedBins }
+        : {}),
+      ...(typeof lpPositionSignal.lpCurrentValueSol === 'number'
+        ? { lpCurrentValueSol: lpPositionSignal.lpCurrentValueSol }
+        : {}),
+      ...(typeof lpPositionSignal.lpUnclaimedFeeSol === 'number'
+        ? { lpUnclaimedFeeSol: lpPositionSignal.lpUnclaimedFeeSol }
+        : {}),
       labels: traderSnapshot?.labels ?? [],
       pnlUsd: traderSnapshot?.pnlUsd ?? 0,
       freshnessMs: traderSnapshot?.freshnessMs ?? 0
