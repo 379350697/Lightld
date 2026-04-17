@@ -217,6 +217,8 @@ async function main() {
     journalRootDir: args.journalRootDir,
     tickIntervalMs: args.tickIntervalMs,
     maxTicks: args.maxTicks,
+    accountProvider: executionAdapters.accountProvider,
+    confirmationProvider: executionAdapters.confirmationProvider,
     mirrorRuntime,
     housekeepingRunner,
     buildCycleInput: async () => {

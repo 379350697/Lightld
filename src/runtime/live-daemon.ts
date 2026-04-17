@@ -9,11 +9,12 @@ import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
 import { isExposureReducingAction } from './action-semantics.ts';
-import type { LiveAccountState } from './live-account-provider.ts';
+import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
 import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
+import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -25,9 +26,14 @@ type LiveDaemonOptions = {
   alertSink?: AlertSink;
   mirrorRuntime?: MirrorRuntime;
   housekeepingRunner?: HousekeepingRunner;
+  accountProvider?: LiveAccountStateProvider;
+  confirmationProvider?: LiveConfirmationProvider;
 };
 
-async function resolveEffectiveAccountState(cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined) {
+async function resolveEffectiveAccountState(
+  cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined,
+  fallback?: LiveAccountState
+) {
   if (cycleInput?.accountState) {
     return cycleInput.accountState;
   }
@@ -36,7 +42,56 @@ async function resolveEffectiveAccountState(cycleInput: Omit<LiveCycleInput, 'st
     return cycleInput.accountProvider.readState();
   }
 
-  return undefined;
+  return fallback;
+}
+
+async function runPreIngestPendingRecovery(input: {
+  pendingSubmissionStore: PendingSubmissionStore;
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  accountProvider?: LiveAccountStateProvider;
+  confirmationProvider?: LiveConfirmationProvider;
+}) {
+  if (!input.pendingSubmission) {
+    return {
+      pendingSubmission: null,
+      effectiveAccountState: undefined as LiveAccountState | undefined,
+      recoveryReason: 'clear' as const
+    };
+  }
+
+  const effectiveAccountState = input.accountProvider
+    ? await input.accountProvider.readState()
+    : undefined;
+
+  const recovery = await recoverPendingSubmission({
+    pendingSubmission: input.pendingSubmission,
+    confirmationProvider: input.confirmationProvider,
+    accountState: effectiveAccountState
+  });
+
+  if (recovery.clearPending) {
+    await input.pendingSubmissionStore.clear();
+    return {
+      pendingSubmission: null,
+      effectiveAccountState,
+      recoveryReason: recovery.reason
+    };
+  }
+
+  if (recovery.nextPendingSubmission) {
+    await input.pendingSubmissionStore.write(recovery.nextPendingSubmission);
+    return {
+      pendingSubmission: recovery.nextPendingSubmission,
+      effectiveAccountState,
+      recoveryReason: recovery.reason
+    };
+  }
+
+  return {
+    pendingSubmission: input.pendingSubmission,
+    effectiveAccountState,
+    recoveryReason: recovery.reason
+  };
 }
 
 function nowIso() {
@@ -100,11 +155,16 @@ function resolveLifecycleStateForPersist(input: {
   lastReason?: string;
   activeMint?: string;
 }): PositionLifecycleState {
+  const hasInventory = hasOpenInventory(input.accountState);
+
+  if (input.nextLifecycleState === 'closed' && hasInventory) {
+    return 'open';
+  }
+
   if (input.nextLifecycleState) {
     return input.nextLifecycleState;
   }
 
-  const hasInventory = hasOpenInventory(input.accountState);
   const unresolvedOpen = Boolean(input.activeMint) && (
     input.lastReason?.includes('journal-open-unresolved') ||
     input.lastReason?.includes('pending-open:') ||
@@ -177,31 +237,63 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let effectiveAccountState: LiveAccountState | undefined;
       let pendingSubmission = await pendingSubmissionStore.read();
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
-      const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
-      const derived = deriveRuntimeMode({
-        currentMode: runtimeState.mode,
-        quoteFailures: dependencyHealth.quote.consecutiveFailures,
-        reconcileFailures: dependencyHealth.account.consecutiveFailures,
-        hasUnknownSubmissionOutcome: pendingSubmission?.confirmationStatus === 'unknown',
-        cooldownActive,
-        flattenOnlyRequested: runtimeState.mode === 'flatten_only'
-      });
-      const previousMode = runtimeState.mode;
-
-      const hasPendingSubmission = pendingSubmission !== null;
-      runtimeState = applyDerivedRuntimeState({
-        currentState: runtimeState,
-        derived,
-        pendingSubmission: hasPendingSubmission,
-        now: nowIso()
-      });
+      let previousMode = runtimeState.mode;
 
       try {
+        const preRecovery = await runPreIngestPendingRecovery({
+          pendingSubmissionStore,
+          pendingSubmission,
+          accountProvider: options.accountProvider,
+          confirmationProvider: options.confirmationProvider
+        });
+        pendingSubmission = preRecovery.pendingSubmission;
+        effectiveAccountState = preRecovery.effectiveAccountState;
+        positionState = await runtimeStateStore.readPositionState() ?? undefined;
+        if (
+          pendingSubmission === null &&
+          effectiveAccountState &&
+          hasOpenInventory(effectiveAccountState) &&
+          (preRecovery.recoveryReason === 'pending-submission-filled' || preRecovery.recoveryReason === 'pending-submission-confirmed')
+        ) {
+          positionState = positionState
+            ? {
+                ...positionState,
+                lifecycleState: 'open'
+              }
+            : {
+                allowNewOpens: true,
+                flattenOnly: false,
+                lastAction: 'hold',
+                lifecycleState: 'open',
+                updatedAt: nowIso()
+              };
+        }
+
+        const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
+        const derived = deriveRuntimeMode({
+          currentMode: runtimeState.mode,
+          quoteFailures: dependencyHealth.quote.consecutiveFailures,
+          reconcileFailures: dependencyHealth.account.consecutiveFailures,
+          hasUnknownSubmissionOutcome: pendingSubmission?.confirmationStatus === 'unknown',
+          cooldownActive,
+          flattenOnlyRequested: runtimeState.mode === 'flatten_only'
+        });
+        previousMode = runtimeState.mode;
+
+        const hasPendingSubmission = pendingSubmission !== null;
+        runtimeState = applyDerivedRuntimeState({
+          currentState: runtimeState,
+          derived,
+          pendingSubmission: hasPendingSubmission,
+          now: nowIso()
+        });
+
         cycleInput = await buildCycleInput(tickCount);
-        effectiveAccountState = await resolveEffectiveAccountState(cycleInput);
+        effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         pendingSubmission = await pendingSubmissionStore.read();
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
         let runtimeStateExplicitlySet = false;
+        const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
 
         const result = await runLiveCycle({
           strategy: options.strategy,
@@ -280,7 +372,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'broadcaster', nowIso());
         }
 
-        if (cycleInput.confirmationProvider && result.confirmationStatus && result.confirmationStatus !== 'unknown') {
+        if (confirmationProvider && result.confirmationStatus && result.confirmationStatus !== 'unknown') {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'confirmation', nowIso());
         }
 
@@ -301,7 +393,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (postTickPendingSubmission && effectiveAccountState) {
           const postTickRecovery = await recoverPendingSubmission({
             pendingSubmission: postTickPendingSubmission,
-            confirmationProvider: cycleInput.confirmationProvider,
+            confirmationProvider,
             accountState: effectiveAccountState
           });
 

@@ -631,6 +631,102 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('clears recoverable unknown pending before buildCycleInput runs, even if ingest/build fails afterward', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-pre-ingest-recovery-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'timeout',
+      cooldownUntil: '2026-03-22T00:10:00.000Z',
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: false,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lastReason: 'pending-submission-timeout',
+      activeMint: '',
+      lifecycleState: 'closed',
+      lastClosedMint: '',
+      lastClosedAt: '',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await pendingSubmissionStore.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'legacy-k-open',
+      submissionId: '',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:30:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      reason: 'broadcast-outcome-unknown'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      accountProvider: {
+        readState: async () => ({
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-1',
+              mint: 'mint-safe',
+              binCount: 69,
+              fundedBinCount: 69,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-1',
+              mint: 'mint-safe',
+              binCount: 69,
+              fundedBinCount: 69,
+              hasLiquidity: true
+            }
+          ],
+          fills: []
+        })
+      },
+      buildCycleInput: async () => {
+        throw new Error('fetch failed');
+      }
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const positionState = await runtimeStateStore.readPositionState();
+    const health = await runtimeStateStore.readHealthReport();
+
+    await expect(pendingSubmissionStore.read()).resolves.toBeNull();
+    expect(runtimeState).toMatchObject({
+      mode: 'circuit_open',
+      circuitReason: 'fetch failed'
+    });
+    expect(positionState).toMatchObject({
+      lifecycleState: 'open'
+    });
+    expect(health).toMatchObject({
+      pendingSubmission: false
+    });
+  });
+
   it('keeps the daemon ticking when the mirror runtime degrades', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-mirror-'));
     const stateRootDir = join(root, 'state');
