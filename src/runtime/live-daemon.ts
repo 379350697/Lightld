@@ -724,6 +724,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           openedAt: persistedOpenedAt,
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,
+          walletSol: effectiveAccountState?.walletSol,
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);

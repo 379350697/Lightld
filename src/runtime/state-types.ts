@@ -105,6 +105,7 @@ export const PositionStateSnapshotSchema = z.object({
   openedAt: z.string().optional(),
   lastClosedMint: z.string().optional(),
   lastClosedAt: z.string().optional(),
+  walletSol: z.number().optional(),
   updatedAt: z.string()
 });
 

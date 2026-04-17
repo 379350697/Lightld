@@ -37,7 +37,7 @@ export function loadMirrorConfig(
   const stateDir = env.LIVE_STATE_DIR ?? 'state';
 
   return MirrorConfigSchema.parse({
-    enabled: parseBoolean(env.LIVE_DB_MIRROR_ENABLED),
+    enabled: env.LIVE_DB_MIRROR_ENABLED !== undefined ? parseBoolean(env.LIVE_DB_MIRROR_ENABLED) : true,
     path: env.LIVE_DB_MIRROR_PATH ?? join(stateDir, 'lightld-observability.sqlite'),
     queueCapacity: parseInteger(env.LIVE_DB_MIRROR_QUEUE_CAPACITY, 1000),
     batchSize: parseInteger(env.LIVE_DB_MIRROR_BATCH_SIZE, 64),
