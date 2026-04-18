@@ -133,7 +133,10 @@ async function loadCurrentValues(strategyId: 'new-token-v1' | 'large-pool-v1') {
     'lpConfig.minFeeTvlRatio24h'
   ];
 
-  return Object.fromEntries(paths.map((path) => [path, getPathValue(config, path)]));
+  return Object.fromEntries(paths.map((path) => [path, getPathValue(config, path)])) as Record<
+    string,
+    number | string | boolean | null | undefined
+  >;
 }
 
 function getPathValue(root: Record<string, unknown>, path: string): unknown {

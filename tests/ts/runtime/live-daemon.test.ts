@@ -264,6 +264,52 @@ describe('runLiveDaemon', () => {
     expect(health.mode).toBe('healthy');
   });
 
+  it('emits live-cycle outcome evidence through the daemon-owned evolution sink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-outcome-store-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const outcomes: Array<{ tokenMint: string; actualExitReason: string }> = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      evolutionOutcomeStore: {
+        appendOutcome: async (record) => {
+          outcomes.push({
+            tokenMint: record.tokenMint,
+            actualExitReason: record.actualExitReason
+          });
+        }
+      },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    expect(outcomes).toEqual([
+      expect.objectContaining({
+        tokenMint: 'mint-safe',
+        actualExitReason: 'lp-open-approved'
+      })
+    ]);
+  });
+
   it('can drive a tick from ingest-backed context building', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-ingest-'));
     const stateRootDir = join(root, 'state');

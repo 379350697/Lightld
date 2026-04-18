@@ -6,6 +6,7 @@ import { HttpLiveQuoteProvider } from '../execution/http-live-quote-provider.ts'
 import { HttpLiveSigner } from '../execution/http-live-signer.ts';
 import { loadMirrorConfig } from '../observability/mirror-config.ts';
 import { createMirrorRuntime } from '../observability/mirror-runtime.ts';
+import { CandidateScanStore, resolveEvolutionPaths } from '../evolution/index.ts';
 import { HttpAlertSink } from '../runtime/http-alert-sink.ts';
 import { sweepTokenSafetyCache } from '../ingest/gmgn/token-safety-client.ts';
 import {
@@ -210,6 +211,8 @@ async function main() {
         maxEntries: parsePositiveInteger(process.env.GMGN_CACHE_MAX_ENTRIES, 5_000)
       })
   });
+  const evolutionPaths = resolveEvolutionPaths(strategy, join(args.stateRootDir, 'evolution'));
+  const candidateScanStore = new CandidateScanStore(evolutionPaths.candidateScansPath);
 
   await runLiveDaemon({
     strategy,
@@ -230,6 +233,7 @@ async function main() {
         strategy,
         traderWallet: args.traderWallet,
         requestedPositionSol: args.requestedPositionSol,
+        candidateScanSink: candidateScanStore,
         accountState,
         meteoraPageSize: args.meteoraPageSize,
         meteoraQuery: args.meteoraQuery,

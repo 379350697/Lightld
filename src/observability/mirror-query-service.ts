@@ -19,6 +19,8 @@ export type MirrorStatusExtras = {
     finality: string;
     updatedAt: string;
   }>;
+  recentCandidateScans: MirrorResearchExtras['recentCandidateScans'];
+  recentWatchlistSnapshots: MirrorResearchExtras['recentWatchlistSnapshots'];
 };
 
 export type MirrorResearchExtras = {
@@ -57,7 +59,9 @@ export async function readMirrorStatus(path: string): Promise<MirrorStatusExtras
   try {
     return {
       recentIncidents: await writer.readRecentIncidents(5),
-      recentOrders: await writer.readRecentOrders(5)
+      recentOrders: await writer.readRecentOrders(5),
+      recentCandidateScans: await writer.readRecentCandidateScans(5),
+      recentWatchlistSnapshots: await writer.readRecentWatchlistSnapshots(5)
     };
   } finally {
     await writer.close();
@@ -92,13 +96,17 @@ export async function buildStatusView<T extends object>(input: {
     return {
       ...base,
       recentIncidents: mirror.recentIncidents ?? [],
-      recentOrders: mirror.recentOrders ?? []
+      recentOrders: mirror.recentOrders ?? [],
+      recentCandidateScans: mirror.recentCandidateScans ?? [],
+      recentWatchlistSnapshots: mirror.recentWatchlistSnapshots ?? []
     };
   } catch {
     return {
       ...base,
       recentIncidents: [],
-      recentOrders: []
+      recentOrders: [],
+      recentCandidateScans: [],
+      recentWatchlistSnapshots: []
     };
   }
 }

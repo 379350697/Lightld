@@ -6,6 +6,7 @@ import { enqueueMirrorCatchupFromJournals } from '../observability/mirror-catchu
 import { toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
 import type { MirrorRuntime } from '../observability/mirror-runtime.ts';
 import {
+  LiveCycleOutcomeStore,
   WatchlistStore,
   resolveEvolutionPaths,
   type EvolutionWatchlistCandidate,
@@ -42,6 +43,7 @@ type LiveDaemonOptions = {
   accountProvider?: LiveAccountStateProvider;
   confirmationProvider?: LiveConfirmationProvider;
   evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
+  evolutionOutcomeStore?: Pick<LiveCycleOutcomeStore, 'appendOutcome'>;
   sleep?: (delayMs: number) => Promise<void>;
 };
 
@@ -702,6 +704,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
     trackedTokensPath: resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).watchlistTrackedTokensPath,
     snapshotsPath: resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).watchlistSnapshotsPath
   });
+  const evolutionOutcomeStore = options.evolutionOutcomeStore ?? new LiveCycleOutcomeStore(
+    resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).positionOutcomesPath
+  );
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
@@ -795,6 +800,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
         let runtimeStateExplicitlySet = false;
         const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
+        const evolutionSink = cycleInput.evolutionSink ?? evolutionOutcomeStore;
 
         const result = await runLiveCycle({
           strategy: options.strategy,
@@ -804,6 +810,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           mirrorSink: mirrorRuntime,
           positionState,
           ...cycleInput,
+          evolutionSink,
           accountState: effectiveAccountState
         });
 

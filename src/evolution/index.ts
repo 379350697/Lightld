@@ -1,5 +1,7 @@
 export { resolveEvolutionPaths, type EvolutionPaths } from './paths.ts';
 export { CandidateSampleStore } from './candidate-sample-store.ts';
+export { CandidateScanStore } from './candidate-scan-store.ts';
+export { LiveCycleOutcomeStore } from './live-cycle-outcome-store.ts';
 export { WatchlistStore } from './watchlist-store.ts';
 export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
 export {

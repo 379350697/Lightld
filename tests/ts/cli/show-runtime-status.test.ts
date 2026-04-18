@@ -37,6 +37,35 @@ describe('formatRuntimeStatus', () => {
         lastError: ''
       },
       updatedAt: '2026-03-22T00:00:05.000Z'
+      ,
+      recentCandidateScans: [
+        {
+          scanId: 'scan-1',
+          capturedAt: '2026-03-22T00:00:01.000Z',
+          strategyId: 'new-token-v1',
+          selectedTokenMint: 'mint-safe',
+          selectedPoolAddress: 'pool-safe',
+          blockedReason: '',
+          candidateCount: 2
+        }
+      ],
+      recentWatchlistSnapshots: [
+        {
+          watchId: 'watch-1',
+          trackedSince: '2026-03-22T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          poolAddress: 'pool-safe',
+          observationAt: '2026-03-22T01:00:00.000Z',
+          windowLabel: '1h',
+          currentValueSol: 0.4,
+          unclaimedFeeSol: 0.02,
+          hasInventory: true,
+          hasLpPosition: true,
+          sourceReason: 'selected'
+        }
+      ]
     });
 
     expect(output).toContain('mode=degraded');
@@ -44,5 +73,7 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('mirrorState=degraded');
     expect(output).toContain('lastHousekeepingAt=2026-03-22T00:00:06.000Z');
     expect(output).toContain('mirrorPruneDeletedRows=4');
+    expect(output).toContain('recentCandidateScans=1');
+    expect(output).toContain('recentWatchlistSnapshots=1');
   });
 });

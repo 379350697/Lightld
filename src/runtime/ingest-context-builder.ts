@@ -13,9 +13,8 @@ import { fetchPumpTrades } from '../ingest/pump/client.ts';
 import { normalizePumpTokenEvent } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
+import type { CandidateScanRecord, CandidateSampleRecord } from '../evolution/index.ts';
 import {
-  type CandidateScanRecord,
-  type CandidateSampleRecord,
   applySafetyFilter,
   countActiveInventoryPositions,
   filterLpEligibleCandidates,

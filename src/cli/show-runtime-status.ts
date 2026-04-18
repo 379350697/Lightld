@@ -44,5 +44,13 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
     lines.push(`recentOrders=${report.recentOrders.length}`);
   }
 
+  if (report.recentCandidateScans && report.recentCandidateScans.length > 0) {
+    lines.push(`recentCandidateScans=${report.recentCandidateScans.length}`);
+  }
+
+  if (report.recentWatchlistSnapshots && report.recentWatchlistSnapshots.length > 0) {
+    lines.push(`recentWatchlistSnapshots=${report.recentWatchlistSnapshots.length}`);
+  }
+
   return lines.join('\n');
 }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
 import { buildCashflowMetrics, buildEquityMetrics } from './dashboard-metrics.ts';
+import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 
 // ── Configuration ──
@@ -125,11 +126,18 @@ type PositionFallbackOrderRow = {
 };
 
 async function handleStatus(): Promise<StatusResponse> {
+  const evolutionPaths = resolveEvolutionPaths(STRATEGY_ID === 'large-pool-v1' ? 'large-pool-v1' : 'new-token-v1', join(STATE_ROOT_DIR, 'evolution'));
   const [health, position, runtime] = await Promise.all([
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'health.json')),
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'position-state.json')),
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'runtime-state.json')),
   ]);
+  const [proposalCatalog, approvalQueue] = await Promise.all([
+    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.proposalCatalogPath),
+    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.approvalQueuePath)
+  ]);
+  const candidateScanCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM candidate_scans')[0]?.count ?? 0;
+  const watchlistSnapshotCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots')[0]?.count ?? 0;
 
   // Wallet SOL: prefer position-state.json (written every tick), fallback to SQLite reconciliations
   let walletSol: number | null = typeof position?.walletSol === 'number' ? position.walletSol : null;
@@ -222,6 +230,12 @@ async function handleStatus(): Promise<StatusResponse> {
     lastClosedAt: position?.lastClosedAt ?? '',
 
     walletSol,
+    evolution: {
+      proposalCount: proposalCatalog?.length ?? 0,
+      approvalQueueCount: approvalQueue?.length ?? 0,
+      mirroredCandidateScanCount: candidateScanCount,
+      mirroredWatchlistSnapshotCount: watchlistSnapshotCount
+    }
   };
 }
 
