@@ -271,6 +271,7 @@ function maybePopulateLpNetPnlPct(input: {
   positionState?: PositionStateSnapshot;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
   requestedPositionSol?: number;
+  accountState?: LiveAccountState;
 }) {
   if (typeof input.context.trader.lpNetPnlPct === 'number') {
     return;
@@ -279,9 +280,15 @@ function maybePopulateLpNetPnlPct(input: {
   const positionStateMint = typeof input.positionState?.activeMint === 'string' ? input.positionState.activeMint : '';
   const contextMint = typeof input.context.token.mint === 'string' ? input.context.token.mint : '';
   const positionStateMatchesContext = Boolean(positionStateMint && contextMint && positionStateMint === contextMint);
-  const entrySol = positionStateMatchesContext
-    ? input.positionState?.entrySol
-    : (typeof input.requestedPositionSol === 'number' && input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined);
+  const mintOpenFill = input.accountState?.fills
+    ?.filter((fill) => fill.mint === contextMint && (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0)
+    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+  const liveFillEntrySol = typeof mintOpenFill?.amount === 'number' && mintOpenFill.amount > 0
+    ? mintOpenFill.amount
+    : undefined;
+  const entrySol = liveFillEntrySol
+    ?? (positionStateMatchesContext ? input.positionState?.entrySol : undefined)
+    ?? (typeof input.requestedPositionSol === 'number' && input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined);
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
@@ -638,7 +645,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     context,
     positionState: input.positionState,
     config,
-    requestedPositionSol: input.requestedPositionSol
+    requestedPositionSol: input.requestedPositionSol,
+    accountState
   });
   
   if (config.poolClass === 'new-token') {
