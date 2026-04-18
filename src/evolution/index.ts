@@ -12,6 +12,16 @@ export {
   type OutcomeAnalysisResult,
   type OutcomeAnalysisSummary
 } from './outcome-analysis.ts';
+export {
+  generateEvolutionProposals,
+  type GenerateEvolutionProposalsInput,
+  type ProposalGenerationResult
+} from './proposal-engine.ts';
+export {
+  generatePatchDraft,
+  type PatchDraftResult
+} from './patch-draft.ts';
+export { ApprovalStore } from './approval-store.ts';
 export type {
   AnalysisConfidence,
   AnalysisDirection,
@@ -49,6 +59,7 @@ export {
   LiveCycleOutcomeRecordArraySchema,
   LiveCycleParameterSnapshotSchema,
   ParameterFindingSchema,
+  ParameterProposalRecordArraySchema,
   ParameterProposalRecordSchema,
   ProposalKindSchema,
   ProposalStatusSchema,

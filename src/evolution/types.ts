@@ -191,9 +191,22 @@ export const ParameterProposalRecordSchema = z.object({
   strategyId: EvolutionStrategyIdSchema,
   status: ProposalStatusSchema,
   createdAt: z.string(),
-  updatedAt: z.string()
+  updatedAt: z.string(),
+  targetPath: z.string(),
+  oldValue: z.union([z.number(), z.string(), z.boolean(), z.null()]).optional(),
+  proposedValue: z.union([z.number(), z.string(), z.boolean(), z.null()]).optional(),
+  evidenceWindowHours: z.number().int().positive().optional(),
+  sampleSize: z.number().int().nonnegative().optional(),
+  rationale: z.string().default(''),
+  expectedImprovement: z.string().default(''),
+  riskNote: z.string().default(''),
+  uncertaintyNote: z.string().default(''),
+  patchable: z.boolean().default(false),
+  decisionNote: z.string().optional(),
+  decidedAt: z.string().optional()
 });
 export type ParameterProposalRecord = z.infer<typeof ParameterProposalRecordSchema>;
+export const ParameterProposalRecordArraySchema = z.array(ParameterProposalRecordSchema);
 
 export const ApprovalDecisionSchema = z.object({
   proposalId: z.string(),
