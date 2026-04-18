@@ -1,8 +1,17 @@
+import { join } from 'node:path';
+
 import { createDependencyHealthSnapshot, markDependencyFailure, markDependencySuccess } from './dependency-health.ts';
 import { buildHealthReport } from './health-report.ts';
 import { enqueueMirrorCatchupFromJournals } from '../observability/mirror-catchup.ts';
 import { toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
 import type { MirrorRuntime } from '../observability/mirror-runtime.ts';
+import {
+  WatchlistStore,
+  resolveEvolutionPaths,
+  type EvolutionWatchlistCandidate,
+  type TrackedWatchTokenRecord,
+  type WatchlistSnapshotRecord
+} from '../evolution/index.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
@@ -32,10 +41,21 @@ type LiveDaemonOptions = {
   housekeepingRunner?: HousekeepingRunner;
   accountProvider?: LiveAccountStateProvider;
   confirmationProvider?: LiveConfirmationProvider;
+  evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
   sleep?: (delayMs: number) => Promise<void>;
 };
 
 const TRANSIENT_CIRCUIT_RECOVERY_SUCCESS_TICKS = 2;
+const WATCHLIST_WINDOWS = [
+  ['15m', 15 * 60_000],
+  ['1h', 60 * 60_000],
+  ['4h', 4 * 60 * 60_000],
+  ['24h', 24 * 60 * 60_000]
+] as const;
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
 
 function enqueueRuntimeSnapshot(
   mirrorRuntime: MirrorRuntime | undefined,
@@ -47,6 +67,204 @@ function enqueueRuntimeSnapshot(
   }
 
   mirrorRuntime.enqueue(toRuntimeSnapshotEvent(report, accountState));
+}
+
+function buildWatchId(strategy: StrategyId, tokenMint: string, poolAddress: string) {
+  return `${strategy}:${tokenMint || 'unknown'}:${poolAddress || 'none'}`;
+}
+
+function buildWatchKey(tokenMint: string, poolAddress: string) {
+  return `${tokenMint || 'unknown'}:${poolAddress || 'none'}`;
+}
+
+function isNonStableMint(mint: string) {
+  return mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
+}
+
+function collectWatchlistCandidates(input: {
+  cycleInput?: Omit<LiveCycleInput, 'strategy'>;
+  accountState?: LiveAccountState;
+}): EvolutionWatchlistCandidate[] {
+  const candidates: EvolutionWatchlistCandidate[] = [
+    ...((input.cycleInput?.evolutionWatchlistCandidates ?? []).filter((candidate) => candidate.tokenMint.length > 0))
+  ];
+
+  for (const token of input.accountState?.walletTokens ?? []) {
+    if (token.amount > 0 && isNonStableMint(token.mint)) {
+      candidates.push({
+        tokenMint: token.mint,
+        tokenSymbol: token.symbol ?? '',
+        poolAddress: '',
+        sourceReason: 'wallet_inventory'
+      });
+    }
+  }
+
+  for (const position of [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ]) {
+    if (isNonStableMint(position.mint)) {
+      candidates.push({
+        tokenMint: position.mint,
+        tokenSymbol: '',
+        poolAddress: position.poolAddress ?? '',
+        sourceReason: 'lp_position'
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function mergeTrackedWatchTokens(input: {
+  strategy: StrategyId;
+  existing: TrackedWatchTokenRecord[];
+  candidates: EvolutionWatchlistCandidate[];
+  nowIso: string;
+}) {
+  const merged = new Map(
+    input.existing.map((token) => [buildWatchKey(token.tokenMint, token.poolAddress), token] as const)
+  );
+
+  for (const candidate of input.candidates) {
+    const key = buildWatchKey(candidate.tokenMint, candidate.poolAddress);
+    const existing = merged.get(key);
+
+    if (existing) {
+      merged.set(key, {
+        ...existing,
+        tokenSymbol: existing.tokenSymbol || candidate.tokenSymbol,
+        sourceReason: existing.sourceReason || candidate.sourceReason,
+        lastEvaluatedAt: input.nowIso
+      });
+      continue;
+    }
+
+    merged.set(key, {
+      watchId: buildWatchId(input.strategy, candidate.tokenMint, candidate.poolAddress),
+      trackedSince: candidate.trackedSince ?? input.nowIso,
+      strategyId: input.strategy,
+      tokenMint: candidate.tokenMint,
+      tokenSymbol: candidate.tokenSymbol,
+      poolAddress: candidate.poolAddress,
+      sourceReason: candidate.sourceReason,
+      firstCapturedAt: candidate.trackedSince ?? input.nowIso,
+      lastEvaluatedAt: input.nowIso
+    });
+  }
+
+  return [...merged.values()];
+}
+
+function buildWatchlistSnapshot(input: {
+  trackedToken: TrackedWatchTokenRecord;
+  accountState?: LiveAccountState;
+  cycleInput?: Omit<LiveCycleInput, 'strategy'>;
+  observationAt: string;
+  windowLabel: string;
+}): WatchlistSnapshotRecord {
+  const walletToken = (input.accountState?.walletTokens ?? []).find((token) => token.mint === input.trackedToken.tokenMint && token.amount > 0);
+  const journalToken = (input.accountState?.journalTokens ?? []).find((token) => token.mint === input.trackedToken.tokenMint && token.amount > 0);
+  const lpPosition = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].find((position) =>
+    position.mint === input.trackedToken.tokenMint
+    && (!input.trackedToken.poolAddress || position.poolAddress === input.trackedToken.poolAddress)
+  );
+  const contextPool = input.cycleInput?.context?.pool ?? {};
+
+  return {
+    watchId: input.trackedToken.watchId,
+    trackedSince: input.trackedToken.trackedSince,
+    strategyId: input.trackedToken.strategyId,
+    tokenMint: input.trackedToken.tokenMint,
+    tokenSymbol: input.trackedToken.tokenSymbol || walletToken?.symbol || journalToken?.symbol || '',
+    poolAddress: input.trackedToken.poolAddress,
+    observationAt: input.observationAt,
+    windowLabel: input.windowLabel,
+    currentValueSol: typeof lpPosition?.currentValueSol === 'number' ? lpPosition.currentValueSol : null,
+    liquidityUsd: typeof contextPool.liquidityUsd === 'number' ? contextPool.liquidityUsd : null,
+    activeBinId: typeof lpPosition?.activeBinId === 'number' ? lpPosition.activeBinId : null,
+    lowerBinId: typeof lpPosition?.lowerBinId === 'number' ? lpPosition.lowerBinId : null,
+    upperBinId: typeof lpPosition?.upperBinId === 'number' ? lpPosition.upperBinId : null,
+    binCount: typeof lpPosition?.binCount === 'number' ? lpPosition.binCount : null,
+    fundedBinCount: typeof lpPosition?.fundedBinCount === 'number' ? lpPosition.fundedBinCount : null,
+    solDepletedBins: typeof lpPosition?.solDepletedBins === 'number' ? lpPosition.solDepletedBins : null,
+    unclaimedFeeSol: typeof lpPosition?.unclaimedFeeSol === 'number' ? lpPosition.unclaimedFeeSol : null,
+    hasInventory: Boolean(walletToken || journalToken),
+    hasLpPosition: Boolean(lpPosition),
+    sourceReason: input.trackedToken.sourceReason
+  };
+}
+
+async function updateEvolutionWatchlistBestEffort(input: {
+  strategy: StrategyId;
+  store: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
+  cycleInput?: Omit<LiveCycleInput, 'strategy'>;
+  accountState?: LiveAccountState;
+  now: Date;
+}) {
+  const nowIso = input.now.toISOString();
+
+  try {
+    const candidates = collectWatchlistCandidates({
+      cycleInput: input.cycleInput,
+      accountState: input.accountState
+    });
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const existingTrackedTokens = await input.store.readTrackedTokens();
+    const mergedTrackedTokens = mergeTrackedWatchTokens({
+      strategy: input.strategy,
+      existing: existingTrackedTokens,
+      candidates,
+      nowIso
+    });
+
+    await input.store.writeTrackedTokens(mergedTrackedTokens);
+
+    const existingSnapshots = await input.store.readSnapshots();
+    const existingSnapshotKeys = new Set(
+      existingSnapshots.map((snapshot) => `${snapshot.watchId}:${snapshot.windowLabel}`)
+    );
+
+    for (const trackedToken of mergedTrackedTokens) {
+      const trackedSinceMs = Date.parse(trackedToken.trackedSince);
+      if (Number.isNaN(trackedSinceMs)) {
+        continue;
+      }
+
+      for (const [windowLabel, windowMs] of WATCHLIST_WINDOWS) {
+        if (input.now.getTime() - trackedSinceMs < windowMs) {
+          continue;
+        }
+
+        const snapshotKey = `${trackedToken.watchId}:${windowLabel}`;
+        if (existingSnapshotKeys.has(snapshotKey)) {
+          continue;
+        }
+
+        await input.store.appendSnapshot(
+          buildWatchlistSnapshot({
+            trackedToken,
+            accountState: input.accountState,
+            cycleInput: input.cycleInput,
+            observationAt: nowIso,
+            windowLabel
+          })
+        );
+        existingSnapshotKeys.add(snapshotKey);
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[LiveDaemon] Evolution watchlist persistence failed; continuing without watchlist evidence: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 function isTransientAutoHealableCircuitReason(reason: string) {
@@ -480,6 +698,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const alertSink = options.alertSink ?? new NoopAlertSink();
   const mirrorRuntime = options.mirrorRuntime;
   const housekeepingRunner = options.housekeepingRunner;
+  const evolutionWatchlistStore = options.evolutionWatchlistStore ?? new WatchlistStore({
+    trackedTokensPath: resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).watchlistTrackedTokensPath,
+    snapshotsPath: resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).watchlistSnapshotsPath
+  });
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
@@ -583,6 +805,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           positionState,
           ...cycleInput,
           accountState: effectiveAccountState
+        });
+
+        await updateEvolutionWatchlistBestEffort({
+          strategy: options.strategy,
+          store: evolutionWatchlistStore,
+          cycleInput,
+          accountState: effectiveAccountState,
+          now: new Date()
         });
 
         if (result.failureKind && result.failureSource) {

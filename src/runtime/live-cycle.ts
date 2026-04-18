@@ -130,6 +130,13 @@ export type LiveCycleInput = {
   evolutionSink?: {
     appendOutcome(record: LiveCycleOutcomeRecord): Promise<void>;
   };
+  evolutionWatchlistCandidates?: Array<{
+    tokenMint: string;
+    tokenSymbol: string;
+    poolAddress: string;
+    sourceReason: string;
+    trackedSince?: string;
+  }>;
 };
 
 export type LiveCycleResult = {

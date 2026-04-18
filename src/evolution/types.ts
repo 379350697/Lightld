@@ -65,24 +65,33 @@ export const TrackedWatchTokenRecordSchema = z.object({
 });
 export type TrackedWatchTokenRecord = z.infer<typeof TrackedWatchTokenRecordSchema>;
 
+export const EvolutionWatchlistCandidateSchema = z.object({
+  tokenMint: z.string(),
+  tokenSymbol: z.string(),
+  poolAddress: z.string(),
+  sourceReason: z.string(),
+  trackedSince: z.string().optional()
+});
+export type EvolutionWatchlistCandidate = z.infer<typeof EvolutionWatchlistCandidateSchema>;
+
 export const WatchlistSnapshotRecordSchema = z.object({
   watchId: z.string(),
   trackedSince: z.string(),
   strategyId: EvolutionStrategyIdSchema,
   tokenMint: z.string(),
-  tokenSymbol: z.string(),
-  poolAddress: z.string(),
+  tokenSymbol: z.string().default(''),
+  poolAddress: z.string().default(''),
   observationAt: z.string(),
   windowLabel: z.string(),
-  currentValueSol: z.number().finite().nonnegative().nullable(),
-  liquidityUsd: z.number().finite().nonnegative().nullable(),
-  activeBinId: z.number().int().nullable(),
-  lowerBinId: z.number().int().nullable(),
-  upperBinId: z.number().int().nullable(),
-  binCount: z.number().int().nonnegative().nullable(),
-  fundedBinCount: z.number().int().nonnegative().nullable(),
-  solDepletedBins: z.number().int().nonnegative().nullable(),
-  unclaimedFeeSol: z.number().finite().nonnegative().nullable(),
+  currentValueSol: z.number().finite().nonnegative().nullable().default(null),
+  liquidityUsd: z.number().finite().nonnegative().nullable().default(null),
+  activeBinId: z.number().int().nullable().default(null),
+  lowerBinId: z.number().int().nullable().default(null),
+  upperBinId: z.number().int().nullable().default(null),
+  binCount: z.number().int().nonnegative().nullable().default(null),
+  fundedBinCount: z.number().int().nonnegative().nullable().default(null),
+  solDepletedBins: z.number().int().nonnegative().nullable().default(null),
+  unclaimedFeeSol: z.number().finite().nonnegative().nullable().default(null),
   hasInventory: z.boolean(),
   hasLpPosition: z.boolean(),
   sourceReason: z.string()

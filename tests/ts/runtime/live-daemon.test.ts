@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { resolveEvolutionPaths, WatchlistStore } from '../../../src/evolution';
 import { appendJsonLine, resolveActiveJsonlPath } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
@@ -91,6 +92,176 @@ describe('runLiveDaemon', () => {
     });
 
     expect(readState).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks watchlist tokens from selected, filtered, wallet, and lp sources and emits due snapshots', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-18T00:00:00.000Z'));
+
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-watchlist-'));
+      const stateRootDir = join(root, 'state');
+      const journalRootDir = join(root, 'journals');
+      const evolutionPaths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+      const watchlistStore = new WatchlistStore({
+        trackedTokensPath: evolutionPaths.watchlistTrackedTokensPath,
+        snapshotsPath: evolutionPaths.watchlistSnapshotsPath
+      });
+
+      await runLiveDaemon({
+        strategy: 'new-token-v1',
+        stateRootDir,
+        journalRootDir,
+        tickIntervalMs: 1,
+        maxTicks: 2,
+        sleep: async () => {
+          vi.advanceTimersByTime(60 * 60 * 1000);
+        },
+        buildCycleInput: async () => ({
+          requestedPositionSol: 0.1,
+          evolutionWatchlistCandidates: [
+            {
+              tokenMint: 'mint-selected',
+              tokenSymbol: 'SAFE',
+              poolAddress: 'pool-selected',
+              sourceReason: 'selected',
+              trackedSince: '2026-04-18T00:00:00.000Z'
+            },
+            {
+              tokenMint: 'mint-filtered',
+              tokenSymbol: 'RISK',
+              poolAddress: 'pool-filtered',
+              sourceReason: 'filtered_out',
+              trackedSince: '2026-04-18T00:00:00.000Z'
+            }
+          ],
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [
+              { mint: 'mint-wallet', symbol: 'WAL', amount: 2 }
+            ],
+            journalTokens: [
+              { mint: 'mint-wallet', symbol: 'WAL', amount: 2 }
+            ],
+            walletLpPositions: [
+              {
+                poolAddress: 'pool-lp',
+                positionAddress: 'pos-lp',
+                mint: 'mint-lp',
+                currentValueSol: 0.4,
+                unclaimedFeeSol: 0.02,
+                activeBinId: 123,
+                lowerBinId: 100,
+                upperBinId: 140,
+                binCount: 41,
+                fundedBinCount: 20,
+                solDepletedBins: 5,
+                hasLiquidity: true
+              }
+            ],
+            journalLpPositions: [
+              {
+                poolAddress: 'pool-lp',
+                positionAddress: 'pos-lp',
+                mint: 'mint-lp',
+                currentValueSol: 0.4,
+                unclaimedFeeSol: 0.02,
+                activeBinId: 123,
+                lowerBinId: 100,
+                upperBinId: 140,
+                binCount: 41,
+                fundedBinCount: 20,
+                solDepletedBins: 5,
+                hasLiquidity: true
+              }
+            ],
+            fills: []
+          },
+          context: {
+            pool: { address: 'pool-selected', liquidityUsd: 10_000 },
+            token: { mint: 'mint-selected', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        })
+      });
+
+      const trackedTokens = await watchlistStore.readTrackedTokens();
+      const snapshots = await watchlistStore.readSnapshots();
+
+      expect(trackedTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ tokenMint: 'mint-selected', sourceReason: 'selected' }),
+          expect.objectContaining({ tokenMint: 'mint-filtered', sourceReason: 'filtered_out' }),
+          expect.objectContaining({ tokenMint: 'mint-wallet', sourceReason: 'wallet_inventory' }),
+          expect.objectContaining({ tokenMint: 'mint-lp', sourceReason: 'lp_position' })
+        ])
+      );
+      expect(snapshots).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            tokenMint: 'mint-selected',
+            windowLabel: '1h'
+          }),
+          expect.objectContaining({
+            tokenMint: 'mint-lp',
+            windowLabel: '1h',
+            currentValueSol: 0.4,
+            unclaimedFeeSol: 0.02
+          })
+        ])
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps ticking when the evolution watchlist store fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-watchlist-failure-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+
+    const result = await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      evolutionWatchlistStore: {
+        readTrackedTokens: async () => [],
+        writeTrackedTokens: async () => {
+          throw new Error('watchlist-write-failed');
+        },
+        readSnapshots: async () => [],
+        appendSnapshot: async () => undefined
+      },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        evolutionWatchlistCandidates: [
+          {
+            tokenMint: 'mint-selected',
+            tokenSymbol: 'SAFE',
+            poolAddress: 'pool-selected',
+            sourceReason: 'selected',
+            trackedSince: '2026-04-18T00:00:00.000Z'
+          }
+        ],
+        context: {
+          pool: { address: 'pool-selected', liquidityUsd: 10_000 },
+          token: { mint: 'mint-selected', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
+      mode: string;
+    };
+
+    expect(result.tickCount).toBe(1);
+    expect(health.mode).toBe('healthy');
   });
 
   it('can drive a tick from ingest-backed context building', async () => {

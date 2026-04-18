@@ -935,10 +935,29 @@ export async function buildLiveCycleInputFromIngest(
     sessionPhase: sessionActive ? 'active' : 'closed'
   });
 
+  const evolutionWatchlistCandidates = buildCandidateScanRecords({
+    strategy: input.strategy,
+    capturedAt: now.toISOString(),
+    activePositionsCount,
+    sessionPhase: sessionActive ? 'active' : 'closed',
+    allCandidates: prefilterCandidates,
+    lpEligibleCandidates,
+    safeCandidates,
+    safetyDiagnostics,
+    selectedCandidate: candidate
+  }).map((candidateRecord) => ({
+    tokenMint: candidateRecord.tokenMint,
+    tokenSymbol: candidateRecord.tokenSymbol,
+    poolAddress: candidateRecord.poolAddress,
+    sourceReason: candidateRecord.selected ? 'selected' : 'filtered_out',
+    trackedSince: candidateRecord.capturedAt
+  }));
+
   return {
     context,
     requestedPositionSol,
-    sessionPhase: sessionActive ? 'active' : 'closed'
+    sessionPhase: sessionActive ? 'active' : 'closed',
+    evolutionWatchlistCandidates
   };
 }
 
