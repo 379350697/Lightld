@@ -34,6 +34,24 @@ export const CandidateSampleRecordSchema = z.object({
 });
 export type CandidateSampleRecord = z.infer<typeof CandidateSampleRecordSchema>;
 
+export const CandidateScanRecordSchema = z.object({
+  scanId: z.string(),
+  capturedAt: z.string(),
+  strategyId: EvolutionStrategyIdSchema,
+  poolCount: z.number().int().nonnegative(),
+  prefilteredCount: z.number().int().nonnegative(),
+  postLpCount: z.number().int().nonnegative(),
+  postSafetyCount: z.number().int().nonnegative(),
+  eligibleSelectionCount: z.number().int().nonnegative(),
+  scanWindowOpen: z.boolean(),
+  activePositionsCount: z.number().int().nonnegative(),
+  selectedTokenMint: z.string().default(''),
+  selectedPoolAddress: z.string().default(''),
+  blockedReason: z.string().default(''),
+  candidates: z.array(CandidateSampleRecordSchema)
+});
+export type CandidateScanRecord = z.infer<typeof CandidateScanRecordSchema>;
+
 export const TrackedWatchTokenRecordSchema = z.object({
   watchId: z.string(),
   trackedSince: z.string(),
@@ -73,6 +91,7 @@ export type WatchlistSnapshotRecord = z.infer<typeof WatchlistSnapshotRecordSche
 
 export const TrackedWatchTokenRecordArraySchema = z.array(TrackedWatchTokenRecordSchema);
 export const WatchlistSnapshotRecordArraySchema = z.array(WatchlistSnapshotRecordSchema);
+export const CandidateScanRecordArraySchema = z.array(CandidateScanRecordSchema);
 
 export const ProposalStatusSchema = z.enum([
   'draft',

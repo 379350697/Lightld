@@ -14,6 +14,8 @@ import { normalizePumpTokenEvent } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import {
+  type CandidateScanRecord,
+  type CandidateSampleRecord,
   applySafetyFilter,
   countActiveInventoryPositions,
   filterLpEligibleCandidates,
@@ -65,6 +67,9 @@ type IngestContextBuilderInput = {
   fetchPumpTradesImpl?: FetchPumpTradesImpl;
   fetchGmgnTraderImpl?: FetchGmgnTraderImpl;
   fetchTokenSafetyBatchImpl?: FetchTokenSafetyBatchImpl;
+  candidateScanSink?: {
+    appendScan(scan: CandidateScanRecord): Promise<void>;
+  };
 };
 
 type PumpIndexes = {
@@ -573,6 +578,139 @@ function buildCandidate(
   } satisfies IngestCandidate;
 }
 
+function buildCandidateScanRecords(input: {
+  strategy: StrategyId;
+  capturedAt: string;
+  activePositionsCount: number;
+  sessionPhase: 'active' | 'closed';
+  allCandidates: IngestCandidate[];
+  lpEligibleCandidates: IngestCandidate[];
+  safeCandidates: IngestCandidate[];
+  safetyDiagnostics: SafetyFilterDiagnostics | null;
+  selectedCandidate: IngestCandidate | null;
+}) {
+  const lpEligibleKeys = new Set(input.lpEligibleCandidates.map((candidate) => `${candidate.address}:${candidate.mint}`));
+  const safeKeys = new Set(input.safeCandidates.map((candidate) => `${candidate.address}:${candidate.mint}`));
+  const rejectedBySafety = new Map(
+    (input.safetyDiagnostics?.rejected ?? []).map((candidate) => [candidate.mint, candidate] as const)
+  );
+  const selectedKey = input.selectedCandidate
+    ? `${input.selectedCandidate.address}:${input.selectedCandidate.mint}`
+    : '';
+
+  return input.allCandidates.map((candidate, index) => {
+    const key = `${candidate.address}:${candidate.mint}`;
+    const safetyRejected = rejectedBySafety.get(candidate.mint);
+    const rejectedByLp = !lpEligibleKeys.has(key);
+    const rejectedBySafetyStage = lpEligibleKeys.has(key) && !safeKeys.has(key);
+    const selected = key === selectedKey;
+
+    let rejectionStage: CandidateSampleRecord['rejectionStage'] = 'none';
+    let blockedReason = '';
+
+    if (rejectedByLp) {
+      rejectionStage = 'lp_eligibility';
+      blockedReason = 'lp-thresholds-not-met';
+    } else if (rejectedBySafetyStage) {
+      rejectionStage = 'safety';
+      blockedReason = safetyRejected?.rejectReasons?.join(',') || safetyRejected?.error || 'safety-check-failed';
+    } else if (!selected && selectedKey.length > 0) {
+      rejectionStage = 'selection';
+      blockedReason = 'selected-other-candidate';
+    }
+
+    const selectionRank = selected
+      ? 1
+      : safeKeys.has(key)
+        ? input.safeCandidates.findIndex((item) => item.address === candidate.address && item.mint === candidate.mint) + 1
+        : index + 1;
+
+    return {
+      sampleId: `${input.strategy}:${input.capturedAt}:${candidate.address || candidate.mint || index}`,
+      capturedAt: input.capturedAt,
+      strategyId: input.strategy,
+      cycleId: `${input.strategy}:${input.capturedAt}`,
+      tokenMint: candidate.mint,
+      tokenSymbol: candidate.symbol,
+      poolAddress: candidate.address,
+      liquidityUsd: candidate.liquidityUsd,
+      holders: candidate.holders,
+      safetyScore: candidate.safetyScore ?? safetyRejected?.safetyScore ?? 0,
+      volume24h: candidate.volume24h,
+      feeTvlRatio24h: candidate.feeTvlRatio24h,
+      binStep: candidate.binStep,
+      hasInventory: candidate.hasInventory,
+      hasLpPosition: candidate.hasLpPosition,
+      selected,
+      selectionRank: Math.max(selectionRank, 1),
+      blockedReason,
+      rejectionStage,
+      runtimeMode: 'healthy',
+      sessionPhase: input.sessionPhase === 'active' ? 'active' : 'closed'
+    } satisfies CandidateSampleRecord;
+  });
+}
+
+async function appendCandidateScanBestEffort(input: {
+  sink?: IngestContextBuilderInput['candidateScanSink'];
+  strategy: StrategyId;
+  now: Date;
+  poolCount: number;
+  prefilteredCount: number;
+  postLpCount: number;
+  postSafetyCount: number;
+  eligibleSelectionCount: number;
+  inScanWindow: boolean;
+  activePositionsCount: number;
+  blockedReason?: string;
+  allCandidates: IngestCandidate[];
+  lpEligibleCandidates: IngestCandidate[];
+  safeCandidates: IngestCandidate[];
+  safetyDiagnostics: SafetyFilterDiagnostics | null;
+  selectedCandidate: IngestCandidate | null;
+  sessionPhase: 'active' | 'closed';
+}) {
+  if (!input.sink) {
+    return;
+  }
+
+  const capturedAt = input.now.toISOString();
+  const scan: CandidateScanRecord = {
+    scanId: `${input.strategy}:${capturedAt}`,
+    capturedAt,
+    strategyId: input.strategy,
+    poolCount: input.poolCount,
+    prefilteredCount: input.prefilteredCount,
+    postLpCount: input.postLpCount,
+    postSafetyCount: input.postSafetyCount,
+    eligibleSelectionCount: input.eligibleSelectionCount,
+    scanWindowOpen: input.inScanWindow,
+    activePositionsCount: input.activePositionsCount,
+    selectedTokenMint: input.selectedCandidate?.mint ?? '',
+    selectedPoolAddress: input.selectedCandidate?.address ?? '',
+    blockedReason: input.blockedReason ?? '',
+    candidates: buildCandidateScanRecords({
+      strategy: input.strategy,
+      capturedAt,
+      activePositionsCount: input.activePositionsCount,
+      sessionPhase: input.sessionPhase,
+      allCandidates: input.allCandidates,
+      lpEligibleCandidates: input.lpEligibleCandidates,
+      safeCandidates: input.safeCandidates,
+      safetyDiagnostics: input.safetyDiagnostics,
+      selectedCandidate: input.selectedCandidate
+    })
+  };
+
+  try {
+    await input.sink.appendScan(scan);
+  } catch (error) {
+    console.warn(
+      `[Ingest] Candidate scan persistence failed; continuing without evolution evidence: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 export async function buildLiveCycleInputFromIngest(
   input: IngestContextBuilderInput
 ): Promise<IngestBackedCycleInput> {
@@ -642,16 +780,18 @@ export async function buildLiveCycleInputFromIngest(
     return hasSolRoute && !isBlacklisted && binStep >= 100 && isRecentPool(payload, now, maxPoolAgeMs);
   });
 
-  let candidates = prefilteredRows.map((row) =>
+  const prefilterCandidates = prefilteredRows.map((row) =>
     buildCandidate(
       row,
       pumpIndexes,
       input.accountState
     )
   );
+  let candidates = prefilterCandidates;
   const preLpCount = candidates.length;
-  candidates = filterLpEligibleCandidates(candidates, config);
-  const postLpCount = candidates.length;
+  const lpEligibleCandidates = filterLpEligibleCandidates(candidates, config);
+  candidates = lpEligibleCandidates;
+  const postLpCount = lpEligibleCandidates.length;
   const activePositionsCount = countActiveInventoryPositions(input.accountState);
   const inScanWindow = isInScanWindow(now);
   const maxBatchSize = 50;
@@ -667,7 +807,8 @@ export async function buildLiveCycleInputFromIngest(
       safetyDiagnostics = diagnostics;
     }
   });
-  const postSafetyCount = candidates.length;
+  const safeCandidates = candidates;
+  const postSafetyCount = safeCandidates.length;
 
   console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
 
@@ -690,6 +831,26 @@ export async function buildLiveCycleInputFromIngest(
     });
 
     console.log(`[Ingest] Blocking live cycle: ${diagnostics.blockReason}${diagnostics.blockDetails ? ` (${diagnostics.blockDetails})` : ''}`);
+
+    await appendCandidateScanBestEffort({
+      sink: input.candidateScanSink,
+      strategy: input.strategy,
+      now,
+      poolCount: poolRows.length,
+      prefilteredCount: prefilteredRows.length,
+      postLpCount,
+      postSafetyCount,
+      eligibleSelectionCount,
+      inScanWindow,
+      activePositionsCount,
+      blockedReason: diagnostics.blockReason,
+      allCandidates: prefilterCandidates,
+      lpEligibleCandidates,
+      safeCandidates,
+      safetyDiagnostics,
+      selectedCandidate: null,
+      sessionPhase: sessionActive ? 'active' : 'closed'
+    });
 
     return buildFallbackContext(
       input,
@@ -754,6 +915,25 @@ export async function buildLiveCycleInputFromIngest(
       poolAddress: candidate.address
     }
   };
+
+  await appendCandidateScanBestEffort({
+    sink: input.candidateScanSink,
+    strategy: input.strategy,
+    now,
+    poolCount: poolRows.length,
+    prefilteredCount: prefilteredRows.length,
+    postLpCount,
+    postSafetyCount,
+    eligibleSelectionCount,
+    inScanWindow,
+    activePositionsCount,
+    allCandidates: prefilterCandidates,
+    lpEligibleCandidates,
+    safeCandidates,
+    safetyDiagnostics,
+    selectedCandidate: candidate,
+    sessionPhase: sessionActive ? 'active' : 'closed'
+  });
 
   return {
     context,

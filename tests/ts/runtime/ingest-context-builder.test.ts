@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { CandidateScanRecord } from '../../../src/evolution';
 import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safety-client';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
@@ -693,6 +694,178 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
     expect(result.context.token).toMatchObject({
       symbol: 'GOOD'
+    });
+  });
+
+  it('emits structured candidate scan evidence with selected and rejected candidates', async () => {
+    const scans: CandidateScanRecord[] = [];
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      candidateScanSink: {
+        appendScan: async (scan) => {
+          scans.push(scan);
+        }
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        },
+        {
+          address: 'pool-risky',
+          baseMint: 'mint-risky',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'RISK',
+          liquidityUsd: 18_000,
+          created_at: new Date('2026-03-21T10:01:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 130,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 1_500_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.02
+          },
+          updatedAt: '2026-03-22T09:57:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        },
+        {
+          mint: 'mint-risky',
+          symbol: 'RISK',
+          holders: 20,
+          timestamp: '2026-03-22T09:55:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: true,
+          safetyScore: 95,
+          maxScore: 120
+        },
+        {
+          mint: 'mint-risky',
+          safe: false,
+          safetyScore: 12,
+          maxScore: 120,
+          rejectReasons: ['top10-holders-too-high']
+        }
+      ]
+    });
+
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'SAFE'
+    });
+    expect(scans).toHaveLength(1);
+    expect(scans[0]).toMatchObject({
+      strategyId: 'new-token-v1',
+      poolCount: 2,
+      prefilteredCount: 2,
+      postLpCount: 2,
+      postSafetyCount: 1,
+      selectedTokenMint: 'mint-safe',
+      selectedPoolAddress: 'pool-safe'
+    });
+    expect(scans[0].candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          selected: true,
+          rejectionStage: 'none',
+          blockedReason: ''
+        }),
+        expect.objectContaining({
+          tokenMint: 'mint-risky',
+          tokenSymbol: 'RISK',
+          selected: false,
+          rejectionStage: 'safety',
+          blockedReason: 'top10-holders-too-high'
+        })
+      ])
+    );
+  });
+
+  it('swallows candidate scan sink failures and still returns the selected context', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      candidateScanSink: {
+        appendScan: async () => {
+          throw new Error('disk-full');
+        }
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: true,
+          safetyScore: 95,
+          maxScore: 120
+        }
+      ]
+    });
+
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'SAFE'
     });
   });
 });

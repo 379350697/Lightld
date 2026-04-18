@@ -4,6 +4,7 @@ export { WatchlistStore } from './watchlist-store.ts';
 export type {
   ApprovalDecision,
   CandidateRejectionStage,
+  CandidateScanRecord,
   CandidateSampleRecord,
   EvolutionStrategyId,
   ParameterProposalRecord,
@@ -16,6 +17,8 @@ export type {
 export {
   ApprovalDecisionSchema,
   CandidateRejectionStageSchema,
+  CandidateScanRecordArraySchema,
+  CandidateScanRecordSchema,
   CandidateSampleRecordSchema,
   EvolutionStrategyIdSchema,
   ParameterProposalRecordSchema,
