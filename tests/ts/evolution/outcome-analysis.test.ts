@@ -1,0 +1,170 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  analyzeOutcomeEvidence,
+  type LiveCycleOutcomeRecord,
+  type WatchlistSnapshotRecord
+} from '../../../src/evolution';
+
+describe('analyzeOutcomeEvidence', () => {
+  it('surfaces TP/SL and LP/bin directional findings from follow-through evidence', () => {
+    const result = analyzeOutcomeEvidence({
+      outcomes: [
+        buildOutcome({
+          cycleId: 'cycle-tp',
+          tokenMint: 'mint-tp',
+          tokenSymbol: 'TP',
+          actualExitReason: 'take-profit-hit',
+          action: 'dca-out',
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            quoteOutputSol: 0.2
+          }
+        }),
+        buildOutcome({
+          cycleId: 'cycle-sl',
+          tokenMint: 'mint-sl',
+          tokenSymbol: 'SL',
+          actualExitReason: 'stop-loss-hit',
+          action: 'dca-out',
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            quoteOutputSol: 0.16
+          }
+        }),
+        buildOutcome({
+          cycleId: 'cycle-lp',
+          tokenMint: 'mint-lp',
+          tokenSymbol: 'LP',
+          actualExitReason: 'sol-depletion-hit',
+          action: 'withdraw-lp',
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            lpCurrentValueSol: 0.4,
+            lpSolDepletedBins: 60,
+            lpUnclaimedFeeSol: 0.02
+          }
+        })
+      ],
+      watchlistSnapshots: [
+        buildWatchlistSnapshot({
+          watchId: 'watch-tp',
+          tokenMint: 'mint-tp',
+          tokenSymbol: 'TP',
+          currentValueSol: 0.34,
+          sourceReason: 'selected'
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-sl',
+          tokenMint: 'mint-sl',
+          tokenSymbol: 'SL',
+          currentValueSol: 0.08,
+          sourceReason: 'selected'
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-lp',
+          tokenMint: 'mint-lp',
+          tokenSymbol: 'LP',
+          currentValueSol: 0.58,
+          hasLpPosition: true,
+          solDepletedBins: 72,
+          unclaimedFeeSol: 0.04,
+          sourceReason: 'selected'
+        })
+      ],
+      minimumSampleSize: 1
+    });
+
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: 'riskThresholds.takeProfitPct',
+        direction: 'increase'
+      }),
+      expect.objectContaining({
+        path: 'riskThresholds.stopLossPct',
+        direction: 'decrease'
+      }),
+      expect.objectContaining({
+        path: 'lpConfig.solDepletionExitBins',
+        direction: 'increase'
+      })
+    ]));
+    expect(result.noActionReasons).toEqual([]);
+  });
+
+  it('returns a no-action result when outcome samples are below threshold', () => {
+    const result = analyzeOutcomeEvidence({
+      outcomes: [
+        buildOutcome({
+          cycleId: 'cycle-only',
+          tokenMint: 'mint-only',
+          tokenSymbol: 'ONLY'
+        })
+      ],
+      watchlistSnapshots: [],
+      minimumSampleSize: 2
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(result.noActionReasons).toContain('insufficient_sample_size');
+  });
+});
+
+function buildOutcome(overrides: Partial<LiveCycleOutcomeRecord>): LiveCycleOutcomeRecord {
+  return {
+    cycleId: 'cycle-1',
+    strategyId: 'new-token-v1',
+    recordedAt: '2026-04-18T00:30:00.000Z',
+    tokenMint: 'mint-selected',
+    tokenSymbol: 'SAFE',
+    poolAddress: 'pool-selected',
+    runtimeMode: 'healthy',
+    sessionPhase: 'active',
+    action: 'dca-out',
+    actualExitReason: 'take-profit-hit',
+    liveOrderSubmitted: true,
+    parameterSnapshot: {
+      takeProfitPct: 20,
+      stopLossPct: 12,
+      lpEnabled: true,
+      lpStopLossNetPnlPct: 20,
+      lpTakeProfitNetPnlPct: 30,
+      lpSolDepletionExitBins: 60,
+      lpMinBinStep: 100,
+      lpMinVolume24hUsd: 100000,
+      lpMinFeeTvlRatio24h: 0,
+      maxHoldHours: 10
+    },
+    exitMetrics: {
+      requestedPositionSol: 0.15,
+      quoteOutputSol: 0.2
+    },
+    ...overrides
+  };
+}
+
+function buildWatchlistSnapshot(overrides: Partial<WatchlistSnapshotRecord>): WatchlistSnapshotRecord {
+  return {
+    watchId: 'watch-1',
+    trackedSince: '2026-04-18T00:00:00.000Z',
+    strategyId: 'new-token-v1',
+    tokenMint: 'mint-selected',
+    tokenSymbol: 'SAFE',
+    poolAddress: 'pool-selected',
+    observationAt: '2026-04-18T01:00:00.000Z',
+    windowLabel: '1h',
+    currentValueSol: 0.25,
+    liquidityUsd: 12000,
+    activeBinId: 123,
+    lowerBinId: 100,
+    upperBinId: 140,
+    binCount: 41,
+    fundedBinCount: 20,
+    solDepletedBins: 60,
+    unclaimedFeeSol: 0.02,
+    hasInventory: true,
+    hasLpPosition: false,
+    sourceReason: 'selected',
+    ...overrides
+  };
+}

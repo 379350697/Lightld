@@ -143,6 +143,7 @@ export const LiveCycleOutcomeRecordSchema = z.object({
   exitMetrics: LiveCycleExitMetricsSchema
 });
 export type LiveCycleOutcomeRecord = z.infer<typeof LiveCycleOutcomeRecordSchema>;
+export const LiveCycleOutcomeRecordArraySchema = z.array(LiveCycleOutcomeRecordSchema);
 
 export const ProposalStatusSchema = z.enum([
   'draft',
@@ -158,6 +159,31 @@ export type ProposalStatus = z.infer<typeof ProposalStatusSchema>;
 
 export const ProposalKindSchema = z.enum(['parameter', 'system']);
 export type ProposalKind = z.infer<typeof ProposalKindSchema>;
+
+export const AnalysisDirectionSchema = z.enum(['increase', 'decrease', 'hold']);
+export type AnalysisDirection = z.infer<typeof AnalysisDirectionSchema>;
+
+export const AnalysisConfidenceSchema = z.enum(['low', 'medium', 'high']);
+export type AnalysisConfidence = z.infer<typeof AnalysisConfidenceSchema>;
+
+export const AnalysisNoActionReasonSchema = z.enum([
+  'insufficient_sample_size',
+  'conflicting_evidence',
+  'regime_instability',
+  'data_coverage_gaps',
+  'no_safe_parameter_proposal'
+]);
+export type AnalysisNoActionReason = z.infer<typeof AnalysisNoActionReasonSchema>;
+
+export const ParameterFindingSchema = z.object({
+  path: z.string(),
+  direction: AnalysisDirectionSchema,
+  sampleSize: z.number().int().nonnegative(),
+  confidence: AnalysisConfidenceSchema,
+  rationale: z.string(),
+  supportingMetric: z.number().finite().optional()
+});
+export type ParameterFinding = z.infer<typeof ParameterFindingSchema>;
 
 export const ParameterProposalRecordSchema = z.object({
   proposalId: z.string(),

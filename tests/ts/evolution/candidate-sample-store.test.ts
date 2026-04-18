@@ -16,6 +16,7 @@ describe('resolveEvolutionPaths', () => {
     expect(paths.candidateScansPath).toBe('state/evolution/new-token-v1/candidate-scans.jsonl');
     expect(paths.watchlistSnapshotsPath).toBe('state/evolution/new-token-v1/watchlist-snapshots.jsonl');
     expect(paths.watchlistTrackedTokensPath).toBe('state/evolution/new-token-v1/watchlist-tracked-tokens.json');
+    expect(paths.positionOutcomesPath).toBe('state/evolution/new-token-v1/position-outcomes.jsonl');
     expect(paths.reportJsonPath).toBe('state/evolution/new-token-v1/evolution-report.json');
     expect(paths.reportMarkdownPath).toBe('state/evolution/new-token-v1/evolution-report.md');
     expect(paths.proposalCatalogPath).toBe('state/evolution/new-token-v1/proposal-catalog.json');

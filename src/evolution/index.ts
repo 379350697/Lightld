@@ -1,7 +1,21 @@
 export { resolveEvolutionPaths, type EvolutionPaths } from './paths.ts';
 export { CandidateSampleStore } from './candidate-sample-store.ts';
 export { WatchlistStore } from './watchlist-store.ts';
+export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
+export {
+  analyzeFilterEvidence,
+  type FilterAnalysisResult,
+  type FilterAnalysisSummary
+} from './filter-analysis.ts';
+export {
+  analyzeOutcomeEvidence,
+  type OutcomeAnalysisResult,
+  type OutcomeAnalysisSummary
+} from './outcome-analysis.ts';
 export type {
+  AnalysisConfidence,
+  AnalysisDirection,
+  AnalysisNoActionReason,
   ApprovalDecision,
   CandidateRejectionStage,
   CandidateScanRecord,
@@ -11,6 +25,7 @@ export type {
   LiveCycleExitMetrics,
   LiveCycleOutcomeRecord,
   LiveCycleParameterSnapshot,
+  ParameterFinding,
   ParameterProposalRecord,
   ProposalKind,
   ProposalStatus,
@@ -19,6 +34,9 @@ export type {
   WatchlistSnapshotRecord
 } from './types.ts';
 export {
+  AnalysisConfidenceSchema,
+  AnalysisDirectionSchema,
+  AnalysisNoActionReasonSchema,
   ApprovalDecisionSchema,
   CandidateRejectionStageSchema,
   CandidateScanRecordArraySchema,
@@ -28,7 +46,9 @@ export {
   EvolutionStrategyIdSchema,
   LiveCycleExitMetricsSchema,
   LiveCycleOutcomeRecordSchema,
+  LiveCycleOutcomeRecordArraySchema,
   LiveCycleParameterSnapshotSchema,
+  ParameterFindingSchema,
   ParameterProposalRecordSchema,
   ProposalKindSchema,
   ProposalStatusSchema,

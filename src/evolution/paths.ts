@@ -7,6 +7,7 @@ export type EvolutionPaths = {
   candidateScansPath: string;
   watchlistSnapshotsPath: string;
   watchlistTrackedTokensPath: string;
+  positionOutcomesPath: string;
   reportJsonPath: string;
   reportMarkdownPath: string;
   proposalCatalogPath: string;
@@ -25,6 +26,7 @@ export function resolveEvolutionPaths(
     candidateScansPath: join(rootDir, 'candidate-scans.jsonl'),
     watchlistSnapshotsPath: join(rootDir, 'watchlist-snapshots.jsonl'),
     watchlistTrackedTokensPath: join(rootDir, 'watchlist-tracked-tokens.json'),
+    positionOutcomesPath: join(rootDir, 'position-outcomes.jsonl'),
     reportJsonPath: join(rootDir, 'evolution-report.json'),
     reportMarkdownPath: join(rootDir, 'evolution-report.md'),
     proposalCatalogPath: join(rootDir, 'proposal-catalog.json'),
