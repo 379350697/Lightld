@@ -964,7 +964,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
-  if (ingestBlockReason) {
+  if (ingestBlockReason && !multiLpExit) {
     logContext.engineReason = ingestBlockReason;
     await appendDecision(journals, logContext, {
       stage: 'engine',
@@ -1091,6 +1091,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   );
 
   if (
+    !multiLpExit &&
     activeMint &&
     (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
     isRecentlyClosedSameMint
@@ -1107,6 +1108,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   if (
+    !multiLpExit &&
     activeMint &&
     (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp') &&
     !mintAggregate.canOpen
