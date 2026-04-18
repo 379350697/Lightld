@@ -22,6 +22,10 @@ export {
   type PatchDraftResult
 } from './patch-draft.ts';
 export { ApprovalStore } from './approval-store.ts';
+export {
+  renderEvolutionReport,
+  type EvolutionReport
+} from './report-render.ts';
 export type {
   AnalysisConfidence,
   AnalysisDirection,
