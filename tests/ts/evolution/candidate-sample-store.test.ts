@@ -17,10 +17,14 @@ describe('resolveEvolutionPaths', () => {
     expect(paths.watchlistSnapshotsPath).toBe('state/evolution/new-token-v1/watchlist-snapshots.jsonl');
     expect(paths.watchlistTrackedTokensPath).toBe('state/evolution/new-token-v1/watchlist-tracked-tokens.json');
     expect(paths.positionOutcomesPath).toBe('state/evolution/new-token-v1/position-outcomes.jsonl');
+    expect(paths.evidenceSnapshotPath).toBe('state/evolution/new-token-v1/evidence-snapshot.json');
     expect(paths.reportJsonPath).toBe('state/evolution/new-token-v1/evolution-report.json');
     expect(paths.reportMarkdownPath).toBe('state/evolution/new-token-v1/evolution-report.md');
     expect(paths.proposalCatalogPath).toBe('state/evolution/new-token-v1/proposal-catalog.json');
     expect(paths.approvalQueuePath).toBe('state/evolution/new-token-v1/approval-queue.json');
+    expect(paths.approvalHistoryPath).toBe('state/evolution/new-token-v1/approval-history.jsonl');
+    expect(paths.outcomeLedgerPath).toBe('state/evolution/new-token-v1/outcome-ledger.jsonl');
+    expect(paths.patchDraftsDir).toBe('state/evolution/new-token-v1/patch-drafts');
     expect(paths.approvedPatchesDir).toBe('state/evolution/new-token-v1/approved-patches');
   });
 });

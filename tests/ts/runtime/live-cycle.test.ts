@@ -90,6 +90,17 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        openedAt: '2026-04-18T00:00:00.000Z',
+        updatedAt: '2026-04-18T00:00:00.000Z'
+      },
       evolutionSink: {
         appendOutcome: async (record) => {
           outcomes.push(record);
@@ -98,7 +109,14 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25, lpSolDepletedBins: 61 },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpNetPnlPct: -25,
+          lpSolDepletedBins: 61,
+          lpCurrentValueSol: 0.13,
+          lpUnclaimedFeeSol: 0.01
+        },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -110,8 +128,18 @@ describe('runLiveCycle', () => {
       strategyId: 'new-token-v1',
       tokenMint: 'mint-safe',
       tokenSymbol: 'SAFE',
+      positionId: 'pool-1:mint-safe',
       action: 'withdraw-lp',
       actualExitReason: 'lp-stop-loss',
+      openedAt: '2026-04-18T00:00:00.000Z',
+      closedAt: expect.any(String),
+      entrySol: 0.1,
+      maxObservedDrawdownPct: 0,
+      actualExitMetricValue: -25,
+      lpStopLossNetPnlPctAtEntry: 20,
+      lpTakeProfitNetPnlPctAtEntry: 30,
+      solDepletionExitBinsAtEntry: 60,
+      minBinStepAtEntry: 100,
       parameterSnapshot: {
         lpStopLossNetPnlPct: 20,
         lpTakeProfitNetPnlPct: 30,
@@ -124,6 +152,7 @@ describe('runLiveCycle', () => {
         lpSolDepletedBins: 61
       }
     });
+    expect(outcomes[0].maxObservedUpsidePct).toBeCloseTo(40, 6);
   });
 
   it('swallows evolution outcome sink failures without changing the live-cycle result', async () => {

@@ -9,6 +9,7 @@ import type { OutcomeAnalysisResult } from './outcome-analysis.ts';
 export type EvolutionReport = {
   strategyId: EvolutionStrategyId;
   generatedAt: string;
+  evidenceSnapshot: EvolutionEvidenceSnapshot;
   evidenceCounts: {
     candidateScans: number;
     watchlistSnapshots: number;
@@ -21,6 +22,29 @@ export type EvolutionReport = {
   noActionReasons: AnalysisNoActionReason[];
 };
 
+export type EvolutionEvidenceSnapshot = {
+  capturedAt: string;
+  timeWindowLabel: string;
+  sampleCounts: {
+    candidateScans: number;
+    watchlistSnapshots: number;
+    outcomes: number;
+  };
+  strategyConfigPath: string;
+  coverageScore: number;
+  regimeScore: number;
+  proposalReadinessScore: number;
+  coverageBreakdown: {
+    candidateScanCoverage: number;
+    watchlistCoverage: number;
+    outcomeCoverage: number;
+    followThroughCoverage: number;
+  };
+  regimeLabels: string[];
+  headlineDiagnostics: string[];
+  proposalIds: string[];
+};
+
 export function renderEvolutionReport(report: EvolutionReport) {
   const lines = [
     '# Evolution Report',
@@ -29,6 +53,11 @@ export function renderEvolutionReport(report: EvolutionReport) {
     `Generated at: ${report.generatedAt}`,
     '',
     '## Evidence',
+    `Evidence snapshot: ${report.evidenceSnapshot.timeWindowLabel}`,
+    `Regime labels: ${report.evidenceSnapshot.regimeLabels.join(', ') || 'none'}`,
+    `Coverage score: ${report.evidenceSnapshot.coverageScore.toFixed(2)}`,
+    `Regime score: ${report.evidenceSnapshot.regimeScore.toFixed(2)}`,
+    `Proposal readiness: ${report.evidenceSnapshot.proposalReadinessScore.toFixed(2)}`,
     `Candidate scans: ${report.evidenceCounts.candidateScans}`,
     `Watchlist snapshots: ${report.evidenceCounts.watchlistSnapshots}`,
     `Outcomes: ${report.evidenceCounts.outcomes}`,

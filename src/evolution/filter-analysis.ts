@@ -97,6 +97,30 @@ export function analyzeFilterEvidence(input: AnalyzeFilterEvidenceInput): Filter
         supportingMetric: minBinStepStats.outperformed / minBinStepStats.count
       });
     }
+
+    const minVolumeStats = reasonStats.get('min-volume-24h');
+    if (minVolumeStats && minVolumeStats.outperformed > 0) {
+      findings.push({
+        path: 'lpConfig.minVolume24hUsd',
+        direction: 'decrease',
+        sampleSize: minVolumeStats.count,
+        confidence: confidenceForSamples(minVolumeStats.count),
+        rationale: 'Pools blocked by the 24h volume floor later outperformed the selected follow-through baseline.',
+        supportingMetric: minVolumeStats.outperformed / minVolumeStats.count
+      });
+    }
+
+    const minFeeTvlStats = reasonStats.get('min-fee-tvl-ratio-24h');
+    if (minFeeTvlStats && minFeeTvlStats.outperformed > 0) {
+      findings.push({
+        path: 'lpConfig.minFeeTvlRatio24h',
+        direction: 'decrease',
+        sampleSize: minFeeTvlStats.count,
+        confidence: confidenceForSamples(minFeeTvlStats.count),
+        rationale: 'Pools blocked by fee/TVL requirements later outperformed the selected follow-through baseline.',
+        supportingMetric: minFeeTvlStats.outperformed / minFeeTvlStats.count
+      });
+    }
   }
 
   if (findings.length === 0 && noActionReasons.size === 0) {

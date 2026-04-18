@@ -59,7 +59,10 @@ export function parseRunEvolutionApprovalArgs(argv: string[]): RunEvolutionAppro
 
 export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
   const paths = resolveEvolutionPaths(args.strategyId, join(args.stateRootDir, 'evolution'));
-  const store = new ApprovalStore(paths.approvalQueuePath);
+  const store = new ApprovalStore(paths.approvalQueuePath, {
+    decisionLogPath: paths.approvalHistoryPath,
+    outcomeLedgerPath: paths.outcomeLedgerPath
+  });
   const queue = await store.readQueue();
   const proposal = queue.find((entry) => entry.proposalId === args.proposalId);
 
@@ -68,13 +71,6 @@ export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
   }
 
   const decidedAt = new Date().toISOString();
-  await store.applyDecision({
-    proposalId: args.proposalId,
-    action: args.action,
-    note: args.note,
-    decidedAt
-  });
-
   let patchPath: string | undefined;
   if (args.action === 'approve' && proposal.patchable) {
     const patchDraft = await generatePatchDraft({
@@ -98,6 +94,15 @@ export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
       );
     }
   }
+
+  await store.applyDecision({
+    proposalId: args.proposalId,
+    action: args.action,
+    note: args.note,
+    decidedAt,
+    relatedReportPath: paths.reportJsonPath,
+    generatedPatchDraftPath: patchPath
+  });
 
   return {
     status: args.action === 'approve' ? 'approved' : args.action === 'reject' ? 'rejected' : 'deferred',

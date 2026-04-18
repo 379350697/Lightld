@@ -44,6 +44,34 @@ describe('analyzeOutcomeEvidence', () => {
             lpSolDepletedBins: 60,
             lpUnclaimedFeeSol: 0.02
           }
+        }),
+        buildOutcome({
+          cycleId: 'cycle-lp-stop',
+          tokenMint: 'mint-lp-stop',
+          tokenSymbol: 'LPS',
+          actualExitReason: 'lp-stop-loss',
+          action: 'withdraw-lp',
+          actualExitMetricValue: -24,
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            lpCurrentValueSol: 0.08,
+            lpNetPnlPct: -24,
+            lpUnclaimedFeeSol: 0.01
+          }
+        }),
+        buildOutcome({
+          cycleId: 'cycle-lp-tp',
+          tokenMint: 'mint-lp-tp',
+          tokenSymbol: 'LPT',
+          actualExitReason: 'lp-take-profit',
+          action: 'withdraw-lp',
+          actualExitMetricValue: 32,
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            lpCurrentValueSol: 0.23,
+            lpNetPnlPct: 32,
+            lpUnclaimedFeeSol: 0.01
+          }
         })
       ],
       watchlistSnapshots: [
@@ -70,6 +98,22 @@ describe('analyzeOutcomeEvidence', () => {
           solDepletedBins: 72,
           unclaimedFeeSol: 0.04,
           sourceReason: 'selected'
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-lp-stop',
+          tokenMint: 'mint-lp-stop',
+          tokenSymbol: 'LPS',
+          currentValueSol: 0.04,
+          hasLpPosition: true,
+          sourceReason: 'selected'
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-lp-tp',
+          tokenMint: 'mint-lp-tp',
+          tokenSymbol: 'LPT',
+          currentValueSol: 0.33,
+          hasLpPosition: true,
+          sourceReason: 'selected'
         })
       ],
       minimumSampleSize: 1
@@ -86,6 +130,14 @@ describe('analyzeOutcomeEvidence', () => {
       }),
       expect.objectContaining({
         path: 'lpConfig.solDepletionExitBins',
+        direction: 'increase'
+      }),
+      expect.objectContaining({
+        path: 'lpConfig.stopLossNetPnlPct',
+        direction: 'decrease'
+      }),
+      expect.objectContaining({
+        path: 'lpConfig.takeProfitNetPnlPct',
         direction: 'increase'
       })
     ]));
@@ -120,8 +172,21 @@ function buildOutcome(overrides: Partial<LiveCycleOutcomeRecord>): LiveCycleOutc
     poolAddress: 'pool-selected',
     runtimeMode: 'healthy',
     sessionPhase: 'active',
+    positionId: 'position-1',
     action: 'dca-out',
     actualExitReason: 'take-profit-hit',
+    openedAt: '2026-04-18T00:00:00.000Z',
+    closedAt: '2026-04-18T00:30:00.000Z',
+    entrySol: 0.15,
+    maxObservedUpsidePct: 33.33,
+    maxObservedDrawdownPct: 0,
+    actualExitMetricValue: 0.2,
+    takeProfitPctAtEntry: 20,
+    stopLossPctAtEntry: 12,
+    lpStopLossNetPnlPctAtEntry: 20,
+    lpTakeProfitNetPnlPctAtEntry: 30,
+    solDepletionExitBinsAtEntry: 60,
+    minBinStepAtEntry: 100,
     liveOrderSubmitted: true,
     parameterSnapshot: {
       takeProfitPct: 20,

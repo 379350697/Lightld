@@ -23,9 +23,19 @@ export {
   generatePatchDraft,
   type PatchDraftResult
 } from './patch-draft.ts';
+export {
+  buildEvolutionAnalysisContext,
+  isDecisionReady,
+  PROPOSAL_MIN_COVERAGE_SCORE,
+  PROPOSAL_MIN_READINESS_SCORE,
+  PROPOSAL_MIN_REGIME_SCORE,
+  type EvolutionAnalysisContext,
+  type EvolutionCoverageBreakdown
+} from './scoring.ts';
 export { ApprovalStore } from './approval-store.ts';
 export {
   renderEvolutionReport,
+  type EvolutionEvidenceSnapshot,
   type EvolutionReport
 } from './report-render.ts';
 export type {
@@ -33,6 +43,7 @@ export type {
   AnalysisDirection,
   AnalysisNoActionReason,
   ApprovalDecision,
+  ApprovalDecisionRecord,
   CandidateRejectionStage,
   CandidateScanRecord,
   CandidateSampleRecord,
@@ -41,6 +52,8 @@ export type {
   LiveCycleExitMetrics,
   LiveCycleOutcomeRecord,
   LiveCycleParameterSnapshot,
+  OutcomeReviewRecord,
+  OutcomeReviewStatus,
   ParameterFinding,
   ParameterProposalRecord,
   ProposalKind,
@@ -54,6 +67,8 @@ export {
   AnalysisDirectionSchema,
   AnalysisNoActionReasonSchema,
   ApprovalDecisionSchema,
+  ApprovalDecisionRecordArraySchema,
+  ApprovalDecisionRecordSchema,
   CandidateRejectionStageSchema,
   CandidateScanRecordArraySchema,
   CandidateScanRecordSchema,
@@ -64,6 +79,8 @@ export {
   LiveCycleOutcomeRecordSchema,
   LiveCycleOutcomeRecordArraySchema,
   LiveCycleParameterSnapshotSchema,
+  OutcomeReviewRecordArraySchema,
+  OutcomeReviewRecordSchema,
   ParameterFindingSchema,
   ParameterProposalRecordArraySchema,
   ParameterProposalRecordSchema,

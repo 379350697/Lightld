@@ -29,7 +29,9 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
   const matchedSamples = {
     takeProfit: 0,
     stopLoss: 0,
-    solDepletion: 0
+    solDepletion: 0,
+    lpStopLoss: 0,
+    lpTakeProfit: 0
   };
   const findings: ParameterFinding[] = [];
   let matchedFollowThroughCount = 0;
@@ -45,6 +47,22 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
     }
 
     matchedFollowThroughCount += 1;
+
+    if (outcome.actualExitReason.includes('lp-stop-loss')) {
+      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      if (typeof exitValue === 'number' && snapshot.currentValueSol < exitValue * 0.75) {
+        matchedSamples.lpStopLoss += 1;
+      }
+      continue;
+    }
+
+    if (outcome.actualExitReason.includes('lp-take-profit')) {
+      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      if (typeof exitValue === 'number' && snapshot.currentValueSol > exitValue * 1.2) {
+        matchedSamples.lpTakeProfit += 1;
+      }
+      continue;
+    }
 
     if (outcome.actualExitReason.includes('take-profit')) {
       const exitValue = outcome.exitMetrics.quoteOutputSol;
@@ -107,6 +125,28 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
       confidence: confidenceForSamples(matchedSamples.solDepletion),
       rationale: 'LP exits at the current depletion threshold were followed by continued upside and fee potential.',
       supportingMetric: matchedSamples.solDepletion / Math.max(1, matchedFollowThroughCount)
+    });
+  }
+
+  if (matchedSamples.lpStopLoss > 0) {
+    findings.push({
+      path: 'lpConfig.stopLossNetPnlPct',
+      direction: 'decrease',
+      sampleSize: matchedSamples.lpStopLoss,
+      confidence: confidenceForSamples(matchedSamples.lpStopLoss),
+      rationale: 'LP stop-loss exits were followed by further downside, suggesting tighter LP loss containment.',
+      supportingMetric: matchedSamples.lpStopLoss / Math.max(1, matchedFollowThroughCount)
+    });
+  }
+
+  if (matchedSamples.lpTakeProfit > 0) {
+    findings.push({
+      path: 'lpConfig.takeProfitNetPnlPct',
+      direction: 'increase',
+      sampleSize: matchedSamples.lpTakeProfit,
+      confidence: confidenceForSamples(matchedSamples.lpTakeProfit),
+      rationale: 'LP take-profit exits were followed by continued upside, suggesting the LP profit target may be too tight.',
+      supportingMetric: matchedSamples.lpTakeProfit / Math.max(1, matchedFollowThroughCount)
     });
   }
 

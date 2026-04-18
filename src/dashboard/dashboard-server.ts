@@ -136,8 +136,14 @@ async function handleStatus(): Promise<StatusResponse> {
     readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.proposalCatalogPath),
     readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.approvalQueuePath)
   ]);
+  const [outcomeLedger, evidenceSnapshot] = await Promise.all([
+    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.outcomeLedgerPath),
+    readJsonSafe<Record<string, unknown>>(evolutionPaths.evidenceSnapshotPath)
+  ]);
   const candidateScanCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM candidate_scans')[0]?.count ?? 0;
   const watchlistSnapshotCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots')[0]?.count ?? 0;
+  const latestProposal = sortByIsoDesc(proposalCatalog ?? [], 'updatedAt', 'createdAt')[0] ?? null;
+  const latestReview = sortByIsoDesc(outcomeLedger ?? [], 'reviewedAt')[0] ?? null;
 
   // Wallet SOL: prefer position-state.json (written every tick), fallback to SQLite reconciliations
   let walletSol: number | null = typeof position?.walletSol === 'number' ? position.walletSol : null;
@@ -234,9 +240,28 @@ async function handleStatus(): Promise<StatusResponse> {
       proposalCount: proposalCatalog?.length ?? 0,
       approvalQueueCount: approvalQueue?.length ?? 0,
       mirroredCandidateScanCount: candidateScanCount,
-      mirroredWatchlistSnapshotCount: watchlistSnapshotCount
+      mirroredWatchlistSnapshotCount: watchlistSnapshotCount,
+      latestEvidenceWindow: typeof evidenceSnapshot?.timeWindowLabel === 'string' ? evidenceSnapshot.timeWindowLabel : 'all-available',
+      latestCoverageScore: typeof evidenceSnapshot?.coverageScore === 'number' ? evidenceSnapshot.coverageScore : null,
+      latestRegimeScore: typeof evidenceSnapshot?.regimeScore === 'number' ? evidenceSnapshot.regimeScore : null,
+      latestReadinessScore: typeof evidenceSnapshot?.proposalReadinessScore === 'number'
+        ? evidenceSnapshot.proposalReadinessScore
+        : null,
+      latestProposalPath: typeof latestProposal?.targetPath === 'string' ? latestProposal.targetPath : '',
+      latestProposalStatus: typeof latestProposal?.status === 'string' ? latestProposal.status : '',
+      latestReviewStatus: typeof latestReview?.status === 'string' ? latestReview.status : '',
+      latestReviewProposalId: typeof latestReview?.proposalId === 'string' ? latestReview.proposalId : ''
     }
   };
+}
+
+function sortByIsoDesc(rows: Array<Record<string, unknown>>, ...keys: string[]) {
+  return [...rows].sort((left, right) => {
+    const leftIso = keys.map((key) => String(left[key] ?? '')).find((value) => value.length > 0) ?? '';
+    const rightIso = keys.map((key) => String(right[key] ?? '')).find((value) => value.length > 0) ?? '';
+
+    return rightIso.localeCompare(leftIso);
+  });
 }
 
 type PositionResponse = Array<{

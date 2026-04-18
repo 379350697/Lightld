@@ -142,6 +142,87 @@ describe('generatePatchDraft', () => {
     expect(result.status).toBe('blocked');
     expect(result.blockedReason).toBe('too_many_changes');
   });
+
+  it('fails closed when proposal evidence quality is below the patch-draft safety threshold', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-evolution-patch-weak-'));
+    directories.push(root);
+    const baselineConfigPath = join(root, 'new-token-v1.yaml');
+
+    await copyFile('src/config/strategies/new-token-v1.yaml', baselineConfigPath);
+
+    const result = await generatePatchDraft({
+      proposalId: 'proposal-weak-1',
+      baselineConfigPath,
+      proposals: [
+        {
+          proposalId: 'prop-weak',
+          proposalKind: 'parameter',
+          strategyId: 'new-token-v1',
+          status: 'draft',
+          createdAt: '2026-04-18T12:00:00.000Z',
+          updatedAt: '2026-04-18T12:00:00.000Z',
+          targetPath: 'filters.minLiquidityUsd',
+          oldValue: 1000,
+          proposedValue: 900,
+          evidenceWindowHours: 24,
+          sampleSize: 2,
+          rationale: 'Very small sample suggested a lower floor.',
+          expectedImprovement: 'Maybe capture more breakouts.',
+          riskNote: 'Could admit noisier pools.',
+          uncertaintyNote: 'Weak evidence.',
+          analysisConfidence: 'low',
+          supportingMetric: 0.4,
+          patchable: true
+        }
+      ]
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockedReason).toBe('insufficient_evidence');
+    expect(result.patchYaml).toBeNull();
+  });
+
+  it('fails closed when regime or coverage scoring says the proposal is not patch-ready', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-evolution-patch-regime-'));
+    directories.push(root);
+    const baselineConfigPath = join(root, 'new-token-v1.yaml');
+
+    await copyFile('src/config/strategies/new-token-v1.yaml', baselineConfigPath);
+
+    const result = await generatePatchDraft({
+      proposalId: 'proposal-regime-1',
+      baselineConfigPath,
+      proposals: [
+        {
+          proposalId: 'prop-regime',
+          proposalKind: 'parameter',
+          strategyId: 'new-token-v1',
+          status: 'draft',
+          createdAt: '2026-04-18T12:00:00.000Z',
+          updatedAt: '2026-04-18T12:00:00.000Z',
+          targetPath: 'filters.minLiquidityUsd',
+          oldValue: 1000,
+          proposedValue: 900,
+          evidenceWindowHours: 24,
+          sampleSize: 6,
+          rationale: 'Evidence looked good but the active window was thin and unstable.',
+          expectedImprovement: 'Capture more breakouts.',
+          riskNote: 'Could admit noisier pools.',
+          uncertaintyNote: 'Window quality is poor.',
+          analysisConfidence: 'high',
+          supportingMetric: 0.8,
+          coverageScore: 0.46,
+          regimeScore: 0.49,
+          proposalReadinessScore: 0.5,
+          patchable: true
+        }
+      ]
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockedReason).toBe('insufficient_evidence');
+    expect(result.patchYaml).toBeNull();
+  });
 });
 
 function buildPatchableProposal(targetPath: string, oldValue: number, proposedValue: number) {

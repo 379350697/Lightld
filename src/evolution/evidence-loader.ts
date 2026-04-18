@@ -26,11 +26,12 @@ type LoadEvolutionEvidenceInput = {
   strategyId: 'new-token-v1' | 'large-pool-v1';
   stateRootDir?: string;
   mirrorPath?: string;
+  evolutionRootDir?: string;
 };
 
 export async function loadEvolutionEvidence(input: LoadEvolutionEvidenceInput): Promise<EvolutionEvidence> {
   const stateRootDir = input.stateRootDir ?? 'state';
-  const paths = resolveEvolutionPaths(input.strategyId, join(stateRootDir, 'evolution'));
+  const paths = resolveEvolutionPaths(input.strategyId, input.evolutionRootDir ?? join(stateRootDir, 'evolution'));
   const mirroredCandidateScans = await readMirroredRows(
     input.mirrorPath,
     'candidate_scans',

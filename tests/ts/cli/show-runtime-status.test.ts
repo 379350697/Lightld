@@ -65,7 +65,13 @@ describe('formatRuntimeStatus', () => {
           hasLpPosition: true,
           sourceReason: 'selected'
         }
-      ]
+      ],
+      evolution: {
+        proposalCount: 3,
+        approvalQueueCount: 2,
+        outcomeReviewCount: 1,
+        latestEvidenceWindow: 'last-24h'
+      }
     });
 
     expect(output).toContain('mode=degraded');
@@ -75,5 +81,9 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('mirrorPruneDeletedRows=4');
     expect(output).toContain('recentCandidateScans=1');
     expect(output).toContain('recentWatchlistSnapshots=1');
+    expect(output).toContain('evolutionProposalCount=3');
+    expect(output).toContain('evolutionApprovalQueueCount=2');
+    expect(output).toContain('evolutionOutcomeReviewCount=1');
+    expect(output).toContain('evolutionLatestEvidenceWindow=last-24h');
   });
 });

@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { parse, stringify } from 'yaml';
 
 import type { ParameterProposalRecord } from './types.ts';
+import {
+  PROPOSAL_MIN_COVERAGE_SCORE,
+  PROPOSAL_MIN_READINESS_SCORE,
+  PROPOSAL_MIN_REGIME_SCORE
+} from './scoring.ts';
 
 const PATCHABLE_PATHS = new Set([
   'filters.minLiquidityUsd',
@@ -18,7 +23,7 @@ const PATCHABLE_PATHS = new Set([
 
 export type PatchDraftResult = {
   status: 'ready' | 'blocked';
-  blockedReason?: 'baseline_drift' | 'too_many_changes' | 'unrelated_parameter_group' | 'unsafe_path';
+  blockedReason?: 'baseline_drift' | 'too_many_changes' | 'unrelated_parameter_group' | 'unsafe_path' | 'insufficient_evidence';
   patchYaml: string | null;
   metadata: {
     proposalId: string;
@@ -45,6 +50,10 @@ export async function generatePatchDraft(input: GeneratePatchDraftInput): Promis
 
   if (input.proposals.some((proposal) => !proposal.patchable || !PATCHABLE_PATHS.has(proposal.targetPath))) {
     return blockedResult(input.proposalId, input.proposals, 'unsafe_path');
+  }
+
+  if (input.proposals.some((proposal) => !meetsEvidenceThreshold(proposal))) {
+    return blockedResult(input.proposalId, input.proposals, 'insufficient_evidence');
   }
 
   const groups = new Set(input.proposals.map((proposal) => proposal.targetPath.split('.')[0]));
@@ -125,4 +134,35 @@ function valuesMatch(left: unknown, right: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function meetsEvidenceThreshold(proposal: ParameterProposalRecord) {
+  if ((proposal.sampleSize ?? 0) < 3) {
+    return false;
+  }
+
+  if (proposal.analysisConfidence === 'low') {
+    return false;
+  }
+
+  if (typeof proposal.supportingMetric === 'number' && proposal.supportingMetric < 0.5) {
+    return false;
+  }
+
+  if (typeof proposal.coverageScore === 'number' && proposal.coverageScore < PROPOSAL_MIN_COVERAGE_SCORE) {
+    return false;
+  }
+
+  if (typeof proposal.regimeScore === 'number' && proposal.regimeScore < PROPOSAL_MIN_REGIME_SCORE) {
+    return false;
+  }
+
+  if (
+    typeof proposal.proposalReadinessScore === 'number'
+    && proposal.proposalReadinessScore < PROPOSAL_MIN_READINESS_SCORE
+  ) {
+    return false;
+  }
+
+  return true;
 }

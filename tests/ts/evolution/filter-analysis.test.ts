@@ -145,6 +145,26 @@ describe('analyzeFilterEvidence', () => {
               selectionRank: 3,
               blockedReason: 'min-bin-step',
               rejectionStage: 'lp_eligibility'
+            }),
+            buildCandidateSample({
+              sampleId: 'cand-volume',
+              tokenMint: 'mint-volume',
+              tokenSymbol: 'VOL',
+              poolAddress: 'pool-volume',
+              selected: false,
+              selectionRank: 4,
+              blockedReason: 'min-volume-24h',
+              rejectionStage: 'lp_eligibility'
+            }),
+            buildCandidateSample({
+              sampleId: 'cand-fee',
+              tokenMint: 'mint-fee',
+              tokenSymbol: 'FEE',
+              poolAddress: 'pool-fee',
+              selected: false,
+              selectionRank: 5,
+              blockedReason: 'min-fee-tvl-ratio-24h',
+              rejectionStage: 'lp_eligibility'
             })
           ]
         })
@@ -167,12 +187,24 @@ describe('analyzeFilterEvidence', () => {
           tokenMint: 'mint-bin',
           sourceReason: 'filtered_out',
           currentValueSol: 0.55
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-volume',
+          tokenMint: 'mint-volume',
+          sourceReason: 'filtered_out',
+          currentValueSol: 0.51
+        }),
+        buildWatchlistSnapshot({
+          watchId: 'watch-fee',
+          tokenMint: 'mint-fee',
+          sourceReason: 'filtered_out',
+          currentValueSol: 0.49
         })
       ],
       minimumSampleSize: 1
     });
 
-    expect(result.summary.missedOpportunityCount).toBe(2);
+    expect(result.summary.missedOpportunityCount).toBe(4);
     expect(result.summary.blockedReasonCounts[0]).toEqual({
       reason: 'min-liquidity',
       count: 1
@@ -184,6 +216,14 @@ describe('analyzeFilterEvidence', () => {
       }),
       expect.objectContaining({
         path: 'lpConfig.minBinStep',
+        direction: 'decrease'
+      }),
+      expect.objectContaining({
+        path: 'lpConfig.minVolume24hUsd',
+        direction: 'decrease'
+      }),
+      expect.objectContaining({
+        path: 'lpConfig.minFeeTvlRatio24h',
         direction: 'decrease'
       })
     ]));

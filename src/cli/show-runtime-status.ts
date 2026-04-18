@@ -1,7 +1,16 @@
 import type { MirrorStatusExtras } from '../observability/mirror-query-service.ts';
 import type { HealthReport } from '../runtime/state-types.ts';
 
-export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusExtras>) {
+type EvolutionStatusSummary = {
+  proposalCount: number;
+  approvalQueueCount: number;
+  outcomeReviewCount: number;
+  latestEvidenceWindow: string;
+};
+
+export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusExtras> & {
+  evolution?: EvolutionStatusSummary;
+}) {
   const lines = [
     `mode=${report.mode}`,
     `allowNewOpens=${report.allowNewOpens}`,
@@ -50,6 +59,15 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
 
   if (report.recentWatchlistSnapshots && report.recentWatchlistSnapshots.length > 0) {
     lines.push(`recentWatchlistSnapshots=${report.recentWatchlistSnapshots.length}`);
+  }
+
+  if (report.evolution) {
+    lines.push(
+      `evolutionProposalCount=${report.evolution.proposalCount}`,
+      `evolutionApprovalQueueCount=${report.evolution.approvalQueueCount}`,
+      `evolutionOutcomeReviewCount=${report.evolution.outcomeReviewCount}`,
+      `evolutionLatestEvidenceWindow=${report.evolution.latestEvidenceWindow}`
+    );
   }
 
   return lines.join('\n');

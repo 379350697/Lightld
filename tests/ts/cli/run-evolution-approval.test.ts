@@ -22,7 +22,10 @@ describe('runEvolutionApproval', () => {
     directories.push(root);
     const stateRootDir = join(root, 'state');
     const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
-    const store = new ApprovalStore(paths.approvalQueuePath);
+    const store = new ApprovalStore(paths.approvalQueuePath, {
+      decisionLogPath: paths.approvalHistoryPath,
+      outcomeLedgerPath: paths.outcomeLedgerPath
+    });
 
     await store.upsertProposal({
       proposalId: 'parameter:lpConfig.minBinStep:2026-04-18T12:00:00.000Z',
@@ -60,6 +63,7 @@ describe('runEvolutionApproval', () => {
     const result = await runEvolutionApproval(parsed);
     const queueRaw = JSON.parse(await readFile(paths.approvalQueuePath, 'utf8')) as Array<{ status: string }>;
     const safeFileName = 'parameter_lpConfig.minBinStep_2026-04-18T12_00_00.000Z';
+    const decisionHistory = await store.readDecisionHistory();
 
     expect(result.status).toBe('approved');
     expect(queueRaw[0].status).toBe('approved');
@@ -69,5 +73,13 @@ describe('runEvolutionApproval', () => {
     await expect(
       readFile(join(paths.approvedPatchesDir, `${safeFileName}.meta.json`), 'utf8')
     ).resolves.toContain('"proposalId": "parameter:lpConfig.minBinStep:2026-04-18T12:00:00.000Z"');
+    expect(decisionHistory).toEqual([
+      expect.objectContaining({
+        proposalId: 'parameter:lpConfig.minBinStep:2026-04-18T12:00:00.000Z',
+        action: 'approve',
+        relatedReportPath: paths.reportJsonPath,
+        generatedPatchDraftPath: join(paths.approvedPatchesDir, `${safeFileName}.yaml`)
+      })
+    ]);
   });
 });

@@ -136,8 +136,21 @@ export const LiveCycleOutcomeRecordSchema = z.object({
   poolAddress: z.string(),
   runtimeMode: z.string(),
   sessionPhase: SessionPhaseSchema,
+  positionId: z.string().optional(),
   action: z.enum(['hold', 'deploy', 'dca-out', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']),
   actualExitReason: z.string(),
+  openedAt: z.string().optional(),
+  closedAt: z.string().optional(),
+  entrySol: z.number().finite().nonnegative().optional(),
+  maxObservedUpsidePct: z.number().finite().nonnegative().optional(),
+  maxObservedDrawdownPct: z.number().finite().nonnegative().optional(),
+  actualExitMetricValue: z.number().finite().optional(),
+  takeProfitPctAtEntry: z.number().finite().positive().optional(),
+  stopLossPctAtEntry: z.number().finite().positive().optional(),
+  lpStopLossNetPnlPctAtEntry: z.number().finite().positive().optional(),
+  lpTakeProfitNetPnlPctAtEntry: z.number().finite().positive().optional(),
+  solDepletionExitBinsAtEntry: z.number().int().nonnegative().optional(),
+  minBinStepAtEntry: z.number().int().positive().optional(),
   liveOrderSubmitted: z.boolean(),
   parameterSnapshot: LiveCycleParameterSnapshotSchema,
   exitMetrics: LiveCycleExitMetricsSchema
@@ -197,6 +210,11 @@ export const ParameterProposalRecordSchema = z.object({
   proposedValue: z.union([z.number(), z.string(), z.boolean(), z.null()]).optional(),
   evidenceWindowHours: z.number().int().positive().optional(),
   sampleSize: z.number().int().nonnegative().optional(),
+  analysisConfidence: AnalysisConfidenceSchema.optional(),
+  supportingMetric: z.number().finite().optional(),
+  coverageScore: z.number().finite().min(0).max(1).optional(),
+  regimeScore: z.number().finite().min(0).max(1).optional(),
+  proposalReadinessScore: z.number().finite().min(0).max(1).optional(),
   rationale: z.string().default(''),
   expectedImprovement: z.string().default(''),
   riskNote: z.string().default(''),
@@ -212,6 +230,26 @@ export const ApprovalDecisionSchema = z.object({
   proposalId: z.string(),
   action: z.enum(['approve', 'reject', 'defer']),
   note: z.string().optional(),
-  decidedAt: z.string()
+  decidedAt: z.string(),
+  relatedReportPath: z.string().optional(),
+  generatedPatchDraftPath: z.string().optional()
 });
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
+
+export const ApprovalDecisionRecordSchema = ApprovalDecisionSchema;
+export type ApprovalDecisionRecord = z.infer<typeof ApprovalDecisionRecordSchema>;
+export const ApprovalDecisionRecordArraySchema = z.array(ApprovalDecisionRecordSchema);
+
+const OutcomeReviewStatusSchema = z.enum(['confirmed', 'mixed', 'rejected', 'needs_more_data']);
+export type OutcomeReviewStatus = z.infer<typeof OutcomeReviewStatusSchema>;
+
+const OutcomeObservedMetricValueSchema = z.union([z.number(), z.string(), z.boolean(), z.null()]);
+export const OutcomeReviewRecordSchema = z.object({
+  proposalId: z.string(),
+  status: OutcomeReviewStatusSchema,
+  reviewedAt: z.string(),
+  note: z.string().optional(),
+  observedMetrics: z.record(z.string(), OutcomeObservedMetricValueSchema).default({})
+});
+export type OutcomeReviewRecord = z.infer<typeof OutcomeReviewRecordSchema>;
+export const OutcomeReviewRecordArraySchema = z.array(OutcomeReviewRecordSchema);

@@ -136,6 +136,55 @@ export function buildDashboardHtml(): string {
     .positions-section, .logs-section {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 32px;
     }
+    .research-brief {
+      display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 16px; margin-bottom: 32px;
+    }
+    .research-card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      min-height: 124px;
+    }
+    .research-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.9px;
+      margin-bottom: 10px;
+    }
+    .research-main {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+    .research-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .research-mono { font-family: var(--font-mono); }
+    .research-score-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .research-score-chip {
+      border-radius: 8px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 10px 12px;
+    }
+    .research-score-chip b {
+      display: block;
+      font-size: 15px;
+      color: var(--text-primary);
+      margin-top: 4px;
+      font-family: var(--font-mono);
+    }
     .positions-header, .logs-header { padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .positions-title, .logs-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
     .positions-summary { display: flex; align-items: center; gap: 20px; font-size: 13px; color: var(--text-secondary); flex-wrap: wrap; }
@@ -187,6 +236,7 @@ export function buildDashboardHtml(): string {
     .section-note { padding: 14px 24px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
     @media (max-width: 900px) {
       .portfolio-section { grid-template-columns: 1fr; }
+      .research-brief { grid-template-columns: 1fr; }
       .portfolio-stats { border-right: none; border-bottom: 1px solid var(--border); }
       .header { padding: 0 12px; }
       .main { padding: 16px; }
@@ -228,6 +278,7 @@ export function buildDashboardHtml(): string {
           <div class="stat-item"><div class="stat-label">TOTAL FLOW</div><div class="stat-value" id="stat-total-profit">0.0000</div></div>
           <div class="stat-item"><div class="stat-label">MONTH FLOW</div><div class="stat-value" id="stat-monthly-profit">0.0000</div></div>
           <div class="stat-item" style="grid-column: span 2;"><div class="stat-label">CIRCUIT REASON</div><div class="stat-value" id="stat-circuit" style="font-size:14px;">--</div></div>
+          <div class="stat-item" style="grid-column: span 2;"><div class="stat-label">RESEARCH</div><div class="stat-value" id="stat-research" style="font-size:14px;">--</div></div>
         </div>
       </div>
       <div class="portfolio-chart">
@@ -240,6 +291,24 @@ export function buildDashboardHtml(): string {
         <div class="chart-body" id="pnl-chart">
           <div class="chart-watermark"><div class="wm-icon"></div><span class="wm-text">Lightld</span></div>
         </div>
+      </div>
+    </div>
+
+    <div class="research-brief" id="research-brief">
+      <div class="research-card">
+        <div class="research-label">Research Window</div>
+        <div class="research-main research-mono" id="research-window">--</div>
+        <div class="research-meta" id="research-scores">coverage=-- readiness=-- regime=--</div>
+      </div>
+      <div class="research-card">
+        <div class="research-label">Latest Proposal</div>
+        <div class="research-main research-mono" id="research-latest-proposal">--</div>
+        <div class="research-meta" id="research-latest-proposal-meta">No evolution proposal yet.</div>
+      </div>
+      <div class="research-card">
+        <div class="research-label">Latest Review</div>
+        <div class="research-main research-mono" id="research-latest-review">--</div>
+        <div class="research-meta" id="research-latest-review-meta">No outcome review yet.</div>
       </div>
     </div>
 
@@ -486,6 +555,35 @@ export function buildDashboardHtml(): string {
           $('#stat-mode').textContent = status.mode || '--';
           $('#stat-lifecycle').textContent = status.lifecycleState || '--';
           $('#stat-circuit').textContent = status.circuitReason || '--';
+          var evolution = status.evolution || null;
+          $('#stat-research').textContent = evolution
+            ? ('proposals=' + String(evolution.proposalCount || 0)
+              + ' queue=' + String(evolution.approvalQueueCount || 0)
+              + ' scans=' + String(evolution.mirroredCandidateScanCount || 0)
+              + ' watch=' + String(evolution.mirroredWatchlistSnapshotCount || 0))
+            : '--';
+          $('#research-window').textContent = evolution ? String(evolution.latestEvidenceWindow || '--') : '--';
+          $('#research-scores').innerHTML = evolution
+            ? (
+              '<div class="research-score-row">'
+              + '<div class="research-score-chip">Coverage<b>' + escHtml(fmtMaybeScore(evolution.latestCoverageScore)) + '</b></div>'
+              + '<div class="research-score-chip">Readiness<b>' + escHtml(fmtMaybeScore(evolution.latestReadinessScore)) + '</b></div>'
+              + '<div class="research-score-chip">Regime<b>' + escHtml(fmtMaybeScore(evolution.latestRegimeScore)) + '</b></div>'
+              + '</div>'
+            )
+            : 'coverage=-- readiness=-- regime=--';
+          $('#research-latest-proposal').textContent = evolution && evolution.latestProposalPath
+            ? String(evolution.latestProposalPath)
+            : '--';
+          $('#research-latest-proposal-meta').textContent = evolution && evolution.latestProposalStatus
+            ? ('status=' + String(evolution.latestProposalStatus))
+            : 'No evolution proposal yet.';
+          $('#research-latest-review').textContent = evolution && evolution.latestReviewStatus
+            ? String(evolution.latestReviewStatus)
+            : '--';
+          $('#research-latest-review-meta').textContent = evolution && evolution.latestReviewProposalId
+            ? ('proposal=' + String(evolution.latestReviewProposalId))
+            : 'No outcome review yet.';
           var walletSol = typeof status.walletSol === 'number' ? status.walletSol : 0;
           var openValue = Array.isArray(positions) ? positions.reduce(function(sum, p) { return sum + (Number(p.currentValueSol) || 0); }, 0) : 0;
           var openFees = Array.isArray(positions) ? positions.reduce(function(sum, p) { return sum + (Number(p.unclaimedFeeSol) || 0); }, 0) : 0;
@@ -506,6 +604,10 @@ export function buildDashboardHtml(): string {
     }
     refreshAll();
     setInterval(refreshAll, 5000);
+
+    function fmtMaybeScore(value) {
+      return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '--';
+    }
   </script>
 </body>
 </html>`;

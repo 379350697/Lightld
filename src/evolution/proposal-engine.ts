@@ -1,11 +1,14 @@
 import type {
   AnalysisNoActionReason,
   EvolutionStrategyId,
+  OutcomeReviewRecord,
   ParameterFinding,
   ParameterProposalRecord
 } from './types.ts';
 import type { FilterAnalysisResult } from './filter-analysis.ts';
 import type { OutcomeAnalysisResult } from './outcome-analysis.ts';
+import type { EvolutionAnalysisContext } from './scoring.ts';
+import { isDecisionReady } from './scoring.ts';
 
 const PATCHABLE_PATHS = new Set([
   'filters.minLiquidityUsd',
@@ -27,6 +30,9 @@ export type GenerateEvolutionProposalsInput = {
   currentValues: Record<string, ProposalValue>;
   filterAnalysis: FilterAnalysisResult;
   outcomeAnalysis: OutcomeAnalysisResult;
+  analysisContext?: EvolutionAnalysisContext;
+  existingProposals?: ParameterProposalRecord[];
+  outcomeReviews?: OutcomeReviewRecord[];
 };
 
 export type ProposalGenerationResult = {
@@ -40,12 +46,27 @@ export function generateEvolutionProposals(input: GenerateEvolutionProposalsInpu
     ...input.filterAnalysis.findings,
     ...input.outcomeAnalysis.findings
   ]);
+  const suppressionContext = buildSuppressionContext({
+    existingProposals: input.existingProposals ?? [],
+    outcomeReviews: input.outcomeReviews ?? []
+  });
   const parameterProposals: ParameterProposalRecord[] = [];
   const systemProposals: ParameterProposalRecord[] = [];
   const noActionReasons = new Set<AnalysisNoActionReason>([
     ...input.filterAnalysis.noActionReasons,
     ...input.outcomeAnalysis.noActionReasons
   ]);
+  const decisionReady = input.analysisContext
+    ? isDecisionReady(input.analysisContext)
+    : true;
+
+  if (input.analysisContext && input.analysisContext.coverageScore < 0.55) {
+    noActionReasons.add('data_coverage_gaps');
+  }
+
+  if (input.analysisContext && input.analysisContext.regimeScore < 0.55) {
+    noActionReasons.add('regime_instability');
+  }
 
   for (const finding of findings) {
     if (finding.direction === 'hold') {
@@ -77,8 +98,7 @@ export function generateEvolutionProposals(input: GenerateEvolutionProposalsInpu
       ? defaultCurrentValueForPath(finding.path)
       : currentValue;
     const proposedValue = deriveProposedValue(oldValue, finding);
-
-    parameterProposals.push(buildProposal({
+    const candidateProposal = buildProposal({
       proposalKind: 'parameter',
       strategyId: input.strategyId,
       createdAt: input.createdAt,
@@ -88,12 +108,28 @@ export function generateEvolutionProposals(input: GenerateEvolutionProposalsInpu
       proposedValue,
       evidenceWindowHours: 24,
       sampleSize: finding.sampleSize,
+      analysisConfidence: finding.confidence,
+      supportingMetric: finding.supportingMetric,
+      coverageScore: input.analysisContext?.coverageScore,
+      regimeScore: input.analysisContext?.regimeScore,
+      proposalReadinessScore: input.analysisContext?.proposalReadinessScore,
       rationale: finding.rationale,
       expectedImprovement: expectedImprovementForPath(finding.path, finding.direction),
       riskNote: riskNoteForPath(finding.path, finding.direction),
       uncertaintyNote: `Confidence=${finding.confidence}. Supporting metric=${finding.supportingMetric ?? 0}.`,
       patchable: true
-    }));
+    });
+
+    if (!decisionReady) {
+      continue;
+    }
+
+    if (shouldSuppressProposal(candidateProposal, suppressionContext)) {
+      noActionReasons.add('conflicting_evidence');
+      continue;
+    }
+
+    parameterProposals.push(candidateProposal);
   }
 
   if (parameterProposals.length === 0) {
@@ -189,4 +225,121 @@ function riskNoteForPath(path: string, direction: ParameterFinding['direction'])
   }
 
   return 'Operator review is required before applying this change.';
+}
+
+function buildSuppressionContext(input: {
+  existingProposals: ParameterProposalRecord[];
+  outcomeReviews: OutcomeReviewRecord[];
+}) {
+  const proposalById = new Map(input.existingProposals.map((proposal) => [proposal.proposalId, proposal]));
+  const latestReviewByPath = new Map<string, { proposal: ParameterProposalRecord; review: OutcomeReviewRecord }>();
+  const reviewHistoryByPath = new Map<string, Array<{ proposal: ParameterProposalRecord; review: OutcomeReviewRecord }>>();
+
+  for (const review of input.outcomeReviews) {
+    const proposal = proposalById.get(review.proposalId);
+    if (!proposal) {
+      continue;
+    }
+
+    const history = reviewHistoryByPath.get(proposal.targetPath) ?? [];
+    history.push({ proposal, review });
+    reviewHistoryByPath.set(proposal.targetPath, history);
+
+    const existing = latestReviewByPath.get(proposal.targetPath);
+    if (!existing || existing.review.reviewedAt < review.reviewedAt) {
+      latestReviewByPath.set(proposal.targetPath, { proposal, review });
+    }
+  }
+
+  return {
+    existingProposals: input.existingProposals,
+    latestReviewByPath,
+    reviewHistoryByPath
+  };
+}
+
+function shouldSuppressProposal(
+  proposal: ParameterProposalRecord,
+  context: ReturnType<typeof buildSuppressionContext>
+) {
+  const existingProposal = context.existingProposals.find((entry) =>
+    entry.targetPath === proposal.targetPath
+    && entry.status === 'approved'
+    && valuesMatch(entry.proposedValue, proposal.proposedValue)
+  );
+  if (existingProposal) {
+    return true;
+  }
+
+  const latestReview = context.latestReviewByPath.get(proposal.targetPath);
+  if (!latestReview) {
+    return false;
+  }
+
+  const reviewHistory = context.reviewHistoryByPath.get(proposal.targetPath) ?? [];
+  const reviewedDirection = directionForProposal(latestReview.proposal);
+  const currentDirection = directionForProposal(proposal);
+  if (reviewedDirection !== currentDirection) {
+    return false;
+  }
+
+  const repeatedWeakHistory = reviewHistory.filter(({ proposal: historicalProposal, review }) =>
+    directionForProposal(historicalProposal) === currentDirection
+    && (review.status === 'needs_more_data' || review.status === 'mixed')
+  );
+
+  if (repeatedWeakHistory.length >= 2 && !isMeaningfullyStronger(proposal, repeatedWeakHistory.map((entry) => entry.proposal))) {
+    return true;
+  }
+
+  return latestReview.review.status === 'rejected' || latestReview.review.status === 'mixed';
+}
+
+function directionForProposal(proposal: Pick<ParameterProposalRecord, 'oldValue' | 'proposedValue'>) {
+  if (typeof proposal.oldValue === 'number' && typeof proposal.proposedValue === 'number') {
+    if (proposal.proposedValue > proposal.oldValue) {
+      return 'increase' as const;
+    }
+
+    if (proposal.proposedValue < proposal.oldValue) {
+      return 'decrease' as const;
+    }
+  }
+
+  return 'hold' as const;
+}
+
+function valuesMatch(left: unknown, right: unknown) {
+  return left === right || (typeof left === 'undefined' && right === null);
+}
+
+function isMeaningfullyStronger(
+  proposal: Pick<ParameterProposalRecord, 'sampleSize' | 'analysisConfidence' | 'supportingMetric'>,
+  historicalProposals: Array<Pick<ParameterProposalRecord, 'sampleSize' | 'analysisConfidence' | 'supportingMetric'>>
+) {
+  const maxHistoricalSampleSize = Math.max(...historicalProposals.map((entry) => entry.sampleSize ?? 0), 0);
+  const maxHistoricalMetric = Math.max(...historicalProposals.map((entry) => entry.supportingMetric ?? 0), 0);
+  const maxHistoricalConfidence = Math.max(...historicalProposals.map((entry) => confidenceRank(entry.analysisConfidence)), 0);
+
+  return (
+    (proposal.sampleSize ?? 0) >= maxHistoricalSampleSize + 2
+    || confidenceRank(proposal.analysisConfidence) > maxHistoricalConfidence
+    || (proposal.supportingMetric ?? 0) >= maxHistoricalMetric + 0.1
+  );
+}
+
+function confidenceRank(confidence: ParameterProposalRecord['analysisConfidence']) {
+  if (confidence === 'high') {
+    return 3;
+  }
+
+  if (confidence === 'medium') {
+    return 2;
+  }
+
+  if (confidence === 'low') {
+    return 1;
+  }
+
+  return 0;
 }

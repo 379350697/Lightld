@@ -269,6 +269,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
   context: ReturnType<typeof buildDecisionContext>;
   snapshot: Record<string, unknown>;
+  positionState?: PositionStateSnapshot;
   requestedPositionSol: number;
   quote?: SolExitQuote;
 }) {
@@ -277,31 +278,146 @@ async function appendEvolutionOutcomeBestEffort(input: {
   }
 
   try {
+    const recordedAt = new Date().toISOString();
+    const parameterSnapshot = buildEvolutionParameterSnapshot(input.config);
+    const exitMetrics = buildEvolutionExitMetrics({
+      context: input.context,
+      snapshot: input.snapshot,
+      requestedPositionSol: input.requestedPositionSol,
+      quote: input.quote
+    });
+    const entrySol = resolveOutcomeEntrySol({
+      positionState: input.positionState,
+      requestedPositionSol: input.requestedPositionSol
+    });
+    const observedReturnPct = resolveObservedReturnPct({
+      action: input.action,
+      entrySol,
+      exitMetrics
+    });
+
     await input.sink.appendOutcome({
       cycleId: input.logContext.cycleId,
       strategyId: input.logContext.strategyId,
-      recordedAt: new Date().toISOString(),
+      recordedAt,
       tokenMint: input.logContext.tokenMint,
       tokenSymbol: input.logContext.tokenSymbol,
       poolAddress: input.logContext.poolAddress,
       runtimeMode: input.logContext.runtimeMode,
       sessionPhase: input.logContext.sessionPhase,
+      positionId: resolveOutcomePositionId(input.logContext, input.positionState),
       action: input.action,
       actualExitReason: input.actualExitReason,
+      openedAt: resolveOutcomeOpenedAt({
+        positionState: input.positionState,
+        recordedAt,
+        holdTimeMs: exitMetrics.holdTimeMs
+      }),
+      closedAt: recordedAt,
+      entrySol,
+      maxObservedUpsidePct: typeof observedReturnPct === 'number' ? Math.max(observedReturnPct, 0) : undefined,
+      maxObservedDrawdownPct: typeof observedReturnPct === 'number' ? Math.max(observedReturnPct * -1, 0) : undefined,
+      actualExitMetricValue: resolveActualExitMetricValue(input.actualExitReason, input.action, exitMetrics),
+      takeProfitPctAtEntry: parameterSnapshot.takeProfitPct,
+      stopLossPctAtEntry: parameterSnapshot.stopLossPct,
+      lpStopLossNetPnlPctAtEntry: parameterSnapshot.lpStopLossNetPnlPct,
+      lpTakeProfitNetPnlPctAtEntry: parameterSnapshot.lpTakeProfitNetPnlPct,
+      solDepletionExitBinsAtEntry: parameterSnapshot.lpSolDepletionExitBins,
+      minBinStepAtEntry: parameterSnapshot.lpMinBinStep,
       liveOrderSubmitted: input.liveOrderSubmitted,
-      parameterSnapshot: buildEvolutionParameterSnapshot(input.config),
-      exitMetrics: buildEvolutionExitMetrics({
-        context: input.context,
-        snapshot: input.snapshot,
-        requestedPositionSol: input.requestedPositionSol,
-        quote: input.quote
-      })
+      parameterSnapshot,
+      exitMetrics
     });
   } catch (error) {
     console.warn(
       `[LiveCycle] Evolution outcome persistence failed; continuing without research evidence: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function resolveOutcomePositionId(
+  logContext: LiveCycleLogContext,
+  positionState?: PositionStateSnapshot
+) {
+  if (positionState?.activePoolAddress && positionState.activeMint) {
+    return `${positionState.activePoolAddress}:${positionState.activeMint}`;
+  }
+
+  return `${logContext.poolAddress}:${logContext.tokenMint}`;
+}
+
+function resolveOutcomeOpenedAt(input: {
+  positionState?: PositionStateSnapshot;
+  recordedAt: string;
+  holdTimeMs?: number;
+}) {
+  if (typeof input.positionState?.openedAt === 'string' && input.positionState.openedAt.length > 0) {
+    return input.positionState.openedAt;
+  }
+
+  if (typeof input.holdTimeMs === 'number' && Number.isFinite(input.holdTimeMs) && input.holdTimeMs > 0) {
+    return new Date(Date.parse(input.recordedAt) - input.holdTimeMs).toISOString();
+  }
+
+  return input.recordedAt;
+}
+
+function resolveOutcomeEntrySol(input: {
+  positionState?: PositionStateSnapshot;
+  requestedPositionSol: number;
+}) {
+  if (typeof input.positionState?.entrySol === 'number' && input.positionState.entrySol > 0) {
+    return input.positionState.entrySol;
+  }
+
+  return input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined;
+}
+
+function resolveObservedReturnPct(input: {
+  action: LiveAction;
+  entrySol?: number;
+  exitMetrics: ReturnType<typeof buildEvolutionExitMetrics>;
+}) {
+  if (typeof input.entrySol !== 'number' || input.entrySol <= 0) {
+    return undefined;
+  }
+
+  if (
+    (input.action === 'withdraw-lp' || input.action === 'claim-fee' || input.action === 'rebalance-lp')
+    && typeof input.exitMetrics.lpCurrentValueSol === 'number'
+  ) {
+    const totalExitValue = input.exitMetrics.lpCurrentValueSol + (input.exitMetrics.lpUnclaimedFeeSol ?? 0);
+    return ((totalExitValue - input.entrySol) / input.entrySol) * 100;
+  }
+
+  if (typeof input.exitMetrics.quoteOutputSol === 'number') {
+    return ((input.exitMetrics.quoteOutputSol - input.entrySol) / input.entrySol) * 100;
+  }
+
+  return undefined;
+}
+
+function resolveActualExitMetricValue(
+  actualExitReason: string,
+  action: LiveAction,
+  exitMetrics: ReturnType<typeof buildEvolutionExitMetrics>
+) {
+  if (actualExitReason.includes('sol-depletion') && typeof exitMetrics.lpSolDepletedBins === 'number') {
+    return exitMetrics.lpSolDepletedBins;
+  }
+
+  if (
+    (actualExitReason.includes('stop-loss') || action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp')
+    && typeof exitMetrics.lpNetPnlPct === 'number'
+  ) {
+    return exitMetrics.lpNetPnlPct;
+  }
+
+  if (typeof exitMetrics.quoteOutputSol === 'number') {
+    return exitMetrics.quoteOutputSol;
+  }
+
+  return undefined;
 }
 
 function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string, nowMs: number): number {
@@ -1809,6 +1925,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     config,
     context,
     snapshot: updatedSnapshot,
+    positionState: input.positionState,
     requestedPositionSol,
     quote
   });
