@@ -17,10 +17,16 @@ export type ApprovalStoreOptions = {
 };
 
 export class ApprovalStore {
+  private readonly path: string;
+  private readonly options: ApprovalStoreOptions;
+
   constructor(
-    private readonly path: string,
-    private readonly options: ApprovalStoreOptions = {}
-  ) {}
+    path: string,
+    options: ApprovalStoreOptions = {}
+  ) {
+    this.path = path;
+    this.options = options;
+  }
 
   async readQueue(): Promise<ParameterProposalRecord[]> {
     return (await readJsonIfExists(this.path, ParameterProposalRecordArraySchema)) ?? [];

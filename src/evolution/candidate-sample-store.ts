@@ -2,7 +2,11 @@ import { readJsonLines, appendJsonLine } from '../journals/jsonl-writer.ts';
 import { CandidateSampleRecordSchema, type CandidateSampleRecord } from './types.ts';
 
 export class CandidateSampleStore {
-  constructor(private readonly path: string) {}
+  private readonly path: string;
+
+  constructor(path: string) {
+    this.path = path;
+  }
 
   async append(sample: CandidateSampleRecord): Promise<void> {
     await appendJsonLine(this.path, CandidateSampleRecordSchema.parse(sample));

@@ -9,7 +9,11 @@ import {
 } from './types.ts';
 
 export class PoolDecisionSampleStore {
-  constructor(private readonly path: string) {}
+  private readonly path: string;
+
+  constructor(path: string) {
+    this.path = path;
+  }
 
   async append(sample: PoolDecisionSampleRecord): Promise<void> {
     await appendJsonLine(this.path, PoolDecisionSampleRecordSchema.parse(sample));

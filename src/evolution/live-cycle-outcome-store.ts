@@ -2,7 +2,11 @@ import { appendJsonLine, readJsonLines } from '../journals/jsonl-writer.ts';
 import { LiveCycleOutcomeRecordSchema, type LiveCycleOutcomeRecord } from './types.ts';
 
 export class LiveCycleOutcomeStore {
-  constructor(private readonly path: string) {}
+  private readonly path: string;
+
+  constructor(path: string) {
+    this.path = path;
+  }
 
   async appendOutcome(record: LiveCycleOutcomeRecord): Promise<void> {
     await appendJsonLine(this.path, LiveCycleOutcomeRecordSchema.parse(record));
