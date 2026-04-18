@@ -270,12 +270,18 @@ function maybePopulateLpNetPnlPct(input: {
   context: ReturnType<typeof buildDecisionContext>;
   positionState?: PositionStateSnapshot;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+  requestedPositionSol?: number;
 }) {
   if (typeof input.context.trader.lpNetPnlPct === 'number') {
     return;
   }
 
-  const entrySol = input.positionState?.entrySol;
+  const positionStateMint = typeof input.positionState?.activeMint === 'string' ? input.positionState.activeMint : '';
+  const contextMint = typeof input.context.token.mint === 'string' ? input.context.token.mint : '';
+  const positionStateMatchesContext = Boolean(positionStateMint && contextMint && positionStateMint === contextMint);
+  const entrySol = positionStateMatchesContext
+    ? input.positionState?.entrySol
+    : (typeof input.requestedPositionSol === 'number' && input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined);
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
@@ -631,7 +637,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   maybePopulateLpNetPnlPct({
     context,
     positionState: input.positionState,
-    config
+    config,
+    requestedPositionSol: input.requestedPositionSol
   });
   
   if (config.poolClass === 'new-token') {
