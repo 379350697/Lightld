@@ -8,7 +8,7 @@ import type {
 } from './mirror-events.ts';
 import type { MirrorRuntime } from './mirror-runtime.ts';
 import { MirrorCursorStore } from './mirror-cursor-store.ts';
-import { readJsonLines, resolveActiveJsonlPath } from '../journals/jsonl-writer.ts';
+import { listRotatedJsonlPaths, readJsonLines } from '../journals/jsonl-writer.ts';
 
 export function applyCatchupWindow<T>(input: {
   lines: Array<{ offset: number; value: T }>;
@@ -24,6 +24,35 @@ export async function readJsonLinesWithOffsets<T>(path: string) {
     offset: index + 1,
     value
   }));
+}
+
+function buildStableRotatedOffset(path: string, lineNumber: number) {
+  const match = /(\d{4})-(\d{2})-(\d{2})\.jsonl$/.exec(path.replace(/\\/g, '/'));
+  if (!match) {
+    return lineNumber;
+  }
+
+  const dayKey = Number(`${match[1]}${match[2]}${match[3]}`);
+  return dayKey * 1_000_000 + lineNumber;
+}
+
+export async function readRotatedJsonLinesWithOffsets<T>(path: string) {
+  const rotatedPaths = await listRotatedJsonlPaths(path);
+  const sourcePaths = rotatedPaths.length > 0 ? rotatedPaths : [path];
+  const lines: Array<{ offset: number; value: T }> = [];
+
+  for (const sourcePath of sourcePaths) {
+    const values = await readJsonLines<T>(sourcePath);
+
+    for (let index = 0; index < values.length; index += 1) {
+      lines.push({
+        offset: buildStableRotatedOffset(sourcePath, index + 1),
+        value: values[index]
+      });
+    }
+  }
+
+  return lines;
 }
 
 type CatchupInput = {
@@ -206,17 +235,17 @@ function buildJournalSpecs(strategyId: string, journalRootDir: string): JournalS
   return [
     {
       key: `${strategyId}-live-orders`,
-      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-orders.jsonl`)),
+      path: join(journalRootDir, `${strategyId}-live-orders.jsonl`),
       toEvent: (value, currentStrategyId) => toOrderCatchupEvent(value, currentStrategyId)
     },
     {
       key: `${strategyId}-live-fills`,
-      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-fills.jsonl`)),
+      path: join(journalRootDir, `${strategyId}-live-fills.jsonl`),
       toEvent: (value, currentStrategyId, offset) => toFillCatchupEvent(value, currentStrategyId, offset)
     },
     {
       key: `${strategyId}-live-incidents`,
-      path: resolveActiveJsonlPath(join(journalRootDir, `${strategyId}-live-incidents.jsonl`)),
+      path: join(journalRootDir, `${strategyId}-live-incidents.jsonl`),
       toEvent: (value, currentStrategyId, offset) => toIncidentCatchupEvent(value, currentStrategyId, offset)
     }
   ];
@@ -257,7 +286,7 @@ export async function enqueueMirrorCatchupFromJournals(input: CatchupInput) {
       break;
     }
 
-    const lines = await readJsonLinesWithOffsets<unknown>(journal.path);
+    const lines = await readRotatedJsonLinesWithOffsets<unknown>(journal.path);
     const lastOffset = cursorSnapshot.offsets[journal.key] ?? 0;
     const unseen = applyCatchupWindow({
       lines,

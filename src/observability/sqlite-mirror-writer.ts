@@ -85,6 +85,8 @@ export class SqliteMirrorWriter {
       database.exec(statement);
     }
 
+    this.ensureRuntimeSnapshotColumns(database);
+
     this.database = database;
   }
 
@@ -140,6 +142,24 @@ export class SqliteMirrorWriter {
         LIMIT ?
       `)
       .all(limit) as RecentIncidentRow[];
+  }
+
+  private ensureRuntimeSnapshotColumns(database: DatabaseSync) {
+    const existingColumns = new Set((database.prepare('PRAGMA table_info(runtime_snapshots)').all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    const requiredColumns = [
+      ['wallet_sol', 'REAL'],
+      ['lp_value_sol', 'REAL'],
+      ['unclaimed_fee_sol', 'REAL'],
+      ['net_worth_sol', 'REAL'],
+      ['open_position_count', 'INTEGER']
+    ] as const;
+
+    for (const [columnName, columnType] of requiredColumns) {
+      if (!existingColumns.has(columnName)) {
+        database.exec(`ALTER TABLE runtime_snapshots ADD COLUMN ${columnName} ${columnType}`);
+      }
+    }
   }
 
   async readRecentOrders(limit = 5): Promise<RecentOrderRow[]> {
@@ -454,8 +474,13 @@ export class SqliteMirrorWriter {
         pending_submission,
         circuit_reason,
         quote_failures,
-        reconcile_failures
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        reconcile_failures,
+        wallet_sol,
+        lp_value_sol,
+        unclaimed_fee_sol,
+        net_worth_sol,
+        open_position_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(snapshot_at) DO UPDATE SET
         runtime_mode=excluded.runtime_mode,
         allow_new_opens=excluded.allow_new_opens,
@@ -463,7 +488,12 @@ export class SqliteMirrorWriter {
         pending_submission=excluded.pending_submission,
         circuit_reason=excluded.circuit_reason,
         quote_failures=excluded.quote_failures,
-        reconcile_failures=excluded.reconcile_failures
+        reconcile_failures=excluded.reconcile_failures,
+        wallet_sol=excluded.wallet_sol,
+        lp_value_sol=excluded.lp_value_sol,
+        unclaimed_fee_sol=excluded.unclaimed_fee_sol,
+        net_worth_sol=excluded.net_worth_sol,
+        open_position_count=excluded.open_position_count
     `).run(
       payload.snapshotAt,
       payload.runtimeMode,
@@ -472,7 +502,12 @@ export class SqliteMirrorWriter {
       booleanToInteger(payload.pendingSubmission),
       payload.circuitReason,
       payload.quoteFailures,
-      payload.reconcileFailures
+      payload.reconcileFailures,
+      payload.walletSol,
+      payload.lpValueSol,
+      payload.unclaimedFeeSol,
+      payload.netWorthSol,
+      payload.openPositionCount
     );
   }
 

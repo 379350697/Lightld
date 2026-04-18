@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
+import { buildCashflowMetrics, buildEquityMetrics } from './dashboard-metrics.ts';
+import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 
 // ── Configuration ──
 
@@ -82,22 +84,8 @@ async function readJsonlTail(path: string, maxLines: number): Promise<Record<str
   }
 }
 
-async function findLatestJournalFile(prefix: string): Promise<string | null> {
-  try {
-    const files = await readdir(JOURNAL_ROOT_DIR);
-    const matching = files
-      .filter(f => f.startsWith(prefix) && f.endsWith('.jsonl'))
-      .sort((a, b) => b.localeCompare(a));
-    return matching.length > 0 ? join(JOURNAL_ROOT_DIR, matching[0]) : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readLatestJournalEntries(prefix: string, maxLines: number) {
-  const path = await findLatestJournalFile(prefix);
-  if (!path) return [];
-  return readJsonlTail(path, maxLines);
+async function readJournalEntries(baseName: string, maxLines: number) {
+  return readRotatedJsonTail<Record<string, unknown>>(join(JOURNAL_ROOT_DIR, `${baseName}.jsonl`), maxLines);
 }
 
 // ── API handlers ──
@@ -187,7 +175,7 @@ async function handleStatus(): Promise<StatusResponse> {
     }
 
     if (entrySol === null || !openedAt || !activeSymbol) {
-      const orderJournalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
+      const orderJournalRows = await readJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
       const matchedJournalOrder = [...orderJournalRows].reverse().find(row => {
         const tokenMint = String(row.tokenMint ?? '');
         const poolAddress = String(row.poolAddress ?? '');
@@ -289,89 +277,99 @@ async function handlePositions(): Promise<PositionResponse> {
 }
 
 type PnlResponse = {
+  metricType?: 'realized_cashflow';
+  totalCashflowSol?: number;
+  todayCashflowSol?: number;
+  monthCashflowSol?: number;
+  dailyCashflow?: Array<{ date: string; cashflowSol: number }>;
   totalPnl: number;
   todayPnl: number;
   monthPnl: number;
   dailyPnl: Array<{ date: string; pnl: number }>;
 };
 
+type EquityResponse = ReturnType<typeof buildEquityMetrics>;
+
 function handlePnl(): PnlResponse {
-  const today = new Date().toISOString().slice(0, 10);
-  const month = new Date().toISOString().slice(0, 7);
   const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  // Primary source: fills
-  const totalEntry = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp')"
-  );
-  const totalExit = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee')"
-  );
-
-  const todayEntry = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp') AND recorded_at >= ?",
-    today + 'T00:00:00.000Z'
-  );
-  const todayExit = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee') AND recorded_at >= ?",
-    today + 'T00:00:00.000Z'
-  );
-
-  const monthEntry = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('buy', 'add-lp') AND recorded_at >= ?",
-    month + '-01T00:00:00.000Z'
-  );
-  const monthExit = queryAll<{ total: number }>(
-    "SELECT COALESCE(SUM(filled_sol), 0) AS total FROM fills WHERE side IN ('sell', 'withdraw-lp', 'claim-fee') AND recorded_at >= ?",
-    month + '-01T00:00:00.000Z'
-  );
-
-  let totalPnl = (totalExit[0]?.total ?? 0) - (totalEntry[0]?.total ?? 0);
-  let todayPnl = (todayExit[0]?.total ?? 0) - (todayEntry[0]?.total ?? 0);
-  let monthPnl = (monthExit[0]?.total ?? 0) - (monthEntry[0]?.total ?? 0);
-
-  let dailyPnl = queryAll<{ date: string; entry_sol: number; exit_sol: number }>(`
+  const fillRows = queryAll<{ side: string; filled_sol: number; recorded_at: string }>(`
     SELECT
-      SUBSTR(recorded_at, 1, 10) AS date,
-      COALESCE(SUM(CASE WHEN side IN ('buy', 'add-lp') THEN filled_sol ELSE 0 END), 0) AS entry_sol,
-      COALESCE(SUM(CASE WHEN side IN ('sell', 'withdraw-lp', 'claim-fee') THEN filled_sol ELSE 0 END), 0) AS exit_sol
+      side,
+      filled_sol,
+      recorded_at
     FROM fills
     WHERE recorded_at >= ?
-    GROUP BY SUBSTR(recorded_at, 1, 10)
-    ORDER BY date ASC
-  `, since30d).map(r => ({
-    date: r.date,
-    pnl: r.exit_sol - r.entry_sol,
+    ORDER BY recorded_at ASC
+  `, since30d).map((row) => ({
+    side: row.side,
+    filledSol: row.filled_sol,
+    recordedAt: row.recorded_at
   }));
 
-  // Fallback: use orders when fills are missing/incomplete.
-  if (dailyPnl.length === 0) {
-    const orderRows = queryAll<{ date: string; entry_sol: number }>(`
+  const orderFallback = queryAll<{ action: string; requested_position_sol: number; created_at: string; updated_at: string }>(`
       SELECT
-        SUBSTR(COALESCE(updated_at, created_at), 1, 10) AS date,
-        COALESCE(SUM(CASE WHEN action = 'add-lp' THEN requested_position_sol ELSE 0 END), 0) AS entry_sol
+        action,
+        requested_position_sol,
+        created_at,
+        updated_at
       FROM orders
       WHERE COALESCE(updated_at, created_at) >= ?
-      GROUP BY SUBSTR(COALESCE(updated_at, created_at), 1, 10)
-      ORDER BY date ASC
-    `, since30d);
+      ORDER BY COALESCE(updated_at, created_at) ASC
+    `, since30d).map((row) => ({
+      action: row.action,
+      requestedPositionSol: row.requested_position_sol,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
 
-    dailyPnl = orderRows
-      .map(r => ({ date: r.date, pnl: -(r.entry_sol ?? 0) }))
-      .filter(r => Number.isFinite(r.pnl) && r.pnl !== 0);
+  return buildCashflowMetrics({
+    fills: fillRows,
+    orderFallback
+  });
+}
 
-    if (dailyPnl.length > 0 && totalPnl === 0 && todayPnl === 0 && monthPnl === 0) {
-      totalPnl = dailyPnl.reduce((sum, row) => sum + row.pnl, 0);
-      todayPnl = dailyPnl
-        .filter(row => row.date >= today)
-        .reduce((sum, row) => sum + row.pnl, 0);
-      monthPnl = dailyPnl
-        .filter(row => row.date >= month + '-01')
-        .reduce((sum, row) => sum + row.pnl, 0);
-    }
-  }
+function handleEquity(): EquityResponse {
+  const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  return { totalPnl, todayPnl, monthPnl, dailyPnl };
+  const rows = queryAll<{
+    snapshot_at: string;
+    wallet_sol: number | null;
+    lp_value_sol: number | null;
+    unclaimed_fee_sol: number | null;
+    net_worth_sol: number | null;
+    open_position_count: number | null;
+  }>(`
+    SELECT
+      snapshots.snapshot_at,
+      snapshots.wallet_sol,
+      snapshots.lp_value_sol,
+      snapshots.unclaimed_fee_sol,
+      snapshots.net_worth_sol,
+      snapshots.open_position_count
+    FROM runtime_snapshots AS snapshots
+    INNER JOIN (
+      SELECT
+        MAX(snapshot_at) AS snapshot_at
+      FROM runtime_snapshots
+      WHERE snapshot_at >= ?
+        AND net_worth_sol IS NOT NULL
+      GROUP BY substr(snapshot_at, 1, 10)
+    ) AS latest
+      ON latest.snapshot_at = snapshots.snapshot_at
+    ORDER BY snapshots.snapshot_at ASC
+  `, since30d);
+
+  return buildEquityMetrics({
+    snapshots: rows.map((row) => ({
+      snapshotAt: row.snapshot_at,
+      walletSol: row.wallet_sol,
+      lpValueSol: row.lp_value_sol,
+      unclaimedFeeSol: row.unclaimed_fee_sol,
+      netWorthSol: row.net_worth_sol,
+      openPositionCount: row.open_position_count
+    }))
+  });
 }
 
 type OrderRow = {
@@ -413,7 +411,7 @@ async function handleOrders() {
     }));
   }
 
-  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
+  const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
   return journalRows.reverse().map(r => ({
     idempotencyKey: String(r.idempotencyKey ?? ''),
     submissionId: String(r.submissionId ?? ''),
@@ -462,7 +460,7 @@ async function handleFills() {
     }));
   }
 
-  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
+  const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
   return journalRows.reverse().map(r => ({
     fillId: String(r.fillId ?? r.submissionId ?? r.cycleId ?? ''),
     submissionId: String(r.submissionId ?? ''),
@@ -509,7 +507,7 @@ async function handleIncidents() {
     }));
   }
 
-  const journalRows = await readLatestJournalEntries(`${STRATEGY_ID}-live-incidents`, 200);
+  const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-incidents`, 200);
   return journalRows.reverse().map(r => ({
     incidentId: String(r.incidentId ?? r.cycleId ?? ''),
     cycleId: String(r.cycleId ?? ''),
@@ -523,10 +521,7 @@ async function handleIncidents() {
 }
 
 async function handleLogs() {
-  const path = await findLatestJournalFile(`${STRATEGY_ID}-decision-audit`);
-  if (!path) return [];
-
-  const entries = await readJsonlTail(path, 200);
+  const entries = await readJournalEntries(`${STRATEGY_ID}-decision-audit`, 200);
   return entries.reverse().map(e => ({
     recordedAt: e.recordedAt ?? '',
     action: e.action ?? '',
@@ -589,14 +584,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         status: await handleStatus(),
         positions: await handlePositions(),
         pnl: handlePnl(),
+        equity: handleEquity(),
         orders: await handleOrders(),
         fills: await handleFills(),
         incidents: await handleIncidents(),
+        logs: await handleLogs(),
       });
     }
 
     if (url === '/api/positions') {
       return sendJson(res, await handlePositions());
+    }
+
+    if (url === '/api/equity') {
+      return sendJson(res, handleEquity());
     }
 
     if (url === '/api/orders') {

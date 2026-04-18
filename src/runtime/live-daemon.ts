@@ -1,6 +1,7 @@
 import { createDependencyHealthSnapshot, markDependencyFailure, markDependencySuccess } from './dependency-health.ts';
 import { buildHealthReport } from './health-report.ts';
 import { enqueueMirrorCatchupFromJournals } from '../observability/mirror-catchup.ts';
+import { toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
 import type { MirrorRuntime } from '../observability/mirror-runtime.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
@@ -34,6 +35,18 @@ type LiveDaemonOptions = {
 };
 
 const TRANSIENT_CIRCUIT_RECOVERY_SUCCESS_TICKS = 2;
+
+function enqueueRuntimeSnapshot(
+  mirrorRuntime: MirrorRuntime | undefined,
+  report: Parameters<typeof toRuntimeSnapshotEvent>[0],
+  accountState?: LiveAccountState
+) {
+  if (!mirrorRuntime) {
+    return;
+  }
+
+  mirrorRuntime.enqueue(toRuntimeSnapshotEvent(report, accountState));
+}
 
 function isTransientAutoHealableCircuitReason(reason: string) {
   const normalized = reason.trim().toLowerCase();
@@ -783,6 +796,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
+        enqueueRuntimeSnapshot(mirrorRuntime, report, effectiveAccountState);
         await mirrorRuntime?.flushOnce();
 
         if (mirrorRuntime) {
@@ -879,6 +893,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           updatedAt: now
         });
         await runtimeStateStore.writeHealthReport(report);
+        enqueueRuntimeSnapshot(mirrorRuntime, report, effectiveAccountState);
         await mirrorRuntime?.flushOnce();
 
         if (shouldSendAlert({

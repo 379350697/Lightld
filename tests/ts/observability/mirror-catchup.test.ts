@@ -90,7 +90,77 @@ describe('applyCatchupWindow', () => {
       type: 'order',
       priority: 'low'
     });
-    expect(Object.values(cursor.offsets)).toContain(1);
+    expect(Object.values(cursor.offsets).every((value) => value > 0)).toBe(true);
+  });
+
+  it('replays rotated journal history across days instead of only the latest active file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-rotated-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const events: MirrorEvent[] = [];
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), {
+      cycleId: 'cycle-old',
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-old',
+      poolAddress: 'pool-old',
+      outputSol: 0.2,
+      requestedPositionSol: 0.2,
+      quotedOutputSol: 0.2,
+      createdAt: '2026-04-17T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date('2026-04-17T00:00:00.000Z')
+    });
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), {
+      cycleId: 'cycle-new',
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-new',
+      poolAddress: 'pool-new',
+      outputSol: 0.1,
+      requestedPositionSol: 0.1,
+      quotedOutputSol: 0.1,
+      createdAt: '2026-04-18T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date('2026-04-18T00:00:00.000Z')
+    });
+
+    await enqueueMirrorCatchupFromJournals({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(stateRootDir, 'lightld-observability.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 16,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      }
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => (event as Extract<MirrorEvent, { type: 'order' }>).payload.idempotencyKey)).toEqual([
+      'k-old',
+      'k-new'
+    ]);
   });
 
   it('skips catch-up when the mirror is not healthy or the queue is under pressure', async () => {

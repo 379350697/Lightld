@@ -61,6 +61,26 @@ export function resolveActiveJsonlPath(path: string, now = new Date()) {
   return join(dirname(path), `${fileName}-${formatUtcDate(now)}${extension}`);
 }
 
+export async function listRotatedJsonlPaths(path: string): Promise<string[]> {
+  const directory = dirname(path);
+  const pattern = buildRotatedJsonlPattern(path);
+
+  try {
+    const entries = await readdir(directory, { withFileTypes: true });
+
+    return entries
+      .filter((entry) => entry.isFile() && pattern.test(entry.name))
+      .map((entry) => join(directory, entry.name))
+      .sort((left, right) => left.localeCompare(right));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
 export async function cleanupRotatedJsonlFiles(
   path: string,
   options: { retentionDays: number; now?: Date }
@@ -140,4 +160,20 @@ export async function readJsonLines<T>(path: string): Promise<T[]> {
 
     throw error;
   }
+}
+
+export async function readRotatedJsonLines<T>(path: string): Promise<T[]> {
+  const rotatedPaths = await listRotatedJsonlPaths(path);
+
+  if (rotatedPaths.length === 0) {
+    return readJsonLines<T>(path);
+  }
+
+  const nested = await Promise.all(rotatedPaths.map((rotatedPath) => readJsonLines<T>(rotatedPath)));
+  return nested.flat();
+}
+
+export async function readRotatedJsonTail<T>(path: string, maxLines: number): Promise<T[]> {
+  const allLines = await readRotatedJsonLines<T>(path);
+  return allLines.slice(-maxLines);
 }

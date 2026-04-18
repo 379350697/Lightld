@@ -93,7 +93,12 @@ describe('SQLite mirror retention', () => {
           pendingSubmission: false,
           circuitReason: '',
           quoteFailures: 0,
-          reconcileFailures: 0
+          reconcileFailures: 0,
+          walletSol: 1.4,
+          lpValueSol: 0.8,
+          unclaimedFeeSol: 0.05,
+          netWorthSol: 2.25,
+          openPositionCount: 1
         }
       }
     ]);

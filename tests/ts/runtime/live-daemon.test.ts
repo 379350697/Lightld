@@ -1181,7 +1181,91 @@ describe('runLiveDaemon', () => {
     };
 
     expect(events.some((event) => event.type === 'order' && event.priority === 'low')).toBe(true);
-    expect(Object.values(cursor.offsets)).toContain(1);
+    expect(Object.values(cursor.offsets).some((value) => value > 0)).toBe(true);
+  });
+
+  it('emits a runtime snapshot mirror event with wallet and LP equity summary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-equity-snapshot-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const events: MirrorEvent[] = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(root, 'mirror.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 64,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.2,
+          journalSol: 1.2,
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-1',
+              mint: 'mint-1',
+              currentValueSol: 0.7,
+              unclaimedFeeSol: 0.04,
+              hasLiquidity: true
+            },
+            {
+              poolAddress: 'pool-2',
+              positionAddress: 'pos-2',
+              mint: 'mint-2',
+              currentValueSol: 0.3,
+              unclaimedFeeSol: 0.01,
+              hasLiquidity: true
+            }
+          ],
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false },
+          token: { mint: '', symbol: '', inSession: true, hasSolRoute: false },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const snapshotEvent = events.find((event) => event.type === 'runtime_snapshot');
+
+    expect(snapshotEvent).toMatchObject({
+      type: 'runtime_snapshot',
+      payload: {
+        walletSol: 1.2,
+        lpValueSol: 1.0,
+        unclaimedFeeSol: 0.05,
+        netWorthSol: 2.25,
+        openPositionCount: 2
+      }
+    });
   });
 
   it('proves the staged exit chain withdraw-lp -> inventory -> dca-out across ticks', async () => {

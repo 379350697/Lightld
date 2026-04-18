@@ -125,6 +125,11 @@ export function buildDashboardHtml(): string {
     .chart-bar { width: 80%; max-width: 16px; border-radius: 2px; position: absolute; min-height: 2px; }
     .chart-bar.pos { background: var(--green); bottom: 50%; }
     .chart-bar.neg { background: var(--red); top: 50%; }
+    .chart-svg { position: absolute; left: 50px; right: 0; top: 0; bottom: 28px; width: calc(100% - 50px); height: calc(100% - 28px); overflow: visible; }
+    .chart-grid-line { stroke: var(--border-subtle); stroke-width: 1; }
+    .chart-area { fill: rgba(34, 197, 94, 0.12); }
+    .chart-line { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-point { fill: var(--green); }
     .chart-x-label { position: absolute; bottom: -22px; font-size: 9px; font-family: var(--font-mono); color: var(--text-dim); white-space: nowrap; }
     .chart-tooltip { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: #252525; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; font-family: var(--font-mono); color: var(--text-primary); white-space: nowrap; z-index: 10; }
     .chart-bar-wrap:hover .chart-tooltip { display: block; }
@@ -220,16 +225,16 @@ export function buildDashboardHtml(): string {
           <div class="stat-item"><div class="stat-label">LIFECYCLE</div><div class="stat-value" id="stat-lifecycle">--</div></div>
           <div class="stat-item"><div class="stat-label">OPEN POSITIONS</div><div class="stat-value" id="stat-open-count">0</div></div>
           <div class="stat-item"><div class="stat-label">UNCLAIMED FEES</div><div class="stat-value" id="stat-fee-earned">0.0000</div></div>
-          <div class="stat-item"><div class="stat-label">TOTAL PNL</div><div class="stat-value" id="stat-total-profit">0.0000</div></div>
-          <div class="stat-item"><div class="stat-label">MONTH PNL</div><div class="stat-value" id="stat-monthly-profit">0.0000</div></div>
+          <div class="stat-item"><div class="stat-label">TOTAL FLOW</div><div class="stat-value" id="stat-total-profit">0.0000</div></div>
+          <div class="stat-item"><div class="stat-label">MONTH FLOW</div><div class="stat-value" id="stat-monthly-profit">0.0000</div></div>
           <div class="stat-item" style="grid-column: span 2;"><div class="stat-label">CIRCUIT REASON</div><div class="stat-value" id="stat-circuit" style="font-size:14px;">--</div></div>
         </div>
       </div>
       <div class="portfolio-chart">
         <div class="chart-header">
-          <div class="chart-title">PROFIT HISTORY</div>
+          <div class="chart-title">NET WORTH HISTORY</div>
           <div class="chart-controls">
-            <div class="chart-filter-group"><button class="chart-filter-btn active">Real</button></div>
+            <div class="chart-filter-group"><button class="chart-filter-btn active">Equity</button></div>
           </div>
         </div>
         <div class="chart-body" id="pnl-chart">
@@ -304,8 +309,8 @@ export function buildDashboardHtml(): string {
       return Math.floor(hr / 24) + ' days ago';
     }
     function fetchJson(url) { return fetch(url).then(function(res) { if (!res.ok) return null; return res.json(); }).catch(function() { return null; }); }
-    function renderChart(dailyPnl) {
-      var data = Array.isArray(dailyPnl) ? dailyPnl : [];
+    function renderChart(dailyEquity) {
+      var data = Array.isArray(dailyEquity) ? dailyEquity : [];
       var container = $('#pnl-chart');
       var watermark = container.querySelector('.chart-watermark');
       container.innerHTML = '';
@@ -319,25 +324,85 @@ export function buildDashboardHtml(): string {
         empty.style.alignItems = 'center';
         empty.style.justifyContent = 'center';
         empty.style.paddingBottom = '28px';
-        empty.textContent = 'No realized PnL data yet';
+        empty.textContent = 'No net worth history yet';
         container.appendChild(empty);
         return;
       }
-      var maxAbs = Math.max.apply(null, data.map(function(d) { return Math.abs(Number(d.pnl) || 0); }).concat([0.001]));
+      var values = data.map(function(d) { return Number(d.netWorthSol) || 0; });
+      var minValue = Math.min.apply(null, values);
+      var maxValue = Math.max.apply(null, values);
+      if (maxValue === minValue) {
+        var padding = maxValue === 0 ? 0.1 : Math.abs(maxValue) * 0.05;
+        maxValue += padding;
+        minValue -= padding;
+      }
       var yAxis = document.createElement('div');
       yAxis.className = 'chart-y-axis';
-      [maxAbs, maxAbs/2, 0, -maxAbs/2, -maxAbs].forEach(function(v) {
+      [maxValue, (maxValue + minValue) / 2, minValue].forEach(function(v) {
         var el = document.createElement('div'); el.className = 'chart-y-label'; el.textContent = v.toFixed(4); yAxis.appendChild(el);
       });
       container.appendChild(yAxis);
-      var zeroLine = document.createElement('div'); zeroLine.className = 'chart-zero-line'; zeroLine.style.top = '50%'; container.appendChild(zeroLine);
+
+      var svgNS = 'http://www.w3.org/2000/svg';
+      var svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('class', 'chart-svg');
+      svg.setAttribute('viewBox', '0 0 1000 220');
+      svg.setAttribute('preserveAspectRatio', 'none');
+
+      [0, 0.5, 1].forEach(function(offset) {
+        var line = document.createElementNS(svgNS, 'line');
+        var y = 12 + (180 * offset);
+        line.setAttribute('x1', '0');
+        line.setAttribute('y1', String(y));
+        line.setAttribute('x2', '1000');
+        line.setAttribute('y2', String(y));
+        line.setAttribute('class', 'chart-grid-line');
+        svg.appendChild(line);
+      });
+
+      var points = data.map(function(d, i) {
+        var x = data.length === 1 ? 500 : (i / (data.length - 1)) * 1000;
+        var value = Number(d.netWorthSol) || 0;
+        var y = 12 + ((maxValue - value) / (maxValue - minValue)) * 180;
+        return { x: x, y: y, date: d.date || '--', value: value };
+      });
+
+      var linePath = points.map(function(point, index) {
+        return (index === 0 ? 'M ' : 'L ') + point.x.toFixed(2) + ' ' + point.y.toFixed(2);
+      }).join(' ');
+      var areaPath = 'M ' + points[0].x.toFixed(2) + ' 192 '
+        + points.map(function(point) {
+          return 'L ' + point.x.toFixed(2) + ' ' + point.y.toFixed(2);
+        }).join(' ')
+        + ' L ' + points[points.length - 1].x.toFixed(2) + ' 192 Z';
+
+      var area = document.createElementNS(svgNS, 'path');
+      area.setAttribute('class', 'chart-area');
+      area.setAttribute('d', areaPath);
+      svg.appendChild(area);
+
+      var line = document.createElementNS(svgNS, 'path');
+      line.setAttribute('class', 'chart-line');
+      line.setAttribute('d', linePath);
+      svg.appendChild(line);
+
+      points.forEach(function(point, i) {
+        var dot = document.createElementNS(svgNS, 'circle');
+        dot.setAttribute('class', 'chart-point');
+        dot.setAttribute('cx', point.x.toFixed(2));
+        dot.setAttribute('cy', point.y.toFixed(2));
+        dot.setAttribute('r', i === points.length - 1 ? '4' : '3');
+        var title = document.createElementNS(svgNS, 'title');
+        title.textContent = point.date + ': ' + point.value.toFixed(4) + ' SOL';
+        dot.appendChild(title);
+        svg.appendChild(dot);
+      });
+
+      container.appendChild(svg);
+
       data.forEach(function(d, i) {
-        var pnl = Number(d.pnl) || 0;
-        var pct = Math.max((Math.abs(pnl) / maxAbs) * 45, 1);
         var wrap = document.createElement('div'); wrap.className = 'chart-bar-wrap';
-        var bar = document.createElement('div'); bar.className = 'chart-bar ' + (pnl >= 0 ? 'pos' : 'neg'); bar.style.height = pct + '%';
-        var tip = document.createElement('div'); tip.className = 'chart-tooltip'; tip.textContent = (d.date || '--') + ': ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL';
-        wrap.appendChild(bar); wrap.appendChild(tip);
+        wrap.style.pointerEvents = 'none';
         if (i % 7 === 0 || i === data.length - 1) { var xl = document.createElement('div'); xl.className = 'chart-x-label'; xl.textContent = String(d.date || '').slice(5); wrap.appendChild(xl); }
         container.appendChild(wrap);
       });
@@ -401,12 +466,13 @@ export function buildDashboardHtml(): string {
       navigator.clipboard.writeText(addr).then(function() { $('#copy-btn').textContent = '✓ Copied'; setTimeout(function() { $('#copy-btn').textContent = '📋 Copy'; }, 1200); });
     });
     function refreshAll() {
-      Promise.all([fetchJson('/api/overview'), fetchJson('/api/pnl'), fetchJson('/api/logs')]).then(function(results) {
+      Promise.all([fetchJson('/api/overview')]).then(function(results) {
         var overview = results[0] || {};
         var status = overview.status || null;
         var positions = overview.positions || [];
-        var pnl = results[1] || {};
-        var logs = results[2] || [];
+        var pnl = overview.pnl || {};
+        var equity = overview.equity || {};
+        var logs = overview.logs || [];
         if (status) {
           var addr = status.activePoolAddress || status.activeMint || '--';
           $('#wallet-full-addr').textContent = truncAddr(addr);
@@ -422,14 +488,18 @@ export function buildDashboardHtml(): string {
           $('#stat-circuit').textContent = status.circuitReason || '--';
           var walletSol = typeof status.walletSol === 'number' ? status.walletSol : 0;
           var openValue = Array.isArray(positions) ? positions.reduce(function(sum, p) { return sum + (Number(p.currentValueSol) || 0); }, 0) : 0;
-          $('#net-worth-num').textContent = (walletSol + openValue).toFixed(4) + ' ';
+          var openFees = Array.isArray(positions) ? positions.reduce(function(sum, p) { return sum + (Number(p.unclaimedFeeSol) || 0); }, 0) : 0;
+          $('#net-worth-num').textContent = (walletSol + openValue + openFees).toFixed(4) + ' ';
           $('#last-update').textContent = timeAgo(status.updatedAt || status.lastSuccessfulTickAt || '');
         }
-        $('#stat-total-profit').textContent = fmtSol(Number(pnl.totalPnl));
-        $('#stat-monthly-profit').textContent = fmtSol(Number(pnl.monthPnl));
-        $('#stat-total-profit').className = 'stat-value ' + ((Number(pnl.totalPnl) || 0) >= 0 ? 'green' : 'red');
-        $('#stat-monthly-profit').className = 'stat-value ' + ((Number(pnl.monthPnl) || 0) >= 0 ? 'green' : 'red');
-        renderChart(Array.isArray(pnl.dailyPnl) ? pnl.dailyPnl : []);
+        var totalCashflow = Number(pnl.totalCashflowSol != null ? pnl.totalCashflowSol : pnl.totalPnl);
+        var monthCashflow = Number(pnl.monthCashflowSol != null ? pnl.monthCashflowSol : pnl.monthPnl);
+        var dailyEquity = Array.isArray(equity.dailyEquity) ? equity.dailyEquity : [];
+        $('#stat-total-profit').textContent = fmtSol(totalCashflow);
+        $('#stat-monthly-profit').textContent = fmtSol(monthCashflow);
+        $('#stat-total-profit').className = 'stat-value ' + (totalCashflow >= 0 ? 'green' : 'red');
+        $('#stat-monthly-profit').className = 'stat-value ' + (monthCashflow >= 0 ? 'green' : 'red');
+        renderChart(dailyEquity);
         renderOpenPositions(Array.isArray(positions) ? positions : []);
         renderLogs(Array.isArray(logs) ? logs : []);
       });

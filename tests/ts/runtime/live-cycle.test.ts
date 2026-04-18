@@ -1,8 +1,9 @@
 import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { readJsonLines } from '../../../src/journals/jsonl-writer';
+import { appendJsonLine, readJsonLines } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
@@ -397,5 +398,112 @@ describe('runLiveCycle', () => {
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toBe('lp-stop-loss');
+  });
+
+  it('prefers an older journal-backed LP exit over a newer bin-depletion exit', async () => {
+    const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'old-open',
+      mint: 'mint-old',
+      side: 'add-lp',
+      amount: 1,
+      recordedAt: '2026-04-17T01:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date('2026-04-17T01:00:00.000Z')
+    });
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'new-open',
+      mint: 'mint-new',
+      side: 'add-lp',
+      amount: 1,
+      recordedAt: '2026-04-18T09:30:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date('2026-04-18T09:30:00.000Z')
+    });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-new',
+            positionAddress: 'pos-new',
+            mint: 'mint-new',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 165,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 0.97,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: true
+          },
+          {
+            poolAddress: 'pool-old',
+            positionAddress: 'pos-old',
+            mint: 'mint-old',
+            lowerBinId: 200,
+            upperBinId: 268,
+            activeBinId: 210,
+            solSide: 'tokenX',
+            solDepletedBins: 10,
+            currentValueSol: 0.72,
+            unclaimedFeeSol: 0.03,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-new',
+            positionAddress: 'pos-new',
+            mint: 'mint-new',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 165,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 0.97,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: true
+          },
+          {
+            poolAddress: 'pool-old',
+            positionAddress: 'pos-old',
+            mint: 'mint-old',
+            lowerBinId: 200,
+            upperBinId: 268,
+            activeBinId: 210,
+            solSide: 'tokenX',
+            solDepletedBins: 10,
+            currentValueSol: 0.72,
+            unclaimedFeeSol: 0.03,
+            hasLiquidity: true
+          }
+        ],
+        fills: []
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toMatch(/lp-stop-loss|max-hold-with-lp-position/);
+    expect(result.orderIntent?.poolAddress).toBe('pool-old');
   });
 });

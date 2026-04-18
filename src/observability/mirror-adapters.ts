@@ -1,4 +1,6 @@
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
+import { summarizeAccountEquity } from '../runtime/account-equity.ts';
+import type { LiveAccountState } from '../runtime/live-account-provider.ts';
 import type { HealthReport, PendingFinality, RuntimeMode } from '../runtime/state-types.ts';
 import type {
   CycleRunMirrorEvent,
@@ -14,7 +16,12 @@ import type {
   RuntimeSnapshotMirrorEvent
 } from './mirror-events.ts';
 
-export function toRuntimeSnapshotEvent(report: HealthReport): RuntimeSnapshotMirrorEvent {
+export function toRuntimeSnapshotEvent(
+  report: HealthReport,
+  accountState?: Pick<LiveAccountState, 'walletSol' | 'walletLpPositions'> | null
+): RuntimeSnapshotMirrorEvent {
+  const equity = summarizeAccountEquity(accountState);
+
   return {
     type: 'runtime_snapshot',
     priority: 'high',
@@ -26,7 +33,12 @@ export function toRuntimeSnapshotEvent(report: HealthReport): RuntimeSnapshotMir
       pendingSubmission: report.pendingSubmission,
       circuitReason: report.circuitReason,
       quoteFailures: report.dependencyHealth.quoteFailures,
-      reconcileFailures: report.dependencyHealth.reconcileFailures
+      reconcileFailures: report.dependencyHealth.reconcileFailures,
+      walletSol: equity.walletSol,
+      lpValueSol: equity.lpValueSol,
+      unclaimedFeeSol: equity.unclaimedFeeSol,
+      netWorthSol: equity.netWorthSol,
+      openPositionCount: equity.openPositionCount
     }
   };
 }

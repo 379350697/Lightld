@@ -42,6 +42,7 @@ export const SQLITE_MIRROR_SCHEMA = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS idx_orders_submission_id ON orders (submission_id, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON orders (updated_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS fills (
       fill_id TEXT PRIMARY KEY,
@@ -57,6 +58,7 @@ export const SQLITE_MIRROR_SCHEMA = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS idx_fills_submission_id ON fills (submission_id, recorded_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_fills_recorded_at ON fills (recorded_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS reconciliations (
       cycle_id TEXT PRIMARY KEY,
@@ -70,6 +72,7 @@ export const SQLITE_MIRROR_SCHEMA = [
       raw_json TEXT NOT NULL
     )
   `,
+  `CREATE INDEX IF NOT EXISTS idx_reconciliations_recorded_at ON reconciliations (recorded_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS incidents (
       incident_id TEXT PRIMARY KEY,
@@ -94,7 +97,12 @@ export const SQLITE_MIRROR_SCHEMA = [
       pending_submission INTEGER NOT NULL,
       circuit_reason TEXT NOT NULL,
       quote_failures INTEGER NOT NULL,
-      reconcile_failures INTEGER NOT NULL
+      reconcile_failures INTEGER NOT NULL,
+      wallet_sol REAL,
+      lp_value_sol REAL,
+      unclaimed_fee_sol REAL,
+      net_worth_sol REAL,
+      open_position_count INTEGER
     )
   `
 ] as const;

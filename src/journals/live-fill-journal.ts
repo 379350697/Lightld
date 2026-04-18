@@ -2,6 +2,7 @@ import {
   appendJsonLine,
   type JsonlFileOptions,
   readJsonLines,
+  readRotatedJsonLines,
   resolveActiveJsonlPath
 } from './jsonl-writer.ts';
 
@@ -31,6 +32,10 @@ export class LiveFillJournal<T extends object = object> {
   }
 
   async readAll(): Promise<T[]> {
+    if (this.options?.rotateDaily) {
+      return readRotatedJsonLines<T>(this.basePath);
+    }
+
     return readJsonLines<T>(this.path);
   }
 }

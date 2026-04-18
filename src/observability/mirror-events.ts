@@ -89,6 +89,11 @@ export type RuntimeSnapshotMirrorPayload = {
   circuitReason: string;
   quoteFailures: number;
   reconcileFailures: number;
+  walletSol: number | null;
+  lpValueSol: number | null;
+  unclaimedFeeSol: number | null;
+  netWorthSol: number | null;
+  openPositionCount: number | null;
 };
 
 type MirrorEventBase<TType extends string, TPayload> = {
