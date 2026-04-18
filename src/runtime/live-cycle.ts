@@ -229,6 +229,86 @@ function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string,
   return 0;
 }
 
+function buildLpExitSnapshotFromPosition(input: {
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  holdTimeMs: number;
+}) {
+  return {
+    inSession: true,
+    hasInventory: true,
+    hasLpPosition: true,
+    lpCurrentValueSol: input.position.currentValueSol,
+    lpUnclaimedFeeSol: input.position.unclaimedFeeSol,
+    lpSolDepletedBins: input.position.solDepletedBins,
+    lpActiveBinStatus: typeof input.position.activeBinId === 'number'
+      && typeof input.position.lowerBinId === 'number'
+      && typeof input.position.upperBinId === 'number'
+      ? (input.position.activeBinId >= input.position.lowerBinId && input.position.activeBinId <= input.position.upperBinId ? 'in-range' : 'out-of-range')
+      : undefined,
+    holdTimeMs: input.holdTimeMs,
+    pendingConfirmationStatus: 'confirmed' as const,
+    lifecycleState: 'open'
+  };
+}
+
+function selectTriggeredLpExit(input: {
+  accountState?: LiveAccountState;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+  nowMs: number;
+}) {
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => (position.hasLiquidity ?? true));
+
+  for (const position of positions) {
+    const mint = position.mint;
+    if (!mint) {
+      continue;
+    }
+
+    const openFill = input.accountState?.fills
+      ?.filter((fill) => fill.mint === mint && (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+    const entrySol = typeof openFill?.amount === 'number' && openFill.amount > 0 ? openFill.amount : undefined;
+    const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
+    const unclaimedFeeSol = typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : 0;
+    const holdTimeMs = openFill?.recordedAt ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt)) : 0;
+    const snapshot: any = buildLpExitSnapshotFromPosition({ position, holdTimeMs });
+
+    if (typeof entrySol === 'number' && typeof currentValueSol === 'number') {
+      snapshot.lpNetPnlPct = evaluateLpPnl(entrySol, currentValueSol, unclaimedFeeSol, {
+        stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
+        takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
+      }).unrealizedPct;
+    }
+
+    const decision = runEngineCycle({
+      engine: 'new-token',
+      snapshot,
+      config: {
+        maxHoldHours: input.config.live.maxHoldHours ?? 18,
+        requireSolRoute: true,
+        minLiquidityUsd: 0,
+        lpEnabled: input.config.lpConfig?.enabled ?? false,
+        lpStopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct,
+        lpTakeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct,
+        lpMinHoldMinutesBeforeTakeProfit: 5,
+        lpSolDepletionExitBins: input.config.lpConfig?.solDepletionExitBins,
+        lpClaimFeeThresholdUsd: input.config.lpConfig?.claimFeeThresholdUsd,
+        lpRebalanceOnOutOfRange: input.config.lpConfig?.rebalanceOnOutOfRange ?? false,
+        lpMaxImpermanentLossPct: input.config.lpConfig?.maxImpermanentLossPct
+      }
+    });
+
+    if (decision.action === 'withdraw-lp' || decision.action === 'claim-fee' || decision.action === 'rebalance-lp') {
+      return { position, decision, entrySol, snapshot };
+    }
+  }
+
+  return null;
+}
+
 function buildEngineSnapshot(
   poolClass: 'new-token' | 'large-pool',
   context: ReturnType<typeof buildDecisionContext>
@@ -797,7 +877,25 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     (snapshot as any).pendingConfirmationStatus = pendingSubmission?.confirmationStatus;
   }
 
-  const activeMint = firstString(logContext.tokenMint, context.token.mint);
+  const multiLpExit = config.poolClass === 'new-token'
+    ? selectTriggeredLpExit({ accountState, config, nowMs: Date.now() })
+    : null;
+  if (multiLpExit && multiLpExit.position.mint) {
+    context.token.mint = multiLpExit.position.mint;
+    context.pool.address = multiLpExit.position.poolAddress;
+    context.token.symbol = firstString(context.token.symbol, multiLpExit.position.mint);
+    context.trader.hasLpPosition = true;
+    context.trader.hasInventory = true;
+    context.trader.lpCurrentValueSol = multiLpExit.position.currentValueSol;
+    context.trader.lpUnclaimedFeeSol = multiLpExit.position.unclaimedFeeSol;
+    context.trader.lpSolDepletedBins = multiLpExit.position.solDepletedBins;
+  }
+
+  const activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
+  if (multiLpExit?.position.poolAddress) {
+    logContext.poolAddress = multiLpExit.position.poolAddress;
+    logContext.tokenMint = multiLpExit.position.mint;
+  }
 
   if (
     currentLifecycleState === 'open_pending' &&
@@ -913,7 +1011,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       (updatedSnapshot as any).lifecycleState = 'inventory_exit_ready';
     }
   }
-  const engineResult = runEngineCycle({
+  const engineResult = multiLpExit?.decision ?? runEngineCycle({
     engine: config.poolClass,
     snapshot: updatedSnapshot,
     config: {
