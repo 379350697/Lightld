@@ -16,6 +16,7 @@ import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
+import { isManageableLpPosition } from './lp-position-visibility.ts';
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -187,7 +188,7 @@ function hasHotLpSignal(input: {
     && (lpNetPnlPct >= 25 || lpNetPnlPct <= -15);
   const hotBinFromContext = typeof lpSolDepletedBins === 'number' && lpSolDepletedBins >= 63;
   const hotBinFromAccount = accountLpPositions.some((position) =>
-    (position.hasLiquidity ?? true) && typeof position.solDepletedBins === 'number' && position.solDepletedBins >= 63
+    isManageableLpPosition(position) && typeof position.solDepletedBins === 'number' && position.solDepletedBins >= 63
   );
 
   return hotPnl || hotBinFromContext || hotBinFromAccount;
@@ -356,7 +357,7 @@ function hasOpenInventory(accountState?: LiveAccountState) {
       && token.mint !== 'So11111111111111111111111111111111111111112'
       && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') ||
     accountState?.walletLpPositions?.some((position) =>
-      (position.hasLiquidity ?? true)
+      isManageableLpPosition(position)
       &&
       position.mint !== 'So11111111111111111111111111111111111111112'
       && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
@@ -379,7 +380,7 @@ function inferOpenPositionMetadata(input: {
   }
 
   const lpPosition = (input.accountState.walletLpPositions ?? []).find((position) => {
-    if (!(position.hasLiquidity ?? true)) {
+    if (!isManageableLpPosition(position)) {
       return false;
     }
 

@@ -72,6 +72,7 @@ import {
   runAccountReconciliationGate,
   runPendingRecoveryGate
 } from './live-cycle-preflight.ts';
+import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
 
@@ -89,10 +90,10 @@ function hasNonStableInventory(accountState: LiveAccountState | undefined) {
   return Boolean(
     accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)) ||
     accountState?.walletLpPositions?.some((position) =>
-      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && (position.hasLiquidity ?? true)
+      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && isManageableLpPosition(position)
     ) ||
     accountState?.journalLpPositions?.some((position) =>
-      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && (position.hasLiquidity ?? true)
+      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && isManageableLpPosition(position)
     )
   );
 }
@@ -323,7 +324,7 @@ function dedupeActiveLpPositions(accountState?: LiveAccountState) {
     ...(accountState?.walletLpPositions ?? []),
     ...(accountState?.journalLpPositions ?? [])
   ]) {
-    if (!(position.hasLiquidity ?? true)) {
+    if (!isManageableLpPosition(position)) {
       continue;
     }
 

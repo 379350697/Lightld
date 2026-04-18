@@ -100,10 +100,10 @@ describe('createLocalLiveExecutionServer', () => {
       walletSol: 1.25,
       journalSol: 1.25,
       walletLpPositions: [
-        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe', positionStatus: 'residual' }
       ],
       journalLpPositions: [
-        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe', positionStatus: 'residual' }
       ],
       walletTokens: [
         { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }
@@ -166,10 +166,10 @@ describe('createLocalLiveExecutionServer', () => {
       walletSol: 1.25,
       journalSol: 1.25,
       walletLpPositions: [
-        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe', positionStatus: 'residual' }
       ],
       journalLpPositions: [
-        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe' }
+        { poolAddress: 'pool-1', positionAddress: 'pos-1', mint: 'mint-safe', positionStatus: 'residual' }
       ],
       walletTokens: [
         { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }

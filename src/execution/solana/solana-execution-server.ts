@@ -363,6 +363,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               solDepletedBins: number;
               currentValueSol?: number;
               unclaimedFeeSol?: number;
+              positionStatus: 'active' | 'residual' | 'empty';
               hasLiquidity: boolean;
               hasClaimableFees: boolean;
             }> = [];
@@ -383,7 +384,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             try {
               if (options.dlmmClient) {
-                walletLpPositions = await options.dlmmClient.getPositionSnapshots(keypair.publicKey);
+                walletLpPositions = (await options.dlmmClient.getPositionSnapshots(keypair.publicKey))
+                  .filter((position) => position.positionStatus !== 'empty');
               }
             } catch {
               // Meteora positions query may fail on free RPC

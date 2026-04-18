@@ -1,4 +1,5 @@
 import type { LiveAccountState } from './live-account-provider.ts';
+import { isManageableLpPosition } from './lp-position-visibility.ts';
 
 export type AccountEquitySummary = {
   walletSol: number | null;
@@ -21,7 +22,7 @@ export function summarizeAccountEquity(
     };
   }
 
-  const activePositions = (accountState.walletLpPositions ?? []).filter((position) => position.hasLiquidity ?? true);
+  const activePositions = (accountState.walletLpPositions ?? []).filter((position) => isManageableLpPosition(position));
   let lpValueSol = 0;
   let unclaimedFeeSol = 0;
 

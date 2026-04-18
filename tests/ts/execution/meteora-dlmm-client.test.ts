@@ -160,7 +160,7 @@ describe('MeteoraDlmmClient', () => {
     expect(transactions).toEqual([{ id: 'claim-1' }, { id: 'claim-2' }]);
   });
 
-  it('returns rich LP snapshots and marks empty positions separately from funded ones', async () => {
+  it('returns rich LP snapshots and classifies active, residual, and empty positions separately', async () => {
     const poolAddress = makePoolAddress(80).toBase58();
     const fundedPosition = {
       publicKey: makePoolAddress(81),
@@ -179,6 +179,20 @@ describe('MeteoraDlmmClient', () => {
         ]
       }
     };
+    const residualPosition = {
+      publicKey: makePoolAddress(83),
+      positionData: {
+        lowerBinId: 300,
+        upperBinId: 368,
+        feeX: { isZero: () => false },
+        feeY: { isZero: () => true },
+        totalXAmount: '200000000',
+        totalYAmount: '0',
+        feeXExcludeTransferFee: '10000000',
+        feeYExcludeTransferFee: '0',
+        positionBinData: []
+      }
+    };
     const emptyPosition = {
       publicKey: makePoolAddress(82),
       positionData: {
@@ -194,7 +208,11 @@ describe('MeteoraDlmmClient', () => {
       [poolAddress, {
         tokenX: { mint: { decimals: 9 } },
         tokenY: { mint: { decimals: 6 } },
-        lbPairPositionsData: [{ publicKey: fundedPosition.publicKey }, { publicKey: emptyPosition.publicKey }]
+        lbPairPositionsData: [
+          { publicKey: fundedPosition.publicKey },
+          { publicKey: residualPosition.publicKey },
+          { publicKey: emptyPosition.publicKey }
+        ]
       }]
     ]));
     dlmmPkg.create = vi.fn(async () => ({
@@ -202,7 +220,7 @@ describe('MeteoraDlmmClient', () => {
       tokenY: { publicKey: makePoolAddress(90) },
       getPositionsByUserAndLbPair: async () => ({
         activeBin: { binId: 167, price: '1' },
-        userPositions: [fundedPosition, emptyPosition]
+        userPositions: [fundedPosition, residualPosition, emptyPosition]
       })
     }));
 
@@ -218,10 +236,25 @@ describe('MeteoraDlmmClient', () => {
         activeBinId: 167,
         binCount: 69,
         fundedBinCount: 2,
+        positionStatus: 'active',
         hasLiquidity: true,
         hasClaimableFees: true,
         solSide: 'tokenX',
         solDepletedBins: 67
+      }),
+      expect.objectContaining({
+        poolAddress,
+        positionAddress: residualPosition.publicKey.toBase58(),
+        lowerBinId: 300,
+        upperBinId: 368,
+        activeBinId: 167,
+        binCount: 69,
+        fundedBinCount: 0,
+        positionStatus: 'residual',
+        hasLiquidity: false,
+        hasClaimableFees: true,
+        solSide: 'tokenX',
+        solDepletedBins: 0
       }),
       expect.objectContaining({
         poolAddress,
@@ -231,6 +264,7 @@ describe('MeteoraDlmmClient', () => {
         activeBinId: 167,
         binCount: 69,
         fundedBinCount: 0,
+        positionStatus: 'empty',
         hasLiquidity: false,
         hasClaimableFees: false,
         solSide: 'tokenX',
@@ -239,6 +273,8 @@ describe('MeteoraDlmmClient', () => {
     ]);
     expect(snapshots[0]?.currentValueSol).toBeCloseTo(1.25, 10);
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.15, 10);
+    expect(snapshots[1]?.currentValueSol).toBeCloseTo(0.2, 10);
+    expect(snapshots[1]?.unclaimedFeeSol).toBeCloseTo(0.01, 10);
   });
 
   it('computes SOL depletion from the upper edge when SOL is token Y', async () => {

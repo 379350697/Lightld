@@ -37,6 +37,7 @@ export type MeteoraLpPositionSnapshot = {
   lowerPrice?: number;
   upperPrice?: number;
   priceProgress?: number;
+  positionStatus: 'active' | 'residual' | 'empty';
   hasLiquidity: boolean;
   hasClaimableFees: boolean;
 };
@@ -88,18 +89,29 @@ function summarizePosition(positionInfo: any) {
     toNumericValue(bin?.positionLiquidityShare) > 0
   ).length;
 
+  const hasClaimableFees =
+    !isZeroLike(positionData.feeX) ||
+    !isZeroLike(positionData.feeY) ||
+    positionBinData.some((bin: any) =>
+      toNumericValue(bin?.positionFeeXAmount) > 0 || toNumericValue(bin?.positionFeeYAmount) > 0
+    );
+
+  const hasResidualValue =
+    toNumericValue(positionData.totalXAmountExcludeTransferFee ?? positionData.totalXAmount) > 0 ||
+    toNumericValue(positionData.totalYAmountExcludeTransferFee ?? positionData.totalYAmount) > 0;
+
+  const positionStatus: MeteoraLpPositionSnapshot['positionStatus'] = fundedBinCount > 0
+    ? 'active'
+    : (hasClaimableFees || hasResidualValue ? 'residual' : 'empty');
+
   return {
     lowerBinId,
     upperBinId,
     binCount: Math.max(0, upperBinId - lowerBinId + 1),
     fundedBinCount,
+    positionStatus,
     hasLiquidity: fundedBinCount > 0,
-    hasClaimableFees:
-      !isZeroLike(positionData.feeX) ||
-      !isZeroLike(positionData.feeY) ||
-      positionBinData.some((bin: any) =>
-        toNumericValue(bin?.positionFeeXAmount) > 0 || toNumericValue(bin?.positionFeeYAmount) > 0
-      )
+    hasClaimableFees
   };
 }
 
@@ -474,6 +486,7 @@ export class MeteoraDlmmClient {
             lowerPrice,
             upperPrice,
             priceProgress: computePriceProgress(currentPrice, lowerPrice, upperPrice),
+            positionStatus: summary.positionStatus,
             hasLiquidity: summary.hasLiquidity,
             hasClaimableFees: summary.hasClaimableFees
           });

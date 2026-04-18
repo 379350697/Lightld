@@ -1,6 +1,8 @@
 import type { FetchImpl } from '../ingest/shared/http-client.ts';
 import { executeWithRetry } from '../execution/request-resilience.ts';
 
+import type { RuntimeLpPositionStatus } from './lp-position-visibility.ts';
+
 export type LiveAccountState = {
   walletSol: number;
   journalSol: number;
@@ -21,6 +23,7 @@ export type LiveAccountState = {
     lowerPrice?: number;
     upperPrice?: number;
     priceProgress?: number;
+    positionStatus?: RuntimeLpPositionStatus;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
   }>;
@@ -41,6 +44,7 @@ export type LiveAccountState = {
     lowerPrice?: number;
     upperPrice?: number;
     priceProgress?: number;
+    positionStatus?: RuntimeLpPositionStatus;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
   }>;

@@ -64,6 +64,7 @@ const AccountStateSchema = z.object({
     lowerPrice: z.number().finite().positive().optional(),
     upperPrice: z.number().finite().positive().optional(),
     priceProgress: z.number().finite().min(0).max(1).optional(),
+    positionStatus: z.enum(['active', 'residual', 'empty']).optional(),
     hasLiquidity: z.boolean().optional(),
     hasClaimableFees: z.boolean().optional()
   })).optional(),
@@ -84,6 +85,7 @@ const AccountStateSchema = z.object({
     lowerPrice: z.number().finite().positive().optional(),
     upperPrice: z.number().finite().positive().optional(),
     priceProgress: z.number().finite().min(0).max(1).optional(),
+    positionStatus: z.enum(['active', 'residual', 'empty']).optional(),
     hasLiquidity: z.boolean().optional(),
     hasClaimableFees: z.boolean().optional()
   })).optional(),

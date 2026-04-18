@@ -506,4 +506,67 @@ describe('runLiveCycle', () => {
     expect(result.audit.reason).toMatch(/lp-stop-loss|max-hold-with-lp-position/);
     expect(result.orderIntent?.poolAddress).toBe('pool-old');
   });
+
+  it('keeps residual LP positions eligible for bin-based exits even when funded bins are zero', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-residual',
+            positionAddress: 'pos-residual',
+            mint: 'mint-residual',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 165,
+            fundedBinCount: 0,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 0.04,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: false,
+            hasClaimableFees: true,
+            positionStatus: 'residual'
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-residual',
+            positionAddress: 'pos-residual',
+            mint: 'mint-residual',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 165,
+            fundedBinCount: 0,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 0.04,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: false,
+            hasClaimableFees: true,
+            positionStatus: 'residual'
+          }
+        ],
+        fills: []
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toContain('lp-sol-nearly-depleted');
+    expect(result.orderIntent?.poolAddress).toBe('pool-residual');
+  });
 });
