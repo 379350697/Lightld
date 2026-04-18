@@ -5,6 +5,7 @@ import type { EvolutionStrategyId } from './types.ts';
 export type EvolutionPaths = {
   rootDir: string;
   candidateScansPath: string;
+  poolDecisionSamplesPath: string;
   watchlistSnapshotsPath: string;
   watchlistTrackedTokensPath: string;
   positionOutcomesPath: string;
@@ -28,6 +29,7 @@ export function resolveEvolutionPaths(
   return {
     rootDir,
     candidateScansPath: join(rootDir, 'candidate-scans.jsonl'),
+    poolDecisionSamplesPath: join(rootDir, 'pool-decision-samples.jsonl'),
     watchlistSnapshotsPath: join(rootDir, 'watchlist-snapshots.jsonl'),
     watchlistTrackedTokensPath: join(rootDir, 'watchlist-tracked-tokens.json'),
     positionOutcomesPath: join(rootDir, 'position-outcomes.jsonl'),

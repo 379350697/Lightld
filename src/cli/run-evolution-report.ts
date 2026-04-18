@@ -9,10 +9,12 @@ import {
   ParameterProposalRecordArraySchema,
   analyzeFilterEvidence,
   analyzeOutcomeEvidence,
+  buildPoolDecisionSamples,
   buildEvolutionAnalysisContext,
   generatePatchDraft,
   type EvolutionEvidenceSnapshot,
   type ParameterProposalRecord,
+  PoolDecisionSampleStore,
   generateEvolutionProposals,
   loadEvolutionEvidence,
   renderEvolutionReport,
@@ -167,7 +169,10 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
     systemProposals: proposals.systemProposals,
     noActionReasons: proposals.noActionReasons
   });
+  const poolDecisionSamples = buildPoolDecisionSamples(evidence);
+  const poolDecisionSampleStore = new PoolDecisionSampleStore(paths.poolDecisionSamplesPath);
 
+  await poolDecisionSampleStore.writeAll(poolDecisionSamples);
   await writeJsonAtomically(paths.evidenceSnapshotPath, evidenceSnapshot);
   await writeJsonAtomically(paths.reportJsonPath, rendered.json);
   await writeFile(paths.reportMarkdownPath, `${rendered.markdown}\n`, 'utf8');

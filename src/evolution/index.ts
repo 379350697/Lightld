@@ -2,7 +2,12 @@ export { resolveEvolutionPaths, type EvolutionPaths } from './paths.ts';
 export { CandidateSampleStore } from './candidate-sample-store.ts';
 export { CandidateScanStore } from './candidate-scan-store.ts';
 export { LiveCycleOutcomeStore } from './live-cycle-outcome-store.ts';
+export { PoolDecisionSampleStore } from './pool-decision-sample-store.ts';
 export { WatchlistStore } from './watchlist-store.ts';
+export {
+  buildPoolDecisionSamples,
+  type BuildPoolDecisionSamplesInput
+} from './pool-decision-sample-builder.ts';
 export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
 export {
   analyzeFilterEvidence,
@@ -54,6 +59,11 @@ export type {
   LiveCycleParameterSnapshot,
   OutcomeReviewRecord,
   OutcomeReviewStatus,
+  PoolDecisionSampleCounterfactual,
+  PoolDecisionSampleDecision,
+  PoolDecisionSampleFeature,
+  PoolDecisionSampleFuturePath,
+  PoolDecisionSampleRecord,
   ParameterFinding,
   ParameterProposalRecord,
   ProposalKind,
@@ -81,6 +91,12 @@ export {
   LiveCycleParameterSnapshotSchema,
   OutcomeReviewRecordArraySchema,
   OutcomeReviewRecordSchema,
+  PoolDecisionSampleCounterfactualSchema,
+  PoolDecisionSampleDecisionSchema,
+  PoolDecisionSampleFeatureSchema,
+  PoolDecisionSampleFuturePathSchema,
+  PoolDecisionSampleRecordArraySchema,
+  PoolDecisionSampleRecordSchema,
   ParameterFindingSchema,
   ParameterProposalRecordArraySchema,
   ParameterProposalRecordSchema,

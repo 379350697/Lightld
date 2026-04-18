@@ -52,6 +52,66 @@ export const CandidateScanRecordSchema = z.object({
 });
 export type CandidateScanRecord = z.infer<typeof CandidateScanRecordSchema>;
 
+export const PoolDecisionSampleDecisionSchema = z.object({
+  selected: z.boolean(),
+  selectionRank: z.number().int().positive(),
+  blockedReason: z.string().default(''),
+  rejectionStage: CandidateRejectionStageSchema,
+  runtimeMode: z.string(),
+  sessionPhase: SessionPhaseSchema
+});
+export type PoolDecisionSampleDecision = z.infer<typeof PoolDecisionSampleDecisionSchema>;
+
+export const PoolDecisionSampleFeatureSchema = z.object({
+  liquidityUsd: z.number().finite().nonnegative(),
+  holders: z.number().int().nonnegative(),
+  safetyScore: z.number().finite().nonnegative(),
+  volume24h: z.number().finite().nonnegative(),
+  feeTvlRatio24h: z.number().finite().nonnegative(),
+  binStep: z.number().int().nonnegative(),
+  hasInventory: z.boolean(),
+  hasLpPosition: z.boolean()
+});
+export type PoolDecisionSampleFeature = z.infer<typeof PoolDecisionSampleFeatureSchema>;
+
+export const PoolDecisionSampleFuturePathSchema = z.object({
+  observationCount: z.number().int().nonnegative(),
+  latestWindowLabel: z.string().nullable().default(null),
+  latestValueSol: z.number().finite().nonnegative().nullable().default(null),
+  maxObservedValueSol: z.number().finite().nonnegative().nullable().default(null),
+  minObservedValueSol: z.number().finite().nonnegative().nullable().default(null),
+  latestLiquidityUsd: z.number().finite().nonnegative().nullable().default(null),
+  hasInventoryFollowThrough: z.boolean().nullable().default(null),
+  hasLpPositionFollowThrough: z.boolean().nullable().default(null),
+  outcomeCount: z.number().int().nonnegative(),
+  latestOutcomeReason: z.string().nullable().default(null),
+  latestExitMetricValue: z.number().finite().nullable().default(null)
+});
+export type PoolDecisionSampleFuturePath = z.infer<typeof PoolDecisionSampleFuturePathSchema>;
+
+export const PoolDecisionSampleCounterfactualSchema = z.object({
+  selectedBaselineValueSol: z.number().finite().nonnegative().nullable().default(null),
+  relativeToSelectedBaselineSol: z.number().finite().nullable().default(null),
+  outperformedSelectedBaseline: z.boolean().nullable().default(null)
+});
+export type PoolDecisionSampleCounterfactual = z.infer<typeof PoolDecisionSampleCounterfactualSchema>;
+
+export const PoolDecisionSampleRecordSchema = z.object({
+  sampleId: z.string(),
+  strategyId: EvolutionStrategyIdSchema,
+  cycleId: z.string(),
+  capturedAt: z.string(),
+  tokenMint: z.string(),
+  tokenSymbol: z.string(),
+  poolAddress: z.string(),
+  decision: PoolDecisionSampleDecisionSchema,
+  candidateFeatures: PoolDecisionSampleFeatureSchema,
+  futurePath: PoolDecisionSampleFuturePathSchema,
+  counterfactual: PoolDecisionSampleCounterfactualSchema
+});
+export type PoolDecisionSampleRecord = z.infer<typeof PoolDecisionSampleRecordSchema>;
+export const PoolDecisionSampleRecordArraySchema = z.array(PoolDecisionSampleRecordSchema);
+
 export const TrackedWatchTokenRecordSchema = z.object({
   watchId: z.string(),
   trackedSince: z.string(),

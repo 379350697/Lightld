@@ -286,6 +286,25 @@ describe('runEvolutionReport', () => {
       evidenceSnapshot.proposalIds.some((proposalId) => proposalId.startsWith('parameter:filters.minLiquidityUsd:'))
     ).toBe(true);
     await expect(readFile(paths.reportMarkdownPath, 'utf8')).resolves.toContain('# Evolution Report');
+    const derivedSamples = (await readFile(paths.poolDecisionSamplesPath, 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as {
+        tokenMint: string;
+        futurePath: { latestValueSol: number | null; observationCount: number };
+        counterfactual: { selectedBaselineValueSol: number | null; outperformedSelectedBaseline: boolean | null };
+      });
+    expect(derivedSamples).toHaveLength(4);
+    expect(derivedSamples.find((sample) => sample.tokenMint === 'mint-breakout')).toMatchObject({
+      futurePath: {
+        latestValueSol: 0.62,
+        observationCount: 1
+      },
+      counterfactual: {
+        selectedBaselineValueSol: 0.18,
+        outperformedSelectedBaseline: true
+      }
+    });
     await expect(readFile(paths.proposalCatalogPath, 'utf8')).resolves.toContain('filters.minLiquidityUsd');
     await expect(
       access(join(paths.patchDraftsDir, 'parameter_filters.minLiquidityUsd.yaml'))
