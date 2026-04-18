@@ -21,6 +21,33 @@ export type MirrorStatusExtras = {
   }>;
 };
 
+export type MirrorResearchExtras = {
+  recentCandidateScans: Array<{
+    scanId: string;
+    capturedAt: string;
+    strategyId: string;
+    selectedTokenMint: string;
+    selectedPoolAddress: string;
+    blockedReason: string;
+    candidateCount: number;
+  }>;
+  recentWatchlistSnapshots: Array<{
+    watchId: string;
+    trackedSince: string;
+    strategyId: string;
+    tokenMint: string;
+    tokenSymbol: string;
+    poolAddress: string;
+    observationAt: string;
+    windowLabel: string;
+    currentValueSol: number | null;
+    unclaimedFeeSol: number | null;
+    hasInventory: boolean;
+    hasLpPosition: boolean;
+    sourceReason: string;
+  }>;
+};
+
 export type RuntimeStatusView = HealthReport & MirrorStatusExtras;
 
 export async function readMirrorStatus(path: string): Promise<MirrorStatusExtras> {
@@ -31,6 +58,20 @@ export async function readMirrorStatus(path: string): Promise<MirrorStatusExtras
     return {
       recentIncidents: await writer.readRecentIncidents(5),
       recentOrders: await writer.readRecentOrders(5)
+    };
+  } finally {
+    await writer.close();
+  }
+}
+
+export async function readMirrorResearch(path: string): Promise<MirrorResearchExtras> {
+  const writer = new SqliteMirrorWriter({ path });
+  await writer.open();
+
+  try {
+    return {
+      recentCandidateScans: await writer.readRecentCandidateScans(10),
+      recentWatchlistSnapshots: await writer.readRecentWatchlistSnapshots(10)
     };
   } finally {
     await writer.close();

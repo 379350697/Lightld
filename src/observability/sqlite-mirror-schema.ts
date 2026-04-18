@@ -104,5 +104,52 @@ export const SQLITE_MIRROR_SCHEMA = [
       net_worth_sol REAL,
       open_position_count INTEGER
     )
+  `,
   `
+    CREATE TABLE IF NOT EXISTS candidate_scans (
+      scan_id TEXT PRIMARY KEY,
+      captured_at TEXT NOT NULL,
+      strategy_id TEXT NOT NULL,
+      pool_count INTEGER NOT NULL,
+      prefiltered_count INTEGER NOT NULL,
+      post_lp_count INTEGER NOT NULL,
+      post_safety_count INTEGER NOT NULL,
+      eligible_selection_count INTEGER NOT NULL,
+      scan_window_open INTEGER NOT NULL,
+      active_positions_count INTEGER NOT NULL,
+      selected_token_mint TEXT NOT NULL,
+      selected_pool_address TEXT NOT NULL,
+      blocked_reason TEXT NOT NULL,
+      candidate_count INTEGER NOT NULL,
+      raw_json TEXT NOT NULL
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_candidate_scans_captured_at ON candidate_scans (captured_at DESC)`,
+  `
+    CREATE TABLE IF NOT EXISTS watchlist_snapshots (
+      watch_id TEXT NOT NULL,
+      tracked_since TEXT NOT NULL,
+      strategy_id TEXT NOT NULL,
+      token_mint TEXT NOT NULL,
+      token_symbol TEXT NOT NULL,
+      pool_address TEXT NOT NULL,
+      observation_at TEXT NOT NULL,
+      window_label TEXT NOT NULL,
+      current_value_sol REAL,
+      liquidity_usd REAL,
+      active_bin_id INTEGER,
+      lower_bin_id INTEGER,
+      upper_bin_id INTEGER,
+      bin_count INTEGER,
+      funded_bin_count INTEGER,
+      sol_depleted_bins INTEGER,
+      unclaimed_fee_sol REAL,
+      has_inventory INTEGER NOT NULL,
+      has_lp_position INTEGER NOT NULL,
+      source_reason TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      PRIMARY KEY (watch_id, tracked_since, window_label)
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_watchlist_snapshots_observation_at ON watchlist_snapshots (observation_at DESC)`
 ] as const;

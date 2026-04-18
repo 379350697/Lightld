@@ -1,11 +1,22 @@
 import { join } from 'node:path';
 
+import {
+  CandidateScanRecordSchema,
+  resolveEvolutionPaths,
+  WatchlistSnapshotRecordSchema
+} from '../evolution/index.ts';
 import type {
+  CandidateScanMirrorEvent,
   FillMirrorEvent,
   IncidentMirrorEvent,
   MirrorEvent,
-  OrderMirrorEvent
+  OrderMirrorEvent,
+  WatchlistSnapshotMirrorEvent
 } from './mirror-events.ts';
+import {
+  toCandidateScanMirrorEvent,
+  toWatchlistSnapshotMirrorEvent
+} from './mirror-adapters.ts';
 import type { MirrorRuntime } from './mirror-runtime.ts';
 import { MirrorCursorStore } from './mirror-cursor-store.ts';
 import { listRotatedJsonlPaths, readJsonLines } from '../journals/jsonl-writer.ts';
@@ -231,7 +242,27 @@ function toIncidentCatchupEvent(
   };
 }
 
-function buildJournalSpecs(strategyId: string, journalRootDir: string): JournalSpec[] {
+function toCandidateScanCatchupEvent(value: unknown): CandidateScanMirrorEvent | null {
+  const parsed = CandidateScanRecordSchema.safeParse(value);
+  if (!parsed.success) {
+    return null;
+  }
+
+  return toCandidateScanMirrorEvent(parsed.data);
+}
+
+function toWatchlistSnapshotCatchupEvent(value: unknown): WatchlistSnapshotMirrorEvent | null {
+  const parsed = WatchlistSnapshotRecordSchema.safeParse(value);
+  if (!parsed.success) {
+    return null;
+  }
+
+  return toWatchlistSnapshotMirrorEvent(parsed.data);
+}
+
+function buildJournalSpecs(strategyId: string, journalRootDir: string, stateRootDir: string): JournalSpec[] {
+  const evolutionPaths = resolveEvolutionPaths(strategyId as 'new-token-v1' | 'large-pool-v1', join(stateRootDir, 'evolution'));
+
   return [
     {
       key: `${strategyId}-live-orders`,
@@ -247,6 +278,16 @@ function buildJournalSpecs(strategyId: string, journalRootDir: string): JournalS
       key: `${strategyId}-live-incidents`,
       path: join(journalRootDir, `${strategyId}-live-incidents.jsonl`),
       toEvent: (value, currentStrategyId, offset) => toIncidentCatchupEvent(value, currentStrategyId, offset)
+    },
+    {
+      key: `${strategyId}-candidate-scans`,
+      path: evolutionPaths.candidateScansPath,
+      toEvent: (value) => toCandidateScanCatchupEvent(value)
+    },
+    {
+      key: `${strategyId}-watchlist-snapshots`,
+      path: evolutionPaths.watchlistSnapshotsPath,
+      toEvent: (value) => toWatchlistSnapshotCatchupEvent(value)
     }
   ];
 }
@@ -281,7 +322,7 @@ export async function enqueueMirrorCatchupFromJournals(input: CatchupInput) {
   let processed = 0;
   let updated = false;
 
-  for (const journal of buildJournalSpecs(input.strategyId, input.journalRootDir)) {
+  for (const journal of buildJournalSpecs(input.strategyId, input.journalRootDir, input.stateRootDir)) {
     if (processed >= eventBudget) {
       break;
     }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { resolveEvolutionPaths } from '../../../src/evolution';
 import { appendJsonLine } from '../../../src/journals/jsonl-writer';
 import {
   applyCatchupWindow,
@@ -209,5 +210,120 @@ describe('applyCatchupWindow', () => {
 
     expect(processed).toBe(0);
     expect(events).toHaveLength(0);
+  });
+
+  it('rehydrates evolution candidate scans and watchlist snapshots into mirror events', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-evolution-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const evolutionPaths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+    const events: MirrorEvent[] = [];
+
+    await appendJsonLine(evolutionPaths.candidateScansPath, {
+      scanId: 'scan-1',
+      capturedAt: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      poolCount: 3,
+      prefilteredCount: 2,
+      postLpCount: 2,
+      postSafetyCount: 1,
+      eligibleSelectionCount: 1,
+      scanWindowOpen: true,
+      activePositionsCount: 0,
+      selectedTokenMint: 'mint-safe',
+      selectedPoolAddress: 'pool-safe',
+      candidates: [
+        {
+          sampleId: 'cand-1',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          cycleId: 'cycle-1',
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          poolAddress: 'pool-safe',
+          liquidityUsd: 10000,
+          holders: 120,
+          safetyScore: 80,
+          volume24h: 5000,
+          feeTvlRatio24h: 0.12,
+          binStep: 20,
+          hasInventory: false,
+          hasLpPosition: false,
+          selected: true,
+          selectionRank: 1,
+          rejectionStage: 'none',
+          runtimeMode: 'healthy',
+          sessionPhase: 'active'
+        }
+      ]
+    });
+
+    await appendJsonLine(evolutionPaths.watchlistSnapshotsPath, {
+      watchId: 'new-token-v1:mint-safe:pool-safe',
+      trackedSince: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      poolAddress: 'pool-safe',
+      observationAt: '2026-04-18T01:00:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.4,
+      liquidityUsd: 12000,
+      activeBinId: 123,
+      lowerBinId: 100,
+      upperBinId: 140,
+      binCount: 41,
+      fundedBinCount: 20,
+      solDepletedBins: 5,
+      unclaimedFeeSol: 0.02,
+      hasInventory: true,
+      hasLpPosition: true,
+      sourceReason: 'selected'
+    });
+
+    await enqueueMirrorCatchupFromJournals({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(stateRootDir, 'lightld-observability.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 16,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      }
+    });
+
+    const cursor = JSON.parse(
+      await readFile(join(stateRootDir, 'mirror-cursor.json'), 'utf8')
+    ) as {
+      offsets: Record<string, number>;
+    };
+
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining(['candidate_scan', 'watchlist_snapshot'])
+    );
+    expect(
+      Object.entries(cursor.offsets).some(([key, value]) => key.includes('candidate-scans') && value > 0)
+    ).toBe(true);
+    expect(
+      Object.entries(cursor.offsets).some(([key, value]) => key.includes('watchlist-snapshots') && value > 0)
+    ).toBe(true);
   });
 });

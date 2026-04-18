@@ -86,6 +86,8 @@ describe('SqliteMirrorWriter', () => {
     db.close();
 
     expect(indexes.map((row) => row.name)).toEqual(expect.arrayContaining([
+      'idx_candidate_scans_captured_at',
+      'idx_watchlist_snapshots_observation_at',
       'idx_orders_submission_id',
       'idx_orders_updated_at',
       'idx_fills_recorded_at',
@@ -129,5 +131,106 @@ describe('SqliteMirrorWriter', () => {
       'net_worth_sol',
       'open_position_count'
     ]));
+  });
+
+  it('writes and queries mirrored evolution research rows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-evolution-'));
+    directories.push(root);
+    const writer = new SqliteMirrorWriter({ path: join(root, 'mirror.sqlite') });
+
+    await writer.open();
+    await writer.writeBatch([
+      {
+        type: 'candidate_scan',
+        priority: 'low',
+        payload: {
+          scanId: 'scan-1',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          poolCount: 3,
+          prefilteredCount: 2,
+          postLpCount: 2,
+          postSafetyCount: 1,
+          eligibleSelectionCount: 1,
+          scanWindowOpen: true,
+          activePositionsCount: 0,
+          selectedTokenMint: 'mint-safe',
+          selectedPoolAddress: 'pool-safe',
+          blockedReason: '',
+          candidates: [
+            {
+              sampleId: 'cand-1',
+              capturedAt: '2026-04-18T00:00:00.000Z',
+              strategyId: 'new-token-v1',
+              cycleId: 'cycle-1',
+              tokenMint: 'mint-safe',
+              tokenSymbol: 'SAFE',
+              poolAddress: 'pool-safe',
+              liquidityUsd: 10000,
+              holders: 120,
+              safetyScore: 80,
+              volume24h: 5000,
+              feeTvlRatio24h: 0.12,
+              binStep: 20,
+              hasInventory: false,
+              hasLpPosition: false,
+              selected: true,
+              selectionRank: 1,
+              blockedReason: '',
+              rejectionStage: 'none',
+              runtimeMode: 'healthy',
+              sessionPhase: 'active'
+            }
+          ]
+        }
+      },
+      {
+        type: 'watchlist_snapshot',
+        priority: 'low',
+        payload: {
+          watchId: 'new-token-v1:mint-safe:pool-safe',
+          trackedSince: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          poolAddress: 'pool-safe',
+          observationAt: '2026-04-18T01:00:00.000Z',
+          windowLabel: '1h',
+          currentValueSol: 0.4,
+          liquidityUsd: 12000,
+          activeBinId: 123,
+          lowerBinId: 100,
+          upperBinId: 140,
+          binCount: 41,
+          fundedBinCount: 20,
+          solDepletedBins: 5,
+          unclaimedFeeSol: 0.02,
+          hasInventory: true,
+          hasLpPosition: true,
+          sourceReason: 'selected'
+        }
+      }
+    ]);
+
+    await expect(writer.countRows('candidate_scans')).resolves.toBe(1);
+    await expect(writer.countRows('watchlist_snapshots')).resolves.toBe(1);
+    await expect(writer.readRecentCandidateScans(5)).resolves.toEqual([
+      expect.objectContaining({
+        scanId: 'scan-1',
+        selectedTokenMint: 'mint-safe',
+        selectedPoolAddress: 'pool-safe',
+        candidateCount: 1
+      })
+    ]);
+    await expect(writer.readRecentWatchlistSnapshots(5)).resolves.toEqual([
+      expect.objectContaining({
+        watchId: 'new-token-v1:mint-safe:pool-safe',
+        windowLabel: '1h',
+        tokenMint: 'mint-safe',
+        hasLpPosition: true
+      })
+    ]);
+
+    await writer.close();
   });
 });

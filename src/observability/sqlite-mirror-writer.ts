@@ -3,12 +3,14 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type {
+  CandidateScanMirrorPayload,
   FillMirrorPayload,
   IncidentMirrorPayload,
   MirrorEvent,
   OrderMirrorPayload,
   ReconciliationMirrorPayload,
-  RuntimeSnapshotMirrorPayload
+  RuntimeSnapshotMirrorPayload,
+  WatchlistSnapshotMirrorPayload
 } from './mirror-events.ts';
 import { SQLITE_MIRROR_SCHEMA } from './sqlite-mirror-schema.ts';
 
@@ -29,6 +31,8 @@ type PruneTableCounts = {
   reconciliations: number;
   incidents: number;
   runtimeSnapshots: number;
+  candidateScans: number;
+  watchlistSnapshots: number;
 };
 
 export type MirrorPruneResult = {
@@ -53,6 +57,32 @@ type RecentOrderRow = {
   confirmationStatus: string;
   finality: string;
   updatedAt: string;
+};
+
+type RecentCandidateScanRow = {
+  scanId: string;
+  capturedAt: string;
+  strategyId: string;
+  selectedTokenMint: string;
+  selectedPoolAddress: string;
+  blockedReason: string;
+  candidateCount: number;
+};
+
+type RecentWatchlistSnapshotRow = {
+  watchId: string;
+  trackedSince: string;
+  strategyId: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  poolAddress: string;
+  observationAt: string;
+  windowLabel: string;
+  currentValueSol: number | null;
+  unclaimedFeeSol: number | null;
+  hasInventory: boolean;
+  hasLpPosition: boolean;
+  sourceReason: string;
 };
 
 export class SqliteMirrorWriter {
@@ -179,6 +209,53 @@ export class SqliteMirrorWriter {
       .all(limit) as RecentOrderRow[];
   }
 
+  async readRecentCandidateScans(limit = 5): Promise<RecentCandidateScanRow[]> {
+    return this.requireDatabase()
+      .prepare(`
+        SELECT
+          scan_id AS scanId,
+          captured_at AS capturedAt,
+          strategy_id AS strategyId,
+          selected_token_mint AS selectedTokenMint,
+          selected_pool_address AS selectedPoolAddress,
+          blocked_reason AS blockedReason,
+          candidate_count AS candidateCount
+        FROM candidate_scans
+        ORDER BY captured_at DESC
+        LIMIT ?
+      `)
+      .all(limit) as RecentCandidateScanRow[];
+  }
+
+  async readRecentWatchlistSnapshots(limit = 5): Promise<RecentWatchlistSnapshotRow[]> {
+    return this.requireDatabase()
+      .prepare(`
+        SELECT
+          watch_id AS watchId,
+          tracked_since AS trackedSince,
+          strategy_id AS strategyId,
+          token_mint AS tokenMint,
+          token_symbol AS tokenSymbol,
+          pool_address AS poolAddress,
+          observation_at AS observationAt,
+          window_label AS windowLabel,
+          current_value_sol AS currentValueSol,
+          unclaimed_fee_sol AS unclaimedFeeSol,
+          has_inventory AS hasInventory,
+          has_lp_position AS hasLpPosition,
+          source_reason AS sourceReason
+        FROM watchlist_snapshots
+        ORDER BY observation_at DESC
+        LIMIT ?
+      `)
+      .all(limit)
+      .map((row) => ({
+        ...row,
+        hasInventory: Boolean(row.hasInventory),
+        hasLpPosition: Boolean(row.hasLpPosition)
+      })) as RecentWatchlistSnapshotRow[];
+  }
+
   async checkpointWal(mode: 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE' = 'TRUNCATE') {
     this.requireDatabase().exec(`PRAGMA wal_checkpoint(${mode});`);
   }
@@ -194,7 +271,9 @@ export class SqliteMirrorWriter {
       fills: 0,
       reconciliations: 0,
       incidents: 0,
-      runtimeSnapshots: 0
+      runtimeSnapshots: 0,
+      candidateScans: 0,
+      watchlistSnapshots: 0
     };
 
     database.exec('BEGIN IMMEDIATE');
@@ -206,6 +285,8 @@ export class SqliteMirrorWriter {
       deletedByTable.reconciliations = this.deleteOlderThan('reconciliations', 'recorded_at', cutoffIso);
       deletedByTable.incidents = this.deleteOlderThan('incidents', 'recorded_at', cutoffIso);
       deletedByTable.runtimeSnapshots = this.deleteOlderThan('runtime_snapshots', 'snapshot_at', cutoffIso);
+      deletedByTable.candidateScans = this.deleteOlderThan('candidate_scans', 'captured_at', cutoffIso);
+      deletedByTable.watchlistSnapshots = this.deleteOlderThan('watchlist_snapshots', 'observation_at', cutoffIso);
       database.exec('COMMIT');
     } catch (error) {
       try {
@@ -312,6 +393,14 @@ export class SqliteMirrorWriter {
 
       case 'runtime_snapshot':
         this.writeRuntimeSnapshot(event.payload);
+        return;
+
+      case 'candidate_scan':
+        this.writeCandidateScan(event.payload);
+        return;
+
+      case 'watchlist_snapshot':
+        this.writeWatchlistSnapshot(event.payload);
         return;
     }
   }
@@ -508,6 +597,128 @@ export class SqliteMirrorWriter {
       payload.unclaimedFeeSol,
       payload.netWorthSol,
       payload.openPositionCount
+    );
+  }
+
+  private writeCandidateScan(payload: CandidateScanMirrorPayload) {
+    this.requireDatabase().prepare(`
+      INSERT INTO candidate_scans (
+        scan_id,
+        captured_at,
+        strategy_id,
+        pool_count,
+        prefiltered_count,
+        post_lp_count,
+        post_safety_count,
+        eligible_selection_count,
+        scan_window_open,
+        active_positions_count,
+        selected_token_mint,
+        selected_pool_address,
+        blocked_reason,
+        candidate_count,
+        raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scan_id) DO UPDATE SET
+        captured_at=excluded.captured_at,
+        strategy_id=excluded.strategy_id,
+        pool_count=excluded.pool_count,
+        prefiltered_count=excluded.prefiltered_count,
+        post_lp_count=excluded.post_lp_count,
+        post_safety_count=excluded.post_safety_count,
+        eligible_selection_count=excluded.eligible_selection_count,
+        scan_window_open=excluded.scan_window_open,
+        active_positions_count=excluded.active_positions_count,
+        selected_token_mint=excluded.selected_token_mint,
+        selected_pool_address=excluded.selected_pool_address,
+        blocked_reason=excluded.blocked_reason,
+        candidate_count=excluded.candidate_count,
+        raw_json=excluded.raw_json
+    `).run(
+      payload.scanId,
+      payload.capturedAt,
+      payload.strategyId,
+      payload.poolCount,
+      payload.prefilteredCount,
+      payload.postLpCount,
+      payload.postSafetyCount,
+      payload.eligibleSelectionCount,
+      booleanToInteger(payload.scanWindowOpen),
+      payload.activePositionsCount,
+      payload.selectedTokenMint,
+      payload.selectedPoolAddress,
+      payload.blockedReason,
+      payload.candidates.length,
+      JSON.stringify(payload)
+    );
+  }
+
+  private writeWatchlistSnapshot(payload: WatchlistSnapshotMirrorPayload) {
+    this.requireDatabase().prepare(`
+      INSERT INTO watchlist_snapshots (
+        watch_id,
+        tracked_since,
+        strategy_id,
+        token_mint,
+        token_symbol,
+        pool_address,
+        observation_at,
+        window_label,
+        current_value_sol,
+        liquidity_usd,
+        active_bin_id,
+        lower_bin_id,
+        upper_bin_id,
+        bin_count,
+        funded_bin_count,
+        sol_depleted_bins,
+        unclaimed_fee_sol,
+        has_inventory,
+        has_lp_position,
+        source_reason,
+        raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(watch_id, tracked_since, window_label) DO UPDATE SET
+        strategy_id=excluded.strategy_id,
+        token_mint=excluded.token_mint,
+        token_symbol=excluded.token_symbol,
+        pool_address=excluded.pool_address,
+        observation_at=excluded.observation_at,
+        current_value_sol=excluded.current_value_sol,
+        liquidity_usd=excluded.liquidity_usd,
+        active_bin_id=excluded.active_bin_id,
+        lower_bin_id=excluded.lower_bin_id,
+        upper_bin_id=excluded.upper_bin_id,
+        bin_count=excluded.bin_count,
+        funded_bin_count=excluded.funded_bin_count,
+        sol_depleted_bins=excluded.sol_depleted_bins,
+        unclaimed_fee_sol=excluded.unclaimed_fee_sol,
+        has_inventory=excluded.has_inventory,
+        has_lp_position=excluded.has_lp_position,
+        source_reason=excluded.source_reason,
+        raw_json=excluded.raw_json
+    `).run(
+      payload.watchId,
+      payload.trackedSince,
+      payload.strategyId,
+      payload.tokenMint,
+      payload.tokenSymbol,
+      payload.poolAddress,
+      payload.observationAt,
+      payload.windowLabel,
+      payload.currentValueSol,
+      payload.liquidityUsd,
+      payload.activeBinId,
+      payload.lowerBinId,
+      payload.upperBinId,
+      payload.binCount,
+      payload.fundedBinCount,
+      payload.solDepletedBins,
+      payload.unclaimedFeeSol,
+      booleanToInteger(payload.hasInventory),
+      booleanToInteger(payload.hasLpPosition),
+      payload.sourceReason,
+      JSON.stringify(payload)
     );
   }
 

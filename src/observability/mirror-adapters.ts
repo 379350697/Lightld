@@ -3,6 +3,8 @@ import { summarizeAccountEquity } from '../runtime/account-equity.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
 import type { HealthReport, PendingFinality, RuntimeMode } from '../runtime/state-types.ts';
 import type {
+  CandidateScanMirrorEvent,
+  CandidateScanMirrorPayload,
   CycleRunMirrorEvent,
   CycleRunMirrorPayload,
   FillMirrorEvent,
@@ -13,7 +15,9 @@ import type {
   OrderMirrorPayload,
   ReconciliationMirrorEvent,
   ReconciliationMirrorPayload,
-  RuntimeSnapshotMirrorEvent
+  RuntimeSnapshotMirrorEvent,
+  WatchlistSnapshotMirrorEvent,
+  WatchlistSnapshotMirrorPayload
 } from './mirror-events.ts';
 
 export function toRuntimeSnapshotEvent(
@@ -40,6 +44,24 @@ export function toRuntimeSnapshotEvent(
       netWorthSol: equity.netWorthSol,
       openPositionCount: equity.openPositionCount
     }
+  };
+}
+
+export function toCandidateScanMirrorEvent(payload: CandidateScanMirrorPayload): CandidateScanMirrorEvent {
+  return {
+    type: 'candidate_scan',
+    priority: 'low',
+    payload
+  };
+}
+
+export function toWatchlistSnapshotMirrorEvent(
+  payload: WatchlistSnapshotMirrorPayload
+): WatchlistSnapshotMirrorEvent {
+  return {
+    type: 'watchlist_snapshot',
+    priority: 'low',
+    payload
   };
 }
 

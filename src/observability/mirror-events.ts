@@ -1,4 +1,5 @@
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
+import type { CandidateScanRecord, WatchlistSnapshotRecord } from '../evolution/index.ts';
 import type { RuntimeMode, PendingFinality } from '../runtime/state-types.ts';
 import type { MirrorEventPriority } from './mirror-types.ts';
 
@@ -96,6 +97,9 @@ export type RuntimeSnapshotMirrorPayload = {
   openPositionCount: number | null;
 };
 
+export type CandidateScanMirrorPayload = CandidateScanRecord;
+export type WatchlistSnapshotMirrorPayload = WatchlistSnapshotRecord;
+
 type MirrorEventBase<TType extends string, TPayload> = {
   type: TType;
   priority: MirrorEventPriority;
@@ -108,6 +112,8 @@ export type FillMirrorEvent = MirrorEventBase<'fill', FillMirrorPayload>;
 export type ReconciliationMirrorEvent = MirrorEventBase<'reconciliation', ReconciliationMirrorPayload>;
 export type IncidentMirrorEvent = MirrorEventBase<'incident', IncidentMirrorPayload>;
 export type RuntimeSnapshotMirrorEvent = MirrorEventBase<'runtime_snapshot', RuntimeSnapshotMirrorPayload>;
+export type CandidateScanMirrorEvent = MirrorEventBase<'candidate_scan', CandidateScanMirrorPayload>;
+export type WatchlistSnapshotMirrorEvent = MirrorEventBase<'watchlist_snapshot', WatchlistSnapshotMirrorPayload>;
 
 export type MirrorEvent =
   | CycleRunMirrorEvent
@@ -115,7 +121,9 @@ export type MirrorEvent =
   | FillMirrorEvent
   | ReconciliationMirrorEvent
   | IncidentMirrorEvent
-  | RuntimeSnapshotMirrorEvent;
+  | RuntimeSnapshotMirrorEvent
+  | CandidateScanMirrorEvent
+  | WatchlistSnapshotMirrorEvent;
 
 export type MirrorEventSink = {
   enqueue(event: MirrorEvent): void;
