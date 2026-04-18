@@ -93,6 +93,48 @@ export const TrackedWatchTokenRecordArraySchema = z.array(TrackedWatchTokenRecor
 export const WatchlistSnapshotRecordArraySchema = z.array(WatchlistSnapshotRecordSchema);
 export const CandidateScanRecordArraySchema = z.array(CandidateScanRecordSchema);
 
+export const LiveCycleParameterSnapshotSchema = z.object({
+  takeProfitPct: z.number().finite().positive().optional(),
+  stopLossPct: z.number().finite().positive().optional(),
+  lpEnabled: z.boolean(),
+  lpStopLossNetPnlPct: z.number().finite().positive().optional(),
+  lpTakeProfitNetPnlPct: z.number().finite().positive().optional(),
+  lpSolDepletionExitBins: z.number().int().nonnegative().optional(),
+  lpMinBinStep: z.number().int().positive().optional(),
+  lpMinVolume24hUsd: z.number().finite().nonnegative().optional(),
+  lpMinFeeTvlRatio24h: z.number().finite().nonnegative().optional(),
+  maxHoldHours: z.number().finite().positive()
+});
+export type LiveCycleParameterSnapshot = z.infer<typeof LiveCycleParameterSnapshotSchema>;
+
+export const LiveCycleExitMetricsSchema = z.object({
+  requestedPositionSol: z.number().finite().nonnegative(),
+  quoteOutputSol: z.number().finite().nonnegative().optional(),
+  holdTimeMs: z.number().finite().nonnegative().optional(),
+  lpNetPnlPct: z.number().finite().optional(),
+  lpSolDepletedBins: z.number().int().nonnegative().optional(),
+  lpCurrentValueSol: z.number().finite().nonnegative().optional(),
+  lpUnclaimedFeeSol: z.number().finite().nonnegative().optional()
+});
+export type LiveCycleExitMetrics = z.infer<typeof LiveCycleExitMetricsSchema>;
+
+export const LiveCycleOutcomeRecordSchema = z.object({
+  cycleId: z.string(),
+  strategyId: EvolutionStrategyIdSchema,
+  recordedAt: z.string(),
+  tokenMint: z.string(),
+  tokenSymbol: z.string(),
+  poolAddress: z.string(),
+  runtimeMode: z.string(),
+  sessionPhase: SessionPhaseSchema,
+  action: z.enum(['hold', 'deploy', 'dca-out', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']),
+  actualExitReason: z.string(),
+  liveOrderSubmitted: z.boolean(),
+  parameterSnapshot: LiveCycleParameterSnapshotSchema,
+  exitMetrics: LiveCycleExitMetricsSchema
+});
+export type LiveCycleOutcomeRecord = z.infer<typeof LiveCycleOutcomeRecordSchema>;
+
 export const ProposalStatusSchema = z.enum([
   'draft',
   'approved',

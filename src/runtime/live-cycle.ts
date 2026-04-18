@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { loadStrategyConfig } from '../config/loader.ts';
+import type { LiveCycleOutcomeRecord } from '../evolution/index.ts';
 import {
   buildCycleRunMirrorPayload,
   buildOrderMirrorPayload,
@@ -126,6 +127,9 @@ export type LiveCycleInput = {
   positionState?: PositionStateSnapshot;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
+  evolutionSink?: {
+    appendOutcome(record: LiveCycleOutcomeRecord): Promise<void>;
+  };
 };
 
 export type LiveCycleResult = {
@@ -215,6 +219,82 @@ function firstString(...values: unknown[]) {
   }
 
   return '';
+}
+
+function buildEvolutionParameterSnapshot(config: Awaited<ReturnType<typeof loadStrategyConfig>>) {
+  return {
+    takeProfitPct: config.riskThresholds.takeProfitPct,
+    stopLossPct: config.riskThresholds.stopLossPct,
+    lpEnabled: config.lpConfig?.enabled ?? false,
+    lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
+    lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
+    lpSolDepletionExitBins: config.lpConfig?.solDepletionExitBins,
+    lpMinBinStep: config.lpConfig?.minBinStep,
+    lpMinVolume24hUsd: config.lpConfig?.minVolume24hUsd,
+    lpMinFeeTvlRatio24h: config.lpConfig?.minFeeTvlRatio24h,
+    maxHoldHours: config.live.maxHoldHours ?? 18
+  };
+}
+
+function buildEvolutionExitMetrics(input: {
+  context: ReturnType<typeof buildDecisionContext>;
+  snapshot: Record<string, unknown>;
+  requestedPositionSol: number;
+  quote?: SolExitQuote;
+}) {
+  return {
+    requestedPositionSol: input.requestedPositionSol,
+    quoteOutputSol: input.quote?.outputSol,
+    holdTimeMs: typeof input.snapshot.holdTimeMs === 'number' ? input.snapshot.holdTimeMs : undefined,
+    lpNetPnlPct: typeof input.context.trader.lpNetPnlPct === 'number' ? input.context.trader.lpNetPnlPct : undefined,
+    lpSolDepletedBins: typeof input.context.trader.lpSolDepletedBins === 'number' ? input.context.trader.lpSolDepletedBins : undefined,
+    lpCurrentValueSol: typeof input.context.trader.lpCurrentValueSol === 'number' ? input.context.trader.lpCurrentValueSol : undefined,
+    lpUnclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number' ? input.context.trader.lpUnclaimedFeeSol : undefined
+  };
+}
+
+async function appendEvolutionOutcomeBestEffort(input: {
+  sink: LiveCycleInput['evolutionSink'];
+  logContext: LiveCycleLogContext;
+  action: LiveAction;
+  actualExitReason: string;
+  liveOrderSubmitted: boolean;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+  context: ReturnType<typeof buildDecisionContext>;
+  snapshot: Record<string, unknown>;
+  requestedPositionSol: number;
+  quote?: SolExitQuote;
+}) {
+  if (!input.sink) {
+    return;
+  }
+
+  try {
+    await input.sink.appendOutcome({
+      cycleId: input.logContext.cycleId,
+      strategyId: input.logContext.strategyId,
+      recordedAt: new Date().toISOString(),
+      tokenMint: input.logContext.tokenMint,
+      tokenSymbol: input.logContext.tokenSymbol,
+      poolAddress: input.logContext.poolAddress,
+      runtimeMode: input.logContext.runtimeMode,
+      sessionPhase: input.logContext.sessionPhase,
+      action: input.action,
+      actualExitReason: input.actualExitReason,
+      liveOrderSubmitted: input.liveOrderSubmitted,
+      parameterSnapshot: buildEvolutionParameterSnapshot(input.config),
+      exitMetrics: buildEvolutionExitMetrics({
+        context: input.context,
+        snapshot: input.snapshot,
+        requestedPositionSol: input.requestedPositionSol,
+        quote: input.quote
+      })
+    });
+  } catch (error) {
+    console.warn(
+      `[LiveCycle] Evolution outcome persistence failed; continuing without research evidence: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string, nowMs: number): number {
@@ -1711,6 +1791,19 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationStatus: confirmation.status,
     submissionId: broadcastResult.submissionId,
     liveOrderSubmitted: true
+  });
+
+  await appendEvolutionOutcomeBestEffort({
+    sink: input.evolutionSink,
+    logContext,
+    action: actionableAction,
+    actualExitReason: engineResult.audit.reason,
+    liveOrderSubmitted: true,
+    config,
+    context,
+    snapshot: updatedSnapshot,
+    requestedPositionSol,
+    quote
   });
 
   return finalize(buildLiveSubmittedResult({

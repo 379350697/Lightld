@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { LiveCycleOutcomeRecord } from '../../../src/evolution';
 import { appendJsonLine, readJsonLines } from '../../../src/journals/jsonl-writer';
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
@@ -79,6 +80,74 @@ describe('runLiveCycle', () => {
       confirmationStatus: 'submitted'
     });
     expect(decisionJournal[0].cycleId).toBe(orderJournal[0].cycleId);
+  });
+
+  it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
+    const outcomes: LiveCycleOutcomeRecord[] = [];
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      evolutionSink: {
+        appendOutcome: async (record) => {
+          outcomes.push(record);
+        }
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      action: 'withdraw-lp',
+      actualExitReason: 'lp-stop-loss',
+      parameterSnapshot: {
+        lpStopLossNetPnlPct: 20,
+        lpTakeProfitNetPnlPct: 30,
+        lpSolDepletionExitBins: 60,
+        lpMinBinStep: 100,
+        maxHoldHours: 10
+      },
+      exitMetrics: {
+        lpNetPnlPct: -25,
+        lpSolDepletedBins: 61
+      }
+    });
+  });
+
+  it('swallows evolution outcome sink failures without changing the live-cycle result', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      evolutionSink: {
+        appendOutcome: async () => {
+          throw new Error('outcome-store-unavailable');
+        }
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
   });
 
   it('returns hold without collecting a quote when the strategy is not actionable', async () => {
