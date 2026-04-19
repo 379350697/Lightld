@@ -223,6 +223,64 @@ describe('generatePatchDraft', () => {
     expect(result.blockedReason).toBe('insufficient_evidence');
     expect(result.patchYaml).toBeNull();
   });
+
+  it('fails closed when proposal validation is present but not supported', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-evolution-patch-validation-'));
+    directories.push(root);
+    const baselineConfigPath = join(root, 'new-token-v1.yaml');
+
+    await copyFile('src/config/strategies/new-token-v1.yaml', baselineConfigPath);
+
+    const result = await generatePatchDraft({
+      proposalId: 'proposal-validation-1',
+      baselineConfigPath,
+      proposals: [
+        {
+          proposalId: 'prop-validation',
+          proposalKind: 'parameter',
+          strategyId: 'new-token-v1',
+          status: 'draft',
+          createdAt: '2026-04-18T12:00:00.000Z',
+          updatedAt: '2026-04-18T12:00:00.000Z',
+          targetPath: 'filters.minLiquidityUsd',
+          oldValue: 1000,
+          proposedValue: 900,
+          evidenceWindowHours: 24,
+          sampleSize: 6,
+          rationale: 'Evidence looked positive but still thin.',
+          expectedImprovement: 'Capture more breakouts.',
+          riskNote: 'Could admit noisier pools.',
+          uncertaintyNote: 'Validation is mixed.',
+          analysisConfidence: 'high',
+          supportingMetric: 0.8,
+          coverageScore: 0.8,
+          regimeScore: 0.8,
+          proposalReadinessScore: 0.8,
+          patchable: true
+        }
+      ],
+      proposalValidations: [
+        {
+          proposalId: 'prop-validation',
+          targetPath: 'filters.minLiquidityUsd',
+          status: 'mixed',
+          note: 'Counterfactual evidence is still too thin.',
+          sampleCount: 2,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.47,
+          recentSliceLabel: 'later-half',
+          recentSliceSampleCount: 1,
+          recentSliceOutperformRate: 1,
+          recentSliceAverageRelativeToSelectedBaselineSol: 0.47
+        }
+      ]
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockedReason).toBe('insufficient_evidence');
+    expect(result.blockedNote).toContain('recent slice');
+    expect(result.patchYaml).toBeNull();
+  });
 });
 
 function buildPatchableProposal(targetPath: string, oldValue: number, proposedValue: number) {

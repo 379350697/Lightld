@@ -252,6 +252,11 @@ describe('runEvolutionReport', () => {
     const reportJson = JSON.parse(await readFile(paths.reportJsonPath, 'utf8')) as {
       strategyId: string;
       parameterProposals: Array<{ targetPath: string }>;
+      counterfactualAnalysis: {
+        summary: { eligibleCounterfactualSamples: number; positiveRelativeSamples: number };
+        pathSummaries: Array<{ targetPath: string; outperformRate: number }>;
+      };
+      proposalValidations: Array<{ targetPath: string; status: string }>;
       evidenceSnapshot: {
         strategyConfigPath: string;
         proposalIds: string[];
@@ -259,7 +264,12 @@ describe('runEvolutionReport', () => {
     };
     const evidenceSnapshot = JSON.parse(await readFile(paths.evidenceSnapshotPath, 'utf8')) as {
       timeWindowLabel: string;
-      sampleCounts: { candidateScans: number; watchlistSnapshots: number; outcomes: number };
+      sampleCounts: {
+        candidateScans: number;
+        poolDecisionSamples: number;
+        watchlistSnapshots: number;
+        outcomes: number;
+      };
       strategyConfigPath: string;
       coverageScore: number;
       regimeScore: number;
@@ -272,10 +282,27 @@ describe('runEvolutionReport', () => {
     expect(reportJson.parameterProposals).toEqual([
       expect.objectContaining({ targetPath: 'filters.minLiquidityUsd' })
     ]);
+    expect(reportJson.counterfactualAnalysis.summary).toMatchObject({
+      eligibleCounterfactualSamples: 2,
+      positiveRelativeSamples: 2
+    });
+    expect(reportJson.counterfactualAnalysis.pathSummaries).toEqual([
+      expect.objectContaining({
+        targetPath: 'filters.minLiquidityUsd',
+        outperformRate: 1
+      })
+    ]);
+    expect(reportJson.proposalValidations).toEqual([
+      expect.objectContaining({
+        targetPath: 'filters.minLiquidityUsd',
+        status: 'mixed'
+      })
+    ]);
     expect(reportJson.evidenceSnapshot.strategyConfigPath).toBe('src/config/strategies/new-token-v1.yaml');
     expect(evidenceSnapshot.timeWindowLabel).toBe('all-available');
     expect(evidenceSnapshot.sampleCounts).toEqual({
       candidateScans: 2,
+      poolDecisionSamples: 4,
       watchlistSnapshots: 4,
       outcomes: 0
     });
@@ -285,20 +312,29 @@ describe('runEvolutionReport', () => {
     expect(
       evidenceSnapshot.proposalIds.some((proposalId) => proposalId.startsWith('parameter:filters.minLiquidityUsd:'))
     ).toBe(true);
-    await expect(readFile(paths.reportMarkdownPath, 'utf8')).resolves.toContain('# Evolution Report');
+    await expect(readFile(paths.reportMarkdownPath, 'utf8')).resolves.toContain('Pool decision samples: 4');
     const derivedSamples = (await readFile(paths.poolDecisionSamplesPath, 'utf8'))
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line) as {
         tokenMint: string;
-        futurePath: { latestValueSol: number | null; observationCount: number };
+        futurePath: {
+          latestValueSol: number | null;
+          observationCount: number;
+          bestWindowLabel: string | null;
+          forwardValueByWindowLabel: Record<string, number | null>;
+        };
         counterfactual: { selectedBaselineValueSol: number | null; outperformedSelectedBaseline: boolean | null };
       });
     expect(derivedSamples).toHaveLength(4);
     expect(derivedSamples.find((sample) => sample.tokenMint === 'mint-breakout')).toMatchObject({
       futurePath: {
         latestValueSol: 0.62,
-        observationCount: 1
+        observationCount: 1,
+        bestWindowLabel: '1h',
+        forwardValueByWindowLabel: {
+          '1h': 0.62
+        }
       },
       counterfactual: {
         selectedBaselineValueSol: 0.18,

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderEvolutionReport } from '../../../src/evolution';
+import {
+  renderEvolutionReport,
+  type CounterfactualAnalysisResult,
+  type ProposalValidationRecord
+} from '../../../src/evolution';
 
 describe('renderEvolutionReport', () => {
   it('renders markdown and JSON artifacts for an evidence-backed report', () => {
@@ -12,6 +16,7 @@ describe('renderEvolutionReport', () => {
         timeWindowLabel: 'all-available',
         sampleCounts: {
           candidateScans: 12,
+          poolDecisionSamples: 18,
           watchlistSnapshots: 24,
           outcomes: 8
         },
@@ -31,6 +36,7 @@ describe('renderEvolutionReport', () => {
       },
       evidenceCounts: {
         candidateScans: 12,
+        poolDecisionSamples: 18,
         watchlistSnapshots: 24,
         outcomes: 8
       },
@@ -56,6 +62,8 @@ describe('renderEvolutionReport', () => {
         findings: [],
         noActionReasons: []
       },
+      counterfactualAnalysis: buildCounterfactualAnalysis(),
+      proposalValidations: buildProposalValidations(),
       parameterProposals: [
         {
           proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
@@ -84,6 +92,10 @@ describe('renderEvolutionReport', () => {
     expect(rendered.markdown).toContain('# Evolution Report');
     expect(rendered.markdown).toContain('filters.minLiquidityUsd');
     expect(rendered.markdown).toContain('Candidate scans: 12');
+    expect(rendered.markdown).toContain('Pool decision samples: 18');
+    expect(rendered.markdown).toContain('Eligible counterfactual samples: 9');
+    expect(rendered.markdown).toContain('Supported validations: 1');
+    expect(rendered.markdown).toContain('filters.minLiquidityUsd');
     expect(rendered.markdown).toContain('Evidence snapshot: all-available');
     expect(rendered.markdown).toContain('Coverage score: 0.84');
     expect(rendered.json.evidenceSnapshot.proposalIds).toEqual([
@@ -100,6 +112,7 @@ describe('renderEvolutionReport', () => {
         timeWindowLabel: 'all-available',
         sampleCounts: {
           candidateScans: 0,
+          poolDecisionSamples: 0,
           watchlistSnapshots: 0,
           outcomes: 0
         },
@@ -119,6 +132,7 @@ describe('renderEvolutionReport', () => {
       },
       evidenceCounts: {
         candidateScans: 0,
+        poolDecisionSamples: 0,
         watchlistSnapshots: 0,
         outcomes: 0
       },
@@ -142,6 +156,16 @@ describe('renderEvolutionReport', () => {
         findings: [],
         noActionReasons: ['insufficient_sample_size']
       },
+      counterfactualAnalysis: {
+        summary: {
+          totalSamples: 0,
+          eligibleCounterfactualSamples: 0,
+          positiveRelativeSamples: 0
+        },
+        pathSummaries: [],
+        noActionReasons: ['insufficient_sample_size']
+      },
+      proposalValidations: [],
       parameterProposals: [],
       systemProposals: [],
       noActionReasons: ['no_safe_parameter_proposal']
@@ -152,3 +176,59 @@ describe('renderEvolutionReport', () => {
     expect(rendered.json.noActionReasons).toContain('no_safe_parameter_proposal');
   });
 });
+
+function buildCounterfactualAnalysis(): CounterfactualAnalysisResult {
+  return {
+    summary: {
+      totalSamples: 18,
+      eligibleCounterfactualSamples: 9,
+      positiveRelativeSamples: 6
+    },
+    pathSummaries: [
+      {
+        targetPath: 'filters.minLiquidityUsd',
+        blockedReason: 'min-liquidity',
+        sampleCount: 5,
+        outperformCount: 4,
+        outperformRate: 0.8,
+        averageRelativeToSelectedBaselineSol: 0.21,
+        averageBestWindowValueSol: 0.62,
+        sliceSummaries: [
+          {
+            sliceLabel: 'earlier-half',
+            sampleCount: 2,
+            outperformCount: 1,
+            outperformRate: 0.5,
+            averageRelativeToSelectedBaselineSol: 0.12
+          },
+          {
+            sliceLabel: 'later-half',
+            sampleCount: 3,
+            outperformCount: 3,
+            outperformRate: 1,
+            averageRelativeToSelectedBaselineSol: 0.27
+          }
+        ]
+      }
+    ],
+    noActionReasons: []
+  };
+}
+
+function buildProposalValidations(): ProposalValidationRecord[] {
+  return [
+    {
+      proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
+      targetPath: 'filters.minLiquidityUsd',
+      status: 'supported',
+      note: 'Counterfactual evidence supports the same path direction.',
+      sampleCount: 5,
+      outperformRate: 0.8,
+      averageRelativeToSelectedBaselineSol: 0.21,
+      recentSliceLabel: 'later-half',
+      recentSliceSampleCount: 3,
+      recentSliceOutperformRate: 1,
+      recentSliceAverageRelativeToSelectedBaselineSol: 0.27
+    }
+  ];
+}

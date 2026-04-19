@@ -861,7 +861,17 @@ export async function buildLiveCycleInputFromIngest(
     );
   }
 
-  const requestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
+  const baseRequestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
+  const requestedPositionSol = input.strategy === 'new-token-v1'
+    ? computeDynamicPositionSol(
+      candidate.liquidityUsd,
+      baseRequestedPositionSol,
+      undefined,
+      {
+        safetyScore: candidate.safetyScore
+      }
+    )
+    : baseRequestedPositionSol;
   const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
     mint: candidate.mint,
     poolAddress: candidate.address

@@ -198,7 +198,13 @@ describe('buildPoolDecisionSamples', () => {
         latestWindowLabel: '4h',
         latestValueSol: 0.55,
         maxObservedValueSol: 0.75,
-        minObservedValueSol: 0.55
+        minObservedValueSol: 0.55,
+        bestWindowLabel: '1h',
+        bestWindowValueSol: 0.75,
+        forwardValueByWindowLabel: {
+          '1h': 0.75,
+          '4h': 0.55
+        }
       },
       counterfactual: {
         selectedBaselineValueSol: 0.4,
@@ -214,6 +220,11 @@ describe('buildPoolDecisionSamples', () => {
         observationCount: 1,
         latestWindowLabel: '1h',
         latestValueSol: 0.4,
+        bestWindowLabel: '1h',
+        bestWindowValueSol: 0.4,
+        forwardValueByWindowLabel: {
+          '1h': 0.4
+        },
         outcomeCount: 1,
         latestOutcomeReason: 'spot-take-profit',
         latestExitMetricValue: 0.4

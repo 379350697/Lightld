@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { parse, stringify } from 'yaml';
 
 import type { ParameterProposalRecord } from './types.ts';
+import type { ProposalValidationRecord } from './proposal-validator.ts';
 import {
   PROPOSAL_MIN_COVERAGE_SCORE,
   PROPOSAL_MIN_READINESS_SCORE,
@@ -24,6 +25,7 @@ const PATCHABLE_PATHS = new Set([
 export type PatchDraftResult = {
   status: 'ready' | 'blocked';
   blockedReason?: 'baseline_drift' | 'too_many_changes' | 'unrelated_parameter_group' | 'unsafe_path' | 'insufficient_evidence';
+  blockedNote?: string;
   patchYaml: string | null;
   metadata: {
     proposalId: string;
@@ -37,6 +39,7 @@ type GeneratePatchDraftInput = {
   proposalId: string;
   baselineConfigPath: string;
   proposals: ParameterProposalRecord[];
+  proposalValidations?: ProposalValidationRecord[];
 };
 
 export async function generatePatchDraft(input: GeneratePatchDraftInput): Promise<PatchDraftResult> {
@@ -52,8 +55,9 @@ export async function generatePatchDraft(input: GeneratePatchDraftInput): Promis
     return blockedResult(input.proposalId, input.proposals, 'unsafe_path');
   }
 
-  if (input.proposals.some((proposal) => !meetsEvidenceThreshold(proposal))) {
-    return blockedResult(input.proposalId, input.proposals, 'insufficient_evidence');
+  const evidenceBlock = resolveEvidenceBlock(input.proposals, input.proposalValidations);
+  if (evidenceBlock) {
+    return blockedResult(input.proposalId, input.proposals, 'insufficient_evidence', evidenceBlock);
   }
 
   const groups = new Set(input.proposals.map((proposal) => proposal.targetPath.split('.')[0]));
@@ -94,11 +98,13 @@ function buildMetadata(proposalId: string, proposals: ParameterProposalRecord[])
 function blockedResult(
   proposalId: string,
   proposals: ParameterProposalRecord[],
-  blockedReason: PatchDraftResult['blockedReason']
+  blockedReason: PatchDraftResult['blockedReason'],
+  blockedNote?: string
 ): PatchDraftResult {
   return {
     status: 'blocked',
     blockedReason,
+    blockedNote,
     patchYaml: null,
     metadata: buildMetadata(proposalId, proposals)
   };
@@ -136,33 +142,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function meetsEvidenceThreshold(proposal: ParameterProposalRecord) {
+function resolveEvidenceBlock(
+  proposals: ParameterProposalRecord[],
+  proposalValidations?: ProposalValidationRecord[]
+) {
+  for (const proposal of proposals) {
+    const blockedNote = resolveProposalEvidenceBlock(proposal, proposalValidations);
+    if (blockedNote) {
+      return blockedNote;
+    }
+  }
+
+  return null;
+}
+
+function resolveProposalEvidenceBlock(
+  proposal: ParameterProposalRecord,
+  proposalValidations?: ProposalValidationRecord[]
+) {
   if ((proposal.sampleSize ?? 0) < 3) {
-    return false;
+    return `Sample size for ${proposal.targetPath} is still below the patch threshold.`;
   }
 
   if (proposal.analysisConfidence === 'low') {
-    return false;
+    return `Analysis confidence for ${proposal.targetPath} is still low.`;
   }
 
   if (typeof proposal.supportingMetric === 'number' && proposal.supportingMetric < 0.5) {
-    return false;
+    return `Supporting metric for ${proposal.targetPath} is still below the acceptance floor.`;
   }
 
   if (typeof proposal.coverageScore === 'number' && proposal.coverageScore < PROPOSAL_MIN_COVERAGE_SCORE) {
-    return false;
+    return `Coverage score for ${proposal.targetPath} is still below the proposal threshold.`;
   }
 
   if (typeof proposal.regimeScore === 'number' && proposal.regimeScore < PROPOSAL_MIN_REGIME_SCORE) {
-    return false;
+    return `Regime score for ${proposal.targetPath} is still below the proposal threshold.`;
   }
 
   if (
     typeof proposal.proposalReadinessScore === 'number'
     && proposal.proposalReadinessScore < PROPOSAL_MIN_READINESS_SCORE
   ) {
-    return false;
+    return `Proposal readiness for ${proposal.targetPath} is still below the patch threshold.`;
   }
 
-  return true;
+  const matchingValidation = proposalValidations?.find((validation) => validation.proposalId === proposal.proposalId);
+  if (matchingValidation && matchingValidation.status !== 'supported') {
+    if (matchingValidation.recentSliceLabel) {
+      return `Counterfactual recent slice (${matchingValidation.recentSliceLabel}) for ${proposal.targetPath} has not held up strongly enough yet.`;
+    }
+
+    return matchingValidation.note;
+  }
+
+  return null;
 }

@@ -1,7 +1,12 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { ApprovalStore, generatePatchDraft, resolveEvolutionPaths } from '../evolution/index.ts';
+import {
+  ApprovalStore,
+  generatePatchDraft,
+  resolveEvolutionPaths,
+  type ProposalValidationRecord
+} from '../evolution/index.ts';
 import { writeJsonAtomically } from '../runtime/atomic-file.ts';
 
 export type RunEvolutionApprovalArgs = {
@@ -72,11 +77,13 @@ export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
 
   const decidedAt = new Date().toISOString();
   let patchPath: string | undefined;
+  let patchBlockedNote: string | undefined;
   if (args.action === 'approve' && proposal.patchable) {
     const patchDraft = await generatePatchDraft({
       proposalId: proposal.proposalId,
       baselineConfigPath: strategyConfigPathFor(args.strategyId),
-      proposals: [proposal]
+      proposals: [proposal],
+      proposalValidations: await loadProposalValidations(paths.reportJsonPath)
     });
 
     if (patchDraft.status === 'ready' && patchDraft.patchYaml) {
@@ -92,13 +99,15 @@ export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
           approvedAt: decidedAt
         }
       );
+    } else if (patchDraft.status === 'blocked') {
+      patchBlockedNote = patchDraft.blockedNote;
     }
   }
 
   await store.applyDecision({
     proposalId: args.proposalId,
     action: args.action,
-    note: args.note,
+    note: args.note ?? patchBlockedNote,
     decidedAt,
     relatedReportPath: paths.reportJsonPath,
     generatedPatchDraftPath: patchPath
@@ -106,7 +115,8 @@ export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
 
   return {
     status: args.action === 'approve' ? 'approved' : args.action === 'reject' ? 'rejected' : 'deferred',
-    patchPath
+    patchPath,
+    patchBlockedNote
   };
 }
 
@@ -118,4 +128,55 @@ function strategyConfigPathFor(strategyId: 'new-token-v1' | 'large-pool-v1') {
 
 function sanitizeProposalFileName(proposalId: string) {
   return proposalId.replace(/[<>:"/\\|?*]/g, '_');
+}
+
+async function loadProposalValidations(reportJsonPath: string): Promise<ProposalValidationRecord[]> {
+  try {
+    const raw = await readFile(reportJsonPath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      proposalValidations?: Array<{
+        proposalId?: string;
+        targetPath?: string;
+        status?: string;
+        note?: string;
+        sampleCount?: number;
+        outperformRate?: number | null;
+        averageRelativeToSelectedBaselineSol?: number | null;
+        recentSliceLabel?: string | null;
+        recentSliceSampleCount?: number;
+        recentSliceOutperformRate?: number | null;
+        recentSliceAverageRelativeToSelectedBaselineSol?: number | null;
+      }>;
+    };
+
+    return (parsed.proposalValidations ?? [])
+      .filter((validation) => typeof validation.proposalId === 'string' && typeof validation.targetPath === 'string')
+      .map((validation) => ({
+        proposalId: validation.proposalId as string,
+        targetPath: validation.targetPath as string,
+        status: validation.status === 'supported' ? 'supported' : validation.status === 'mixed' ? 'mixed' : 'insufficient_evidence',
+        note: typeof validation.note === 'string' ? validation.note : '',
+        sampleCount: typeof validation.sampleCount === 'number' ? validation.sampleCount : 0,
+        outperformRate: typeof validation.outperformRate === 'number' ? validation.outperformRate : null,
+        averageRelativeToSelectedBaselineSol:
+          typeof validation.averageRelativeToSelectedBaselineSol === 'number'
+            ? validation.averageRelativeToSelectedBaselineSol
+            : null,
+        recentSliceLabel: typeof validation.recentSliceLabel === 'string' ? validation.recentSliceLabel : null,
+        recentSliceSampleCount:
+          typeof validation.recentSliceSampleCount === 'number' ? validation.recentSliceSampleCount : 0,
+        recentSliceOutperformRate:
+          typeof validation.recentSliceOutperformRate === 'number' ? validation.recentSliceOutperformRate : null,
+        recentSliceAverageRelativeToSelectedBaselineSol:
+          typeof validation.recentSliceAverageRelativeToSelectedBaselineSol === 'number'
+            ? validation.recentSliceAverageRelativeToSelectedBaselineSol
+            : null
+      }));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
 }

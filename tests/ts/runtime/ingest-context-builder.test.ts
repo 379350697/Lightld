@@ -152,6 +152,55 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
   });
 
+  it('applies a conservative safety-based position cap for selected new-token candidates', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-risky',
+          baseMint: 'mint-risky',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'RSK',
+          liquidityUsd: 65_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-risky',
+          symbol: 'RSK',
+          holders: 90,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-risky',
+          safe: true,
+          safetyScore: 68,
+          maxScore: 120
+        }
+      ]
+    });
+
+    expect(result.requestedPositionSol).toBe(0.07);
+    expect(result.context.route).toMatchObject({
+      expectedOutSol: 0.07
+    });
+  });
+
   it('derives lp position state from Meteora positions even without token inventory', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

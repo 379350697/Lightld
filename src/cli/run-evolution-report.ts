@@ -7,6 +7,7 @@ import {
   ApprovalStore,
   type AnalysisNoActionReason,
   ParameterProposalRecordArraySchema,
+  analyzeCounterfactualSamples,
   analyzeFilterEvidence,
   analyzeOutcomeEvidence,
   buildPoolDecisionSamples,
@@ -14,7 +15,9 @@ import {
   generatePatchDraft,
   type EvolutionEvidenceSnapshot,
   type ParameterProposalRecord,
+  type ProposalValidationRecord,
   PoolDecisionSampleStore,
+  validateParameterProposals,
   generateEvolutionProposals,
   loadEvolutionEvidence,
   renderEvolutionReport,
@@ -136,11 +139,21 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
     existingProposals: existingQueue,
     outcomeReviews: existingOutcomeReviews
   });
+  const poolDecisionSamples = buildPoolDecisionSamples(evidence);
+  const counterfactualAnalysis = analyzeCounterfactualSamples({
+    samples: poolDecisionSamples,
+    minimumSampleSize
+  });
+  const proposalValidations = validateParameterProposals({
+    proposals: proposals.parameterProposals,
+    counterfactualAnalysis
+  });
   const evidenceSnapshot = buildEvidenceSnapshot({
     strategyId: args.strategyId,
     generatedAt,
     evidenceCounts: {
       candidateScans: evidence.candidateScans.length,
+      poolDecisionSamples: poolDecisionSamples.length,
       watchlistSnapshots: evidence.watchlistSnapshots.length,
       outcomes: evidence.outcomes.length
     },
@@ -160,16 +173,18 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
     evidenceSnapshot,
     evidenceCounts: {
       candidateScans: evidence.candidateScans.length,
+      poolDecisionSamples: poolDecisionSamples.length,
       watchlistSnapshots: evidence.watchlistSnapshots.length,
       outcomes: evidence.outcomes.length
     },
     filterAnalysis,
     outcomeAnalysis,
+    counterfactualAnalysis,
+    proposalValidations,
     parameterProposals: proposals.parameterProposals,
     systemProposals: proposals.systemProposals,
     noActionReasons: proposals.noActionReasons
   });
-  const poolDecisionSamples = buildPoolDecisionSamples(evidence);
   const poolDecisionSampleStore = new PoolDecisionSampleStore(paths.poolDecisionSamplesPath);
 
   await poolDecisionSampleStore.writeAll(poolDecisionSamples);
@@ -186,7 +201,8 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
   await emitPatchDrafts({
     patchDraftsDir: paths.patchDraftsDir,
     baselineConfigPath: strategyConfigPathFor(args.strategyId),
-    proposals: proposals.parameterProposals
+    proposals: proposals.parameterProposals,
+    proposalValidations
   });
 
   await reviewApprovedProposals({
@@ -215,6 +231,7 @@ async function emitPatchDrafts(input: {
   patchDraftsDir: string;
   baselineConfigPath: string;
   proposals: ParameterProposalRecord[];
+  proposalValidations: ProposalValidationRecord[];
 }) {
   if (input.proposals.length === 0) {
     return;
@@ -226,7 +243,8 @@ async function emitPatchDrafts(input: {
     const patchDraft = await generatePatchDraft({
       proposalId: proposal.proposalId,
       baselineConfigPath: input.baselineConfigPath,
-      proposals: [proposal]
+      proposals: [proposal],
+      proposalValidations: input.proposalValidations
     });
 
     if (patchDraft.status !== 'ready' || !patchDraft.patchYaml) {

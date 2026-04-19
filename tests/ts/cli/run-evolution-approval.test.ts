@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,5 +81,70 @@ describe('runEvolutionApproval', () => {
         generatedPatchDraftPath: join(paths.approvedPatchesDir, `${safeFileName}.yaml`)
       })
     ]);
+  });
+
+  it('does not write an approved patch artifact when the latest report marks the proposal validation as mixed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-approval-guarded-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+    const store = new ApprovalStore(paths.approvalQueuePath, {
+      decisionLogPath: paths.approvalHistoryPath,
+      outcomeLedgerPath: paths.outcomeLedgerPath
+    });
+
+    await store.upsertProposal({
+      proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
+      proposalKind: 'parameter',
+      strategyId: 'new-token-v1',
+      status: 'draft',
+      createdAt: '2026-04-18T12:00:00.000Z',
+      updatedAt: '2026-04-18T12:00:00.000Z',
+      targetPath: 'filters.minLiquidityUsd',
+      oldValue: 1000,
+      proposedValue: 900,
+      evidenceWindowHours: 24,
+      sampleSize: 6,
+      rationale: 'Evidence-backed proposal.',
+      expectedImprovement: 'Expected improvement.',
+      riskNote: 'Known risk.',
+      uncertaintyNote: 'Known uncertainty.',
+      analysisConfidence: 'high',
+      supportingMetric: 0.8,
+      coverageScore: 0.8,
+      regimeScore: 0.8,
+      proposalReadinessScore: 0.8,
+      patchable: true
+    });
+    await writeFile(paths.reportJsonPath, JSON.stringify({
+      proposalValidations: [
+        {
+          proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
+          targetPath: 'filters.minLiquidityUsd',
+          status: 'mixed',
+          note: 'Counterfactual evidence is too thin.',
+          sampleCount: 2,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.47,
+          recentSliceLabel: 'later-half',
+          recentSliceSampleCount: 1,
+          recentSliceOutperformRate: 1,
+          recentSliceAverageRelativeToSelectedBaselineSol: 0.47
+        }
+      ]
+    }, null, 2), 'utf8');
+
+    const result = await runEvolutionApproval({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
+      action: 'approve'
+    });
+    const queueRaw = JSON.parse(await readFile(paths.approvalQueuePath, 'utf8')) as Array<{ decisionNote?: string }>;
+
+    expect(result.status).toBe('approved');
+    expect(result.patchPath).toBeUndefined();
+    expect(result.patchBlockedNote).toContain('recent slice');
+    expect(queueRaw[0].decisionNote).toContain('recent slice');
   });
 });

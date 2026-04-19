@@ -10,6 +10,12 @@ export {
 } from './pool-decision-sample-builder.ts';
 export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
 export {
+  analyzeCounterfactualSamples,
+  type CounterfactualAnalysisResult,
+  type CounterfactualAnalysisSummary,
+  type CounterfactualPathSummary
+} from './counterfactual-analyzer.ts';
+export {
   analyzeFilterEvidence,
   type FilterAnalysisResult,
   type FilterAnalysisSummary
@@ -38,6 +44,11 @@ export {
   type EvolutionCoverageBreakdown
 } from './scoring.ts';
 export { ApprovalStore } from './approval-store.ts';
+export {
+  validateParameterProposals,
+  type ProposalValidationRecord,
+  type ProposalValidationStatus
+} from './proposal-validator.ts';
 export {
   renderEvolutionReport,
   type EvolutionEvidenceSnapshot,

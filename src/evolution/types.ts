@@ -80,6 +80,9 @@ export const PoolDecisionSampleFuturePathSchema = z.object({
   latestValueSol: z.number().finite().nonnegative().nullable().default(null),
   maxObservedValueSol: z.number().finite().nonnegative().nullable().default(null),
   minObservedValueSol: z.number().finite().nonnegative().nullable().default(null),
+  bestWindowLabel: z.string().nullable().default(null),
+  bestWindowValueSol: z.number().finite().nonnegative().nullable().default(null),
+  forwardValueByWindowLabel: z.record(z.string(), z.number().finite().nonnegative().nullable()).default({}),
   latestLiquidityUsd: z.number().finite().nonnegative().nullable().default(null),
   hasInventoryFollowThrough: z.boolean().nullable().default(null),
   hasLpPositionFollowThrough: z.boolean().nullable().default(null),
@@ -111,6 +114,37 @@ export const PoolDecisionSampleRecordSchema = z.object({
 });
 export type PoolDecisionSampleRecord = z.infer<typeof PoolDecisionSampleRecordSchema>;
 export const PoolDecisionSampleRecordArraySchema = z.array(PoolDecisionSampleRecordSchema);
+
+export type CounterfactualPathSummary = {
+  targetPath: string;
+  blockedReason: string;
+  sampleCount: number;
+  outperformCount: number;
+  outperformRate: number;
+  averageRelativeToSelectedBaselineSol: number;
+  averageBestWindowValueSol: number | null;
+  sliceSummaries: CounterfactualSliceSummary[];
+};
+
+export type CounterfactualSliceSummary = {
+  sliceLabel: string;
+  sampleCount: number;
+  outperformCount: number;
+  outperformRate: number;
+  averageRelativeToSelectedBaselineSol: number;
+};
+
+export type CounterfactualAnalysisSummary = {
+  totalSamples: number;
+  eligibleCounterfactualSamples: number;
+  positiveRelativeSamples: number;
+};
+
+export type CounterfactualAnalysisResult = {
+  summary: CounterfactualAnalysisSummary;
+  pathSummaries: CounterfactualPathSummary[];
+  noActionReasons: AnalysisNoActionReason[];
+};
 
 export const TrackedWatchTokenRecordSchema = z.object({
   watchId: z.string(),

@@ -35,9 +35,20 @@ export function buildPoolDecisionSamples(input: BuildPoolDecisionSamplesInput): 
       const observedValues = snapshots
         .map((snapshot) => snapshot.currentValueSol)
         .filter((value): value is number => typeof value === 'number');
+      const bestObservedSnapshot = snapshots
+        .filter((snapshot): snapshot is WatchlistSnapshotRecord & { currentValueSol: number } =>
+          typeof snapshot.currentValueSol === 'number'
+        )
+        .sort((left, right) => right.currentValueSol - left.currentValueSol)[0];
       const latestValueSol = typeof latestSnapshot?.currentValueSol === 'number'
         ? latestSnapshot.currentValueSol
         : null;
+      const forwardValueByWindowLabel = Object.fromEntries(
+        snapshots.map((snapshot) => [
+          snapshot.windowLabel,
+          typeof snapshot.currentValueSol === 'number' ? snapshot.currentValueSol : null
+        ])
+      );
       const relativeToSelectedBaselineSol =
         typeof selectedBaselineValueSol === 'number' && typeof latestValueSol === 'number'
           ? roundMetric(latestValueSol - selectedBaselineValueSol)
@@ -75,6 +86,9 @@ export function buildPoolDecisionSamples(input: BuildPoolDecisionSamplesInput): 
           latestValueSol,
           maxObservedValueSol: observedValues.length > 0 ? Math.max(...observedValues) : null,
           minObservedValueSol: observedValues.length > 0 ? Math.min(...observedValues) : null,
+          bestWindowLabel: bestObservedSnapshot?.windowLabel ?? null,
+          bestWindowValueSol: bestObservedSnapshot?.currentValueSol ?? null,
+          forwardValueByWindowLabel,
           latestLiquidityUsd: typeof latestSnapshot?.liquidityUsd === 'number' ? latestSnapshot.liquidityUsd : null,
           hasInventoryFollowThrough: latestSnapshot?.hasInventory ?? null,
           hasLpPositionFollowThrough: latestSnapshot?.hasLpPosition ?? null,
