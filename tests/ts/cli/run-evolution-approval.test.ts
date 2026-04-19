@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -129,7 +129,28 @@ describe('runEvolutionApproval', () => {
           recentSliceLabel: 'later-half',
           recentSliceSampleCount: 1,
           recentSliceOutperformRate: 1,
-          recentSliceAverageRelativeToSelectedBaselineSol: 0.47
+          recentSliceAverageRelativeToSelectedBaselineSol: 0.47,
+          longHorizonWindowLabel: '24h',
+          longHorizonWindowSampleCount: 2,
+          longHorizonWindowOutperformRate: 0.5,
+          longHorizonWindowAverageRelativeToSelectedBaselineSol: -0.03,
+          replayAdmittedSampleCount: 0,
+          replayPositiveRelativeSamples: 0,
+          replayAverageRelativeToSelectedBaselineSol: null,
+          outcomeReplayableSampleCount: 0,
+          outcomeSupportiveSampleCount: 0,
+          outcomeSupportRate: null,
+          outcomeAverageHeadroomPct: null,
+          outcomeRecentWindowLabel: null,
+          outcomeRecentWindowReplayableSampleCount: 0,
+          outcomeRecentWindowSupportiveSampleCount: 0,
+          outcomeRecentWindowSupportRate: null,
+          outcomeRecentWindowAverageHeadroomPct: null,
+          outcomeLongHorizonWindowLabel: null,
+          outcomeLongHorizonWindowReplayableSampleCount: 0,
+          outcomeLongHorizonWindowSupportiveSampleCount: 0,
+          outcomeLongHorizonWindowSupportRate: null,
+          outcomeLongHorizonWindowAverageHeadroomPct: null
         }
       ]
     }, null, 2), 'utf8');
@@ -146,5 +167,55 @@ describe('runEvolutionApproval', () => {
     expect(result.patchPath).toBeUndefined();
     expect(result.patchBlockedNote).toContain('recent slice');
     expect(queueRaw[0].decisionNote).toContain('recent slice');
+  });
+
+  it('supports approving proposals from a custom evolution root directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-approval-custom-root-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const evolutionRootDir = join(root, 'custom-evolution-root');
+    const paths = resolveEvolutionPaths('new-token-v1', evolutionRootDir);
+    const store = new ApprovalStore(paths.approvalQueuePath, {
+      decisionLogPath: paths.approvalHistoryPath,
+      outcomeLedgerPath: paths.outcomeLedgerPath
+    });
+
+    await store.upsertProposal({
+      proposalId: 'parameter:lpConfig.minBinStep:2026-04-18T13:00:00.000Z',
+      proposalKind: 'parameter',
+      strategyId: 'new-token-v1',
+      status: 'draft',
+      createdAt: '2026-04-18T13:00:00.000Z',
+      updatedAt: '2026-04-18T13:00:00.000Z',
+      targetPath: 'lpConfig.minBinStep',
+      oldValue: 100,
+      proposedValue: 90,
+      evidenceWindowHours: 24,
+      sampleSize: 4,
+      rationale: 'Evidence-backed proposal.',
+      expectedImprovement: 'Expected improvement.',
+      riskNote: 'Known risk.',
+      uncertaintyNote: 'Known uncertainty.',
+      patchable: true
+    });
+
+    const parsed = parseRunEvolutionApprovalArgs([
+      '--state-root-dir',
+      stateRootDir,
+      '--evolution-root-dir',
+      evolutionRootDir,
+      '--proposal-id',
+      'parameter:lpConfig.minBinStep:2026-04-18T13:00:00.000Z',
+      '--action',
+      'approve'
+    ]);
+
+    expect(parsed.evolutionRootDir).toBe(evolutionRootDir);
+
+    const result = await runEvolutionApproval(parsed);
+    const safeFileName = 'parameter_lpConfig.minBinStep_2026-04-18T13_00_00.000Z';
+
+    expect(result.status).toBe('approved');
+    await expect(access(join(paths.approvedPatchesDir, `${safeFileName}.yaml`))).resolves.toBeUndefined();
   });
 });

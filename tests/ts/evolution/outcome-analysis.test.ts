@@ -160,6 +160,40 @@ describe('analyzeOutcomeEvidence', () => {
     expect(result.findings).toEqual([]);
     expect(result.noActionReasons).toContain('insufficient_sample_size');
   });
+
+  it('ignores watchlist snapshots that were recorded before the exit closedAt time', () => {
+    const result = analyzeOutcomeEvidence({
+      outcomes: [
+        buildOutcome({
+          cycleId: 'cycle-pre-exit',
+          tokenMint: 'mint-pre-exit',
+          tokenSymbol: 'PRE',
+          actualExitReason: 'take-profit-hit',
+          action: 'dca-out',
+          closedAt: '2026-04-18T01:00:00.000Z',
+          exitMetrics: {
+            requestedPositionSol: 0.15,
+            quoteOutputSol: 0.2
+          }
+        })
+      ],
+      watchlistSnapshots: [
+        buildWatchlistSnapshot({
+          watchId: 'watch-pre-exit',
+          tokenMint: 'mint-pre-exit',
+          tokenSymbol: 'PRE',
+          observationAt: '2026-04-18T00:45:00.000Z',
+          currentValueSol: 0.35,
+          sourceReason: 'selected'
+        })
+      ],
+      minimumSampleSize: 1
+    });
+
+    expect(result.summary.matchedFollowThroughCount).toBe(0);
+    expect(result.findings).toEqual([]);
+    expect(result.noActionReasons).toContain('data_coverage_gaps');
+  });
 });
 
 function buildOutcome(overrides: Partial<LiveCycleOutcomeRecord>): LiveCycleOutcomeRecord {

@@ -14,6 +14,7 @@ export type BuildPoolDecisionSamplesInput = {
 export function buildPoolDecisionSamples(input: BuildPoolDecisionSamplesInput): PoolDecisionSampleRecord[] {
   return input.candidateScans.flatMap((scan) => {
     const selectedBaselineValueSol = computeSelectedBaseline(scan, input.watchlistSnapshots);
+    const selectedBaselineValueByWindowLabel = computeSelectedBaselineByWindow(scan, input.watchlistSnapshots);
 
     return scan.candidates.map((candidate) => {
       const snapshots = input.watchlistSnapshots
@@ -49,6 +50,19 @@ export function buildPoolDecisionSamples(input: BuildPoolDecisionSamplesInput): 
           typeof snapshot.currentValueSol === 'number' ? snapshot.currentValueSol : null
         ])
       );
+      const relativeToSelectedBaselineByWindowLabel = Object.fromEntries(
+        Object.entries(forwardValueByWindowLabel).map(([windowLabel, value]) => {
+          const selectedBaselineValue = selectedBaselineValueByWindowLabel[windowLabel];
+          const relativeValue =
+            typeof value === 'number' && typeof selectedBaselineValue === 'number'
+              ? roundMetric(value - selectedBaselineValue)
+              : null;
+          return [windowLabel, relativeValue];
+        })
+      );
+      const bestRelativeWindow = Object.entries(relativeToSelectedBaselineByWindowLabel)
+        .filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+        .sort((left, right) => right[1] - left[1])[0];
       const relativeToSelectedBaselineSol =
         typeof selectedBaselineValueSol === 'number' && typeof latestValueSol === 'number'
           ? roundMetric(latestValueSol - selectedBaselineValueSol)
@@ -98,7 +112,11 @@ export function buildPoolDecisionSamples(input: BuildPoolDecisionSamplesInput): 
         },
         counterfactual: {
           selectedBaselineValueSol: selectedBaselineValueSol ?? null,
+          selectedBaselineValueByWindowLabel,
           relativeToSelectedBaselineSol,
+          relativeToSelectedBaselineByWindowLabel,
+          bestRelativeWindowLabel: bestRelativeWindow?.[0] ?? null,
+          bestRelativeWindowValueSol: bestRelativeWindow?.[1] ?? null,
           outperformedSelectedBaseline:
             typeof relativeToSelectedBaselineSol === 'number'
               ? relativeToSelectedBaselineSol > 0
@@ -134,6 +152,35 @@ function computeSelectedBaseline(
   }
 
   return roundMetric(selectedValues.reduce((sum, value) => sum + value, 0) / selectedValues.length);
+}
+
+function computeSelectedBaselineByWindow(
+  scan: CandidateScanRecord,
+  watchlistSnapshots: WatchlistSnapshotRecord[]
+) {
+  const groupedValues = new Map<string, number[]>();
+
+  for (const candidate of scan.candidates.filter((entry) => entry.selected)) {
+    const snapshots = watchlistSnapshots.filter((snapshot) =>
+      snapshot.tokenMint === candidate.tokenMint
+      && snapshot.poolAddress === candidate.poolAddress
+      && Date.parse(snapshot.observationAt) >= Date.parse(candidate.capturedAt)
+      && typeof snapshot.currentValueSol === 'number'
+    );
+
+    for (const snapshot of snapshots) {
+      const bucket = groupedValues.get(snapshot.windowLabel) ?? [];
+      bucket.push(snapshot.currentValueSol as number);
+      groupedValues.set(snapshot.windowLabel, bucket);
+    }
+  }
+
+  return Object.fromEntries(
+    [...groupedValues.entries()].map(([windowLabel, values]) => [
+      windowLabel,
+      values.length > 0 ? roundMetric(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+    ])
+  );
 }
 
 function latestExitMetricValue(outcome: LiveCycleOutcomeRecord | undefined) {

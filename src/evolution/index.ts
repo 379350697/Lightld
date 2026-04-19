@@ -16,6 +16,18 @@ export {
   type CounterfactualPathSummary
 } from './counterfactual-analyzer.ts';
 export {
+  replayParameterProposals,
+  type CounterfactualReplayRecord,
+  type CounterfactualReplaySliceSummary,
+  type CounterfactualReplayWindowSummary
+} from './counterfactual-replay.ts';
+export {
+  replayOutcomeProposals,
+  type OutcomeReplayRecord,
+  type OutcomeReplaySliceSummary,
+  type OutcomeReplayWindowSummary
+} from './outcome-replay.ts';
+export {
   analyzeFilterEvidence,
   type FilterAnalysisResult,
   type FilterAnalysisSummary

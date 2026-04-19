@@ -98,6 +98,28 @@ describe('buildPoolDecisionSamples', () => {
         sourceReason: 'selected'
       },
       {
+        watchId: 'watch-selected-4h',
+        trackedSince: '2026-04-18T00:00:00.000Z',
+        strategyId: 'new-token-v1',
+        tokenMint: 'mint-selected',
+        tokenSymbol: 'SEL',
+        poolAddress: 'pool-selected',
+        observationAt: '2026-04-18T04:00:00.000Z',
+        windowLabel: '4h',
+        currentValueSol: 0.45,
+        liquidityUsd: 14500,
+        activeBinId: null,
+        lowerBinId: null,
+        upperBinId: null,
+        binCount: null,
+        fundedBinCount: null,
+        solDepletedBins: null,
+        unclaimedFeeSol: null,
+        hasInventory: true,
+        hasLpPosition: false,
+        sourceReason: 'selected'
+      },
+      {
         watchId: 'watch-filtered-1h',
         trackedSince: '2026-04-18T00:00:00.000Z',
         strategyId: 'new-token-v1',
@@ -207,9 +229,19 @@ describe('buildPoolDecisionSamples', () => {
         }
       },
       counterfactual: {
-        selectedBaselineValueSol: 0.4,
-        relativeToSelectedBaselineSol: 0.15,
-        outperformedSelectedBaseline: true
+        selectedBaselineValueSol: 0.45,
+        relativeToSelectedBaselineSol: 0.1,
+        outperformedSelectedBaseline: true,
+        selectedBaselineValueByWindowLabel: {
+          '1h': 0.4,
+          '4h': 0.45
+        },
+        relativeToSelectedBaselineByWindowLabel: {
+          '1h': 0.35,
+          '4h': 0.1
+        },
+        bestRelativeWindowLabel: '1h',
+        bestRelativeWindowValueSol: 0.35
       }
     });
 
@@ -217,17 +249,30 @@ describe('buildPoolDecisionSamples', () => {
     expect(selectedSample).toMatchObject({
       tokenMint: 'mint-selected',
       futurePath: {
-        observationCount: 1,
-        latestWindowLabel: '1h',
-        latestValueSol: 0.4,
-        bestWindowLabel: '1h',
-        bestWindowValueSol: 0.4,
+        observationCount: 2,
+        latestWindowLabel: '4h',
+        latestValueSol: 0.45,
+        bestWindowLabel: '4h',
+        bestWindowValueSol: 0.45,
         forwardValueByWindowLabel: {
-          '1h': 0.4
+          '1h': 0.4,
+          '4h': 0.45
         },
         outcomeCount: 1,
         latestOutcomeReason: 'spot-take-profit',
         latestExitMetricValue: 0.4
+      },
+      counterfactual: {
+        selectedBaselineValueByWindowLabel: {
+          '1h': 0.4,
+          '4h': 0.45
+        },
+        relativeToSelectedBaselineByWindowLabel: {
+          '1h': 0,
+          '4h': 0
+        },
+        bestRelativeWindowLabel: '1h',
+        bestRelativeWindowValueSol: 0
       }
     });
   });

@@ -24,7 +24,6 @@ type AnalyzeOutcomeEvidenceInput = {
 
 export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): OutcomeAnalysisResult {
   const minimumSampleSize = input.minimumSampleSize ?? 5;
-  const latestSnapshotsByToken = buildLatestSnapshotByToken(input.watchlistSnapshots);
   const noActionReasons = new Set<AnalysisNoActionReason>();
   const matchedSamples = {
     takeProfit: 0,
@@ -41,7 +40,11 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
   }
 
   for (const outcome of input.outcomes) {
-    const snapshot = latestSnapshotsByToken.get(outcome.tokenMint);
+    const snapshot = buildLatestSnapshotAfterExit({
+      tokenMint: outcome.tokenMint,
+      closedAt: outcome.closedAt,
+      watchlistSnapshots: input.watchlistSnapshots
+    });
     if (!snapshot || typeof snapshot.currentValueSol !== 'number') {
       continue;
     }
@@ -164,19 +167,6 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
   };
 }
 
-function buildLatestSnapshotByToken(watchlistSnapshots: WatchlistSnapshotRecord[]) {
-  const snapshots = new Map<string, WatchlistSnapshotRecord>();
-
-  for (const snapshot of watchlistSnapshots) {
-    const existing = snapshots.get(snapshot.tokenMint);
-    if (!existing || existing.observationAt < snapshot.observationAt) {
-      snapshots.set(snapshot.tokenMint, snapshot);
-    }
-  }
-
-  return snapshots;
-}
-
 function confidenceForSamples(sampleSize: number): ParameterFinding['confidence'] {
   if (sampleSize >= 5) {
     return 'high';
@@ -187,4 +177,26 @@ function confidenceForSamples(sampleSize: number): ParameterFinding['confidence'
   }
 
   return 'low';
+}
+
+function buildLatestSnapshotAfterExit(input: {
+  tokenMint: string;
+  closedAt?: string;
+  watchlistSnapshots: WatchlistSnapshotRecord[];
+}) {
+  const closedAtMs = typeof input.closedAt === 'string' ? Date.parse(input.closedAt) : Number.NaN;
+
+  return input.watchlistSnapshots
+    .filter((snapshot) => {
+      if (snapshot.tokenMint !== input.tokenMint) {
+        return false;
+      }
+
+      if (!Number.isFinite(closedAtMs)) {
+        return true;
+      }
+
+      return Date.parse(snapshot.observationAt) >= closedAtMs;
+    })
+    .sort((left, right) => right.observationAt.localeCompare(left.observationAt))[0];
 }

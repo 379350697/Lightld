@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   renderEvolutionReport,
   type CounterfactualAnalysisResult,
+  type CounterfactualReplayRecord,
+  type OutcomeReplayRecord,
   type ProposalValidationRecord
 } from '../../../src/evolution';
 
@@ -64,6 +66,8 @@ describe('renderEvolutionReport', () => {
       },
       counterfactualAnalysis: buildCounterfactualAnalysis(),
       proposalValidations: buildProposalValidations(),
+      proposalReplays: buildProposalReplays(),
+      outcomeReplays: buildOutcomeReplays(),
       parameterProposals: [
         {
           proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
@@ -94,7 +98,17 @@ describe('renderEvolutionReport', () => {
     expect(rendered.markdown).toContain('Candidate scans: 12');
     expect(rendered.markdown).toContain('Pool decision samples: 18');
     expect(rendered.markdown).toContain('Eligible counterfactual samples: 9');
+    expect(rendered.markdown).toContain('windows=1h:3@0.67/0.1800,4h:2@0.50/0.0900');
     expect(rendered.markdown).toContain('Supported validations: 1');
+    expect(rendered.markdown).toContain('Replay admitted samples: 2');
+    expect(rendered.markdown).toContain('replayWindows=4h:1@1.00/0.1200');
+    expect(rendered.markdown).toContain('replaySlices=later-half:1@1.00/0.1100');
+    expect(rendered.markdown).toContain('Outcome replayable samples: 2');
+    expect(rendered.markdown).toContain('windows=15m:2/0@0.00/n/a,1h:2/1@0.50/30.0000');
+    expect(rendered.markdown).toContain('slices=earlier-half:2/0@0.00/n/a,later-half:2/1@0.50/30.0000');
+    expect(rendered.markdown).toContain('outcomeReplay=3/2@0.67/6.2500');
+    expect(rendered.markdown).toContain('outcomeWindows=15m:2/1@0.50/4.0000,1h:2/2@1.00/7.5000');
+    expect(rendered.markdown).toContain('outcomeSlices=later-half:2/2@1.00/6.2500');
     expect(rendered.markdown).toContain('filters.minLiquidityUsd');
     expect(rendered.markdown).toContain('Evidence snapshot: all-available');
     expect(rendered.markdown).toContain('Coverage score: 0.84');
@@ -166,6 +180,8 @@ describe('renderEvolutionReport', () => {
         noActionReasons: ['insufficient_sample_size']
       },
       proposalValidations: [],
+      proposalReplays: [],
+      outcomeReplays: [],
       parameterProposals: [],
       systemProposals: [],
       noActionReasons: ['no_safe_parameter_proposal']
@@ -193,6 +209,22 @@ function buildCounterfactualAnalysis(): CounterfactualAnalysisResult {
         outperformRate: 0.8,
         averageRelativeToSelectedBaselineSol: 0.21,
         averageBestWindowValueSol: 0.62,
+        windowSummaries: [
+          {
+            windowLabel: '1h',
+            sampleCount: 3,
+            outperformCount: 2,
+            outperformRate: 0.67,
+            averageRelativeToSelectedBaselineSol: 0.18
+          },
+          {
+            windowLabel: '4h',
+            sampleCount: 2,
+            outperformCount: 1,
+            outperformRate: 0.5,
+            averageRelativeToSelectedBaselineSol: 0.09
+          }
+        ],
         sliceSummaries: [
           {
             sliceLabel: 'earlier-half',
@@ -228,7 +260,130 @@ function buildProposalValidations(): ProposalValidationRecord[] {
       recentSliceLabel: 'later-half',
       recentSliceSampleCount: 3,
       recentSliceOutperformRate: 1,
-      recentSliceAverageRelativeToSelectedBaselineSol: 0.27
+      recentSliceAverageRelativeToSelectedBaselineSol: 0.27,
+      longHorizonWindowLabel: '4h',
+      longHorizonWindowSampleCount: 2,
+      longHorizonWindowOutperformRate: 0.5,
+      longHorizonWindowAverageRelativeToSelectedBaselineSol: 0.09,
+      replayAdmittedSampleCount: 2,
+      replayPositiveRelativeSamples: 2,
+      replayAverageRelativeToSelectedBaselineSol: 0.14,
+      replayRecentSliceLabel: 'later-half',
+      replayRecentSliceSampleCount: 1,
+      replayRecentSliceOutperformRate: 1,
+      replayRecentSliceAverageRelativeToSelectedBaselineSol: 0.11,
+      replayLongHorizonWindowLabel: '4h',
+      replayLongHorizonWindowSampleCount: 1,
+      replayLongHorizonWindowOutperformRate: 1,
+      replayLongHorizonWindowAverageRelativeToSelectedBaselineSol: 0.12,
+      outcomeReplayableSampleCount: 3,
+      outcomeSupportiveSampleCount: 2,
+      outcomeSupportRate: 0.6667,
+      outcomeAverageHeadroomPct: 6.25,
+      outcomeRecentWindowLabel: '15m',
+      outcomeRecentWindowReplayableSampleCount: 2,
+      outcomeRecentWindowSupportiveSampleCount: 1,
+      outcomeRecentWindowSupportRate: 0.5,
+      outcomeRecentWindowAverageHeadroomPct: 4,
+      outcomeLongHorizonWindowLabel: '1h',
+      outcomeLongHorizonWindowReplayableSampleCount: 2,
+      outcomeLongHorizonWindowSupportiveSampleCount: 2,
+      outcomeLongHorizonWindowSupportRate: 1,
+      outcomeLongHorizonWindowAverageHeadroomPct: 7.5,
+      outcomeRecentSliceLabel: 'later-half',
+      outcomeRecentSliceReplayableSampleCount: 2,
+      outcomeRecentSliceSupportiveSampleCount: 2,
+      outcomeRecentSliceSupportRate: 1,
+      outcomeRecentSliceAverageHeadroomPct: 6.25
+    }
+  ];
+}
+
+function buildProposalReplays(): CounterfactualReplayRecord[] {
+  return [
+    {
+      proposalId: 'parameter:filters.minLiquidityUsd:2026-04-18T12:00:00.000Z',
+      targetPath: 'filters.minLiquidityUsd',
+      admittedSampleCount: 2,
+      positiveRelativeSamples: 2,
+      averageRelativeToSelectedBaselineSol: 0.14,
+      windowSummaries: [
+        {
+          windowLabel: '1h',
+          sampleCount: 2,
+          outperformCount: 2,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.16
+        },
+        {
+          windowLabel: '4h',
+          sampleCount: 1,
+          outperformCount: 1,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.12
+        }
+      ],
+      sliceSummaries: [
+        {
+          sliceLabel: 'earlier-half',
+          sampleCount: 1,
+          outperformCount: 1,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.17
+        },
+        {
+          sliceLabel: 'later-half',
+          sampleCount: 1,
+          outperformCount: 1,
+          outperformRate: 1,
+          averageRelativeToSelectedBaselineSol: 0.11
+        }
+      ]
+    }
+  ];
+}
+
+function buildOutcomeReplays(): OutcomeReplayRecord[] {
+  return [
+    {
+      proposalId: 'parameter:lpConfig.solDepletionExitBins:2026-04-18T12:00:00.000Z',
+      targetPath: 'lpConfig.solDepletionExitBins',
+      replayableSampleCount: 2,
+      supportiveSampleCount: 1,
+      supportRate: 0.5,
+      averageHeadroomPct: 9.33,
+      windowSummaries: [
+        {
+          windowLabel: '15m',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 0,
+          supportRate: 0,
+          averageHeadroomPct: null
+        },
+        {
+          windowLabel: '1h',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 1,
+          supportRate: 0.5,
+          averageHeadroomPct: 30
+        }
+      ],
+      sliceSummaries: [
+        {
+          sliceLabel: 'earlier-half',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 0,
+          supportRate: 0,
+          averageHeadroomPct: null
+        },
+        {
+          sliceLabel: 'later-half',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 1,
+          supportRate: 0.5,
+          averageHeadroomPct: 30
+        }
+      ]
     }
   ];
 }

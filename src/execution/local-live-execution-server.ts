@@ -92,12 +92,14 @@ const AccountStateSchema = z.object({
   walletTokens: z.array(z.object({
     mint: z.string(),
     symbol: z.string().optional(),
-    amount: z.number().finite()
+    amount: z.number().finite(),
+    currentValueSol: z.number().finite().nonnegative().optional()
   })).optional(),
   journalTokens: z.array(z.object({
     mint: z.string(),
     symbol: z.string().optional(),
-    amount: z.number().finite()
+    amount: z.number().finite(),
+    currentValueSol: z.number().finite().nonnegative().optional()
   })).optional(),
   fills: z.array(z.object({
     submissionId: z.string().optional(),

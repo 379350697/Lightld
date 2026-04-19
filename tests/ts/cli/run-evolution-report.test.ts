@@ -256,6 +256,8 @@ describe('runEvolutionReport', () => {
         summary: { eligibleCounterfactualSamples: number; positiveRelativeSamples: number };
         pathSummaries: Array<{ targetPath: string; outperformRate: number }>;
       };
+      proposalReplays: Array<{ targetPath: string; admittedSampleCount: number }>;
+      outcomeReplays: Array<{ targetPath: string; replayableSampleCount: number }>;
       proposalValidations: Array<{ targetPath: string; status: string }>;
       evidenceSnapshot: {
         strategyConfigPath: string;
@@ -296,6 +298,18 @@ describe('runEvolutionReport', () => {
       expect.objectContaining({
         targetPath: 'filters.minLiquidityUsd',
         status: 'mixed'
+      })
+    ]);
+    expect(reportJson.proposalReplays).toEqual([
+      expect.objectContaining({
+        targetPath: 'filters.minLiquidityUsd',
+        admittedSampleCount: 1
+      })
+    ]);
+    expect(reportJson.outcomeReplays).toEqual([
+      expect.objectContaining({
+        targetPath: 'filters.minLiquidityUsd',
+        replayableSampleCount: 0
       })
     ]);
     expect(reportJson.evidenceSnapshot.strategyConfigPath).toBe('src/config/strategies/new-token-v1.yaml');
@@ -429,6 +443,696 @@ describe('runEvolutionReport', () => {
     expect(reportJson.evidenceSnapshot.regimeScore).toBeLessThan(0.5);
     expect(reportJson.evidenceSnapshot.proposalReadinessScore).toBeLessThan(0.5);
     expect(reportJson.noActionReasons).toContain('insufficient_sample_size');
+  });
+
+  it('marks take-profit proposals as supported when outcome replay confirms post-exit headroom', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-report-outcome-replay-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+
+    await appendJsonLine(paths.candidateScansPath, {
+      scanId: 'scan-tp-1',
+      capturedAt: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      poolCount: 1,
+      prefilteredCount: 1,
+      postLpCount: 1,
+      postSafetyCount: 1,
+      eligibleSelectionCount: 1,
+      scanWindowOpen: true,
+      activePositionsCount: 0,
+      selectedTokenMint: 'mint-tp',
+      selectedPoolAddress: 'pool-tp',
+      blockedReason: '',
+      candidates: [
+        {
+          sampleId: 'cand-tp',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          cycleId: 'cycle-tp-1',
+          tokenMint: 'mint-tp',
+          tokenSymbol: 'TP',
+          poolAddress: 'pool-tp',
+          liquidityUsd: 10000,
+          holders: 120,
+          safetyScore: 82,
+          volume24h: 5000,
+          feeTvlRatio24h: 0.12,
+          binStep: 120,
+          hasInventory: false,
+          hasLpPosition: false,
+          selected: true,
+          selectionRank: 1,
+          blockedReason: '',
+          rejectionStage: 'none',
+          runtimeMode: 'healthy',
+          sessionPhase: 'active'
+        }
+      ]
+    });
+
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-tp-1',
+      trackedSince: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-tp',
+      tokenSymbol: 'TP',
+      poolAddress: 'pool-tp',
+      observationAt: '2026-04-18T01:00:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.27,
+      liquidityUsd: 12000,
+      activeBinId: null,
+      lowerBinId: null,
+      upperBinId: null,
+      binCount: null,
+      fundedBinCount: null,
+      solDepletedBins: null,
+      unclaimedFeeSol: null,
+      hasInventory: true,
+      hasLpPosition: false,
+      sourceReason: 'selected'
+    });
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-tp-2',
+      trackedSince: '2026-04-18T00:05:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-tp-2',
+      tokenSymbol: 'TP2',
+      poolAddress: 'pool-tp-2',
+      observationAt: '2026-04-18T01:05:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.31,
+      liquidityUsd: 13000,
+      activeBinId: null,
+      lowerBinId: null,
+      upperBinId: null,
+      binCount: null,
+      fundedBinCount: null,
+      solDepletedBins: null,
+      unclaimedFeeSol: null,
+      hasInventory: true,
+      hasLpPosition: false,
+      sourceReason: 'selected'
+    });
+
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-tp-1',
+      tokenMint: 'mint-tp',
+      tokenSymbol: 'TP',
+      poolAddress: 'pool-tp',
+      actualExitReason: 'take-profit-hit',
+      maxObservedUpsidePct: 31,
+      actualExitMetricValue: 0.2,
+      exitMetrics: {
+        requestedPositionSol: 0.15,
+        quoteOutputSol: 0.2
+      }
+    }));
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-tp-2',
+      tokenMint: 'mint-tp-2',
+      tokenSymbol: 'TP2',
+      poolAddress: 'pool-tp-2',
+      recordedAt: '2026-04-18T00:35:00.000Z',
+      openedAt: '2026-04-18T00:05:00.000Z',
+      closedAt: '2026-04-18T00:35:00.000Z',
+      positionId: 'position-tp-2',
+      actualExitReason: 'take-profit-hit',
+      maxObservedUpsidePct: 28,
+      actualExitMetricValue: 0.22,
+      exitMetrics: {
+        requestedPositionSol: 0.16,
+        quoteOutputSol: 0.22
+      }
+    }));
+
+    const result = await runEvolutionReport({
+      strategyId: 'new-token-v1',
+      stateRootDir
+    });
+    const reportJson = JSON.parse(await readFile(paths.reportJsonPath, 'utf8')) as {
+      parameterProposals: Array<{ targetPath: string }>;
+      outcomeReplays: Array<{ targetPath: string; replayableSampleCount: number; supportiveSampleCount: number }>;
+      proposalValidations: Array<{ targetPath: string; status: string }>;
+    };
+
+    expect(result.outputDir).toBe(paths.rootDir);
+    expect(reportJson.parameterProposals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetPath: 'riskThresholds.takeProfitPct' })
+      ])
+    );
+    expect(reportJson.outcomeReplays).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'riskThresholds.takeProfitPct',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 2
+        })
+      ])
+    );
+    expect(reportJson.proposalValidations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'riskThresholds.takeProfitPct',
+          status: 'supported'
+        })
+      ])
+    );
+  });
+
+  it('marks lp take-profit proposals as supported when lp outcome replay confirms additional pnl headroom', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-report-lp-outcome-replay-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+
+    await appendJsonLine(paths.candidateScansPath, {
+      scanId: 'scan-lp-tp-1',
+      capturedAt: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      poolCount: 1,
+      prefilteredCount: 1,
+      postLpCount: 1,
+      postSafetyCount: 1,
+      eligibleSelectionCount: 1,
+      scanWindowOpen: true,
+      activePositionsCount: 0,
+      selectedTokenMint: 'mint-lp-tp',
+      selectedPoolAddress: 'pool-lp-tp',
+      blockedReason: '',
+      candidates: [
+        {
+          sampleId: 'cand-lp-tp',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          cycleId: 'cycle-lp-tp-1',
+          tokenMint: 'mint-lp-tp',
+          tokenSymbol: 'LPTP',
+          poolAddress: 'pool-lp-tp',
+          liquidityUsd: 12000,
+          holders: 150,
+          safetyScore: 83,
+          volume24h: 6500,
+          feeTvlRatio24h: 0.15,
+          binStep: 120,
+          hasInventory: false,
+          hasLpPosition: true,
+          selected: true,
+          selectionRank: 1,
+          blockedReason: '',
+          rejectionStage: 'none',
+          runtimeMode: 'healthy',
+          sessionPhase: 'active'
+        }
+      ]
+    });
+
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-lp-tp-1',
+      trackedSince: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-lp-tp',
+      tokenSymbol: 'LPTP',
+      poolAddress: 'pool-lp-tp',
+      observationAt: '2026-04-18T01:00:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.29,
+      liquidityUsd: 13000,
+      activeBinId: 123,
+      lowerBinId: 100,
+      upperBinId: 140,
+      binCount: 41,
+      fundedBinCount: 20,
+      solDepletedBins: 12,
+      unclaimedFeeSol: 0.02,
+      hasInventory: false,
+      hasLpPosition: true,
+      sourceReason: 'lp_position'
+    });
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-lp-tp-2',
+      trackedSince: '2026-04-18T00:05:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-lp-tp-2',
+      tokenSymbol: 'LPTP2',
+      poolAddress: 'pool-lp-tp-2',
+      observationAt: '2026-04-18T01:05:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.33,
+      liquidityUsd: 13500,
+      activeBinId: 124,
+      lowerBinId: 100,
+      upperBinId: 140,
+      binCount: 41,
+      fundedBinCount: 20,
+      solDepletedBins: 10,
+      unclaimedFeeSol: 0.03,
+      hasInventory: false,
+      hasLpPosition: true,
+      sourceReason: 'lp_position'
+    });
+
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-lp-tp-1',
+      tokenMint: 'mint-lp-tp',
+      tokenSymbol: 'LPTP',
+      poolAddress: 'pool-lp-tp',
+      action: 'withdraw-lp',
+      actualExitReason: 'lp-take-profit',
+      actualExitMetricValue: 42,
+      lpTakeProfitNetPnlPctAtEntry: 30,
+      parameterSnapshot: {
+        takeProfitPct: 20,
+        stopLossPct: 12,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 20,
+        lpTakeProfitNetPnlPct: 30,
+        lpSolDepletionExitBins: 60,
+        lpMinBinStep: 100,
+        lpMinVolume24hUsd: 100000,
+        lpMinFeeTvlRatio24h: 0,
+        maxHoldHours: 10
+      },
+      exitMetrics: {
+        requestedPositionSol: 0.18,
+        lpCurrentValueSol: 0.22,
+        lpNetPnlPct: 42,
+        lpUnclaimedFeeSol: 0.01
+      }
+    }));
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-lp-tp-2',
+      tokenMint: 'mint-lp-tp-2',
+      tokenSymbol: 'LPTP2',
+      poolAddress: 'pool-lp-tp-2',
+      recordedAt: '2026-04-18T00:35:00.000Z',
+      openedAt: '2026-04-18T00:05:00.000Z',
+      closedAt: '2026-04-18T00:35:00.000Z',
+      positionId: 'position-lp-tp-2',
+      action: 'withdraw-lp',
+      actualExitReason: 'lp-take-profit',
+      actualExitMetricValue: 39,
+      lpTakeProfitNetPnlPctAtEntry: 30,
+      parameterSnapshot: {
+        takeProfitPct: 20,
+        stopLossPct: 12,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 20,
+        lpTakeProfitNetPnlPct: 30,
+        lpSolDepletionExitBins: 60,
+        lpMinBinStep: 100,
+        lpMinVolume24hUsd: 100000,
+        lpMinFeeTvlRatio24h: 0,
+        maxHoldHours: 10
+      },
+      exitMetrics: {
+        requestedPositionSol: 0.19,
+        lpCurrentValueSol: 0.24,
+        lpNetPnlPct: 39,
+        lpUnclaimedFeeSol: 0.015
+      }
+    }));
+
+    const result = await runEvolutionReport({
+      strategyId: 'new-token-v1',
+      stateRootDir
+    });
+    const reportJson = JSON.parse(await readFile(paths.reportJsonPath, 'utf8')) as {
+      parameterProposals: Array<{ targetPath: string }>;
+      outcomeReplays: Array<{ targetPath: string; replayableSampleCount: number; supportiveSampleCount: number }>;
+      proposalValidations: Array<{ targetPath: string; status: string }>;
+    };
+
+    expect(result.outputDir).toBe(paths.rootDir);
+    expect(reportJson.parameterProposals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetPath: 'lpConfig.takeProfitNetPnlPct' })
+      ])
+    );
+    expect(reportJson.outcomeReplays).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'lpConfig.takeProfitNetPnlPct',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 2
+        })
+      ])
+    );
+    expect(reportJson.proposalValidations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'lpConfig.takeProfitNetPnlPct',
+          status: 'supported'
+        })
+      ])
+    );
+  });
+
+  it('marks stop-loss proposals as supported when post-exit watchlist evidence confirms further downside', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-report-stop-loss-replay-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+
+    await appendJsonLine(paths.candidateScansPath, {
+      scanId: 'scan-sl-1',
+      capturedAt: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      poolCount: 1,
+      prefilteredCount: 1,
+      postLpCount: 1,
+      postSafetyCount: 1,
+      eligibleSelectionCount: 1,
+      scanWindowOpen: true,
+      activePositionsCount: 0,
+      selectedTokenMint: 'mint-sl-1',
+      selectedPoolAddress: 'pool-sl-1',
+      blockedReason: '',
+      candidates: [
+        {
+          sampleId: 'cand-sl-1',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          cycleId: 'cycle-sl-1',
+          tokenMint: 'mint-sl-1',
+          tokenSymbol: 'SL1',
+          poolAddress: 'pool-sl-1',
+          liquidityUsd: 10000,
+          holders: 110,
+          safetyScore: 80,
+          volume24h: 5200,
+          feeTvlRatio24h: 0.12,
+          binStep: 120,
+          hasInventory: false,
+          hasLpPosition: false,
+          selected: true,
+          selectionRank: 1,
+          blockedReason: '',
+          rejectionStage: 'none',
+          runtimeMode: 'healthy',
+          sessionPhase: 'active'
+        }
+      ]
+    });
+
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-sl-1',
+      tokenMint: 'mint-sl-1',
+      tokenSymbol: 'SL1',
+      poolAddress: 'pool-sl-1',
+      actualExitReason: 'stop-loss-hit',
+      stopLossPctAtEntry: 12,
+      exitMetrics: {
+        requestedPositionSol: 0.15,
+        quoteOutputSol: 0.16
+      }
+    }));
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-sl-2',
+      tokenMint: 'mint-sl-2',
+      tokenSymbol: 'SL2',
+      poolAddress: 'pool-sl-2',
+      recordedAt: '2026-04-18T00:35:00.000Z',
+      openedAt: '2026-04-18T00:05:00.000Z',
+      closedAt: '2026-04-18T00:35:00.000Z',
+      positionId: 'position-sl-2',
+      actualExitReason: 'stop-loss-hit',
+      stopLossPctAtEntry: 12,
+      exitMetrics: {
+        requestedPositionSol: 0.15,
+        quoteOutputSol: 0.16
+      }
+    }));
+
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-sl-1',
+      trackedSince: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-sl-1',
+      tokenSymbol: 'SL1',
+      poolAddress: 'pool-sl-1',
+      observationAt: '2026-04-18T01:00:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.1,
+      liquidityUsd: 11000,
+      activeBinId: null,
+      lowerBinId: null,
+      upperBinId: null,
+      binCount: null,
+      fundedBinCount: null,
+      solDepletedBins: null,
+      unclaimedFeeSol: null,
+      hasInventory: false,
+      hasLpPosition: false,
+      sourceReason: 'selected'
+    });
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-sl-2',
+      trackedSince: '2026-04-18T00:05:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-sl-2',
+      tokenSymbol: 'SL2',
+      poolAddress: 'pool-sl-2',
+      observationAt: '2026-04-18T01:05:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.15,
+      liquidityUsd: 10800,
+      activeBinId: null,
+      lowerBinId: null,
+      upperBinId: null,
+      binCount: null,
+      fundedBinCount: null,
+      solDepletedBins: null,
+      unclaimedFeeSol: null,
+      hasInventory: false,
+      hasLpPosition: false,
+      sourceReason: 'selected'
+    });
+
+    const result = await runEvolutionReport({
+      strategyId: 'new-token-v1',
+      stateRootDir
+    });
+    const reportJson = JSON.parse(await readFile(paths.reportJsonPath, 'utf8')) as {
+      parameterProposals: Array<{ targetPath: string }>;
+      outcomeReplays: Array<{ targetPath: string; replayableSampleCount: number; supportiveSampleCount: number }>;
+      proposalValidations: Array<{ targetPath: string; status: string }>;
+    };
+
+    expect(result.outputDir).toBe(paths.rootDir);
+    expect(reportJson.parameterProposals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetPath: 'riskThresholds.stopLossPct' })
+      ])
+    );
+    expect(reportJson.outcomeReplays).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'riskThresholds.stopLossPct',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 1
+        })
+      ])
+    );
+    expect(reportJson.proposalValidations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'riskThresholds.stopLossPct',
+          status: 'supported'
+        })
+      ])
+    );
+  });
+
+  it('marks lp stop-loss proposals as supported when post-exit lp watchlist evidence confirms further downside', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-run-evolution-report-lp-stop-loss-replay-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const paths = resolveEvolutionPaths('new-token-v1', join(stateRootDir, 'evolution'));
+
+    await appendJsonLine(paths.candidateScansPath, {
+      scanId: 'scan-lp-sl-1',
+      capturedAt: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      poolCount: 1,
+      prefilteredCount: 1,
+      postLpCount: 1,
+      postSafetyCount: 1,
+      eligibleSelectionCount: 1,
+      scanWindowOpen: true,
+      activePositionsCount: 0,
+      selectedTokenMint: 'mint-lp-sl-1',
+      selectedPoolAddress: 'pool-lp-sl-1',
+      blockedReason: '',
+      candidates: [
+        {
+          sampleId: 'cand-lp-sl-1',
+          capturedAt: '2026-04-18T00:00:00.000Z',
+          strategyId: 'new-token-v1',
+          cycleId: 'cycle-lp-sl-1',
+          tokenMint: 'mint-lp-sl-1',
+          tokenSymbol: 'LPS1',
+          poolAddress: 'pool-lp-sl-1',
+          liquidityUsd: 12000,
+          holders: 118,
+          safetyScore: 82,
+          volume24h: 5400,
+          feeTvlRatio24h: 0.13,
+          binStep: 120,
+          hasInventory: false,
+          hasLpPosition: true,
+          selected: true,
+          selectionRank: 1,
+          blockedReason: '',
+          rejectionStage: 'none',
+          runtimeMode: 'healthy',
+          sessionPhase: 'active'
+        }
+      ]
+    });
+
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-lp-sl-1',
+      tokenMint: 'mint-lp-sl-1',
+      tokenSymbol: 'LPS1',
+      poolAddress: 'pool-lp-sl-1',
+      action: 'withdraw-lp',
+      actualExitReason: 'lp-stop-loss',
+      lpStopLossNetPnlPctAtEntry: 20,
+      actualExitMetricValue: -24,
+      parameterSnapshot: {
+        takeProfitPct: 20,
+        stopLossPct: 12,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 20,
+        lpTakeProfitNetPnlPct: 30,
+        lpSolDepletionExitBins: 60,
+        lpMinBinStep: 100,
+        lpMinVolume24hUsd: 100000,
+        lpMinFeeTvlRatio24h: 0,
+        maxHoldHours: 10
+      },
+      exitMetrics: {
+        requestedPositionSol: 0.15,
+        lpCurrentValueSol: 0.08,
+        lpNetPnlPct: -24,
+        lpUnclaimedFeeSol: 0.01
+      }
+    }));
+    await appendJsonLine(paths.positionOutcomesPath, buildOutcomeRecord({
+      cycleId: 'cycle-lp-sl-2',
+      tokenMint: 'mint-lp-sl-2',
+      tokenSymbol: 'LPS2',
+      poolAddress: 'pool-lp-sl-2',
+      recordedAt: '2026-04-18T00:35:00.000Z',
+      openedAt: '2026-04-18T00:05:00.000Z',
+      closedAt: '2026-04-18T00:35:00.000Z',
+      positionId: 'position-lp-sl-2',
+      action: 'withdraw-lp',
+      actualExitReason: 'lp-stop-loss',
+      lpStopLossNetPnlPctAtEntry: 20,
+      actualExitMetricValue: -21,
+      parameterSnapshot: {
+        takeProfitPct: 20,
+        stopLossPct: 12,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 20,
+        lpTakeProfitNetPnlPct: 30,
+        lpSolDepletionExitBins: 60,
+        lpMinBinStep: 100,
+        lpMinVolume24hUsd: 100000,
+        lpMinFeeTvlRatio24h: 0,
+        maxHoldHours: 10
+      },
+      exitMetrics: {
+        requestedPositionSol: 0.15,
+        lpCurrentValueSol: 0.08,
+        lpNetPnlPct: -21,
+        lpUnclaimedFeeSol: 0.01
+      }
+    }));
+
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-lp-sl-1',
+      trackedSince: '2026-04-18T00:00:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-lp-sl-1',
+      tokenSymbol: 'LPS1',
+      poolAddress: 'pool-lp-sl-1',
+      observationAt: '2026-04-18T01:00:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.04,
+      liquidityUsd: 11200,
+      activeBinId: 123,
+      lowerBinId: 100,
+      upperBinId: 140,
+      binCount: 41,
+      fundedBinCount: 20,
+      solDepletedBins: 68,
+      unclaimedFeeSol: 0.01,
+      hasInventory: false,
+      hasLpPosition: true,
+      sourceReason: 'selected'
+    });
+    await appendJsonLine(paths.watchlistSnapshotsPath, {
+      watchId: 'watch-lp-sl-2',
+      trackedSince: '2026-04-18T00:05:00.000Z',
+      strategyId: 'new-token-v1',
+      tokenMint: 'mint-lp-sl-2',
+      tokenSymbol: 'LPS2',
+      poolAddress: 'pool-lp-sl-2',
+      observationAt: '2026-04-18T01:05:00.000Z',
+      windowLabel: '1h',
+      currentValueSol: 0.07,
+      liquidityUsd: 11000,
+      activeBinId: 124,
+      lowerBinId: 100,
+      upperBinId: 140,
+      binCount: 41,
+      fundedBinCount: 20,
+      solDepletedBins: 65,
+      unclaimedFeeSol: 0.01,
+      hasInventory: false,
+      hasLpPosition: true,
+      sourceReason: 'selected'
+    });
+
+    const result = await runEvolutionReport({
+      strategyId: 'new-token-v1',
+      stateRootDir
+    });
+    const reportJson = JSON.parse(await readFile(paths.reportJsonPath, 'utf8')) as {
+      parameterProposals: Array<{ targetPath: string }>;
+      outcomeReplays: Array<{ targetPath: string; replayableSampleCount: number; supportiveSampleCount: number }>;
+      proposalValidations: Array<{ targetPath: string; status: string }>;
+    };
+
+    expect(result.outputDir).toBe(paths.rootDir);
+    expect(reportJson.parameterProposals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetPath: 'lpConfig.stopLossNetPnlPct' })
+      ])
+    );
+    expect(reportJson.outcomeReplays).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'lpConfig.stopLossNetPnlPct',
+          replayableSampleCount: 2,
+          supportiveSampleCount: 1
+        })
+      ])
+    );
+    expect(reportJson.proposalValidations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetPath: 'lpConfig.stopLossNetPnlPct',
+          status: 'supported'
+        })
+      ])
+    );
   });
 
   it('marks approved proposals as needs_more_data when the live config has not actually moved to the proposed value', async () => {
@@ -1201,3 +1905,43 @@ describe('runEvolutionReport', () => {
     ]));
   });
 });
+
+function buildOutcomeRecord(overrides: Record<string, unknown>) {
+  return {
+    cycleId: 'cycle-1',
+    strategyId: 'new-token-v1',
+    recordedAt: '2026-04-18T00:30:00.000Z',
+    tokenMint: 'mint-tp',
+    tokenSymbol: 'TP',
+    poolAddress: 'pool-tp',
+    runtimeMode: 'healthy',
+    sessionPhase: 'active',
+    positionId: 'position-tp-1',
+    action: 'dca-out',
+    actualExitReason: 'take-profit-hit',
+    openedAt: '2026-04-18T00:00:00.000Z',
+    closedAt: '2026-04-18T00:30:00.000Z',
+    entrySol: 0.15,
+    maxObservedUpsidePct: 31,
+    maxObservedDrawdownPct: 0,
+    actualExitMetricValue: 0.2,
+    takeProfitPctAtEntry: 20,
+    stopLossPctAtEntry: 12,
+    lpStopLossNetPnlPctAtEntry: 20,
+    lpTakeProfitNetPnlPctAtEntry: 30,
+    solDepletionExitBinsAtEntry: 60,
+    minBinStepAtEntry: 100,
+    liveOrderSubmitted: true,
+    parameterSnapshot: {
+      takeProfitPct: 20,
+      stopLossPct: 12,
+      lpEnabled: false,
+      maxHoldHours: 10
+    },
+    exitMetrics: {
+      requestedPositionSol: 0.15,
+      quoteOutputSol: 0.2
+    },
+    ...overrides
+  };
+}

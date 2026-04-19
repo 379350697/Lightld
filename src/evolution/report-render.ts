@@ -4,8 +4,10 @@ import type {
   EvolutionStrategyId,
   ParameterProposalRecord
 } from './types.ts';
+import type { CounterfactualReplayRecord } from './counterfactual-replay.ts';
 import type { FilterAnalysisResult } from './filter-analysis.ts';
 import type { OutcomeAnalysisResult } from './outcome-analysis.ts';
+import type { OutcomeReplayRecord } from './outcome-replay.ts';
 import type { ProposalValidationRecord } from './proposal-validator.ts';
 
 export type EvolutionReport = {
@@ -22,6 +24,8 @@ export type EvolutionReport = {
   outcomeAnalysis: OutcomeAnalysisResult;
   counterfactualAnalysis: CounterfactualAnalysisResult;
   proposalValidations: ProposalValidationRecord[];
+  proposalReplays: CounterfactualReplayRecord[];
+  outcomeReplays: OutcomeReplayRecord[];
   parameterProposals: ParameterProposalRecord[];
   systemProposals: ParameterProposalRecord[];
   noActionReasons: AnalysisNoActionReason[];
@@ -88,8 +92,57 @@ export function renderEvolutionReport(report: EvolutionReport) {
           `${slice.sliceLabel}:${slice.sampleCount}@${slice.outperformRate.toFixed(2)}/${slice.averageRelativeToSelectedBaselineSol.toFixed(4)}`
         ).join(',')}`
         : '';
+      const windowSuffix = summary.windowSummaries.length > 0
+        ? ` windows=${summary.windowSummaries.map((windowSummary) =>
+          `${windowSummary.windowLabel}:${windowSummary.sampleCount}@${windowSummary.outperformRate.toFixed(2)}/${windowSummary.averageRelativeToSelectedBaselineSol.toFixed(4)}`
+        ).join(',')}`
+        : '';
       lines.push(
-        `- ${summary.targetPath}: ${summary.blockedReason} samples=${summary.sampleCount} outperformRate=${summary.outperformRate.toFixed(2)} avgRelative=${summary.averageRelativeToSelectedBaselineSol.toFixed(4)}${sliceSuffix}`
+        `- ${summary.targetPath}: ${summary.blockedReason} samples=${summary.sampleCount} outperformRate=${summary.outperformRate.toFixed(2)} avgRelative=${summary.averageRelativeToSelectedBaselineSol.toFixed(4)}${windowSuffix}${sliceSuffix}`
+      );
+    }
+  }
+  lines.push('');
+
+  lines.push('## Proposal Replay');
+  const totalReplayAdmissions = report.proposalReplays.reduce((sum, replay) => sum + replay.admittedSampleCount, 0);
+  lines.push(`Replay admitted samples: ${totalReplayAdmissions}`);
+  if (report.proposalReplays.length > 0) {
+    for (const replay of report.proposalReplays) {
+      const replayWindowSuffix = replay.windowSummaries.length > 0
+        ? ` windows=${replay.windowSummaries.map((windowSummary) =>
+          `${windowSummary.windowLabel}:${windowSummary.sampleCount}@${windowSummary.outperformRate.toFixed(2)}/${windowSummary.averageRelativeToSelectedBaselineSol.toFixed(4)}`
+        ).join(',')}`
+        : '';
+      const replaySliceSuffix = replay.sliceSummaries.length > 0
+        ? ` slices=${replay.sliceSummaries.map((sliceSummary) =>
+          `${sliceSummary.sliceLabel}:${sliceSummary.sampleCount}@${sliceSummary.outperformRate.toFixed(2)}/${sliceSummary.averageRelativeToSelectedBaselineSol.toFixed(4)}`
+        ).join(',')}`
+        : '';
+      lines.push(
+        `- ${replay.targetPath}: admitted=${replay.admittedSampleCount} positive=${replay.positiveRelativeSamples} avgRelative=${typeof replay.averageRelativeToSelectedBaselineSol === 'number' ? replay.averageRelativeToSelectedBaselineSol.toFixed(4) : 'n/a'}${replayWindowSuffix}${replaySliceSuffix}`
+      );
+    }
+  }
+  lines.push('');
+
+  lines.push('## Outcome Replay');
+  const totalOutcomeReplaySamples = report.outcomeReplays.reduce((sum, replay) => sum + replay.replayableSampleCount, 0);
+  lines.push(`Outcome replayable samples: ${totalOutcomeReplaySamples}`);
+  if (report.outcomeReplays.length > 0) {
+    for (const replay of report.outcomeReplays) {
+      const outcomeWindowSuffix = replay.windowSummaries.length > 0
+        ? ` windows=${replay.windowSummaries.map((windowSummary) =>
+          `${windowSummary.windowLabel}:${windowSummary.replayableSampleCount}/${windowSummary.supportiveSampleCount}@${windowSummary.supportRate.toFixed(2)}/${typeof windowSummary.averageHeadroomPct === 'number' ? windowSummary.averageHeadroomPct.toFixed(4) : 'n/a'}`
+        ).join(',')}`
+        : '';
+      const outcomeSliceSuffix = replay.sliceSummaries.length > 0
+        ? ` slices=${replay.sliceSummaries.map((sliceSummary) =>
+          `${sliceSummary.sliceLabel}:${sliceSummary.replayableSampleCount}/${sliceSummary.supportiveSampleCount}@${sliceSummary.supportRate.toFixed(2)}/${typeof sliceSummary.averageHeadroomPct === 'number' ? sliceSummary.averageHeadroomPct.toFixed(4) : 'n/a'}`
+        ).join(',')}`
+        : '';
+      lines.push(
+        `- ${replay.targetPath}: replayable=${replay.replayableSampleCount} supportive=${replay.supportiveSampleCount} supportRate=${replay.supportRate.toFixed(2)} avgHeadroom=${typeof replay.averageHeadroomPct === 'number' ? replay.averageHeadroomPct.toFixed(4) : 'n/a'}${outcomeWindowSuffix}${outcomeSliceSuffix}`
       );
     }
   }
@@ -103,8 +156,33 @@ export function renderEvolutionReport(report: EvolutionReport) {
       const recentSliceSuffix = validation.recentSliceLabel
         ? ` recent=${validation.recentSliceLabel}:${validation.recentSliceSampleCount}@${(validation.recentSliceOutperformRate ?? 0).toFixed(2)}/${(validation.recentSliceAverageRelativeToSelectedBaselineSol ?? 0).toFixed(4)}`
         : '';
+      const longHorizonSuffix = validation.longHorizonWindowLabel
+        ? ` long=${validation.longHorizonWindowLabel}:${validation.longHorizonWindowSampleCount}@${(validation.longHorizonWindowOutperformRate ?? 0).toFixed(2)}/${(validation.longHorizonWindowAverageRelativeToSelectedBaselineSol ?? 0).toFixed(4)}`
+        : '';
+      const replaySuffix = validation.replayAdmittedSampleCount > 0 || validation.replayAverageRelativeToSelectedBaselineSol !== null
+        ? ` replay=${validation.replayAdmittedSampleCount}/${validation.replayPositiveRelativeSamples}@${(validation.replayAverageRelativeToSelectedBaselineSol ?? 0).toFixed(4)}`
+        : '';
+      const replayWindowSuffix = validation.replayLongHorizonWindowLabel
+        ? ` replayWindows=${validation.replayLongHorizonWindowLabel}:${validation.replayLongHorizonWindowSampleCount}@${(validation.replayLongHorizonWindowOutperformRate ?? 0).toFixed(2)}/${(validation.replayLongHorizonWindowAverageRelativeToSelectedBaselineSol ?? 0).toFixed(4)}`
+        : '';
+      const replaySliceSuffix = validation.replayRecentSliceLabel
+        ? ` replaySlices=${validation.replayRecentSliceLabel}:${validation.replayRecentSliceSampleCount}@${(validation.replayRecentSliceOutperformRate ?? 0).toFixed(2)}/${(validation.replayRecentSliceAverageRelativeToSelectedBaselineSol ?? 0).toFixed(4)}`
+        : '';
+      const outcomeReplaySuffix = validation.outcomeReplayableSampleCount > 0 || validation.outcomeAverageHeadroomPct !== null
+        ? ` outcomeReplay=${validation.outcomeReplayableSampleCount}/${validation.outcomeSupportiveSampleCount}@${(validation.outcomeSupportRate ?? 0).toFixed(2)}/${(validation.outcomeAverageHeadroomPct ?? 0).toFixed(4)}`
+        : '';
+      const outcomeWindowSuffix = validation.outcomeRecentWindowLabel || validation.outcomeLongHorizonWindowLabel
+        ? ` outcomeWindows=${validation.outcomeRecentWindowLabel
+            ? `${validation.outcomeRecentWindowLabel}:${validation.outcomeRecentWindowReplayableSampleCount}/${validation.outcomeRecentWindowSupportiveSampleCount}@${(validation.outcomeRecentWindowSupportRate ?? 0).toFixed(2)}/${(validation.outcomeRecentWindowAverageHeadroomPct ?? 0).toFixed(4)}`
+            : 'none'}${validation.outcomeLongHorizonWindowLabel
+            ? `,${validation.outcomeLongHorizonWindowLabel}:${validation.outcomeLongHorizonWindowReplayableSampleCount}/${validation.outcomeLongHorizonWindowSupportiveSampleCount}@${(validation.outcomeLongHorizonWindowSupportRate ?? 0).toFixed(2)}/${(validation.outcomeLongHorizonWindowAverageHeadroomPct ?? 0).toFixed(4)}`
+            : ''}`
+        : '';
+      const outcomeSliceSuffix = validation.outcomeRecentSliceLabel
+        ? ` outcomeSlices=${validation.outcomeRecentSliceLabel}:${validation.outcomeRecentSliceReplayableSampleCount}/${validation.outcomeRecentSliceSupportiveSampleCount}@${(validation.outcomeRecentSliceSupportRate ?? 0).toFixed(2)}/${(validation.outcomeRecentSliceAverageHeadroomPct ?? 0).toFixed(4)}`
+        : '';
       lines.push(
-        `- ${validation.targetPath}: ${validation.status} (${validation.note})${recentSliceSuffix}`
+        `- ${validation.targetPath}: ${validation.status} (${validation.note})${recentSliceSuffix}${longHorizonSuffix}${replaySuffix}${replayWindowSuffix}${replaySliceSuffix}${outcomeReplaySuffix}${outcomeWindowSuffix}${outcomeSliceSuffix}`
       );
     }
   }

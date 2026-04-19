@@ -15,7 +15,11 @@ describe('analyzeCounterfactualSamples', () => {
         relativeToSelectedBaselineSol: 0.32,
         bestWindowLabel: '1h',
         latestValueSol: 0.7,
-        bestWindowValueSol: 0.82
+        bestWindowValueSol: 0.82,
+        relativeToSelectedBaselineByWindowLabel: {
+          '1h': 0.32,
+          '4h': 0.17
+        }
       }),
       buildSample({
         sampleId: 'cand-liq-2',
@@ -24,16 +28,24 @@ describe('analyzeCounterfactualSamples', () => {
         relativeToSelectedBaselineSol: -0.08,
         bestWindowLabel: '4h',
         latestValueSol: 0.11,
-        bestWindowValueSol: 0.14
+        bestWindowValueSol: 0.14,
+        relativeToSelectedBaselineByWindowLabel: {
+          '1h': -0.08,
+          '4h': -0.08
+        }
       }),
       buildSample({
         sampleId: 'cand-bin-1',
         tokenMint: 'mint-bin-1',
         blockedReason: 'min-bin-step',
         relativeToSelectedBaselineSol: 0.18,
-        bestWindowLabel: '1h',
+        bestWindowLabel: '24h',
         latestValueSol: 0.39,
-        bestWindowValueSol: 0.48
+        bestWindowValueSol: 0.48,
+        relativeToSelectedBaselineByWindowLabel: {
+          '1h': 0.18,
+          '24h': 0.24
+        }
       }),
       buildSample({
         sampleId: 'cand-selected',
@@ -65,6 +77,20 @@ describe('analyzeCounterfactualSamples', () => {
         outperformCount: 1,
         outperformRate: 0.5,
         averageRelativeToSelectedBaselineSol: 0.12,
+        windowSummaries: [
+          expect.objectContaining({
+            windowLabel: '1h',
+            sampleCount: 2,
+            outperformRate: 0.5,
+            averageRelativeToSelectedBaselineSol: 0.12
+          }),
+          expect.objectContaining({
+            windowLabel: '4h',
+            sampleCount: 2,
+            outperformRate: 0.5,
+            averageRelativeToSelectedBaselineSol: 0.045
+          })
+        ],
         sliceSummaries: [
           expect.objectContaining({
             sliceLabel: 'earlier-half',
@@ -87,6 +113,20 @@ describe('analyzeCounterfactualSamples', () => {
         outperformCount: 1,
         outperformRate: 1,
         averageRelativeToSelectedBaselineSol: 0.18,
+        windowSummaries: [
+          expect.objectContaining({
+            windowLabel: '1h',
+            sampleCount: 1,
+            outperformRate: 1,
+            averageRelativeToSelectedBaselineSol: 0.18
+          }),
+          expect.objectContaining({
+            windowLabel: '24h',
+            sampleCount: 1,
+            outperformRate: 1,
+            averageRelativeToSelectedBaselineSol: 0.24
+          })
+        ],
         sliceSummaries: [
           expect.objectContaining({
             sliceLabel: 'all-observed',
@@ -136,6 +176,7 @@ function buildSample(input: {
   bestWindowLabel?: string | null;
   latestValueSol?: number | null;
   bestWindowValueSol?: number | null;
+  relativeToSelectedBaselineByWindowLabel?: Record<string, number | null>;
 }): PoolDecisionSampleRecord {
   return {
     sampleId: input.sampleId,
@@ -171,9 +212,14 @@ function buildSample(input: {
       minObservedValueSol: input.latestValueSol ?? null,
       bestWindowLabel: input.bestWindowLabel ?? null,
       bestWindowValueSol: input.bestWindowValueSol ?? input.latestValueSol ?? null,
-      forwardValueByWindowLabel: input.bestWindowLabel
-        ? { [input.bestWindowLabel]: input.bestWindowValueSol ?? input.latestValueSol ?? null }
-        : {},
+      forwardValueByWindowLabel: Object.fromEntries(
+        Object.keys(input.relativeToSelectedBaselineByWindowLabel ?? {}).map((windowLabel) => [
+          windowLabel,
+          input.bestWindowLabel === windowLabel
+            ? (input.bestWindowValueSol ?? input.latestValueSol ?? null)
+            : input.latestValueSol ?? null
+        ])
+      ),
       latestLiquidityUsd: 1200,
       hasInventoryFollowThrough: false,
       hasLpPositionFollowThrough: false,
@@ -184,6 +230,15 @@ function buildSample(input: {
     counterfactual: {
       selectedBaselineValueSol: 0.2,
       relativeToSelectedBaselineSol: input.relativeToSelectedBaselineSol,
+      selectedBaselineValueByWindowLabel: {
+        ...Object.fromEntries(
+          Object.keys(input.relativeToSelectedBaselineByWindowLabel ?? {}).map((windowLabel) => [windowLabel, 0.2])
+        )
+      },
+      relativeToSelectedBaselineByWindowLabel: input.relativeToSelectedBaselineByWindowLabel ?? {},
+      bestRelativeWindowLabel: input.bestWindowLabel ?? null,
+      bestRelativeWindowValueSol:
+        input.relativeToSelectedBaselineByWindowLabel?.[input.bestWindowLabel ?? ''] ?? input.relativeToSelectedBaselineSol,
       outperformedSelectedBaseline:
         typeof input.relativeToSelectedBaselineSol === 'number'
           ? input.relativeToSelectedBaselineSol > 0

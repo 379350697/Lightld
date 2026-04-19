@@ -139,10 +139,10 @@ describe('runLiveDaemon', () => {
             walletSol: 1.25,
             journalSol: 1.25,
             walletTokens: [
-              { mint: 'mint-wallet', symbol: 'WAL', amount: 2 }
+              { mint: 'mint-wallet', symbol: 'WAL', amount: 2, currentValueSol: 0.27 }
             ],
             journalTokens: [
-              { mint: 'mint-wallet', symbol: 'WAL', amount: 2 }
+              { mint: 'mint-wallet', symbol: 'WAL', amount: 2, currentValueSol: 0.27 }
             ],
             walletLpPositions: [
               {
@@ -209,6 +209,11 @@ describe('runLiveDaemon', () => {
             windowLabel: '1h',
             currentValueSol: 0.4,
             unclaimedFeeSol: 0.02
+          }),
+          expect.objectContaining({
+            tokenMint: 'mint-wallet',
+            windowLabel: '1h',
+            currentValueSol: 0.27
           })
         ])
       );

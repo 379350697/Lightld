@@ -15,11 +15,20 @@ export type CounterfactualPathSummary = {
   outperformRate: number;
   averageRelativeToSelectedBaselineSol: number;
   averageBestWindowValueSol: number | null;
+  windowSummaries: CounterfactualWindowSummary[];
   sliceSummaries: CounterfactualSliceSummary[];
 };
 
 export type CounterfactualSliceSummary = {
   sliceLabel: string;
+  sampleCount: number;
+  outperformCount: number;
+  outperformRate: number;
+  averageRelativeToSelectedBaselineSol: number;
+};
+
+export type CounterfactualWindowSummary = {
+  windowLabel: string;
   sampleCount: number;
   outperformCount: number;
   outperformRate: number;
@@ -95,6 +104,7 @@ export function analyzeCounterfactualSamples(input: {
         averageBestWindowValueSol: bestWindowValues.length > 0
           ? roundMetric(bestWindowValues.reduce((sum, value) => sum + value, 0) / bestWindowValues.length)
           : null,
+        windowSummaries: buildWindowSummaries(samples),
         sliceSummaries: buildSliceSummaries(samples)
       } satisfies CounterfactualPathSummary;
     })
@@ -115,6 +125,37 @@ export function analyzeCounterfactualSamples(input: {
 
 function roundMetric(value: number) {
   return Math.round(value * 10000) / 10000;
+}
+
+function buildWindowSummaries(samples: PoolDecisionSampleRecord[]): CounterfactualWindowSummary[] {
+  const grouped = new Map<string, number[]>();
+
+  for (const sample of samples) {
+    for (const [windowLabel, value] of Object.entries(sample.counterfactual.relativeToSelectedBaselineByWindowLabel)) {
+      if (typeof value !== 'number') {
+        continue;
+      }
+
+      const bucket = grouped.get(windowLabel) ?? [];
+      bucket.push(value);
+      grouped.set(windowLabel, bucket);
+    }
+  }
+
+  return [...grouped.entries()]
+    .map(([windowLabel, values]) => {
+      const outperformCount = values.filter((value) => value > 0).length;
+      return {
+        windowLabel,
+        sampleCount: values.length,
+        outperformCount,
+        outperformRate: roundMetric(outperformCount / Math.max(1, values.length)),
+        averageRelativeToSelectedBaselineSol: roundMetric(
+          values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)
+        )
+      } satisfies CounterfactualWindowSummary;
+    })
+    .sort((left, right) => left.windowLabel.localeCompare(right.windowLabel));
 }
 
 function buildSliceSummaries(samples: PoolDecisionSampleRecord[]): CounterfactualSliceSummary[] {

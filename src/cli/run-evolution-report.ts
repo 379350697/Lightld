@@ -17,6 +17,8 @@ import {
   type ParameterProposalRecord,
   type ProposalValidationRecord,
   PoolDecisionSampleStore,
+  replayParameterProposals,
+  replayOutcomeProposals,
   validateParameterProposals,
   generateEvolutionProposals,
   loadEvolutionEvidence,
@@ -144,9 +146,20 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
     samples: poolDecisionSamples,
     minimumSampleSize
   });
+  const proposalReplays = replayParameterProposals({
+    proposals: proposals.parameterProposals,
+    samples: poolDecisionSamples
+  });
+  const outcomeReplays = replayOutcomeProposals({
+    proposals: proposals.parameterProposals,
+    outcomes: evidence.outcomes,
+    watchlistSnapshots: evidence.watchlistSnapshots
+  });
   const proposalValidations = validateParameterProposals({
     proposals: proposals.parameterProposals,
-    counterfactualAnalysis
+    counterfactualAnalysis,
+    proposalReplays,
+    outcomeReplays
   });
   const evidenceSnapshot = buildEvidenceSnapshot({
     strategyId: args.strategyId,
@@ -181,6 +194,8 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
     outcomeAnalysis,
     counterfactualAnalysis,
     proposalValidations,
+    proposalReplays,
+    outcomeReplays,
     parameterProposals: proposals.parameterProposals,
     systemProposals: proposals.systemProposals,
     noActionReasons: proposals.noActionReasons
@@ -200,6 +215,7 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
   );
   await emitPatchDrafts({
     patchDraftsDir: paths.patchDraftsDir,
+    reportJsonPath: paths.reportJsonPath,
     baselineConfigPath: strategyConfigPathFor(args.strategyId),
     proposals: proposals.parameterProposals,
     proposalValidations
@@ -229,6 +245,7 @@ export async function runEvolutionReport(args: RunEvolutionReportArgs) {
 
 async function emitPatchDrafts(input: {
   patchDraftsDir: string;
+  reportJsonPath: string;
   baselineConfigPath: string;
   proposals: ParameterProposalRecord[];
   proposalValidations: ProposalValidationRecord[];
@@ -255,12 +272,12 @@ async function emitPatchDrafts(input: {
     await writeFile(join(input.patchDraftsDir, `${safeName}.yaml`), `${patchDraft.patchYaml}\n`, 'utf8');
     await writeJsonAtomically(
       join(input.patchDraftsDir, `${safeName}.meta.json`),
-      {
-        ...patchDraft.metadata,
-        proposalId: proposal.proposalId,
-        reportPath: input.patchDraftsDir
-      }
-    );
+        {
+          ...patchDraft.metadata,
+          proposalId: proposal.proposalId,
+          reportPath: input.reportJsonPath
+        }
+      );
   }
 }
 

@@ -186,7 +186,11 @@ function buildWatchlistSnapshot(input: {
     poolAddress: input.trackedToken.poolAddress,
     observationAt: input.observationAt,
     windowLabel: input.windowLabel,
-    currentValueSol: typeof lpPosition?.currentValueSol === 'number' ? lpPosition.currentValueSol : null,
+    currentValueSol: resolveTrackedCurrentValueSol({
+      walletToken,
+      journalToken,
+      lpPosition
+    }),
     liquidityUsd: typeof contextPool.liquidityUsd === 'number' ? contextPool.liquidityUsd : null,
     activeBinId: typeof lpPosition?.activeBinId === 'number' ? lpPosition.activeBinId : null,
     lowerBinId: typeof lpPosition?.lowerBinId === 'number' ? lpPosition.lowerBinId : null,
@@ -199,6 +203,26 @@ function buildWatchlistSnapshot(input: {
     hasLpPosition: Boolean(lpPosition),
     sourceReason: input.trackedToken.sourceReason
   };
+}
+
+function resolveTrackedCurrentValueSol(input: {
+  walletToken?: { currentValueSol?: number } | undefined;
+  journalToken?: { currentValueSol?: number } | undefined;
+  lpPosition?: { currentValueSol?: number } | undefined;
+}) {
+  if (typeof input.lpPosition?.currentValueSol === 'number') {
+    return input.lpPosition.currentValueSol;
+  }
+
+  if (typeof input.walletToken?.currentValueSol === 'number') {
+    return input.walletToken.currentValueSol;
+  }
+
+  if (typeof input.journalToken?.currentValueSol === 'number') {
+    return input.journalToken.currentValueSol;
+  }
+
+  return null;
 }
 
 async function updateEvolutionWatchlistBestEffort(input: {

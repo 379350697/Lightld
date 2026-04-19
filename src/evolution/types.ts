@@ -94,7 +94,11 @@ export type PoolDecisionSampleFuturePath = z.infer<typeof PoolDecisionSampleFutu
 
 export const PoolDecisionSampleCounterfactualSchema = z.object({
   selectedBaselineValueSol: z.number().finite().nonnegative().nullable().default(null),
+  selectedBaselineValueByWindowLabel: z.record(z.string(), z.number().finite().nonnegative().nullable()).default({}),
   relativeToSelectedBaselineSol: z.number().finite().nullable().default(null),
+  relativeToSelectedBaselineByWindowLabel: z.record(z.string(), z.number().finite().nullable()).default({}),
+  bestRelativeWindowLabel: z.string().nullable().default(null),
+  bestRelativeWindowValueSol: z.number().finite().nullable().default(null),
   outperformedSelectedBaseline: z.boolean().nullable().default(null)
 });
 export type PoolDecisionSampleCounterfactual = z.infer<typeof PoolDecisionSampleCounterfactualSchema>;
@@ -123,11 +127,20 @@ export type CounterfactualPathSummary = {
   outperformRate: number;
   averageRelativeToSelectedBaselineSol: number;
   averageBestWindowValueSol: number | null;
+  windowSummaries: CounterfactualWindowSummary[];
   sliceSummaries: CounterfactualSliceSummary[];
 };
 
 export type CounterfactualSliceSummary = {
   sliceLabel: string;
+  sampleCount: number;
+  outperformCount: number;
+  outperformRate: number;
+  averageRelativeToSelectedBaselineSol: number;
+};
+
+export type CounterfactualWindowSummary = {
+  windowLabel: string;
   sampleCount: number;
   outperformCount: number;
   outperformRate: number;
