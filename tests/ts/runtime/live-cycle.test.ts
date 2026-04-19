@@ -82,6 +82,41 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0].cycleId).toBe(orderJournal[0].cycleId);
   });
 
+  it('writes confirmed LP fills with canonical and compatibility amount fields', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: '2026-04-20T00:00:02.000Z'
+        })
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+
+    expect(result.action).toBe('add-lp');
+    expect(fillJournal[0]).toMatchObject({
+      side: 'add-lp',
+      status: 'confirmed',
+      confirmationStatus: 'confirmed',
+      amount: 0.05,
+      filledSol: 0.05
+    });
+  });
+
   it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
     const outcomes: LiveCycleOutcomeRecord[] = [];
 
@@ -820,5 +855,62 @@ describe('runLiveCycle', () => {
 
     expect(result.action).toBe('hold');
     expect(result.reason).toContain('valuation-unavailable');
+  });
+
+  it('records an incident when an open LP position is missing entry metadata', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-gap',
+        activePoolAddress: 'pool-gap',
+        lifecycleState: 'open',
+        updatedAt: '2026-04-20T00:00:00.000Z'
+      } as any,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-gap',
+            positionAddress: 'pos-gap',
+            mint: 'mint-gap',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 110,
+            solSide: 'tokenX',
+            solDepletedBins: 0,
+            currentValueSol: 0.051,
+            unclaimedFeeSol: 0.001,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+
+    expect(result.action).toBe('hold');
+    expect(incidentJournal).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'runtime-policy',
+        severity: 'warning',
+        reason: 'lp-position-missing-entry-metadata:mint-gap'
+      })
+    ]));
   });
 });

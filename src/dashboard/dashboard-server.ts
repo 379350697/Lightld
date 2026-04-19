@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
+import { normalizeDashboardJournalFill } from './fill-normalization.ts';
 import { buildCashflowMetrics, buildEquityMetrics } from './dashboard-metrics.ts';
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
@@ -500,16 +501,7 @@ async function handleFills() {
   }
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
-  return journalRows.reverse().map(r => ({
-    fillId: String(r.fillId ?? r.submissionId ?? r.cycleId ?? ''),
-    submissionId: String(r.submissionId ?? ''),
-    tokenMint: String(r.tokenMint ?? ''),
-    tokenSymbol: String(r.tokenSymbol ?? ''),
-    side: String(r.side ?? 'unknown'),
-    amount: Number(r.amount ?? 0),
-    filledSol: Number(r.filledSol ?? 0),
-    recordedAt: String(r.recordedAt ?? ''),
-  }));
+  return journalRows.reverse().map((row) => normalizeDashboardJournalFill(row));
 }
 
 type IncidentRow = {

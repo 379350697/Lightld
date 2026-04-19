@@ -1444,6 +1444,39 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     logContext.tokenSymbol = tokenSymbol;
   }
 
+  const matchedActiveLpPosition = [
+    ...(accountState?.walletLpPositions ?? []),
+    ...(accountState?.journalLpPositions ?? [])
+  ].find((position) => {
+    if (!isManageableLpPosition(position)) {
+      return false;
+    }
+
+    if (
+      typeof input.positionState?.chainPositionAddress === 'string'
+      && input.positionState.chainPositionAddress.length > 0
+    ) {
+      return position.positionAddress === input.positionState.chainPositionAddress;
+    }
+
+    return position.mint === input.positionState?.activeMint
+      && position.poolAddress === input.positionState?.activePoolAddress;
+  });
+
+  if (
+    config.poolClass === 'new-token'
+    && currentLifecycleState === 'open'
+    && matchedActiveLpPosition
+    && (!input.positionState?.entrySol || !input.positionState?.openedAt)
+  ) {
+    await appendIncident(journals, logContext, mirrorSink, {
+      stage: 'runtime-policy',
+      severity: 'warning',
+      reason: `lp-position-missing-entry-metadata:${matchedActiveLpPosition.mint || activeMint || 'unknown'}`,
+      submissionId: pendingSubmission?.submissionId
+    });
+  }
+
   if (
     currentLifecycleState === 'open_pending' &&
     pendingSubmission &&
@@ -2105,6 +2138,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     mint: logContext.tokenMint,
     symbol: tokenSymbol,
     side: actionableAction,
+    amount: mirroredFilledSol,
     filledSol: mirroredFilledSol,
     status: mirroredFillStatus,
     confirmationStatus: confirmation.status,
