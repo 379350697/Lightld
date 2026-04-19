@@ -43,6 +43,7 @@ describe('createSolanaExecutionServer', () => {
   });
 
   it('broadcasts every tx returned by Meteora open batches and returns every tracked signature', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     const keypair = Keypair.generate();
     const newPositionKeypair = Keypair.generate();
     const transactions = [
@@ -102,6 +103,13 @@ describe('createSolanaExecutionServer', () => {
       newPositionKeypair.publicKey.toBase58()
     ]);
     expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"event":"solana-execution-broadcast"');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"side":"add-lp"');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"result":"submitted"');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"buildMs":');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"blockhashMs":');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"sendTxMs":[');
 
     await server.stop();
   });
@@ -160,6 +168,7 @@ describe('createSolanaExecutionServer', () => {
   });
 
   it('preserves already accepted Meteora batch signatures when a later tx send fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const keypair = Keypair.generate();
     const transactions = [
       new FakeTransaction('batch-1'),
@@ -217,6 +226,59 @@ describe('createSolanaExecutionServer', () => {
     });
     expect(String(payload.reason)).toContain('rpc rejected tx 2');
     expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('"event":"solana-execution-broadcast"');
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('"side":"withdraw-lp"');
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('"result":"partial"');
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('"acceptedSignatureCount":1');
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('rpc rejected tx 2');
+
+    await server.stop();
+  });
+
+  it('logs a structured error when broadcast fails before any signature is accepted', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const keypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async () => {
+          throw new Error('rpc send failed immediately');
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        removeLiquidity: async () => [new FakeTransaction('close-1')] as any
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp'))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toMatchObject({
+      error: 'rpc send failed immediately'
+    });
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"event":"solana-execution-broadcast"');
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"side":"withdraw-lp"');
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"result":"failed"');
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"acceptedSignatureCount":0');
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('rpc send failed immediately');
 
     await server.stop();
   });

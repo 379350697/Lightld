@@ -69,7 +69,8 @@ async function main() {
         }),
         broadcaster: new HttpLiveBroadcaster({
           url: runtimeConfig.broadcastServiceUrl,
-          authToken: runtimeConfig.authToken
+          authToken: runtimeConfig.authToken,
+          timeoutMs: runtimeConfig.broadcastTimeoutMs
         }),
         confirmationProvider: new HttpLiveConfirmationProvider({
           url: runtimeConfig.confirmationServiceUrl,

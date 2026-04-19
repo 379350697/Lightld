@@ -25,9 +25,27 @@ describe('loadLiveRuntimeConfig', () => {
       quoteServiceUrl: 'https://quote.example/api',
       signServiceUrl: 'https://sign.example/api',
       broadcastServiceUrl: 'https://broadcast.example/api',
+      broadcastTimeoutMs: 15_000,
       confirmationServiceUrl: 'https://confirm.example/api',
       accountStateUrl: 'https://account.example/api',
       authToken: 'secret'
+    });
+  });
+
+  it('loads a custom broadcast timeout override from env', () => {
+    expect(
+      loadLiveRuntimeConfig({
+        LIVE_EXECUTION_MODE: 'http',
+        LIVE_QUOTE_URL: 'https://quote.example/api',
+        LIVE_SIGN_URL: 'https://sign.example/api',
+        LIVE_BROADCAST_URL: 'https://broadcast.example/api',
+        LIVE_CONFIRMATION_URL: 'https://confirm.example/api',
+        LIVE_ACCOUNT_STATE_URL: 'https://account.example/api',
+        LIVE_BROADCAST_TIMEOUT_MS: '22000'
+      })
+    ).toMatchObject({
+      executionMode: 'http',
+      broadcastTimeoutMs: 22_000
     });
   });
 });

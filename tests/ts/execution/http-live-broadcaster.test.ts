@@ -5,6 +5,23 @@ import { buildOrderIntent } from '../../../src/execution/order-intent-builder';
 import { TestLiveSigner } from '../../../src/execution/live-signer';
 
 describe('HttpLiveBroadcaster', () => {
+  it('uses a safer default timeout for synchronous broadcast flows', () => {
+    const broadcaster = new HttpLiveBroadcaster({
+      url: 'https://broadcast.example/api'
+    });
+
+    expect((broadcaster as unknown as { timeoutMs: number }).timeoutMs).toBe(15_000);
+  });
+
+  it('accepts an explicit timeout override', () => {
+    const broadcaster = new HttpLiveBroadcaster({
+      url: 'https://broadcast.example/api',
+      timeoutMs: 22_000
+    });
+
+    expect((broadcaster as unknown as { timeoutMs: number }).timeoutMs).toBe(22_000);
+  });
+
   it('broadcasts through an external http service', async () => {
     const signer = new TestLiveSigner('prod-signer');
     const intent = buildOrderIntent({

@@ -55,6 +55,47 @@ type SolanaExecutionServerOptions = {
   jitoTipLamports?: number;
 };
 
+type BroadcastLogPayload = {
+  event: 'solana-execution-broadcast';
+  recordedAt: string;
+  strategyId: string;
+  idempotencyKey: string;
+  side: string;
+  poolAddress: string;
+  tokenMint?: string;
+  outputSol: number;
+  result: 'submitted' | 'partial' | 'failed';
+  acceptedSignatureCount: number;
+  buildMs?: number;
+  quoteMs?: number;
+  swapBuildMs?: number;
+  signMs?: number;
+  blockhashMs?: number;
+  sendTxMs: number[];
+  totalMs: number;
+  reason?: string;
+};
+
+function durationMs(startedAt: number) {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function logBroadcastOutcome(payload: BroadcastLogPayload) {
+  const line = JSON.stringify(payload);
+
+  if (payload.result === 'failed') {
+    console.error(line);
+    return;
+  }
+
+  if (payload.result === 'partial') {
+    console.warn(line);
+    return;
+  }
+
+  console.info(line);
+}
+
 export function createSolanaExecutionServer(options: SolanaExecutionServerOptions) {
   const {
     keypair,
@@ -122,6 +163,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const body = await readBody(request);
             const payload = BroadcastRequestSchema.parse(JSON.parse(body));
             const intent = payload.intent.intent;
+            const broadcastStartedAt = Date.now();
 
             // Allowlist check
             if (options.maxOutputSol !== undefined) {
@@ -140,70 +182,89 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             const side = intent.side ?? 'buy';
             const tokenMint = intent.tokenMint ?? intent.poolAddress;
+            let buildMs: number | undefined;
+            let quoteMs: number | undefined;
+            let swapBuildMs: number | undefined;
+            let signMs: number | undefined;
+            let blockhashMs: number | undefined;
+            const sendTxMs: number[] = [];
 
-            let signedBase64: string;
+            try {
+              let signedBase64: string;
 
-            if (side === 'buy' || side === 'sell') {
-              let quoteParams: import('./jupiter-client.ts').JupiterQuoteParams;
+              if (side === 'buy' || side === 'sell') {
+                let quoteParams: import('./jupiter-client.ts').JupiterQuoteParams;
 
-              if (side === 'buy') {
-                quoteParams = jupiterClient.buildBuyQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps);
-              } else {
-                if (!intent.fullPositionExit) {
-                  throw new Error('Sell intent must explicitly declare fullPositionExit=true');
+                if (side === 'buy') {
+                  quoteParams = jupiterClient.buildBuyQuoteParams(tokenMint, intent.outputSol, defaultSlippageBps);
+                } else {
+                  if (!intent.fullPositionExit) {
+                    throw new Error('Sell intent must explicitly declare fullPositionExit=true');
+                  }
+
+                  // Sell: query actual token balance and sell all
+                  const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
+                  const tokenAccount = tokenAccounts.find(
+                    (a) => a.account.data.parsed.info.mint === tokenMint
+                  );
+                  if (!tokenAccount) {
+                    throw new Error(`No token account found for mint ${tokenMint}`);
+                  }
+                  const tokenLamports = Number(tokenAccount.account.data.parsed.info.tokenAmount.amount);
+                  if (tokenLamports <= 0) {
+                    throw new Error(`Token balance is zero for mint ${tokenMint}`);
+                  }
+                  quoteParams = jupiterClient.buildSellQuoteParams(tokenMint, tokenLamports, defaultSlippageBps);
                 }
 
-                // Sell: query actual token balance and sell all
-                const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
-                const tokenAccount = tokenAccounts.find(
-                  (a) => a.account.data.parsed.info.mint === tokenMint
+                const quoteStartedAt = Date.now();
+                const quoteResponse = await jupiterClient.getQuote(quoteParams);
+                quoteMs = durationMs(quoteStartedAt);
+
+                // Get swap transaction from Jupiter
+                const swapBuildStartedAt = Date.now();
+                const swapResponse = await jupiterClient.getSwapTransaction(
+                  quoteResponse,
+                  walletPublicKey,
+                  { jitoTipLamports: options.jitoTipLamports }
                 );
-                if (!tokenAccount) {
-                  throw new Error(`No token account found for mint ${tokenMint}`);
+                swapBuildMs = durationMs(swapBuildStartedAt);
+
+                // Sign the transaction with local keypair
+                const signStartedAt = Date.now();
+                signedBase64 = signSwapTransaction(
+                  swapResponse.swapTransaction,
+                  keypair
+                );
+                signMs = durationMs(signStartedAt);
+              } else {
+                if (!options.dlmmClient) {
+                  throw new Error('DLMM client not configured');
                 }
-                const tokenLamports = Number(tokenAccount.account.data.parsed.info.tokenAmount.amount);
-                if (tokenLamports <= 0) {
-                  throw new Error(`Token balance is zero for mint ${tokenMint}`);
-                }
-                quoteParams = jupiterClient.buildSellQuoteParams(tokenMint, tokenLamports, defaultSlippageBps);
-              }
 
-              const quoteResponse = await jupiterClient.getQuote(quoteParams);
-
-              // Get swap transaction from Jupiter
-              const swapResponse = await jupiterClient.getSwapTransaction(
-                quoteResponse,
-                walletPublicKey,
-                { jitoTipLamports: options.jitoTipLamports }
-              );
-
-              // Sign the transaction with local keypair
-              signedBase64 = signSwapTransaction(
-                swapResponse.swapTransaction,
-                keypair
-              );
-            } else {
-              if (!options.dlmmClient) {
-                throw new Error('DLMM client not configured');
-              }
-
-              let txBatch: any[] = [];
-              let signers: Keypair[] = [keypair];
+                let txBatch: any[] = [];
+                let signers: Keypair[] = [keypair];
 
               if (side === 'add-lp') {
+                const buildStartedAt = Date.now();
                 const result = await options.dlmmClient.addLiquidityByStrategy(
                   keypair.publicKey,
                   intent.poolAddress,
                   intent.outputSol
                 );
+                buildMs = durationMs(buildStartedAt);
                 txBatch = toTransactionBatch(result.transaction);
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
                 }
               } else if (side === 'withdraw-lp') {
+                const buildStartedAt = Date.now();
                 txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(keypair.publicKey, intent.poolAddress));
+                buildMs = durationMs(buildStartedAt);
               } else if (side === 'claim-fee') {
+                const buildStartedAt = Date.now();
                 txBatch = toTransactionBatch(await options.dlmmClient.claimFee(keypair.publicKey, intent.poolAddress));
+                buildMs = durationMs(buildStartedAt);
               } else {
                 throw new Error(`Unsupported side: ${side}`);
               }
@@ -212,7 +273,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 throw new Error(`No Meteora transactions returned for side ${side}`);
               }
 
+              const blockhashStartedAt = Date.now();
               const { value: blockhash } = await rpcClient.getLatestBlockhash();
+              blockhashMs = durationMs(blockhashStartedAt);
               const txSignatures: string[] = [];
 
               for (const txParams of txBatch) {
@@ -221,19 +284,39 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   txParams.feePayer = keypair.publicKey;
                   txParams.sign(...signers);
                   signedBase64 = txParams.serialize().toString('base64');
+                  const sendStartedAt = Date.now();
                   txSignatures.push(await rpcClient.sendRawTransaction(signedBase64));
+                  sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
                   if (txSignatures.length === 0) {
                     throw error;
                   }
 
                   options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+                  const reason = error instanceof Error ? error.message : String(error);
+                  logBroadcastOutcome({
+                    event: 'solana-execution-broadcast',
+                    recordedAt: new Date().toISOString(),
+                    strategyId: intent.strategyId,
+                    idempotencyKey: intent.idempotencyKey,
+                    side,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint,
+                    outputSol: intent.outputSol,
+                    result: 'partial',
+                    acceptedSignatureCount: txSignatures.length,
+                    buildMs,
+                    blockhashMs,
+                    sendTxMs,
+                    totalMs: durationMs(broadcastStartedAt),
+                    reason
+                  });
 
                   writeJson(response, 200, buildSubmittedBroadcastResult({
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
                     batchStatus: 'partial',
-                    reason: error instanceof Error ? error.message : String(error)
+                    reason
                   }));
                   return;
                 }
@@ -266,22 +349,81 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+              logBroadcastOutcome({
+                event: 'solana-execution-broadcast',
+                recordedAt: new Date().toISOString(),
+                strategyId: intent.strategyId,
+                idempotencyKey: intent.idempotencyKey,
+                side,
+                poolAddress: intent.poolAddress,
+                tokenMint: intent.tokenMint,
+                outputSol: intent.outputSol,
+                result: 'submitted',
+                acceptedSignatureCount: txSignatures.length,
+                buildMs,
+                blockhashMs,
+                sendTxMs,
+                totalMs: durationMs(broadcastStartedAt)
+              });
 
               writeJson(response, 200, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
                 signatures: txSignatures
               }));
               return;
+              }
+
+              // Send to Solana RPC
+              const sendStartedAt = Date.now();
+              const txSignature = await rpcClient.sendRawTransaction(signedBase64);
+              sendTxMs.push(durationMs(sendStartedAt));
+              logBroadcastOutcome({
+                event: 'solana-execution-broadcast',
+                recordedAt: new Date().toISOString(),
+                strategyId: intent.strategyId,
+                idempotencyKey: intent.idempotencyKey,
+                side,
+                poolAddress: intent.poolAddress,
+                tokenMint: intent.tokenMint,
+                outputSol: intent.outputSol,
+                result: 'submitted',
+                acceptedSignatureCount: 1,
+                quoteMs,
+                swapBuildMs,
+                signMs,
+                sendTxMs,
+                totalMs: durationMs(broadcastStartedAt)
+              });
+
+              writeJson(response, 200, buildSubmittedBroadcastResult({
+                idempotencyKey: intent.idempotencyKey,
+                signatures: [txSignature]
+              }));
+              return;
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              logBroadcastOutcome({
+                event: 'solana-execution-broadcast',
+                recordedAt: new Date().toISOString(),
+                strategyId: intent.strategyId,
+                idempotencyKey: intent.idempotencyKey,
+                side,
+                poolAddress: intent.poolAddress,
+                tokenMint: intent.tokenMint,
+                outputSol: intent.outputSol,
+                result: 'failed',
+                acceptedSignatureCount: 0,
+                buildMs,
+                quoteMs,
+                swapBuildMs,
+                signMs,
+                blockhashMs,
+                sendTxMs,
+                totalMs: durationMs(broadcastStartedAt),
+                reason
+              });
+              throw error;
             }
-
-            // Send to Solana RPC
-            const txSignature = await rpcClient.sendRawTransaction(signedBase64);
-
-            writeJson(response, 200, buildSubmittedBroadcastResult({
-              idempotencyKey: intent.idempotencyKey,
-              signatures: [txSignature]
-            }));
-            return;
           }
 
           // Confirmation — poll Solana RPC for transaction status
