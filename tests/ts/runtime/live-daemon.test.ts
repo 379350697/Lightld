@@ -1406,6 +1406,10 @@ describe('runLiveDaemon', () => {
     });
 
     const positionState = await runtimeStateStore.readPositionState();
+    expect(positionState).not.toBeNull();
+    if (!positionState) {
+      throw new Error('expected position state to be persisted');
+    }
 
     expect(positionState.entrySol).toBeUndefined();
     expect(positionState.openedAt).toBeUndefined();
@@ -1478,6 +1482,10 @@ describe('runLiveDaemon', () => {
     });
 
     const positionState = await runtimeStateStore.readPositionState();
+    expect(positionState).not.toBeNull();
+    if (!positionState) {
+      throw new Error('expected position state to be persisted');
+    }
 
     expect(positionState.openIntentId).toBe('lp-open-intent:test-1');
     expect(positionState.positionId).toBe('pos-bound');

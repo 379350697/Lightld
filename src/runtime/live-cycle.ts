@@ -1582,10 +1582,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
+  const liveLpCurrentValueSol = typeof context.trader.lpCurrentValueSol === 'number'
+    ? context.trader.lpCurrentValueSol
+    : undefined;
+  const liveLpUnclaimedFeeSol = typeof context.trader.lpUnclaimedFeeSol === 'number'
+    ? context.trader.lpUnclaimedFeeSol
+    : undefined;
   const liveLpValuation = config.poolClass === 'new-token' && context.trader.hasLpPosition
     ? evaluateLpValuationState({
-      currentValueSol: context.trader.lpCurrentValueSol,
-      unclaimedFeeSol: context.trader.lpUnclaimedFeeSol,
+      currentValueSol: liveLpCurrentValueSol,
+      unclaimedFeeSol: liveLpUnclaimedFeeSol,
       observedAt: new Date().toISOString()
     })
     : null;
