@@ -42,6 +42,9 @@ describe('applyCatchupWindow', () => {
       cycleId: 'cycle-1',
       strategyId: 'new-token-v1',
       idempotencyKey: 'k1',
+      openIntentId: 'intent-1',
+      positionId: 'position-1',
+      chainPositionAddress: 'chain-pos-1',
       poolAddress: 'pool-1',
       outputSol: 0.1,
       requestedPositionSol: 0.1,
@@ -89,7 +92,12 @@ describe('applyCatchupWindow', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: 'order',
-      priority: 'low'
+      priority: 'low',
+      payload: {
+        openIntentId: 'intent-1',
+        positionId: 'position-1',
+        chainPositionAddress: 'chain-pos-1'
+      }
     });
     expect(Object.values(cursor.offsets).every((value) => value > 0)).toBe(true);
   });
@@ -162,6 +170,71 @@ describe('applyCatchupWindow', () => {
       'k-old',
       'k-new'
     ]);
+  });
+
+  it('replays canonical LP fill identity fields from journal history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-fills-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const events: MirrorEvent[] = [];
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-fills.jsonl'), {
+      cycleId: 'cycle-fill',
+      strategyId: 'new-token-v1',
+      submissionId: 'sub-fill',
+      confirmationSignature: 'tx-fill',
+      openIntentId: 'intent-1',
+      positionId: 'position-1',
+      chainPositionAddress: 'chain-pos-1',
+      mint: 'mint-safe',
+      symbol: 'SAFE',
+      side: 'add-lp',
+      filledSol: 0.1,
+      confirmationStatus: 'confirmed',
+      recordedAt: '2026-04-18T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date('2026-04-18T00:00:00.000Z')
+    });
+
+    await enqueueMirrorCatchupFromJournals({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(stateRootDir, 'lightld-observability.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 16,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      }
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'fill',
+      priority: 'low'
+    });
+    expect((events[0] as any).payload.filledSol).toBe(0.1);
+    expect((events[0] as any).payload.positionId).toBe('position-1');
+    expect((events[0] as any).payload.openIntentId).toBe('intent-1');
+    expect((events[0] as any).payload.chainPositionAddress).toBe('chain-pos-1');
   });
 
   it('skips catch-up when the mirror is not healthy or the queue is under pressure', async () => {

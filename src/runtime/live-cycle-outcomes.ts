@@ -83,6 +83,9 @@ export function buildLiveSubmittedResult(
 export function buildUnknownPendingSubmissionSnapshot(input: {
   strategyId: string;
   idempotencyKey: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   createdAt: string;
   updatedAt: string;
   timeoutAt: string;
@@ -96,6 +99,9 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
     strategyId: input.strategyId,
     idempotencyKey: input.idempotencyKey,
     submissionId: '',
+    openIntentId: input.openIntentId,
+    positionId: input.positionId,
+    chainPositionAddress: input.chainPositionAddress,
     confirmationSignature: undefined,
     confirmationStatus: 'unknown',
     finality: 'unknown',
@@ -115,6 +121,9 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
   strategyId: string;
   idempotencyKey: string;
   submissionId: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   submissionIds?: string[];
   confirmationSignature?: string;
   confirmationSignatures?: string[];
@@ -133,6 +142,9 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
     strategyId: input.strategyId,
     idempotencyKey: input.idempotencyKey,
     submissionId: input.submissionId,
+    openIntentId: input.openIntentId,
+    positionId: input.positionId,
+    chainPositionAddress: input.chainPositionAddress,
     submissionIds: input.submissionIds,
     confirmationSignature: input.confirmationSignature,
     confirmationSignatures: input.confirmationSignatures,

@@ -54,6 +54,7 @@ import {
   classifyAction,
   type LiveAction
 } from './action-semantics.ts';
+import { createOpenIntentId, createPositionId } from './lp-position-record.ts';
 import {
   buildPendingTimeoutAt,
   isFullPositionExitAction,
@@ -74,6 +75,7 @@ import {
   runPendingRecoveryGate
 } from './live-cycle-preflight.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
+import { evaluateLpValuationState } from './lp-valuation.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
 
@@ -339,6 +341,14 @@ function resolveOutcomePositionId(
   logContext: LiveCycleLogContext,
   positionState?: PositionStateSnapshot
 ) {
+  if (positionState?.positionId) {
+    return positionState.positionId;
+  }
+
+  if (positionState?.chainPositionAddress) {
+    return positionState.chainPositionAddress;
+  }
+
   if (positionState?.activePoolAddress && positionState.activeMint) {
     return `${positionState.activePoolAddress}:${positionState.activeMint}`;
   }
@@ -460,7 +470,13 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
   const normalizedJournalFills = journalFills.flatMap((entry) => {
     const mint = typeof entry.mint === 'string' ? entry.mint : '';
     const side = entry.side;
-    const amount = typeof entry.amount === 'number' ? entry.amount : undefined;
+    const amount = typeof entry.amount === 'number'
+      ? entry.amount
+      : typeof entry.filledSol === 'number'
+        ? entry.filledSol
+        : typeof entry.requestedPositionSol === 'number'
+          ? entry.requestedPositionSol
+          : undefined;
     const recordedAt = typeof entry.recordedAt === 'string' ? entry.recordedAt : '';
 
     if (
@@ -482,6 +498,13 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
     return [{
       submissionId: typeof entry.submissionId === 'string' ? entry.submissionId : undefined,
       confirmationSignature: typeof entry.confirmationSignature === 'string' ? entry.confirmationSignature : undefined,
+      openIntentId: typeof entry.openIntentId === 'string' ? entry.openIntentId : undefined,
+      positionId: typeof entry.positionId === 'string' ? entry.positionId : undefined,
+      chainPositionAddress: typeof entry.chainPositionAddress === 'string'
+        ? entry.chainPositionAddress
+        : typeof entry.positionAddress === 'string'
+          ? entry.positionAddress
+          : undefined,
       mint,
       symbol: typeof entry.symbol === 'string' ? entry.symbol : undefined,
       side,
@@ -500,6 +523,13 @@ function buildLpExitSnapshotFromPosition(input: {
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   holdTimeMs: number;
 }) {
+  const valuation = evaluateLpValuationState({
+    currentValueSol: input.position.currentValueSol,
+    unclaimedFeeSol: input.position.unclaimedFeeSol,
+    hasClaimableFees: input.position.hasClaimableFees,
+    observedAt: new Date().toISOString()
+  });
+
   return {
     hasSolRoute: true,
     liquidityUsd: 1,
@@ -514,10 +544,94 @@ function buildLpExitSnapshotFromPosition(input: {
       && typeof input.position.upperBinId === 'number'
       ? (input.position.activeBinId >= input.position.lowerBinId && input.position.activeBinId <= input.position.upperBinId ? 'in-range' : 'out-of-range')
       : undefined,
+    valuationStatus: valuation.valuationStatus,
+    valuationReason: valuation.valuationReason,
     holdTimeMs: input.holdTimeMs,
     pendingConfirmationStatus: 'confirmed' as const,
     lifecycleState: 'open'
   };
+}
+
+function matchesPositionStateLifecycle(
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number],
+  positionState?: PositionStateSnapshot
+) {
+  if (!positionState) {
+    return false;
+  }
+
+  if (
+    typeof positionState.chainPositionAddress === 'string'
+    && positionState.chainPositionAddress.length > 0
+    && positionState.chainPositionAddress === position.positionAddress
+  ) {
+    return true;
+  }
+
+  if (
+    typeof positionState.positionId === 'string'
+    && positionState.positionId.length > 0
+    && typeof position.positionId === 'string'
+    && position.positionId.length > 0
+    && positionState.positionId === position.positionId
+  ) {
+    return true;
+  }
+
+  return positionState.activePoolAddress === position.poolAddress
+    && positionState.activeMint === position.mint;
+}
+
+function resolveLifecycleOpenFill(input: {
+  fills: LiveFillEntry[];
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  positionState?: PositionStateSnapshot;
+}) {
+  const entryFills = input.fills
+    .filter((fill) => (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0);
+
+  const byChainAddress = entryFills
+    .filter((fill) => fill.chainPositionAddress === input.position.positionAddress)
+    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+  if (byChainAddress) {
+    return byChainAddress;
+  }
+
+  if (input.positionState?.positionId) {
+    const byPositionId = entryFills
+      .filter((fill) => fill.positionId === input.positionState?.positionId)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byPositionId) {
+      return byPositionId;
+    }
+  }
+
+  if (input.positionState?.openIntentId) {
+    const byOpenIntentId = entryFills
+      .filter((fill) => fill.openIntentId === input.positionState?.openIntentId)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byOpenIntentId) {
+      return byOpenIntentId;
+    }
+  }
+
+  if (matchesPositionStateLifecycle(input.position, input.positionState) && input.positionState?.openedAt) {
+    const openedAtMs = Date.parse(input.positionState.openedAt);
+    const byOpenedAt = entryFills
+      .filter((fill) => fill.mint === input.position.mint && Date.parse(fill.recordedAt) >= openedAtMs)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byOpenedAt) {
+      return byOpenedAt;
+    }
+  }
+
+  return entryFills
+    .filter((fill) => fill.mint === input.position.mint)
+    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
 }
 
 function dedupeActiveLpPositions(accountState?: LiveAccountState) {
@@ -587,6 +701,7 @@ function selectTriggeredLpExit(input: {
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
   nowMs: number;
   fills: LiveFillEntry[];
+  positionState?: PositionStateSnapshot;
 }) {
   const triggered: Array<{
     position: NonNullable<LiveAccountState['walletLpPositions']>[number];
@@ -603,13 +718,26 @@ function selectTriggeredLpExit(input: {
       continue;
     }
 
-    const openFill = input.fills
-      ?.filter((fill) => fill.mint === mint && (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-    const entrySol = typeof openFill?.amount === 'number' && openFill.amount > 0 ? openFill.amount : undefined;
+    const lifecycleBound = matchesPositionStateLifecycle(position, input.positionState);
+    const openFill = resolveLifecycleOpenFill({
+      fills: input.fills,
+      position,
+      positionState: input.positionState
+    });
+    const entrySol = lifecycleBound
+      && typeof input.positionState?.entrySol === 'number'
+      && input.positionState.entrySol > 0
+      ? input.positionState.entrySol
+      : typeof openFill?.amount === 'number' && openFill.amount > 0
+        ? openFill.amount
+        : undefined;
     const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
     const unclaimedFeeSol = typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : 0;
-    const holdTimeMs = openFill?.recordedAt ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt)) : 0;
+    const holdTimeMs = lifecycleBound && input.positionState?.openedAt
+      ? Math.max(0, input.nowMs - Date.parse(input.positionState.openedAt))
+      : openFill?.recordedAt
+        ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt))
+        : 0;
     const snapshot: any = buildLpExitSnapshotFromPosition({ position, holdTimeMs });
 
     if (typeof entrySol === 'number' && typeof currentValueSol === 'number') {
@@ -791,6 +919,53 @@ function createJournals(strategyId: StrategyId, journalRootDir?: string): LiveCy
       retentionDays: 30,
       now
     })
+  };
+}
+
+function resolveActionIdentity(input: {
+  action: LiveAction;
+  positionState?: PositionStateSnapshot;
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  poolAddress: string;
+  tokenMint: string;
+  chainPositionAddress?: string;
+}) {
+  const chainPositionAddress = firstString(
+    input.chainPositionAddress,
+    input.positionState?.chainPositionAddress,
+    input.pendingSubmission?.chainPositionAddress
+  ) || undefined;
+  const positionId = firstString(
+    input.positionState?.positionId,
+    input.pendingSubmission?.positionId
+  ) || undefined;
+  const openIntentId = firstString(
+    input.positionState?.openIntentId,
+    input.pendingSubmission?.openIntentId
+  ) || undefined;
+
+  if (input.action === 'add-lp') {
+    return {
+      openIntentId: openIntentId ?? createOpenIntentId(),
+      positionId: positionId ?? createPositionId({
+        chainPositionAddress,
+        poolAddress: input.poolAddress,
+        tokenMint: input.tokenMint
+      }),
+      chainPositionAddress
+    };
+  }
+
+  return {
+    openIntentId,
+    positionId: positionId ?? (input.poolAddress || input.tokenMint
+      ? createPositionId({
+          chainPositionAddress,
+          poolAddress: input.poolAddress,
+          tokenMint: input.tokenMint
+        })
+      : undefined),
+    chainPositionAddress
   };
 }
 function resolveStateRootDir(strategyId: StrategyId, stateRootDir?: string) {
@@ -1240,7 +1415,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const multiLpExit = config.poolClass === 'new-token'
-    ? selectTriggeredLpExit({ accountState, config, nowMs: Date.now(), fills: historicalFills })
+    ? selectTriggeredLpExit({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState })
     : null;
   if (multiLpExit && multiLpExit.position.mint) {
     context.token.mint = multiLpExit.position.mint;
@@ -1374,9 +1549,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const updatedSnapshot = buildEngineSnapshot(config.poolClass, context);
+  const liveLpValuation = config.poolClass === 'new-token' && context.trader.hasLpPosition
+    ? evaluateLpValuationState({
+      currentValueSol: context.trader.lpCurrentValueSol,
+      unclaimedFeeSol: context.trader.lpUnclaimedFeeSol,
+      observedAt: new Date().toISOString()
+    })
+    : null;
   if (config.poolClass === 'new-token') {
     (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
     (updatedSnapshot as any).pendingConfirmationStatus = (snapshot as any).pendingConfirmationStatus;
+    (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
+    (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
     if (preEngineMintAggregate.mustCleanupDust) {
       (updatedSnapshot as any).hasInventory = true;
       (updatedSnapshot as any).hasLpPosition = false;
@@ -1410,6 +1594,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpCurrentValueSol=${typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol.toFixed(9) : 'n/a'}`,
     `lpUnclaimedFeeSol=${typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
+    `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
+    `valuationReason=${typeof (updatedSnapshot as any).valuationReason === 'string' ? (updatedSnapshot as any).valuationReason : 'n/a'}`,
     `holdTimeMs=${typeof (updatedSnapshot as any).holdTimeMs === 'number' ? String((updatedSnapshot as any).holdTimeMs) : 'n/a'}`,
     `pendingConfirmationStatus=${typeof (updatedSnapshot as any).pendingConfirmationStatus === 'string' ? (updatedSnapshot as any).pendingConfirmationStatus : 'n/a'}`
   ];
@@ -1426,6 +1612,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   logContext.engineReason = engineAuditReason;
 
   if (engineResult.action === 'hold') {
+    const blockedReason = liveLpValuation && liveLpValuation.valuationStatus !== 'ready'
+      ? `valuation-unavailable:${liveLpValuation.valuationReason}`
+      : 'hold';
     await appendDecision(journals, logContext, {
       stage: 'engine',
       mode: 'BLOCKED',
@@ -1436,7 +1625,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
     return finalize(buildBlockedCycleResult({
       action: 'hold',
-      reason: 'hold',
+      reason: blockedReason,
       audit: engineResult.audit,
       context,
       quoteCollected: false,
@@ -1656,9 +1845,20 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     fullPositionExit: isFullPositionExitAction(actionableAction),
     liquidateResidualTokenToSol: actionableAction === 'withdraw-lp'
   });
+  const actionIdentity = resolveActionIdentity({
+    action: actionableAction,
+    positionState: input.positionState,
+    pendingSubmission,
+    poolAddress: executionPlan.poolAddress,
+    tokenMint: logContext.tokenMint,
+    chainPositionAddress: multiLpExit?.position.positionAddress
+  });
   await journals.orders.append({
     cycleId: logContext.cycleId,
     ...orderIntent,
+    openIntentId: actionIdentity.openIntentId,
+    positionId: actionIdentity.positionId,
+    chainPositionAddress: actionIdentity.chainPositionAddress,
     requestedPositionSol,
     quotedOutputSol: quote.outputSol,
     routeExists: quote.routeExists
@@ -1668,6 +1868,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       idempotencyKey: orderIntent.idempotencyKey,
       cycleId: logContext.cycleId,
       strategyId: input.strategy,
+      openIntentId: actionIdentity.openIntentId,
+      positionId: actionIdentity.positionId,
+      chainPositionAddress: actionIdentity.chainPositionAddress,
       poolAddress: executionPlan.poolAddress,
       tokenMint: logContext.tokenMint,
       tokenSymbol,
@@ -1693,6 +1896,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       pendingSubmission = buildUnknownPendingSubmissionSnapshot({
         strategyId: input.strategy,
         idempotencyKey: orderIntent.idempotencyKey,
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress,
         createdAt: logContext.startedAt,
         updatedAt,
         timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
@@ -1708,6 +1914,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
           idempotencyKey: orderIntent.idempotencyKey,
           cycleId: logContext.cycleId,
           strategyId: input.strategy,
+          openIntentId: actionIdentity.openIntentId,
+          positionId: actionIdentity.positionId,
+          chainPositionAddress: actionIdentity.chainPositionAddress,
           poolAddress: executionPlan.poolAddress,
           tokenMint: logContext.tokenMint,
           tokenSymbol,
@@ -1753,6 +1962,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         cycleId: logContext.cycleId,
         strategyId: input.strategy,
         submissionId: '',
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress,
         confirmationSignature: '',
         poolAddress: executionPlan.poolAddress,
         tokenMint: logContext.tokenMint,
@@ -1822,6 +2034,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     strategyId: input.strategy,
     idempotencyKey: orderIntent.idempotencyKey,
     submissionId: broadcastResult.submissionId,
+    openIntentId: actionIdentity.openIntentId,
+    positionId: actionIdentity.positionId,
+    chainPositionAddress: actionIdentity.chainPositionAddress,
     submissionIds: trackedBroadcastSubmissions.map((trackedSubmission) => trackedSubmission.submissionId),
     confirmationSignature: broadcastResult.confirmationSignature,
     confirmationSignatures: trackedBroadcastSubmissions.map((trackedSubmission) =>
@@ -1858,6 +2073,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       cycleId: logContext.cycleId,
       strategyId: input.strategy,
       submissionId: broadcastResult.submissionId,
+      openIntentId: actionIdentity.openIntentId,
+      positionId: actionIdentity.positionId,
+      chainPositionAddress: actionIdentity.chainPositionAddress,
       confirmationSignature: broadcastResult.confirmationSignature,
       poolAddress: executionPlan.poolAddress,
       tokenMint: logContext.tokenMint,
@@ -1881,6 +2099,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     cycleId: logContext.cycleId,
     submissionId: broadcastResult.submissionId,
     strategyId: input.strategy,
+    openIntentId: actionIdentity.openIntentId,
+    positionId: actionIdentity.positionId,
+    chainPositionAddress: actionIdentity.chainPositionAddress,
     mint: logContext.tokenMint,
     symbol: tokenSymbol,
     side: actionableAction,
@@ -1894,12 +2115,15 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     mirrorSink!.enqueue(toFillMirrorEvent({
       fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
       submissionId: broadcastResult.submissionId,
+      openIntentId: actionIdentity.openIntentId,
+      positionId: actionIdentity.positionId,
+      chainPositionAddress: actionIdentity.chainPositionAddress,
       confirmationSignature: broadcastResult.confirmationSignature ?? '',
       cycleId: logContext.cycleId,
       tokenMint: logContext.tokenMint,
       tokenSymbol,
       side: resolveFillMirrorSide(actionableAction),
-      amount: 0,
+      amount: mirroredFilledSol,
       filledSol: mirroredFilledSol,
       recordedAt: fillRecordedAt
     }));

@@ -18,6 +18,10 @@ type NewTokenSnapshot = {
   lpActiveBinStatus?: 'in-range' | 'out-of-range';
   /** LP mode: impermanent loss percentage (positive number means loss) */
   lpImpermanentLossPct?: number;
+  /** LP mode: whether the valuation inputs are safe enough for PnL exits */
+  valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
+  /** LP mode: why valuation is not ready */
+  valuationReason?: string;
   /** Explicit state machine for exits */
   lifecycleState?: string;
   /** Time elapsed in ms since the first buy fill */
@@ -77,7 +81,9 @@ export function buildNewTokenDecision(
   // ===== LP mode (bid-ask single-sided SOL) =====
   if (config.lpEnabled) {
     if (snapshot.hasLpPosition) {
-      if (typeof snapshot.lpNetPnlPct === 'number') {
+      const pnlValuationReady = !snapshot.valuationStatus || snapshot.valuationStatus === 'ready';
+
+      if (pnlValuationReady && typeof snapshot.lpNetPnlPct === 'number') {
         const stopLoss = config.lpStopLossNetPnlPct ?? 20;
         const takeProfit = config.lpTakeProfitNetPnlPct ?? 30;
         const minHoldMsBeforeTakeProfit = (config.lpMinHoldMinutesBeforeTakeProfit ?? 5) * 60 * 1000;

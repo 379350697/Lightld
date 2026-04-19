@@ -112,6 +112,9 @@ export function buildOrderMirrorPayload(input: {
   cycleId: string;
   strategyId: string;
   submissionId?: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   confirmationSignature?: string;
   poolAddress: string;
   tokenMint: string;
@@ -130,6 +133,9 @@ export function buildOrderMirrorPayload(input: {
     cycleId: input.cycleId,
     strategyId: input.strategyId,
     submissionId: input.submissionId ?? '',
+    openIntentId: input.openIntentId,
+    positionId: input.positionId,
+    chainPositionAddress: input.chainPositionAddress,
     confirmationSignature: input.confirmationSignature ?? '',
     poolAddress: input.poolAddress,
     tokenMint: input.tokenMint,

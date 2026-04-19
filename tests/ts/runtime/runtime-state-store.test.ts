@@ -34,4 +34,38 @@ describe('RuntimeStateStore', () => {
 
     await expect(store.readRuntimeState()).resolves.toBeNull();
   });
+
+  it('persists and reloads canonical LP identity and valuation fields in position state', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lightld-runtime-position-state-'));
+    const store = new RuntimeStateStore(directory);
+
+    await store.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      lifecycleState: 'open',
+      openIntentId: 'intent-1',
+      positionId: 'position-1',
+      chainPositionAddress: 'chain-pos-1',
+      entrySol: 0.15,
+      openedAt: '2026-04-19T00:00:00.000Z',
+      valuationStatus: 'ready',
+      valuationReason: '',
+      lastValuationAt: '2026-04-19T00:01:00.000Z',
+      lastClosedMint: '',
+      lastClosedAt: '',
+      updatedAt: '2026-04-19T00:01:00.000Z'
+    } as any);
+
+    await expect(store.readPositionState()).resolves.toMatchObject({
+      openIntentId: 'intent-1',
+      positionId: 'position-1',
+      chainPositionAddress: 'chain-pos-1',
+      valuationStatus: 'ready',
+      lastValuationAt: '2026-04-19T00:01:00.000Z'
+    });
+  });
 });

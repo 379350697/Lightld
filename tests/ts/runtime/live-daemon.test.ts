@@ -1337,6 +1337,155 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('does not fabricate LP entry metadata during recovery when no trusted bound fill exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-orphaned-lp-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      lifecycleState: 'open',
+      lastClosedMint: '',
+      lastClosedAt: '',
+      updatedAt: '2026-04-18T00:00:00.000Z'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-1',
+              mint: 'mint-safe',
+              currentValueSol: 0.7,
+              unclaimedFeeSol: 0.1,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-1',
+              mint: 'mint-safe',
+              currentValueSol: 0.7,
+              unclaimedFeeSol: 0.1,
+              hasLiquidity: true
+            }
+          ],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: false, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpCurrentValueSol: 0.7,
+            lpUnclaimedFeeSol: 0.1
+          },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState.entrySol).toBeUndefined();
+    expect(positionState.openedAt).toBeUndefined();
+  });
+
+  it('persists canonical LP identity fields from pending submissions and bound chain positions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-lp-identity-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+
+    await pendingSubmissionStore.write({
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'idem-1',
+      submissionId: 'sub-1',
+      openIntentId: 'lp-open-intent:test-1',
+      positionId: 'pool-1:mint-safe',
+      confirmationStatus: 'submitted',
+      finality: 'unknown',
+      createdAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T00:00:01.000Z',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      orderAction: 'add-lp'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-1',
+              positionAddress: 'pos-bound',
+              mint: 'mint-safe',
+              currentValueSol: 0.52,
+              unclaimedFeeSol: 0.01,
+              hasLiquidity: true,
+              valuationStatus: 'ready',
+              valuationReason: '',
+              lastValuationAt: '2026-04-18T00:00:02.000Z'
+            }
+          ],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-safe', inSession: false, hasSolRoute: true, symbol: 'SAFE', score: 90 },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpCurrentValueSol: 0.52,
+            lpUnclaimedFeeSol: 0.01
+          },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState.openIntentId).toBe('lp-open-intent:test-1');
+    expect(positionState.positionId).toBe('pos-bound');
+    expect(positionState.chainPositionAddress).toBe('pos-bound');
+    expect(positionState.valuationStatus).toBe('unavailable');
+    expect(positionState.valuationReason).toBe('orphaned-position-without-bound-entry');
+  });
+
   it('runs mirror catch-up during a healthy tick and advances the journal cursor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-catchup-'));
     const stateRootDir = join(root, 'state');

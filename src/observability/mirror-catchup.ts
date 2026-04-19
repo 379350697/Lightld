@@ -156,6 +156,9 @@ function toOrderCatchupEvent(
       cycleId: readString(value, ['cycleId']),
       strategyId: readString(value, ['strategyId']) || strategyId,
       submissionId: readString(value, ['submissionId']),
+      openIntentId: readString(value, ['openIntentId']) || undefined,
+      positionId: readString(value, ['positionId']) || undefined,
+      chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined,
       confirmationSignature: readString(value, ['confirmationSignature']),
       poolAddress: readString(value, ['poolAddress']),
       tokenMint: readString(value, ['tokenMint', 'mint']),
@@ -196,13 +199,16 @@ function toFillCatchupEvent(
     payload: {
       fillId: `${submissionId || 'fill'}:${recordedAt || offset}:${offset}`,
       submissionId,
+      openIntentId: readString(value, ['openIntentId']) || undefined,
+      positionId: readString(value, ['positionId']) || undefined,
+      chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined,
       confirmationSignature: readString(value, ['confirmationSignature']),
       cycleId: readString(value, ['cycleId']),
       tokenMint: readString(value, ['tokenMint', 'mint']),
       tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
       side: side === 'buy' || side === 'sell' ? side : 'unknown',
-      amount: readNumber(value, ['amount']),
-      filledSol: readNumber(value, ['filledSol']),
+      amount: readNumber(value, ['amount', 'filledSol', 'requestedPositionSol']),
+      filledSol: readNumber(value, ['filledSol', 'amount', 'requestedPositionSol']),
       recordedAt: recordedAt || new Date(0).toISOString()
     }
   };

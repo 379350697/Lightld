@@ -498,6 +498,100 @@ describe('runLiveCycle', () => {
     expect(result.audit.reason).toBe('lp-stop-loss');
   });
 
+  it('uses the current LP lifecycle fill instead of the earliest fill on the same mint', async () => {
+    const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
+    const oldRecordedAt = new Date(Date.now() - (30 * 60 * 60 * 1000)).toISOString();
+    const currentRecordedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'old-open',
+      mint: 'mint-shared',
+      side: 'add-lp',
+      amount: 1,
+      recordedAt: oldRecordedAt
+    }, {
+      rotateDaily: true,
+      now: new Date(oldRecordedAt)
+    });
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'current-open',
+      mint: 'mint-shared',
+      side: 'add-lp',
+      amount: 0.5,
+      recordedAt: currentRecordedAt
+    }, {
+      rotateDaily: true,
+      now: new Date(currentRecordedAt)
+    });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-shared',
+        activePoolAddress: 'pool-shared',
+        lifecycleState: 'open',
+        entrySol: 0.5,
+        openedAt: currentRecordedAt,
+        updatedAt: currentRecordedAt
+      } as any,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-shared',
+            positionAddress: 'pos-current',
+            mint: 'mint-shared',
+            lowerBinId: 200,
+            upperBinId: 268,
+            activeBinId: 210,
+            solSide: 'tokenX',
+            solDepletedBins: 10,
+            currentValueSol: 0.7,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-shared',
+            positionAddress: 'pos-current',
+            mint: 'mint-shared',
+            lowerBinId: 200,
+            upperBinId: 268,
+            activeBinId: 210,
+            solSide: 'tokenX',
+            solDepletedBins: 10,
+            currentValueSol: 0.7,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }
+        ],
+        fills: []
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-take-profit');
+    expect(result.orderIntent?.poolAddress).toBe('pool-shared');
+  });
+
   it('prefers an older journal-backed LP exit over a newer bin-depletion exit', async () => {
     const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
 
@@ -666,5 +760,65 @@ describe('runLiveCycle', () => {
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toContain('lp-sol-nearly-depleted');
     expect(result.orderIntent?.poolAddress).toBe('pool-residual');
+  });
+
+  it('records valuation-unavailable when LP valuation inputs are missing', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        entrySol: 0.5,
+        openedAt,
+        updatedAt: openedAt
+      } as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: undefined,
+          lpUnclaimedFeeSol: 0.01,
+          lpSolDepletedBins: 0
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-1',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 110,
+            solSide: 'tokenX',
+            solDepletedBins: 0,
+            currentValueSol: undefined,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.reason).toContain('valuation-unavailable');
   });
 });

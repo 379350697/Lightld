@@ -64,6 +64,9 @@ export const PendingSubmissionSnapshotSchema = z.object({
   strategyId: z.string(),
   idempotencyKey: z.string(),
   submissionId: z.string(),
+  openIntentId: z.string().optional(),
+  positionId: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
   submissionIds: z.array(z.string()).optional(),
   confirmationSignature: z.string().optional(),
   confirmationSignatures: z.array(z.string()).optional(),
@@ -82,6 +85,9 @@ export const PendingSubmissionSnapshotSchema = z.object({
 
 export type PendingSubmissionSnapshot = z.infer<typeof PendingSubmissionSnapshotSchema>;
 
+export const LpValuationStatusSchema = z.enum(['ready', 'unavailable', 'stale', 'invalid']);
+export type LpValuationStatus = z.infer<typeof LpValuationStatusSchema>;
+
 export const PositionLifecycleStateSchema = z.enum([
   'open_pending',
   'open',
@@ -98,11 +104,17 @@ export const PositionStateSnapshotSchema = z.object({
   flattenOnly: z.boolean(),
   lastAction: z.string(),
   lastReason: z.string().optional(),
+  openIntentId: z.string().optional(),
+  positionId: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
   activeMint: z.string().optional(),
   activePoolAddress: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
   entrySol: z.number().positive().optional(),
   openedAt: z.string().optional(),
+  valuationStatus: LpValuationStatusSchema.optional(),
+  valuationReason: z.string().optional(),
+  lastValuationAt: z.string().optional(),
   lastClosedMint: z.string().optional(),
   lastClosedAt: z.string().optional(),
   walletSol: z.number().optional(),

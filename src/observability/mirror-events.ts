@@ -29,6 +29,9 @@ export type OrderMirrorPayload = {
   cycleId: string;
   strategyId: string;
   submissionId: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   confirmationSignature: string;
   poolAddress: string;
   tokenMint: string;
@@ -46,6 +49,9 @@ export type OrderMirrorPayload = {
 export type FillMirrorPayload = {
   fillId: string;
   submissionId: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   confirmationSignature: string;
   cycleId: string;
   tokenMint: string;

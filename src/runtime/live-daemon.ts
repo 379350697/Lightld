@@ -27,6 +27,7 @@ import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
+import { createPositionId, markOrphanedLpPosition } from './lp-position-record.ts';
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -633,24 +634,93 @@ function inferOpenPositionMetadata(input: {
   });
 
   if (lpPosition) {
-    if (entrySol === undefined) {
-      const currentValueSol = typeof lpPosition.currentValueSol === 'number' ? lpPosition.currentValueSol : undefined;
-      const unclaimedFeeSol = typeof lpPosition.unclaimedFeeSol === 'number' ? lpPosition.unclaimedFeeSol : 0;
-      const inferredEntrySol = typeof currentValueSol === 'number'
-        ? Math.max(0, currentValueSol - unclaimedFeeSol)
-        : undefined;
-
-      if (typeof inferredEntrySol === 'number' && inferredEntrySol > 0) {
-        entrySol = inferredEntrySol;
-      }
-    }
-
-    if (!openedAt) {
-      openedAt = input.fallbackOpenedAt;
-    }
+    return { entrySol, openedAt };
   }
 
   return { entrySol, openedAt };
+}
+
+function resolveBoundLpPosition(input: {
+  accountState?: LiveAccountState;
+  chainPositionAddress?: string;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => isManageableLpPosition(position));
+
+  if (input.chainPositionAddress) {
+    const exact = positions.find((position) => position.positionAddress === input.chainPositionAddress);
+    if (exact) {
+      return exact;
+    }
+  }
+
+  return positions.find((position) => {
+    if (input.activeMint && input.activePoolAddress) {
+      return position.mint === input.activeMint && position.poolAddress === input.activePoolAddress;
+    }
+
+    if (input.activeMint) {
+      return position.mint === input.activeMint;
+    }
+
+    if (input.activePoolAddress) {
+      return position.poolAddress === input.activePoolAddress;
+    }
+
+    return false;
+  });
+}
+
+function resolvePersistedLpIdentity(input: {
+  lifecycleState?: PositionLifecycleState;
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  positionState?: Awaited<ReturnType<RuntimeStateStore['readPositionState']>>;
+  accountState?: LiveAccountState;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  const boundPosition = resolveBoundLpPosition({
+    accountState: input.accountState,
+    chainPositionAddress: input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress,
+    activeMint: input.activeMint,
+    activePoolAddress: input.activePoolAddress
+  });
+  const chainPositionAddress = boundPosition?.positionAddress
+    || input.positionState?.chainPositionAddress
+    || input.pendingSubmission?.chainPositionAddress;
+
+  if (input.lifecycleState !== 'open' && input.lifecycleState !== 'open_pending') {
+    return {
+      openIntentId: undefined,
+      positionId: undefined,
+      chainPositionAddress: undefined,
+      valuationStatus: undefined,
+      valuationReason: undefined,
+      lastValuationAt: undefined
+    };
+  }
+
+  return {
+    openIntentId: input.pendingSubmission?.openIntentId || input.positionState?.openIntentId,
+    positionId: chainPositionAddress
+      ? createPositionId({ chainPositionAddress })
+      : input.pendingSubmission?.positionId
+        || input.positionState?.positionId
+        || ((input.activeMint || input.activePoolAddress)
+          ? createPositionId({
+              poolAddress: input.activePoolAddress,
+              tokenMint: input.activeMint
+            })
+          : undefined),
+    chainPositionAddress,
+    valuationStatus: boundPosition?.valuationStatus ?? input.positionState?.valuationStatus,
+    valuationReason: boundPosition?.valuationReason ?? input.positionState?.valuationReason,
+    lastValuationAt: boundPosition?.lastValuationAt ?? input.positionState?.lastValuationAt
+  };
 }
 
 function resolveLifecycleStateForPersist(input: {
@@ -757,6 +827,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let effectiveAccountState: LiveAccountState | undefined;
       let tickError: unknown;
       let pendingSubmission = await pendingSubmissionStore.read();
+      let pendingSubmissionBeforeCycle = pendingSubmission;
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       let previousMode = runtimeState.mode;
       const tickStartRuntimeState = {
@@ -821,6 +892,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         cycleInput = await buildCycleInput(tickCount);
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         pendingSubmission = await pendingSubmissionStore.read();
+        pendingSubmissionBeforeCycle = pendingSubmission;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
         let runtimeStateExplicitlySet = false;
         const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
@@ -1001,10 +1073,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         await runtimeStateStore.writeRuntimeState(runtimeState);
         await runtimeStateStore.writeDependencyHealth(dependencyHealth);
         const persistedActiveMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        const persistedPendingSubmission = await pendingSubmissionStore.read();
         const persistedLifecycleState = resolveLifecycleStateForPersist({
           nextLifecycleState: result.nextLifecycleState,
           previousLifecycleState: positionState?.lifecycleState,
-          pendingSubmission: (await pendingSubmissionStore.read()) !== null,
+          pendingSubmission: persistedPendingSubmission !== null,
           accountState: effectiveAccountState,
           lastAction: result.action,
           lastReason: result.reason,
@@ -1032,6 +1105,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           : isExposureReducingAction(result.action)
             ? undefined
             : positionState?.openedAt;
+        const persistedIdentity = resolvePersistedLpIdentity({
+          lifecycleState: persistedLifecycleState,
+          pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
+          positionState,
+          accountState: effectiveAccountState,
+          activeMint: persistedActiveMint,
+          activePoolAddress: persistedPoolAddress
+        });
         const inferredPositionMetadata = persistedLifecycleState === 'open'
           ? inferOpenPositionMetadata({
               accountState: effectiveAccountState,
@@ -1042,16 +1123,37 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               fallbackOpenedAt: nowIso()
             })
           : { entrySol: persistedEntrySol, openedAt: persistedOpenedAt };
+        const orphanedIdentity = persistedLifecycleState === 'open'
+          && !inferredPositionMetadata.entrySol
+          && !inferredPositionMetadata.openedAt
+          && (persistedIdentity.chainPositionAddress || persistedIdentity.positionId || persistedIdentity.openIntentId)
+          ? markOrphanedLpPosition({
+              openIntentId: persistedIdentity.openIntentId,
+              positionId: persistedIdentity.positionId,
+              chainPositionAddress: persistedIdentity.chainPositionAddress,
+              poolAddress: persistedPoolAddress,
+              tokenMint: persistedActiveMint,
+              valuationStatus: persistedIdentity.valuationStatus,
+              valuationReason: persistedIdentity.valuationReason,
+              lastValuationAt: persistedIdentity.lastValuationAt
+            })
+          : null;
         await runtimeStateStore.writePositionState({
           allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
           lastReason: result.reason,
+          openIntentId: persistedIdentity.openIntentId,
+          positionId: persistedIdentity.positionId,
+          chainPositionAddress: persistedIdentity.chainPositionAddress,
           activeMint: persistedActiveMint,
           activePoolAddress: persistedPoolAddress,
           lifecycleState: persistedLifecycleState,
-          entrySol: inferredPositionMetadata.entrySol,
-          openedAt: inferredPositionMetadata.openedAt,
+          entrySol: orphanedIdentity?.entrySol ?? inferredPositionMetadata.entrySol,
+          openedAt: orphanedIdentity?.openedAt ?? inferredPositionMetadata.openedAt,
+          valuationStatus: orphanedIdentity?.valuationStatus ?? persistedIdentity.valuationStatus,
+          valuationReason: orphanedIdentity?.valuationReason ?? persistedIdentity.valuationReason,
+          lastValuationAt: orphanedIdentity?.lastValuationAt ?? persistedIdentity.lastValuationAt,
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,
           walletSol: effectiveAccountState?.walletSol,
@@ -1138,18 +1240,35 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         await runtimeStateStore.writeRuntimeState(runtimeState);
         await runtimeStateStore.writeDependencyHealth(dependencyHealth);
+        const persistedPendingSubmission = await pendingSubmissionStore.read();
+        const persistedLifecycleState = resolveLifecycleStateForPersist({
+          previousLifecycleState: positionState?.lifecycleState,
+          pendingSubmission: persistedPendingSubmission !== null,
+          accountState: effectiveAccountState
+        });
+        const persistedIdentity = resolvePersistedLpIdentity({
+          lifecycleState: persistedLifecycleState,
+          pendingSubmission: persistedPendingSubmission,
+          positionState,
+          accountState: effectiveAccountState,
+          activeMint: positionState?.activeMint,
+          activePoolAddress: positionState?.activePoolAddress
+        });
         await runtimeStateStore.writePositionState({
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
+          activeMint: positionState?.activeMint,
+          openIntentId: persistedIdentity.openIntentId,
+          positionId: persistedIdentity.positionId,
+          chainPositionAddress: persistedIdentity.chainPositionAddress,
           activePoolAddress: positionState?.activePoolAddress,
-          lifecycleState: resolveLifecycleStateForPersist({
-            previousLifecycleState: positionState?.lifecycleState,
-            pendingSubmission: (await pendingSubmissionStore.read()) !== null,
-            accountState: effectiveAccountState
-          }),
+          lifecycleState: persistedLifecycleState,
           entrySol: positionState?.entrySol,
           openedAt: positionState?.openedAt,
+          valuationStatus: persistedIdentity.valuationStatus,
+          valuationReason: persistedIdentity.valuationReason,
+          lastValuationAt: persistedIdentity.lastValuationAt,
           lastClosedMint: positionState?.lastClosedMint,
           lastClosedAt: positionState?.lastClosedAt,
           updatedAt: now

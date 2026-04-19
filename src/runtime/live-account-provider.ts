@@ -9,6 +9,9 @@ export type LiveAccountState = {
   walletLpPositions?: Array<{
     poolAddress: string;
     positionAddress: string;
+    chainPositionAddress?: string;
+    positionId?: string;
+    openIntentId?: string;
     mint: string;
     lowerBinId?: number;
     upperBinId?: number;
@@ -26,10 +29,16 @@ export type LiveAccountState = {
     positionStatus?: RuntimeLpPositionStatus;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
+    valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
+    valuationReason?: string;
+    lastValuationAt?: string;
   }>;
   journalLpPositions?: Array<{
     poolAddress: string;
     positionAddress: string;
+    chainPositionAddress?: string;
+    positionId?: string;
+    openIntentId?: string;
     mint: string;
     lowerBinId?: number;
     upperBinId?: number;
@@ -47,6 +56,9 @@ export type LiveAccountState = {
     positionStatus?: RuntimeLpPositionStatus;
     hasLiquidity?: boolean;
     hasClaimableFees?: boolean;
+    valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
+    valuationReason?: string;
+    lastValuationAt?: string;
   }>;
   walletTokens?: Array<{
     mint: string;
@@ -63,6 +75,9 @@ export type LiveAccountState = {
   fills?: Array<{
     submissionId?: string;
     confirmationSignature?: string;
+    openIntentId?: string;
+    positionId?: string;
+    chainPositionAddress?: string;
     mint: string;
     symbol?: string;
     side: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';

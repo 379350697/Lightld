@@ -76,10 +76,35 @@ describe('buildNewTokenDecision — LP mode', () => {
   it('returns withdraw-lp on take-profit (netPnlPct >= +30%)', () => {
     expect(
       buildNewTokenDecision(
-        { inSession: true, hasInventory: false, hasLpPosition: true, lpNetPnlPct: 30 },
+        {
+          inSession: true,
+          hasInventory: false,
+          hasLpPosition: true,
+          lpNetPnlPct: 30,
+          holdTimeMs: 5 * 60 * 1000,
+          pendingConfirmationStatus: 'confirmed'
+        },
         lpConfig
       )
     ).toMatchObject({ action: 'withdraw-lp' });
+  });
+
+  it('returns hold when LP valuation is unavailable even if stale net PnL looks actionable', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          hasLpPosition: true,
+          lpNetPnlPct: -35,
+          valuationStatus: 'unavailable',
+          valuationReason: 'missing-current-value',
+          holdTimeMs: 10 * 60 * 1000,
+          pendingConfirmationStatus: 'confirmed'
+        },
+        lpConfig
+      )
+    ).toMatchObject({ action: 'hold' });
   });
 
   it('returns hold when LP position PnL within thresholds', () => {
