@@ -21,12 +21,31 @@ const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
 // ── SQLite helpers (lazy, read-only) ──
 
 let dbInstance: InstanceType<typeof import('node:sqlite').DatabaseSync> | null = null;
+let databaseSyncCtorPromise: Promise<typeof import('node:sqlite').DatabaseSync | null> | null = null;
 
-function getDb() {
+async function getDatabaseSyncCtor() {
+  if (databaseSyncCtorPromise) {
+    return databaseSyncCtorPromise;
+  }
+
+  databaseSyncCtorPromise = import('node:sqlite')
+    .then((module) => module.DatabaseSync)
+    .catch((error) => {
+      console.error('[dashboard] failed to load node:sqlite', error);
+      return null;
+    });
+
+  return databaseSyncCtorPromise;
+}
+
+async function getDb() {
   if (dbInstance) return dbInstance;
 
   try {
-    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const DatabaseSync = await getDatabaseSyncCtor();
+    if (!DatabaseSync) {
+      return null;
+    }
     const db = new DatabaseSync(MIRROR_DB_PATH);
     db.exec('PRAGMA busy_timeout = 500;');
     dbInstance = db;
@@ -37,9 +56,9 @@ function getDb() {
   }
 }
 
-function queryAll<T>(sql: string, ...params: Array<string | number | bigint | Uint8Array | null>): T[] {
+async function queryAll<T>(sql: string, ...params: Array<string | number | bigint | Uint8Array | null>): Promise<T[]> {
   try {
-    const db = getDb();
+    const db = await getDb();
     if (!db) return [];
     return db.prepare(sql).all(...params) as T[];
   } catch (error) {
@@ -141,15 +160,19 @@ async function handleStatus(): Promise<StatusResponse> {
     readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.outcomeLedgerPath),
     readJsonSafe<Record<string, unknown>>(evolutionPaths.evidenceSnapshotPath)
   ]);
-  const candidateScanCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM candidate_scans')[0]?.count ?? 0;
-  const watchlistSnapshotCount = queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots')[0]?.count ?? 0;
+  const [candidateScanCounts, watchlistSnapshotCounts] = await Promise.all([
+    queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM candidate_scans'),
+    queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots')
+  ]);
+  const candidateScanCount = candidateScanCounts[0]?.count ?? 0;
+  const watchlistSnapshotCount = watchlistSnapshotCounts[0]?.count ?? 0;
   const latestProposal = sortByIsoDesc(proposalCatalog ?? [], 'updatedAt', 'createdAt')[0] ?? null;
   const latestReview = sortByIsoDesc(outcomeLedger ?? [], 'reviewedAt')[0] ?? null;
 
   // Wallet SOL: prefer position-state.json (written every tick), fallback to SQLite reconciliations
   let walletSol: number | null = typeof position?.walletSol === 'number' ? position.walletSol : null;
   if (walletSol === null) {
-    const recon = queryAll<{ wallet_sol: number }>(
+    const recon = await queryAll<{ wallet_sol: number }>(
       'SELECT wallet_sol FROM reconciliations ORDER BY recorded_at DESC LIMIT 1'
     );
     if (recon.length > 0) {
@@ -165,7 +188,7 @@ async function handleStatus(): Promise<StatusResponse> {
   let activeSymbol = '';
 
   if (activeMint || activePoolAddress) {
-    const fallbackOrder = queryAll<PositionFallbackOrderRow>(`
+    const fallbackOrders = await queryAll<PositionFallbackOrderRow>(`
       SELECT
         token_mint,
         pool_address,
@@ -177,7 +200,8 @@ async function handleStatus(): Promise<StatusResponse> {
       WHERE token_mint = ? OR pool_address = ?
       ORDER BY updated_at DESC
       LIMIT 1
-    `, activeMint, activePoolAddress)[0];
+    `, activeMint, activePoolAddress);
+    const fallbackOrder = fallbackOrders[0];
 
     if (fallbackOrder) {
       activeSymbol = fallbackOrder.token_symbol ?? '';
@@ -330,10 +354,10 @@ type PnlResponse = {
 
 type EquityResponse = ReturnType<typeof buildEquityMetrics>;
 
-function handlePnl(): PnlResponse {
+async function handlePnl(): Promise<PnlResponse> {
   const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  const fillRows = queryAll<{ side: string; filled_sol: number; recorded_at: string }>(`
+  const fillRows = (await queryAll<{ side: string; filled_sol: number; recorded_at: string }>(`
     SELECT
       side,
       filled_sol,
@@ -341,13 +365,13 @@ function handlePnl(): PnlResponse {
     FROM fills
     WHERE recorded_at >= ?
     ORDER BY recorded_at ASC
-  `, since30d).map((row) => ({
+  `, since30d)).map((row) => ({
     side: row.side,
     filledSol: row.filled_sol,
     recordedAt: row.recorded_at
   }));
 
-  const orderFallback = queryAll<{ action: string; requested_position_sol: number; created_at: string; updated_at: string }>(`
+  const orderFallback = (await queryAll<{ action: string; requested_position_sol: number; created_at: string; updated_at: string }>(`
       SELECT
         action,
         requested_position_sol,
@@ -356,7 +380,7 @@ function handlePnl(): PnlResponse {
       FROM orders
       WHERE COALESCE(updated_at, created_at) >= ?
       ORDER BY COALESCE(updated_at, created_at) ASC
-    `, since30d).map((row) => ({
+    `, since30d)).map((row) => ({
       action: row.action,
       requestedPositionSol: row.requested_position_sol,
       createdAt: row.created_at,
@@ -369,10 +393,10 @@ function handlePnl(): PnlResponse {
   });
 }
 
-function handleEquity(): EquityResponse {
+async function handleEquity(): Promise<EquityResponse> {
   const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  const rows = queryAll<{
+  const rows = await queryAll<{
     snapshot_at: string;
     wallet_sol: number | null;
     lp_value_sol: number | null;
@@ -426,7 +450,7 @@ type OrderRow = {
 };
 
 async function handleOrders() {
-  const rows = queryAll<OrderRow>(`
+  const rows = await queryAll<OrderRow>(`
     SELECT
       idempotency_key, submission_id, token_mint,
       token_symbol, action, requested_position_sol,
@@ -478,7 +502,7 @@ type FillRow = {
 };
 
 async function handleFills() {
-  const rows = queryAll<FillRow>(`
+  const rows = await queryAll<FillRow>(`
     SELECT
       fill_id, submission_id, token_mint, token_symbol,
       side, amount, filled_sol, recorded_at
@@ -516,7 +540,7 @@ type IncidentRow = {
 };
 
 async function handleIncidents() {
-  const rows = queryAll<IncidentRow>(`
+  const rows = await queryAll<IncidentRow>(`
     SELECT
       incident_id, cycle_id, stage, severity,
       reason, runtime_mode, token_symbol, recorded_at
@@ -607,15 +631,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     if (url === '/api/pnl') {
-      return sendJson(res, handlePnl());
+      return sendJson(res, await handlePnl());
     }
 
     if (url === '/api/overview') {
       return sendJson(res, {
         status: await handleStatus(),
         positions: await handlePositions(),
-        pnl: handlePnl(),
-        equity: handleEquity(),
+        pnl: await handlePnl(),
+        equity: await handleEquity(),
         orders: await handleOrders(),
         fills: await handleFills(),
         incidents: await handleIncidents(),
@@ -628,7 +652,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     if (url === '/api/equity') {
-      return sendJson(res, handleEquity());
+      return sendJson(res, await handleEquity());
     }
 
     if (url === '/api/orders') {
