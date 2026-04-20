@@ -119,6 +119,7 @@ describe('runLiveCycle', () => {
 
   it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
     const outcomes: LiveCycleOutcomeRecord[] = [];
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -133,8 +134,8 @@ describe('runLiveCycle', () => {
         activePoolAddress: 'pool-1',
         lifecycleState: 'open',
         entrySol: 0.1,
-        openedAt: '2026-04-18T00:00:00.000Z',
-        updatedAt: '2026-04-18T00:00:00.000Z'
+        openedAt,
+        updatedAt: openedAt
       },
       evolutionSink: {
         appendOutcome: async (record) => {
@@ -166,7 +167,7 @@ describe('runLiveCycle', () => {
       positionId: 'pool-1:mint-safe',
       action: 'withdraw-lp',
       actualExitReason: 'lp-stop-loss',
-      openedAt: '2026-04-18T00:00:00.000Z',
+      openedAt,
       closedAt: expect.any(String),
       entrySol: 0.1,
       maxObservedDrawdownPct: 0,
@@ -625,6 +626,41 @@ describe('runLiveCycle', () => {
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toBe('lp-take-profit');
     expect(result.orderIntent?.poolAddress).toBe('pool-shared');
+  });
+
+  it('treats persisted open LP positions as confirmed for take-profit gating even without live fills', async () => {
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        openedAt,
+        updatedAt: openedAt
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpNetPnlPct: 35
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-take-profit');
   });
 
   it('prefers an older journal-backed LP exit over a newer bin-depletion exit', async () => {

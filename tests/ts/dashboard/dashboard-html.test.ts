@@ -12,4 +12,12 @@ describe('buildDashboardHtml', () => {
     expect(html).toContain('id="research-latest-proposal"');
     expect(html).toContain('id="research-latest-review"');
   });
+
+  it('renders a real historical positions table shell instead of a hard-coded empty placeholder', () => {
+    const html = buildDashboardHtml();
+
+    expect(html).toContain('id="history-tbody"');
+    expect(html).toContain('id="history-empty"');
+    expect(html).not.toContain('暂未接入真实 historical 数据');
+  });
 });

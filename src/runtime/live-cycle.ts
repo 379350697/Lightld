@@ -430,19 +430,53 @@ function resolveActualExitMetricValue(
   return undefined;
 }
 
-function getHoldTimeMs(accountState: LiveAccountState | undefined, mint: string, nowMs: number): number {
-  if (!accountState || !accountState.fills || !mint) return 0;
-  
-  const mintFills = accountState.fills
-    .filter(f => f.mint === mint && (f.side === 'buy' || f.side === 'add-lp') && f.recordedAt)
-    .sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
+function getHoldTimeMs(input: {
+  fills: LiveFillEntry[];
+  mint: string;
+  nowMs: number;
+  positionState?: PositionStateSnapshot;
+}): number {
+  if (!input.mint) {
+    return 0;
+  }
+
+  if (
+    input.positionState?.lifecycleState === 'open'
+    && input.positionState.activeMint === input.mint
+    && typeof input.positionState.openedAt === 'string'
+    && input.positionState.openedAt.length > 0
+  ) {
+    return Math.max(0, input.nowMs - Date.parse(input.positionState.openedAt));
+  }
+
+  const mintFills = input.fills
+    .filter((fill) => fill.mint === input.mint && (fill.side === 'buy' || fill.side === 'add-lp') && fill.recordedAt)
+    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt));
 
   if (mintFills.length > 0) {
-    const elapsed = nowMs - Date.parse(mintFills[0].recordedAt!);
-    return elapsed > 0 ? elapsed : 0;
+    return Math.max(0, input.nowMs - Date.parse(mintFills[0].recordedAt));
   }
-  
+
   return 0;
+}
+
+function resolvePendingConfirmationStatus(input: {
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  positionState?: PositionStateSnapshot;
+  mint: string;
+}) {
+  if (input.pendingSubmission?.confirmationStatus) {
+    return input.pendingSubmission.confirmationStatus;
+  }
+
+  if (
+    input.positionState?.lifecycleState === 'open'
+    && input.positionState.activeMint === input.mint
+  ) {
+    return 'confirmed' as const;
+  }
+
+  return undefined;
 }
 
 function dedupeLiveFills(fills: LiveFillEntry[]) {
@@ -1267,7 +1301,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
   
   if (config.poolClass === 'new-token') {
-    (snapshot as any).holdTimeMs = getHoldTimeMs(accountState, firstString(context.token.mint), Date.now());
+    (snapshot as any).holdTimeMs = getHoldTimeMs({
+      fills: historicalFills,
+      mint: firstString(context.token.mint),
+      nowMs: Date.now(),
+      positionState: input.positionState
+    });
   }
 
   const routeExists = Boolean(snapshot.hasSolRoute);
@@ -1411,7 +1450,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   };
   let pendingSubmission = await pendingSubmissionStore.read();
   if (config.poolClass === 'new-token') {
-    (snapshot as any).pendingConfirmationStatus = pendingSubmission?.confirmationStatus;
+    (snapshot as any).pendingConfirmationStatus = resolvePendingConfirmationStatus({
+      pendingSubmission,
+      positionState: input.positionState,
+      mint: firstString(context.token.mint)
+    });
   }
 
   const multiLpExit = config.poolClass === 'new-token'
@@ -1596,8 +1639,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     })
     : null;
   if (config.poolClass === 'new-token') {
-    (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
-    (updatedSnapshot as any).pendingConfirmationStatus = (snapshot as any).pendingConfirmationStatus;
+    (updatedSnapshot as any).holdTimeMs = typeof multiLpExit?.snapshot.holdTimeMs === 'number'
+      ? multiLpExit.snapshot.holdTimeMs
+      : (snapshot as any).holdTimeMs;
+    (updatedSnapshot as any).pendingConfirmationStatus = typeof multiLpExit?.snapshot.pendingConfirmationStatus === 'string'
+      ? multiLpExit.snapshot.pendingConfirmationStatus
+      : (snapshot as any).pendingConfirmationStatus;
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
     if (preEngineMintAggregate.mustCleanupDust) {

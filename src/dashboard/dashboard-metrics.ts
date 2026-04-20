@@ -11,6 +11,25 @@ type CashflowOrderFallback = {
   createdAt: string;
 };
 
+type HistoricalFill = {
+  tokenMint: string;
+  tokenSymbol: string;
+  side: string;
+  filledSol: number;
+  recordedAt: string;
+  confirmationStatus?: string;
+};
+
+type HistoricalOrderFallback = {
+  tokenMint: string;
+  tokenSymbol: string;
+  action: string;
+  requestedPositionSol: number;
+  confirmationStatus?: string;
+  updatedAt: string;
+  createdAt: string;
+};
+
 type DailyCashflowPoint = {
   date: string;
   cashflowSol: number;
@@ -52,6 +71,16 @@ export type DashboardEquityMetrics = {
   dailyEquity: DailyEquityPoint[];
 };
 
+export type DashboardHistoricalActivityEntry = {
+  tokenMint: string;
+  tokenSymbol: string;
+  action: string;
+  amountSol: number;
+  recordedAt: string;
+  source: 'fills' | 'orders';
+  confirmationStatus: string;
+};
+
 function startOfUtcDayString(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -74,6 +103,10 @@ function toSignedCashflow(fill: CashflowFill) {
 
 function sum(values: number[]) {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function sortByRecordedAtDesc<T extends { recordedAt: string }>(rows: T[]) {
+  return [...rows].sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
 }
 
 export function buildCashflowMetrics(input: {
@@ -145,6 +178,65 @@ export function buildCashflowMetrics(input: {
       pnl: entry.cashflowSol
     }))
   };
+}
+
+export function buildHistoricalActivity(input: {
+  fills: HistoricalFill[];
+  orderFallback?: HistoricalOrderFallback[];
+  limit?: number;
+}): DashboardHistoricalActivityEntry[] {
+  const fillEntries = input.fills
+    .filter((fill) =>
+      fill.recordedAt
+      && Number.isFinite(fill.filledSol)
+      && fill.filledSol > 0
+      && fill.side.length > 0
+    )
+    .map((fill) => ({
+      tokenMint: fill.tokenMint,
+      tokenSymbol: fill.tokenSymbol,
+      action: fill.side,
+      amountSol: fill.filledSol,
+      recordedAt: fill.recordedAt,
+      source: 'fills' as const,
+      confirmationStatus: fill.confirmationStatus ?? 'confirmed'
+    }));
+
+  const orderEntries = (input.orderFallback ?? [])
+    .filter((order) =>
+      (order.action === 'add-lp'
+        || order.action === 'deploy'
+        || order.action === 'withdraw-lp'
+        || order.action === 'claim-fee'
+        || order.action === 'rebalance-lp')
+      && Number.isFinite(order.requestedPositionSol)
+      && order.requestedPositionSol > 0
+    )
+    .map((order) => ({
+      tokenMint: order.tokenMint,
+      tokenSymbol: order.tokenSymbol,
+      action: order.action,
+      amountSol: order.requestedPositionSol,
+      recordedAt: order.updatedAt || order.createdAt,
+      source: 'orders' as const,
+      confirmationStatus: order.confirmationStatus ?? 'unknown'
+    }));
+
+  const deduped = new Map<string, DashboardHistoricalActivityEntry>();
+  for (const entry of sortByRecordedAtDesc([...fillEntries, ...orderEntries])) {
+    const key = [
+      entry.source,
+      entry.tokenMint,
+      entry.action,
+      entry.recordedAt,
+      entry.amountSol
+    ].join(':');
+    if (!deduped.has(key)) {
+      deduped.set(key, entry);
+    }
+  }
+
+  return Array.from(deduped.values()).slice(0, input.limit ?? 20);
 }
 
 export function buildEquityMetrics(input: {

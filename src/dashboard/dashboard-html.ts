@@ -217,6 +217,8 @@ export function buildDashboardHtml(): string {
     .cell-red { color: var(--red); }
     .fee-unclaim { padding: 2px 8px; border-radius: 4px; background: var(--green-bg); color: var(--green); font-size: 12px; font-weight: 500; }
     .dpr-value { font-size: 14px; font-weight: 600; font-family: var(--font-mono); color: var(--green); }
+    .hist-action-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text-primary); font-size: 11px; font-weight: 600; }
+    .hist-source-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: var(--bg-surface); color: var(--text-secondary); font-size: 10px; font-weight: 600; text-transform: uppercase; }
     .range-bar { display: flex; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 4px 0; min-width: 120px; }
     .range-fill.blue { background: var(--blue); }
     .range-fill.yellow { background: var(--yellow); }
@@ -346,8 +348,23 @@ export function buildDashboardHtml(): string {
         <div class="positions-title">Historical positions</div>
         <button class="view-btn active">▨ Table</button>
       </div>
-      <div class="empty-state">暂未接入真实 historical 数据</div>
-      <div class="section-note">避免误导，已移除 mock 历史仓位。</div>
+      <div style="overflow-x:auto;">
+        <table class="pos-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Token</th>
+              <th>Action</th>
+              <th>Amount</th>
+              <th>Source</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="history-empty" style="display:none;">最近还没有可展示的真实历史记录</div>
+      <div class="section-note">展示最近真实的 LP 开仓、平仓与费用事件。</div>
     </div>
 
     <div class="logs-section">
@@ -512,6 +529,30 @@ export function buildDashboardHtml(): string {
         '</tr>';
       }).join('');
     }
+    function renderHistoricalPositions(history) {
+      var data = Array.isArray(history) ? history : [];
+      var tbody = $('#history-tbody');
+      var empty = $('#history-empty');
+      if (!data.length) {
+        tbody.innerHTML = '';
+        empty.style.display = '';
+        return;
+      }
+      empty.style.display = 'none';
+      tbody.innerHTML = data.map(function(row) {
+        var tokenMint = row.tokenMint || '--';
+        var tokenSymbol = row.tokenSymbol || '';
+        var label = tokenSymbol ? tokenSymbol + ' / ' + truncAddr(tokenMint) : truncAddr(tokenMint);
+        return '<tr>'
+          + '<td><div class="cell-main">' + escHtml(fmtTime(row.recordedAt)) + '</div><div class="cell-sub">' + escHtml(timeAgo(row.recordedAt)) + '</div></td>'
+          + '<td><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="pool-addr">' + escHtml(tokenMint) + '</div></div></td>'
+          + '<td><span class="hist-action-chip">' + escHtml(row.action || '--') + '</span></td>'
+          + '<td><div class="cell-main">' + fmtSol(Number(row.amountSol)) + '</div><div class="cell-sub">SOL</div></td>'
+          + '<td><span class="hist-source-chip">' + escHtml(row.source || '--') + '</span></td>'
+          + '<td><div class="cell-main">' + escHtml(row.confirmationStatus || '--') + '</div></td>'
+          + '</tr>';
+      }).join('');
+    }
     function renderLogs(logs) {
       var data = Array.isArray(logs) ? logs : [];
       $('#logs-count').textContent = String(data.length);
@@ -541,6 +582,7 @@ export function buildDashboardHtml(): string {
         var positions = overview.positions || [];
         var pnl = overview.pnl || {};
         var equity = overview.equity || {};
+        var history = overview.history || [];
         var logs = overview.logs || [];
         if (status) {
           var addr = status.activePoolAddress || status.activeMint || '--';
@@ -599,6 +641,7 @@ export function buildDashboardHtml(): string {
         $('#stat-monthly-profit').className = 'stat-value ' + (monthCashflow >= 0 ? 'green' : 'red');
         renderChart(dailyEquity);
         renderOpenPositions(Array.isArray(positions) ? positions : []);
+        renderHistoricalPositions(Array.isArray(history) ? history : []);
         renderLogs(Array.isArray(logs) ? logs : []);
       });
     }

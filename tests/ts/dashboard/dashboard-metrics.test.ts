@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCashflowMetrics, buildEquityMetrics } from '../../../src/dashboard/dashboard-metrics';
+import {
+  buildCashflowMetrics,
+  buildEquityMetrics,
+  buildHistoricalActivity
+} from '../../../src/dashboard/dashboard-metrics';
 
 describe('buildCashflowMetrics', () => {
   it('aggregates realized cashflow from fills by total, month, and day', () => {
@@ -78,6 +82,69 @@ describe('buildCashflowMetrics', () => {
     expect(result.dailyEquity).toEqual([
       { date: '2026-04-17', netWorthSol: 1.91 },
       { date: '2026-04-18', netWorthSol: 2 }
+    ]);
+  });
+
+  it('surfaces recent real fill history before falling back to orders', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          side: 'withdraw-lp',
+          filledSol: 1.4,
+          recordedAt: '2026-04-18T09:00:00.000Z'
+        },
+        {
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          side: 'add-lp',
+          filledSol: 1,
+          recordedAt: '2026-04-18T08:00:00.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-fallback',
+          tokenSymbol: 'FBK',
+          action: 'add-lp',
+          requestedPositionSol: 0.2,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T07:30:00.000Z',
+          updatedAt: '2026-04-18T07:31:00.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([
+      {
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        action: 'withdraw-lp',
+        amountSol: 1.4,
+        recordedAt: '2026-04-18T09:00:00.000Z',
+        source: 'fills',
+        confirmationStatus: 'confirmed'
+      },
+      {
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        action: 'add-lp',
+        amountSol: 1,
+        recordedAt: '2026-04-18T08:00:00.000Z',
+        source: 'fills',
+        confirmationStatus: 'confirmed'
+      },
+      {
+        tokenMint: 'mint-fallback',
+        tokenSymbol: 'FBK',
+        action: 'add-lp',
+        amountSol: 0.2,
+        recordedAt: '2026-04-18T07:31:00.000Z',
+        source: 'orders',
+        confirmationStatus: 'confirmed'
+      }
     ]);
   });
 });

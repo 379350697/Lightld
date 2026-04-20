@@ -4,7 +4,11 @@ import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
 import { normalizeDashboardJournalFill } from './fill-normalization.ts';
-import { buildCashflowMetrics, buildEquityMetrics } from './dashboard-metrics.ts';
+import {
+  buildCashflowMetrics,
+  buildEquityMetrics,
+  buildHistoricalActivity
+} from './dashboard-metrics.ts';
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 
@@ -590,6 +594,34 @@ async function handleLogs() {
   }));
 }
 
+async function handleHistory() {
+  const [orders, fills] = await Promise.all([
+    handleOrders(),
+    handleFills()
+  ]);
+
+  return buildHistoricalActivity({
+    fills: fills.map((fill) => ({
+      tokenMint: String(fill.tokenMint ?? ''),
+      tokenSymbol: String(fill.tokenSymbol ?? ''),
+      side: String(fill.side ?? ''),
+      filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
+      recordedAt: String(fill.recordedAt ?? ''),
+      confirmationStatus: 'confirmed'
+    })),
+    orderFallback: orders.map((order) => ({
+      tokenMint: String(order.tokenMint ?? ''),
+      tokenSymbol: String(order.tokenSymbol ?? ''),
+      action: String(order.action ?? ''),
+      requestedPositionSol: Number(order.requestedPositionSol ?? 0),
+      confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
+      createdAt: String(order.createdAt ?? ''),
+      updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
+    })),
+    limit: 20
+  });
+}
+
 // ── HTTP Server ──
 
 const cachedHtml = buildDashboardHtml();
@@ -635,15 +667,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     if (url === '/api/overview') {
+      const [status, positions, pnl, equity, orders, fills, incidents, logs, history] = await Promise.all([
+        handleStatus(),
+        handlePositions(),
+        handlePnl(),
+        handleEquity(),
+        handleOrders(),
+        handleFills(),
+        handleIncidents(),
+        handleLogs(),
+        handleHistory()
+      ]);
+
       return sendJson(res, {
-        status: await handleStatus(),
-        positions: await handlePositions(),
-        pnl: await handlePnl(),
-        equity: await handleEquity(),
-        orders: await handleOrders(),
-        fills: await handleFills(),
-        incidents: await handleIncidents(),
-        logs: await handleLogs(),
+        status,
+        positions,
+        pnl,
+        equity,
+        orders,
+        fills,
+        incidents,
+        logs,
+        history,
       });
     }
 
@@ -661,6 +706,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     if (url === '/api/fills') {
       return sendJson(res, await handleFills());
+    }
+
+    if (url === '/api/history') {
+      return sendJson(res, await handleHistory());
     }
 
     if (url === '/api/incidents') {
