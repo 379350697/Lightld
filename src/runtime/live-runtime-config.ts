@@ -45,7 +45,7 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
       quoteServiceUrl: env.LIVE_QUOTE_URL,
       signServiceUrl: env.LIVE_SIGN_URL,
       broadcastServiceUrl: env.LIVE_BROADCAST_URL,
-      broadcastTimeoutMs: parsePositiveInteger(env.LIVE_BROADCAST_TIMEOUT_MS, 15_000),
+      broadcastTimeoutMs: parsePositiveInteger(env.LIVE_BROADCAST_TIMEOUT_MS, 30_000),
       confirmationServiceUrl: env.LIVE_CONFIRMATION_URL,
       accountStateUrl: env.LIVE_ACCOUNT_STATE_URL,
       authToken: env.LIVE_AUTH_TOKEN,
