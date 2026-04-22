@@ -514,16 +514,16 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const feeEarnedPct = typeof investedSol === 'number' && investedSol > 0 && typeof feeEarnedSol === 'number'
     ? (feeEarnedSol / investedSol) * 100
     : null;
-  const closedSol = closeAction?.exitValueSol ?? closeAction?.amountSol ?? null;
-  const pnlPct = typeof closeAction?.pnlPct === 'number'
-    ? closeAction.pnlPct
-    : typeof investedSol === 'number' && investedSol > 0 && typeof closedSol === 'number'
-      ? ((closedSol - investedSol) / investedSol) * 100
+  const totalExitValueSol = closeAction?.exitValueSol ?? closeAction?.amountSol ?? null;
+  const pnlSol = typeof investedSol === 'number' && typeof totalExitValueSol === 'number'
+    ? totalExitValueSol - investedSol
+    : typeof investedSol === 'number' && investedSol > 0 && typeof closeAction?.pnlPct === 'number'
+      ? investedSol * (closeAction.pnlPct / 100)
       : null;
-  const pnlSol = typeof investedSol === 'number' && investedSol > 0 && typeof pnlPct === 'number'
-    ? investedSol * (pnlPct / 100)
-    : typeof investedSol === 'number' && typeof closedSol === 'number'
-      ? closedSol - investedSol
+  const pnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof pnlSol === 'number'
+    ? (pnlSol / investedSol) * 100
+    : typeof closeAction?.pnlPct === 'number'
+      ? closeAction.pnlPct
       : null;
 
   if (

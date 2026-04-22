@@ -24,6 +24,7 @@ const STRATEGY_ID = process.env.LIVE_STRATEGY_ID ?? 'new-token-v1';
 const ACCOUNT_STATE_URL = process.env.LIVE_ACCOUNT_STATE_URL ?? 'http://127.0.0.1:8791/account-state';
 const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
 const HISTORY_PAGE_SIZE = 10;
+const HISTORY_DECISION_FALLBACK_LINES = 1000;
 
 // ── SQLite helpers (lazy, read-only) ──
 
@@ -682,7 +683,7 @@ function parseDecisionMetrics(reason: string) {
 }
 
 async function readHistoryDecisionFallback() {
-  const entries = await readJournalEntries(`${STRATEGY_ID}-decision-audit`, 200);
+  const entries = await readJournalEntries(`${STRATEGY_ID}-decision-audit`, HISTORY_DECISION_FALLBACK_LINES);
 
   return entries
     .filter((entry) => {
