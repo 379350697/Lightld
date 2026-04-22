@@ -85,33 +85,48 @@ describe('buildCashflowMetrics', () => {
     ]);
   });
 
-  it('surfaces recent real fill history before falling back to orders', () => {
+  it('collapses one matched add and withdraw lifecycle into a single historical order', () => {
     const result = buildHistoricalActivity({
       fills: [
         {
           tokenMint: 'mint-safe',
           tokenSymbol: 'SAFE',
-          side: 'withdraw-lp',
-          filledSol: 1.4,
-          recordedAt: '2026-04-18T09:00:00.000Z'
+          side: 'add-lp',
+          submissionId: 'sub-open',
+          filledSol: 1,
+          recordedAt: '2026-04-18T08:00:00.000Z'
         },
         {
           tokenMint: 'mint-safe',
           tokenSymbol: 'SAFE',
-          side: 'add-lp',
-          filledSol: 1,
-          recordedAt: '2026-04-18T08:00:00.000Z'
+          side: 'withdraw-lp',
+          submissionId: 'sub-close',
+          filledSol: 1.4,
+          recordedAt: '2026-04-18T09:00:00.000Z'
         }
       ],
       orderFallback: [
         {
-          tokenMint: 'mint-fallback',
-          tokenSymbol: 'FBK',
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
           action: 'add-lp',
-          requestedPositionSol: 0.2,
+          submissionId: 'sub-open',
+          idempotencyKey: 'order-open',
+          requestedPositionSol: 1,
           confirmationStatus: 'confirmed',
-          createdAt: '2026-04-18T07:30:00.000Z',
-          updatedAt: '2026-04-18T07:31:00.000Z'
+          createdAt: '2026-04-18T07:59:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        },
+        {
+          tokenMint: 'mint-safe',
+          tokenSymbol: 'SAFE',
+          action: 'withdraw-lp',
+          submissionId: 'sub-close',
+          idempotencyKey: 'order-close',
+          requestedPositionSol: 1.4,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:59:00.000Z',
+          updatedAt: '2026-04-18T09:00:01.000Z'
         }
       ],
       limit: 5
@@ -121,30 +136,104 @@ describe('buildCashflowMetrics', () => {
       {
         tokenMint: 'mint-safe',
         tokenSymbol: 'SAFE',
-        action: 'withdraw-lp',
-        amountSol: 1.4,
-        recordedAt: '2026-04-18T09:00:00.000Z',
-        source: 'fills',
-        confirmationStatus: 'confirmed'
-      },
-      {
-        tokenMint: 'mint-safe',
-        tokenSymbol: 'SAFE',
-        action: 'add-lp',
+        action: 'add-lp -> withdraw-lp',
         amountSol: 1,
-        recordedAt: '2026-04-18T08:00:00.000Z',
-        source: 'fills',
-        confirmationStatus: 'confirmed'
-      },
-      {
-        tokenMint: 'mint-fallback',
-        tokenSymbol: 'FBK',
-        action: 'add-lp',
-        amountSol: 0.2,
-        recordedAt: '2026-04-18T07:31:00.000Z',
-        source: 'orders',
-        confirmationStatus: 'confirmed'
+        recordedAt: '2026-04-18T09:00:01.000Z',
+        source: 'matched',
+        confirmationStatus: 'ok'
       }
     ]);
+  });
+
+  it('marks chain-only historical activity as error', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-chain-only',
+          tokenSymbol: 'CO',
+          side: 'withdraw-lp',
+          submissionId: 'sub-chain-only',
+          filledSol: 0.7,
+          recordedAt: '2026-04-18T09:00:00.000Z'
+        }
+      ],
+      orderFallback: [],
+      limit: 5
+    });
+
+    expect(result).toEqual([
+      {
+        tokenMint: 'mint-chain-only',
+        tokenSymbol: 'CO',
+        action: 'withdraw-lp',
+        amountSol: 0.7,
+        recordedAt: '2026-04-18T09:00:00.000Z',
+        source: 'error',
+        confirmationStatus: 'missing-local'
+      }
+    ]);
+  });
+
+  it('marks local-only historical activity as error', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [
+        {
+          tokenMint: 'mint-local-only',
+          tokenSymbol: 'LO',
+          action: 'add-lp',
+          submissionId: 'sub-local-only',
+          idempotencyKey: 'order-local-only',
+          requestedPositionSol: 0.5,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:59:00.000Z',
+          updatedAt: '2026-04-18T09:00:00.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([
+      {
+        tokenMint: 'mint-local-only',
+        tokenSymbol: 'LO',
+        action: 'add-lp',
+        amountSol: 0.5,
+        recordedAt: '2026-04-18T09:00:00.000Z',
+        source: 'error',
+        confirmationStatus: 'missing-chain'
+      }
+    ]);
+  });
+
+  it('does not show still-open matched positions as historical orders', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-open',
+          tokenSymbol: 'OPEN',
+          side: 'add-lp',
+          submissionId: 'sub-open',
+          filledSol: 0.8,
+          recordedAt: '2026-04-18T08:00:00.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-open',
+          tokenSymbol: 'OPEN',
+          action: 'add-lp',
+          submissionId: 'sub-open',
+          idempotencyKey: 'order-open',
+          requestedPositionSol: 0.8,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T07:59:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([]);
   });
 });

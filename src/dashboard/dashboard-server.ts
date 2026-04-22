@@ -606,6 +606,7 @@ async function handleHistory() {
       tokenMint: String(fill.tokenMint ?? ''),
       tokenSymbol: String(fill.tokenSymbol ?? ''),
       side: String(fill.side ?? ''),
+      submissionId: String(fill.submissionId ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
       recordedAt: String(fill.recordedAt ?? ''),
       confirmationStatus: 'confirmed'
@@ -614,6 +615,8 @@ async function handleHistory() {
       tokenMint: String(order.tokenMint ?? ''),
       tokenSymbol: String(order.tokenSymbol ?? ''),
       action: String(order.action ?? ''),
+      submissionId: String(order.submissionId ?? ''),
+      idempotencyKey: String(order.idempotencyKey ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
       createdAt: String(order.createdAt ?? ''),

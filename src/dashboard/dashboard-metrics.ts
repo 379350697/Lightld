@@ -15,6 +15,7 @@ type HistoricalFill = {
   tokenMint: string;
   tokenSymbol: string;
   side: string;
+  submissionId?: string;
   filledSol: number;
   recordedAt: string;
   confirmationStatus?: string;
@@ -24,6 +25,8 @@ type HistoricalOrderFallback = {
   tokenMint: string;
   tokenSymbol: string;
   action: string;
+  submissionId?: string;
+  idempotencyKey?: string;
   requestedPositionSol: number;
   confirmationStatus?: string;
   updatedAt: string;
@@ -77,8 +80,24 @@ export type DashboardHistoricalActivityEntry = {
   action: string;
   amountSol: number;
   recordedAt: string;
-  source: 'fills' | 'orders';
+  source: 'matched' | 'error';
   confirmationStatus: string;
+};
+
+type ReconciledHistoricalAction = {
+  tokenMint: string;
+  tokenSymbol: string;
+  action: string;
+  amountSol: number;
+  recordedAt: string;
+  status: 'ok' | 'missing-local' | 'missing-chain';
+};
+
+type HistoricalLifecycle = {
+  tokenMint: string;
+  tokenSymbol: string;
+  openAction?: ReconciledHistoricalAction;
+  closeAction?: ReconciledHistoricalAction;
 };
 
 function startOfUtcDayString(date: Date) {
@@ -107,6 +126,90 @@ function sum(values: number[]) {
 
 function sortByRecordedAtDesc<T extends { recordedAt: string }>(rows: T[]) {
   return [...rows].sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
+}
+
+function toHistoricalMatchKey(input: {
+  submissionId?: string;
+  idempotencyKey?: string;
+  tokenMint: string;
+  action: string;
+  recordedAt: string;
+}) {
+  if (input.submissionId && input.submissionId.length > 0) {
+    return `submission:${input.submissionId}`;
+  }
+
+  if (input.idempotencyKey && input.idempotencyKey.length > 0) {
+    return `order:${input.idempotencyKey}`;
+  }
+
+  return `unmatched:${input.tokenMint}:${input.action}:${input.recordedAt}`;
+}
+
+function isHistoricalOpenAction(action: string) {
+  return action === 'add-lp' || action === 'deploy' || action === 'rebalance-lp';
+}
+
+function isHistoricalCloseAction(action: string) {
+  return action === 'withdraw-lp';
+}
+
+function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistoricalActivityEntry | null {
+  const openAction = lifecycle.openAction;
+  const closeAction = lifecycle.closeAction;
+
+  if (!openAction && !closeAction) {
+    return null;
+  }
+
+  if (
+    openAction
+    && !closeAction
+    && openAction.status === 'ok'
+  ) {
+    return null;
+  }
+
+  const recordedAt = closeAction?.recordedAt ?? openAction?.recordedAt ?? '';
+  const amountSol = openAction?.amountSol ?? closeAction?.amountSol ?? 0;
+  const tokenMint = lifecycle.tokenMint;
+  const tokenSymbol = lifecycle.tokenSymbol;
+
+  if (
+    openAction
+    && closeAction
+    && openAction.status === 'ok'
+    && closeAction.status === 'ok'
+  ) {
+    return {
+      tokenMint,
+      tokenSymbol,
+      action: `${openAction.action} -> ${closeAction.action}`,
+      amountSol,
+      recordedAt,
+      source: 'matched',
+      confirmationStatus: 'ok'
+    };
+  }
+
+  const errorStatus = closeAction && closeAction.status !== 'ok'
+    ? closeAction.status
+    : openAction && openAction.status !== 'ok'
+      ? openAction?.status
+      : 'missing-close';
+  const action = openAction && closeAction
+    ? `${openAction.action} -> ${closeAction.action}`
+    : openAction?.action ?? closeAction?.action ?? 'unknown';
+
+  return {
+    tokenMint,
+    tokenSymbol,
+    action,
+    amountSol,
+    recordedAt,
+    source: 'error',
+    confirmationStatus: errorStatus
+  };
 }
 
 export function buildCashflowMetrics(input: {
@@ -185,58 +288,125 @@ export function buildHistoricalActivity(input: {
   orderFallback?: HistoricalOrderFallback[];
   limit?: number;
 }): DashboardHistoricalActivityEntry[] {
-  const fillEntries = input.fills
+  const fills = input.fills
     .filter((fill) =>
       fill.recordedAt
       && Number.isFinite(fill.filledSol)
       && fill.filledSol > 0
       && fill.side.length > 0
-    )
-    .map((fill) => ({
-      tokenMint: fill.tokenMint,
-      tokenSymbol: fill.tokenSymbol,
-      action: fill.side,
-      amountSol: fill.filledSol,
-      recordedAt: fill.recordedAt,
-      source: 'fills' as const,
-      confirmationStatus: fill.confirmationStatus ?? 'confirmed'
-    }));
+    );
 
-  const orderEntries = (input.orderFallback ?? [])
+  const orders = (input.orderFallback ?? [])
     .filter((order) =>
       (order.action === 'add-lp'
         || order.action === 'deploy'
         || order.action === 'withdraw-lp'
-        || order.action === 'claim-fee'
         || order.action === 'rebalance-lp')
       && Number.isFinite(order.requestedPositionSol)
       && order.requestedPositionSol > 0
-    )
-    .map((order) => ({
-      tokenMint: order.tokenMint,
-      tokenSymbol: order.tokenSymbol,
-      action: order.action,
-      amountSol: order.requestedPositionSol,
-      recordedAt: order.updatedAt || order.createdAt,
-      source: 'orders' as const,
-      confirmationStatus: order.confirmationStatus ?? 'unknown'
-    }));
+    );
 
-  const deduped = new Map<string, DashboardHistoricalActivityEntry>();
-  for (const entry of sortByRecordedAtDesc([...fillEntries, ...orderEntries])) {
-    const key = [
-      entry.source,
-      entry.tokenMint,
-      entry.action,
-      entry.recordedAt,
-      entry.amountSol
-    ].join(':');
-    if (!deduped.has(key)) {
-      deduped.set(key, entry);
+  const localByKey = new Map<string, HistoricalOrderFallback>();
+  for (const order of orders) {
+    localByKey.set(toHistoricalMatchKey({
+      submissionId: order.submissionId,
+      idempotencyKey: order.idempotencyKey,
+      tokenMint: order.tokenMint,
+      action: order.action,
+      recordedAt: order.updatedAt || order.createdAt
+    }), order);
+  }
+
+  const chainByKey = new Map<string, HistoricalFill>();
+  for (const fill of fills) {
+    chainByKey.set(toHistoricalMatchKey({
+      submissionId: fill.submissionId,
+      tokenMint: fill.tokenMint,
+      action: fill.side,
+      recordedAt: fill.recordedAt
+    }), fill);
+  }
+
+  const reconciledActions = Array.from(new Set([
+    ...localByKey.keys(),
+    ...chainByKey.keys()
+  ]))
+    .map((key): ReconciledHistoricalAction | null => {
+      const order = localByKey.get(key);
+      const fill = chainByKey.get(key);
+      const tokenMint = fill?.tokenMint ?? order?.tokenMint ?? '';
+      const tokenSymbol = fill?.tokenSymbol ?? order?.tokenSymbol ?? '';
+      const action = fill?.side ?? order?.action ?? '';
+
+      if (
+        tokenMint.length === 0
+        || action.length === 0
+        || (!isHistoricalOpenAction(action) && !isHistoricalCloseAction(action))
+      ) {
+        return null;
+      }
+
+      return {
+        tokenMint,
+        tokenSymbol,
+        action,
+        amountSol: fill?.filledSol ?? order?.requestedPositionSol ?? 0,
+        recordedAt: [fill?.recordedAt ?? '', order?.updatedAt ?? order?.createdAt ?? '']
+          .sort((left, right) => right.localeCompare(left))[0] ?? '',
+        status: order && fill
+          ? 'ok'
+          : order
+            ? 'missing-chain'
+            : 'missing-local'
+      };
+    })
+    .filter((entry): entry is ReconciledHistoricalAction => entry !== null)
+    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+
+  const lifecycles: HistoricalLifecycle[] = [];
+  const currentLifecycleByToken = new Map<string, HistoricalLifecycle>();
+
+  for (const action of reconciledActions) {
+    const tokenKey = action.tokenMint;
+    const current = currentLifecycleByToken.get(tokenKey);
+
+    if (isHistoricalOpenAction(action.action)) {
+      if (current) {
+        lifecycles.push(current);
+      }
+
+      currentLifecycleByToken.set(tokenKey, {
+        tokenMint: action.tokenMint,
+        tokenSymbol: action.tokenSymbol,
+        openAction: action
+      });
+      continue;
+    }
+
+    if (isHistoricalCloseAction(action.action)) {
+      if (current) {
+        current.closeAction = action;
+        lifecycles.push(current);
+        currentLifecycleByToken.delete(tokenKey);
+      } else {
+        lifecycles.push({
+          tokenMint: action.tokenMint,
+          tokenSymbol: action.tokenSymbol,
+          closeAction: action
+        });
+      }
     }
   }
 
-  return Array.from(deduped.values()).slice(0, input.limit ?? 20);
+  for (const lifecycle of currentLifecycleByToken.values()) {
+    lifecycles.push(lifecycle);
+  }
+
+  return sortByRecordedAtDesc(
+    lifecycles
+      .map((lifecycle) => buildLifecycleEntry(lifecycle))
+      .filter((entry): entry is DashboardHistoricalActivityEntry => entry !== null)
+  ).slice(0, input.limit ?? 20);
 }
 
 export function buildEquityMetrics(input: {
