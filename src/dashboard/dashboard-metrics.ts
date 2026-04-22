@@ -39,6 +39,17 @@ type HistoricalOrderFallback = {
   createdAt: string;
 };
 
+type HistoricalDecisionFallback = {
+  tokenMint: string;
+  tokenSymbol: string;
+  action: string;
+  recordedAt: string;
+  entrySol?: number;
+  lpCurrentValueSol?: number;
+  lpUnclaimedFeeSol?: number;
+  lpNetPnlPct?: number;
+};
+
 type DailyCashflowPoint = {
   date: string;
   cashflowSol: number;
@@ -106,6 +117,10 @@ type ReconciledHistoricalAction = {
   amountSol: number;
   recordedAt: string;
   status: 'ok' | 'missing-local' | 'missing-chain';
+  entrySol?: number;
+  exitValueSol?: number;
+  feeEarnedSol?: number;
+  pnlPct?: number;
 };
 
 type HistoricalLifecycle = {
@@ -235,6 +250,81 @@ function isSupportedHistoricalAction(action: string) {
 function toRecordedAtMillis(recordedAt: string) {
   const parsed = Date.parse(recordedAt);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function buildHistoricalTokenSymbolMap(input: {
+  fills: HistoricalFill[];
+  orders: HistoricalOrderFallback[];
+  decisions: HistoricalDecisionFallback[];
+}) {
+  const symbols = new Map<string, string>();
+
+  const collect = (tokenMint: string, tokenSymbol: string) => {
+    if (tokenMint.length === 0 || tokenSymbol.length === 0 || symbols.has(tokenMint)) {
+      return;
+    }
+    symbols.set(tokenMint, tokenSymbol);
+  };
+
+  for (const fill of input.fills) {
+    collect(fill.tokenMint, fill.tokenSymbol);
+  }
+
+  for (const decision of input.decisions) {
+    collect(decision.tokenMint, decision.tokenSymbol);
+  }
+
+  for (const order of input.orders) {
+    collect(order.tokenMint, order.tokenSymbol);
+  }
+
+  return symbols;
+}
+
+function resolveHistoricalTokenSymbol(
+  tokenMint: string,
+  preferredSymbol: string | undefined,
+  symbolMap: Map<string, string>
+) {
+  if (preferredSymbol && preferredSymbol.length > 0) {
+    return preferredSymbol;
+  }
+
+  return symbolMap.get(tokenMint) ?? '';
+}
+
+function findDecisionFallback(input: {
+  tokenMint: string;
+  action: string;
+  recordedAt: string;
+  decisions: HistoricalDecisionFallback[];
+  maxDistanceMs?: number;
+}) {
+  const targetRecordedAtMs = toRecordedAtMillis(input.recordedAt);
+  const maxDistanceMs = input.maxDistanceMs ?? 120_000;
+  let bestMatch: HistoricalDecisionFallback | null = null;
+  let bestDistanceMs = Number.POSITIVE_INFINITY;
+
+  for (const decision of input.decisions) {
+    if (decision.tokenMint !== input.tokenMint || decision.action !== input.action) {
+      continue;
+    }
+
+    const decisionRecordedAtMs = toRecordedAtMillis(decision.recordedAt);
+    if (!Number.isFinite(targetRecordedAtMs) || !Number.isFinite(decisionRecordedAtMs)) {
+      continue;
+    }
+
+    const distanceMs = Math.abs(targetRecordedAtMs - decisionRecordedAtMs);
+    if (distanceMs > maxDistanceMs || distanceMs >= bestDistanceMs) {
+      continue;
+    }
+
+    bestMatch = decision;
+    bestDistanceMs = distanceMs;
+  }
+
+  return bestMatch;
 }
 
 function isStrongHistoricalMatchAllowed(fill: HistoricalFill, order: HistoricalOrderFallback) {
@@ -419,14 +509,22 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const amountSol = openAction?.amountSol ?? closeAction?.amountSol ?? 0;
   const tokenMint = lifecycle.tokenMint;
   const tokenSymbol = lifecycle.tokenSymbol;
-  const investedSol = openAction?.amountSol ?? null;
-  const closedSol = closeAction?.amountSol ?? null;
-  const pnlSol = typeof investedSol === 'number' && typeof closedSol === 'number'
-    ? closedSol - investedSol
+  const investedSol = openAction?.entrySol ?? openAction?.amountSol ?? closeAction?.entrySol ?? null;
+  const feeEarnedSol = closeAction?.feeEarnedSol ?? openAction?.feeEarnedSol ?? null;
+  const feeEarnedPct = typeof investedSol === 'number' && investedSol > 0 && typeof feeEarnedSol === 'number'
+    ? (feeEarnedSol / investedSol) * 100
     : null;
-  const pnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof pnlSol === 'number'
-    ? (pnlSol / investedSol) * 100
-    : null;
+  const closedSol = closeAction?.exitValueSol ?? closeAction?.amountSol ?? null;
+  const pnlPct = typeof closeAction?.pnlPct === 'number'
+    ? closeAction.pnlPct
+    : typeof investedSol === 'number' && investedSol > 0 && typeof closedSol === 'number'
+      ? ((closedSol - investedSol) / investedSol) * 100
+      : null;
+  const pnlSol = typeof investedSol === 'number' && investedSol > 0 && typeof pnlPct === 'number'
+    ? investedSol * (pnlPct / 100)
+    : typeof investedSol === 'number' && typeof closedSol === 'number'
+      ? closedSol - investedSol
+      : null;
 
   if (
     openAction
@@ -445,8 +543,8 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       openedAt: openAction.recordedAt,
       closedAt: closeAction.recordedAt,
       investedSol,
-      feeEarnedSol: null,
-      feeEarnedPct: null,
+      feeEarnedSol,
+      feeEarnedPct,
       pnlSol,
       pnlPct,
       dprPct: pnlPct
@@ -473,8 +571,8 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     openedAt: openAction?.recordedAt ?? null,
     closedAt: closeAction?.recordedAt ?? null,
     investedSol,
-    feeEarnedSol: null,
-    feeEarnedPct: null,
+    feeEarnedSol,
+    feeEarnedPct,
     pnlSol,
     pnlPct,
     dprPct: pnlPct
@@ -555,6 +653,7 @@ export function buildCashflowMetrics(input: {
 export function buildHistoricalActivity(input: {
   fills: HistoricalFill[];
   orderFallback?: HistoricalOrderFallback[];
+  decisionFallback?: HistoricalDecisionFallback[];
   limit?: number;
 }): DashboardHistoricalActivityEntry[] {
   const fills = input.fills
@@ -572,6 +671,12 @@ export function buildHistoricalActivity(input: {
       && Number.isFinite(order.requestedPositionSol)
       && order.requestedPositionSol > 0
     );
+  const decisions = input.decisionFallback ?? [];
+  const tokenSymbolMap = buildHistoricalTokenSymbolMap({
+    fills,
+    orders,
+    decisions
+  });
 
   const localByKey = new Map<string, HistoricalOrderFallback>();
   const ordersByIdentity = new Map<string, HistoricalOrderFallback[]>();
@@ -666,7 +771,7 @@ export function buildHistoricalActivity(input: {
           chainPositionAddress: fill.chainPositionAddress ?? matchedOrder?.chainPositionAddress
         }),
         tokenMint: fill.tokenMint,
-        tokenSymbol: fill.tokenSymbol || matchedOrder?.tokenSymbol || '',
+        tokenSymbol: resolveHistoricalTokenSymbol(fill.tokenMint, fill.tokenSymbol || matchedOrder?.tokenSymbol || '', tokenSymbolMap),
         action,
         amountSol: fill.filledSol > 0 ? fill.filledSol : matchedOrder?.requestedPositionSol ?? 0,
         recordedAt: [fill.recordedAt, matchedOrder?.updatedAt ?? matchedOrder?.createdAt ?? '']
@@ -681,19 +786,29 @@ export function buildHistoricalActivity(input: {
       continue;
     }
 
-    reconciledActions.push({
-      lifecycleKey: toHistoricalLifecycleKey({
-        tokenMint: order.tokenMint,
-        openIntentId: order.openIntentId,
-        positionId: order.positionId,
-        chainPositionAddress: order.chainPositionAddress
-      }),
+    const decision = findDecisionFallback({
       tokenMint: order.tokenMint,
-      tokenSymbol: order.tokenSymbol,
+      action: order.action,
+      recordedAt: order.updatedAt || order.createdAt,
+      decisions
+    });
+
+    reconciledActions.push({
+      lifecycleKey: `token:${order.tokenMint}`,
+      tokenMint: order.tokenMint,
+      tokenSymbol: resolveHistoricalTokenSymbol(order.tokenMint, order.tokenSymbol || decision?.tokenSymbol || '', tokenSymbolMap),
       action: order.action,
       amountSol: order.requestedPositionSol,
       recordedAt: order.updatedAt || order.createdAt,
-      status: 'missing-chain'
+      status: 'missing-chain',
+      entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
+        ? decision.entrySol
+        : undefined,
+      exitValueSol: typeof decision?.lpCurrentValueSol === 'number'
+        ? decision.lpCurrentValueSol + (decision.lpUnclaimedFeeSol ?? 0)
+        : undefined,
+      feeEarnedSol: typeof decision?.lpUnclaimedFeeSol === 'number' ? decision.lpUnclaimedFeeSol : undefined,
+      pnlPct: typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined
     });
   }
 

@@ -648,10 +648,65 @@ async function handleLogs() {
   }));
 }
 
+function parseDecisionMetrics(reason: string) {
+  const metrics = new Map<string, string>();
+
+  for (const segment of reason.split(' | ')) {
+    const separator = segment.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+
+    const key = segment.slice(0, separator).trim();
+    const value = segment.slice(separator + 1).trim();
+    if (key.length > 0) {
+      metrics.set(key, value);
+    }
+  }
+
+  const toNumber = (key: string) => {
+    const value = metrics.get(key);
+    if (!value || value === 'n/a') {
+      return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  return {
+    entrySol: toNumber('entrySol'),
+    lpCurrentValueSol: toNumber('lpCurrentValueSol'),
+    lpUnclaimedFeeSol: toNumber('lpUnclaimedFeeSol'),
+    lpNetPnlPct: toNumber('lpNetPnlPct'),
+  };
+}
+
+async function readHistoryDecisionFallback() {
+  const entries = await readJournalEntries(`${STRATEGY_ID}-decision-audit`, 200);
+
+  return entries
+    .filter((entry) => {
+      const action = String(entry.action ?? '');
+      return action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp';
+    })
+    .map((entry) => {
+      const parsed = parseDecisionMetrics(String(entry.engineReason ?? entry.reason ?? ''));
+      return {
+        tokenMint: String(entry.tokenMint ?? ''),
+        tokenSymbol: String(entry.tokenSymbol ?? ''),
+        action: String(entry.action ?? ''),
+        recordedAt: String(entry.recordedAt ?? ''),
+        ...parsed,
+      };
+    })
+    .filter((entry) => entry.tokenMint.length > 0 && entry.recordedAt.length > 0);
+}
+
 async function handleHistory() {
-  const [orders, fills] = await Promise.all([
+  const [orders, fills, decisionFallback] = await Promise.all([
     handleOrders(),
-    handleFills()
+    handleFills(),
+    readHistoryDecisionFallback()
   ]);
 
   const entries = buildHistoricalActivity({
@@ -681,6 +736,7 @@ async function handleHistory() {
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),
+    decisionFallback,
   });
 
   return paginateHistoryEntries(entries, {
@@ -701,9 +757,10 @@ async function handleHistoryPage(input?: {
   page?: number;
   pageSize?: number;
 }) {
-  const [orders, fills] = await Promise.all([
+  const [orders, fills, decisionFallback] = await Promise.all([
     handleOrders(),
-    handleFills()
+    handleFills(),
+    readHistoryDecisionFallback()
   ]);
 
   const entries = buildHistoricalActivity({
@@ -732,7 +789,8 @@ async function handleHistoryPage(input?: {
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
-    }))
+    })),
+    decisionFallback
   });
 
   return paginateHistoryEntries(entries, {

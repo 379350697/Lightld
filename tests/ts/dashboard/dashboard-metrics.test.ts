@@ -496,4 +496,76 @@ describe('buildCashflowMetrics', () => {
       }
     ]);
   });
+
+  it('falls back to token lifecycle pairing and decision metrics for local-only lp exits', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          side: 'unknown',
+          submissionId: 'sub-open-fill',
+          filledSol: 0,
+          recordedAt: '2026-04-22T13:07:07.421Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: '',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-earth-open',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T13:07:01.715Z',
+          updatedAt: '2026-04-22T13:07:01.722Z'
+        },
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: '',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-earth-close',
+          openIntentId: 'polluted-intent',
+          positionId: 'polluted-position',
+          chainPositionAddress: 'polluted-chain-position',
+          requestedPositionSol: 0.02,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T14:39:45.571Z',
+          updatedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      decisionFallback: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          action: 'withdraw-lp',
+          recordedAt: '2026-04-22T14:40:00.758Z',
+          entrySol: 0.05,
+          lpCurrentValueSol: 0.042972091,
+          lpUnclaimedFeeSol: 0.006224571,
+          lpNetPnlPct: -1.61
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
+      {
+        tokenMint: 'mint-earth',
+        tokenSymbol: 'earthcoin',
+        action: 'add-lp -> withdraw-lp',
+        source: 'error',
+        confirmationStatus: 'missing-chain',
+        openedAt: '2026-04-22T13:07:07.421Z',
+        closedAt: '2026-04-22T14:39:45.589Z',
+        investedSol: 0.05,
+        feeEarnedSol: 0.006224571,
+        pnlPct: -1.61
+      }
+    ]);
+    expect(result[0]?.pnlSol).toBeCloseTo(-0.0008033389999999997);
+  });
 });
