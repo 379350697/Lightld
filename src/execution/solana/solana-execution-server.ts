@@ -78,6 +78,8 @@ type BroadcastLogPayload = {
 
 const RESIDUAL_BALANCE_CHECK_ATTEMPTS = 6;
 const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
+const WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS = 6;
+const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -109,6 +111,35 @@ async function findTokenLamportsWithRetry(
   }
 
   return tokenLamports;
+}
+
+async function waitForConfirmedSignatures(
+  rpcClient: SolanaRpcClient,
+  signatures: string[]
+) {
+  if (signatures.length === 0) {
+    return true;
+  }
+
+  for (let attempt = 0; attempt < WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS; attempt += 1) {
+    const statuses = await rpcClient.getSignatureStatuses(signatures);
+    const allConfirmed = statuses.value.every(
+      (status) =>
+        status &&
+        !status.err &&
+        (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
+    );
+
+    if (allConfirmed) {
+      return true;
+    }
+
+    if (attempt < WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS - 1) {
+      await sleep(WITHDRAW_CONFIRMATION_WAIT_DELAY_MS);
+    }
+  }
+
+  return false;
 }
 
 function durationMs(startedAt: number) {
@@ -358,37 +389,41 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               if (side === 'withdraw-lp' && intent.liquidateResidualTokenToSol && intent.tokenMint) {
-                const tokenLamports = await findTokenLamportsWithRetry(
-                  rpcClient,
-                  walletPublicKey,
-                  intent.tokenMint
-                );
+                const withdrawConfirmed = await waitForConfirmedSignatures(rpcClient, txSignatures);
 
-                if (tokenLamports > 0) {
-                  const residualQuoteStartedAt = Date.now();
-                  const quoteResponse = await jupiterClient.getQuote(
-                    jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
-                  );
-                  quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
-
-                  const residualSwapBuildStartedAt = Date.now();
-                  const swapResponse = await jupiterClient.getSwapTransaction(
-                    quoteResponse,
+                if (withdrawConfirmed) {
+                  const tokenLamports = await findTokenLamportsWithRetry(
+                    rpcClient,
                     walletPublicKey,
-                    { jitoTipLamports: options.jitoTipLamports }
+                    intent.tokenMint
                   );
-                  swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
 
-                  const residualSignStartedAt = Date.now();
-                  const residualSignedBase64 = signSwapTransaction(
-                    swapResponse.swapTransaction,
-                    keypair
-                  );
-                  signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
+                  if (tokenLamports > 0) {
+                    const residualQuoteStartedAt = Date.now();
+                    const quoteResponse = await jupiterClient.getQuote(
+                      jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
+                    );
+                    quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
 
-                  const residualSendStartedAt = Date.now();
-                  txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
-                  sendTxMs.push(durationMs(residualSendStartedAt));
+                    const residualSwapBuildStartedAt = Date.now();
+                    const swapResponse = await jupiterClient.getSwapTransaction(
+                      quoteResponse,
+                      walletPublicKey,
+                      { jitoTipLamports: options.jitoTipLamports }
+                    );
+                    swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
+
+                    const residualSignStartedAt = Date.now();
+                    const residualSignedBase64 = signSwapTransaction(
+                      swapResponse.swapTransaction,
+                      keypair
+                    );
+                    signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
+
+                    const residualSendStartedAt = Date.now();
+                    txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
+                    sendTxMs.push(durationMs(residualSendStartedAt));
+                  }
                 }
               }
 
