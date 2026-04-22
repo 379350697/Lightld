@@ -232,6 +232,7 @@ describe('applyCatchupWindow', () => {
       priority: 'low'
     });
     expect((events[0] as any).payload.filledSol).toBe(0.1);
+    expect((events[0] as any).payload.side).toBe('add-lp');
     expect((events[0] as any).payload.positionId).toBe('position-1');
     expect((events[0] as any).payload.openIntentId).toBe('intent-1');
     expect((events[0] as any).payload.chainPositionAddress).toBe('chain-pos-1');

@@ -300,7 +300,15 @@ function toFillCatchupEvent(
       cycleId: readString(value, ['cycleId']),
       tokenMint: readString(value, ['tokenMint', 'mint']),
       tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
-      side: side === 'buy' || side === 'sell' ? side : 'unknown',
+      side:
+        side === 'buy' ||
+        side === 'sell' ||
+        side === 'add-lp' ||
+        side === 'withdraw-lp' ||
+        side === 'claim-fee' ||
+        side === 'rebalance-lp'
+          ? side
+          : 'unknown',
       amount: readNumber(value, ['amount', 'filledSol', 'requestedPositionSol']),
       filledSol: readNumber(value, ['filledSol', 'amount', 'requestedPositionSol']),
       recordedAt: recordedAt || new Date(0).toISOString()

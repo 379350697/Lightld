@@ -171,5 +171,14 @@ export function resolveFillMirrorSide(action: LiveAction) {
     return 'sell' as const;
   }
 
+  if (
+    action === 'add-lp' ||
+    action === 'withdraw-lp' ||
+    action === 'claim-fee' ||
+    action === 'rebalance-lp'
+  ) {
+    return action;
+  }
+
   return 'unknown' as const;
 }

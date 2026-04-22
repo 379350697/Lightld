@@ -240,7 +240,7 @@ describe('SqliteMirrorWriter', () => {
           cycleId: 'cycle-1',
           tokenMint: 'mint-1',
           tokenSymbol: 'SAFE',
-          side: 'buy',
+          side: 'add-lp',
           amount: 0.5,
           filledSol: 0.5,
           recordedAt: '2026-04-18T08:00:02.000Z'

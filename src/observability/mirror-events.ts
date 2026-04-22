@@ -56,7 +56,7 @@ export type FillMirrorPayload = {
   cycleId: string;
   tokenMint: string;
   tokenSymbol: string;
-  side: 'buy' | 'sell' | 'unknown';
+  side: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'unknown';
   amount: number;
   filledSol: number;
   recordedAt: string;
