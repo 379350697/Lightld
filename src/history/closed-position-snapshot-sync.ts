@@ -31,43 +31,54 @@ type AddressSignatureInfo = {
   blockTime: number | null;
 };
 
-function toLifecycleKey(row: ClosedPositionOrderSeedRow) {
-  if (row.positionAddress.length > 0) {
-    return `position:${row.positionAddress}`;
+function rowsCanShareLifecycle(open: ClosedPositionOrderSeedRow, close: ClosedPositionOrderSeedRow) {
+  if (open.tokenMint !== close.tokenMint) {
+    return false;
   }
 
-  if (row.poolAddress.length > 0) {
-    return `pool:${row.poolAddress}:${row.tokenMint}`;
+  if (open.poolAddress.length > 0 && close.poolAddress.length > 0 && open.poolAddress !== close.poolAddress) {
+    return false;
   }
 
-  return `token:${row.tokenMint}`;
+  if (
+    open.positionAddress.length > 0
+    && close.positionAddress.length > 0
+    && open.positionAddress !== close.positionAddress
+  ) {
+    return false;
+  }
+
+  return open.createdAt.localeCompare(close.createdAt) <= 0;
 }
 
 export function buildClosedPositionOrderSeeds(rows: ClosedPositionOrderSeedRow[]) {
-  const rowsByLifecycle = new Map<string, ClosedPositionOrderSeedRow[]>();
-
-  for (const row of rows) {
-    if (row.action !== 'add-lp' && row.action !== 'withdraw-lp') {
-      continue;
-    }
-
-    const key = toLifecycleKey(row);
-    const group = rowsByLifecycle.get(key) ?? [];
-    group.push(row);
-    rowsByLifecycle.set(key, group);
-  }
-
+  const opens = rows
+    .filter((row) => row.action === 'add-lp')
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const closes = rows
+    .filter((row) => row.action === 'withdraw-lp')
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const usedOpenIndexes = new Set<number>();
   const seeds: ClosedPositionOrderSeed[] = [];
 
-  for (const group of rowsByLifecycle.values()) {
-    const ordered = [...group].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-    const open = ordered.find((row) => row.action === 'add-lp');
-    const close = [...ordered].reverse().find((row) => row.action === 'withdraw-lp');
+  for (const close of closes) {
+    let matchedOpenIndex = -1;
 
-    if (!open || !close) {
+    for (let index = opens.length - 1; index >= 0; index -= 1) {
+      if (usedOpenIndexes.has(index) || !rowsCanShareLifecycle(opens[index], close)) {
+        continue;
+      }
+
+      matchedOpenIndex = index;
+      break;
+    }
+
+    if (matchedOpenIndex < 0) {
       continue;
     }
 
+    const open = opens[matchedOpenIndex];
+    usedOpenIndexes.add(matchedOpenIndex);
     seeds.push({
       tokenMint: open.tokenMint,
       tokenSymbol: open.tokenSymbol || close.tokenSymbol,
@@ -154,7 +165,11 @@ export async function syncClosedPositionSnapshots(input: {
       events
     });
 
-    if (!snapshot) {
+    if (
+      !snapshot
+      || snapshot.depositSol <= 0
+      || snapshot.openedAt.localeCompare(snapshot.closedAt) >= 0
+    ) {
       continue;
     }
 

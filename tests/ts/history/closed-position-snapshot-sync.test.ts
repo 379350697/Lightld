@@ -41,6 +41,31 @@ describe('buildClosedPositionOrderSeeds', () => {
       }
     ]);
   });
+
+  it('does not pair different token mints even when the position address is reused', () => {
+    const seeds = buildClosedPositionOrderSeeds([
+      {
+        tokenMint: 'mint-earth',
+        tokenSymbol: 'earthcoin',
+        poolAddress: 'pool-1',
+        positionAddress: 'position-1',
+        action: 'withdraw-lp',
+        createdAt: '2026-04-22T14:39:45.000Z',
+        signature: 'sig-close-earth'
+      },
+      {
+        tokenMint: 'mint-terminal',
+        tokenSymbol: 'terminal',
+        poolAddress: 'pool-2',
+        positionAddress: 'position-1',
+        action: 'add-lp',
+        createdAt: '2026-04-22T14:40:37.000Z',
+        signature: 'sig-open-terminal'
+      }
+    ]);
+
+    expect(seeds).toEqual([]);
+  });
 });
 
 describe('syncClosedPositionSnapshots', () => {
@@ -399,5 +424,100 @@ describe('syncClosedPositionSnapshots', () => {
     expect(result[0]?.positionAddress).toBe('position-1');
     expect(getTransaction).toHaveBeenCalledWith('sig-open');
     expect(getTransaction).toHaveBeenCalledWith('sig-close');
+  });
+
+  it('drops reconstructed snapshots when the open comes after the close or deposit is zero', async () => {
+    const result = await syncClosedPositionSnapshots({
+      walletAddress: 'wallet-1',
+      seeds: [
+        {
+          tokenMint: 'mint-bad',
+          tokenSymbol: 'BAD',
+          poolAddress: 'pool-bad',
+          positionAddress: 'position-bad',
+          openedAt: '2026-04-22T14:40:37.000Z',
+          closedAt: '2026-04-22T14:39:45.000Z',
+          openSignature: 'sig-open-bad',
+          closeSignature: 'sig-close-bad'
+        }
+      ],
+      rpcClient: {
+        getTransaction: vi.fn(async (signature: string) => {
+          if (signature === 'sig-open-bad') {
+            return {
+              blockTime: 1_777_778_437,
+              transaction: {
+                signatures: ['sig-open-bad'],
+                message: {
+                  instructions: [
+                    {
+                      program: 'meteora',
+                      parsed: {
+                        info: {
+                          pool: 'pool-bad',
+                          position: 'position-bad'
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              meta: {
+                logMessages: [
+                  'Program log: Instruction: AddLiquidityByStrategy2'
+                ]
+              }
+            };
+          }
+
+          return {
+            blockTime: 1_777_778_385,
+            transaction: {
+              signatures: ['sig-close-bad'],
+              message: {
+                instructions: [
+                  {
+                    program: 'meteora',
+                    parsed: {
+                      info: {
+                        pool: 'pool-bad',
+                        position: 'position-bad'
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            meta: {
+              logMessages: [
+                'Program log: Instruction: RemoveLiquidityByRange2'
+              ],
+              innerInstructions: [
+                {
+                  index: 0,
+                  instructions: [
+                    {
+                      program: 'spl-token',
+                      parsed: {
+                        type: 'transferChecked',
+                        info: {
+                          mint: 'mint-bad',
+                          tokenAmount: {
+                            uiAmount: 1000
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          };
+        })
+      },
+      loadTokenPriceInSol: vi.fn(async () => 0.000001)
+    });
+
+    expect(result).toEqual([]);
   });
 });
