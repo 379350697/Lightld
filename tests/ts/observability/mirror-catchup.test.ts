@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -235,6 +235,77 @@ describe('applyCatchupWindow', () => {
     expect((events[0] as any).payload.positionId).toBe('position-1');
     expect((events[0] as any).payload.openIntentId).toBe('intent-1');
     expect((events[0] as any).payload.chainPositionAddress).toBe('chain-pos-1');
+  });
+
+  it('skips malformed journal lines without crashing catch-up and advances the cursor past them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-badline-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const journalPath = join(journalRootDir, 'new-token-v1-live-orders.jsonl');
+    const events: MirrorEvent[] = [];
+
+    await mkdir(journalRootDir, { recursive: true });
+    await writeFile(journalPath, [
+      JSON.stringify({
+        cycleId: 'cycle-good-1',
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-good-1',
+        poolAddress: 'pool-1',
+        createdAt: '2026-04-21T12:07:22.889Z'
+      }),
+      '{"cycleId":"cycle-bad","strategyId":"new-token-v1","idempotencyKey":"k-bad"',
+      JSON.stringify({
+        cycleId: 'cycle-good-2',
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-good-2',
+        poolAddress: 'pool-2',
+        createdAt: '2026-04-21T12:07:55.951Z'
+      }),
+      ''
+    ].join('\n'), 'utf8');
+
+    const processed = await enqueueMirrorCatchupFromJournals({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(stateRootDir, 'lightld-observability.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 16,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      }
+    });
+
+    const cursor = JSON.parse(
+      await readFile(join(stateRootDir, 'mirror-cursor.json'), 'utf8')
+    ) as {
+      offsets: Record<string, number>;
+    };
+
+    expect(processed).toBe(2);
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => (event as Extract<MirrorEvent, { type: 'order' }>).payload.idempotencyKey)).toEqual([
+      'k-good-1',
+      'k-good-2'
+    ]);
+    expect(cursor.offsets['new-token-v1-live-orders']).toBe(3);
   });
 
   it('skips catch-up when the mirror is not healthy or the queue is under pressure', async () => {

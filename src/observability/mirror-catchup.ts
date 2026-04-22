@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 import {
   CandidateScanRecordSchema,
@@ -59,6 +60,90 @@ export async function readRotatedJsonLinesWithOffsets<T>(path: string) {
       lines.push({
         offset: buildStableRotatedOffset(sourcePath, index + 1),
         value: values[index]
+      });
+    }
+  }
+
+  return lines;
+}
+
+type CatchupLine<T> =
+  | { offset: number; value: T; invalid: false }
+  | { offset: number; value: null; invalid: true };
+
+async function quarantineMalformedJsonLine(path: string, offset: number, rawLine: string, error: unknown) {
+  const backupPath = `${path}.bak-badline`;
+  await mkdir(dirname(backupPath), { recursive: true });
+  await appendFile(backupPath, `${JSON.stringify({
+    offset,
+    quarantinedAt: new Date().toISOString(),
+    error: error instanceof Error ? error.message : String(error),
+    rawLine
+  })}\n`, 'utf8');
+}
+
+async function readJsonLinesSinceOffset<T>(path: string, lastOffset: number) {
+  try {
+    const content = await readFile(path, 'utf8');
+    const result: CatchupLine<T>[] = [];
+    const lines = content.split(/\r?\n/);
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+
+      if (!line) {
+        continue;
+      }
+
+      const offset = index + 1;
+      if (offset <= lastOffset) {
+        continue;
+      }
+
+      try {
+        result.push({
+          offset,
+          value: JSON.parse(line) as T,
+          invalid: false
+        });
+      } catch (error) {
+        await quarantineMalformedJsonLine(path, offset, line, error);
+        result.push({
+          offset,
+          value: null,
+          invalid: true
+        });
+      }
+    }
+
+    return result;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+async function readRotatedJsonLinesSinceOffset<T>(path: string, lastOffset: number) {
+  const rotatedPaths = await listRotatedJsonlPaths(path);
+  const sourcePaths = rotatedPaths.length > 0 ? rotatedPaths : [path];
+  const lines: CatchupLine<T>[] = [];
+
+  for (const sourcePath of sourcePaths) {
+    const parsedLines = await readJsonLinesSinceOffset<T>(sourcePath, 0);
+
+    for (const parsedLine of parsedLines) {
+      const offset = buildStableRotatedOffset(sourcePath, parsedLine.offset);
+      if (offset <= lastOffset) {
+        continue;
+      }
+
+      lines.push({
+        offset,
+        value: parsedLine.value,
+        invalid: parsedLine.invalid
       });
     }
   }
@@ -333,17 +418,19 @@ export async function enqueueMirrorCatchupFromJournals(input: CatchupInput) {
       break;
     }
 
-    const lines = await readRotatedJsonLinesWithOffsets<unknown>(journal.path);
     const lastOffset = cursorSnapshot.offsets[journal.key] ?? 0;
-    const unseen = applyCatchupWindow({
-      lines,
-      lastOffset
-    });
+    const unseen = await readRotatedJsonLinesSinceOffset<unknown>(journal.path, lastOffset);
     let latestProcessedOffset = lastOffset;
 
     for (const line of unseen) {
       if (processed >= eventBudget) {
         break;
+      }
+
+      if (line.invalid) {
+        latestProcessedOffset = line.offset;
+        updated = true;
+        continue;
       }
 
       const event = journal.toEvent(line.value, input.strategyId, line.offset);
