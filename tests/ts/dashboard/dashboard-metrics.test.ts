@@ -125,7 +125,7 @@ describe('buildCashflowMetrics', () => {
         {
           walletAddress: 'wallet-1',
           tokenMint: 'mint-earth',
-          tokenSymbol: 'earthcoin',
+          tokenSymbol: '',
           poolAddress: 'pool-1',
           positionAddress: 'position-1',
           openedAt: '2026-04-22T13:07:07.421Z',
@@ -161,6 +161,38 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]?.pnlSol).toBeCloseTo(-0.0088574374);
     expect(result[0]?.pnlPct).toBeCloseTo(-17.7148748);
     expect(result[0]?.dprPct).toBeCloseTo(-17.7148748);
+  });
+
+  it('ignores invalid chain snapshots with zero deposit or reversed time', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [],
+      chainSnapshots: [
+        {
+          walletAddress: 'wallet-1',
+          tokenMint: 'mint-bad',
+          tokenSymbol: 'BAD',
+          poolAddress: 'pool-bad',
+          positionAddress: 'position-bad',
+          openedAt: '2026-04-22T14:40:37.000Z',
+          closedAt: '2026-04-22T14:39:45.000Z',
+          depositSol: 0,
+          depositTokenAmount: 0,
+          withdrawSol: 0.1,
+          withdrawTokenAmount: 0,
+          withdrawTokenValueSol: 0,
+          feeSol: 0,
+          feeTokenAmount: 0,
+          feeTokenValueSol: 0,
+          pnlSol: 0.1,
+          source: 'solana-chain',
+          confidence: 'exact'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('collapses one matched add and withdraw lifecycle into a single historical order', () => {

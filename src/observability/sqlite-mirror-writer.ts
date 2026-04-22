@@ -206,8 +206,24 @@ export class SqliteMirrorWriter {
           source=excluded.source,
           confidence=excluded.confidence
       `);
+      const deleteConflicts = database.prepare(`
+        DELETE FROM closed_position_snapshots
+        WHERE wallet_address = ?
+          AND position_address = ?
+          AND closed_at = ?
+          AND token_mint <> ?
+      `);
 
       for (const row of rows) {
+        if (row.positionAddress.length > 0) {
+          deleteConflicts.run(
+            row.walletAddress,
+            row.positionAddress,
+            row.closedAt,
+            row.tokenMint
+          );
+        }
+
         statement.run(
           row.walletAddress,
           row.tokenMint,

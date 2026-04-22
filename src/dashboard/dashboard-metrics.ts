@@ -611,6 +611,10 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
   };
 }
 
+function isValidClosedPositionSnapshot(snapshot: ClosedPositionSnapshot) {
+  return snapshot.depositSol > 0 && snapshot.openedAt.localeCompare(snapshot.closedAt) < 0;
+}
+
 function matchesClosedPositionSnapshot(
   entry: DashboardHistoricalActivityEntry,
   snapshot: ClosedPositionSnapshot
@@ -904,14 +908,21 @@ export function buildHistoricalActivity(input: {
   }
 
   const chainSnapshots = (input.chainSnapshots ?? [])
-    .filter((snapshot) => snapshot.tokenMint.length > 0 && snapshot.closedAt.length > 0);
+    .filter((snapshot) =>
+      snapshot.tokenMint.length > 0
+      && snapshot.closedAt.length > 0
+      && isValidClosedPositionSnapshot(snapshot)
+    );
   const localEntries = lifecycles
     .map((lifecycle) => buildLifecycleEntry(lifecycle))
     .filter((entry): entry is DashboardHistoricalActivityEntry => entry !== null);
   const filteredLocalEntries = localEntries.filter((entry) =>
     !chainSnapshots.some((snapshot) => matchesClosedPositionSnapshot(entry, snapshot))
   );
-  const snapshotEntries = chainSnapshots.map((snapshot) => buildClosedPositionSnapshotEntry(snapshot));
+  const snapshotEntries = chainSnapshots.map((snapshot) => buildClosedPositionSnapshotEntry({
+    ...snapshot,
+    tokenSymbol: resolveHistoricalTokenSymbol(snapshot.tokenMint, snapshot.tokenSymbol, tokenSymbolMap)
+  }));
 
   return sortByRecordedAtDesc([
     ...filteredLocalEntries,

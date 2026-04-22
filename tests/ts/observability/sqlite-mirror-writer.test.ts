@@ -367,6 +367,79 @@ describe('SqliteMirrorWriter', () => {
     });
   });
 
+  it('replaces conflicting closed position snapshots that reuse the same position and close time', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-closed-snapshots-conflict-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+
+    await writer.open();
+    await writer.writeClosedPositionSnapshots([
+      {
+        walletAddress: 'wallet-1',
+        tokenMint: 'mint-wrong',
+        tokenSymbol: 'WRONG',
+        poolAddress: 'pool-1',
+        positionAddress: 'position-1',
+        openedAt: '2026-04-22T13:00:00.000Z',
+        closedAt: '2026-04-22T14:00:00.000Z',
+        depositSol: 0.02,
+        depositTokenAmount: 0,
+        withdrawSol: 0,
+        withdrawTokenAmount: 1,
+        withdrawTokenValueSol: 0.02,
+        feeSol: 0,
+        feeTokenAmount: 0,
+        feeTokenValueSol: 0,
+        pnlSol: 0,
+        source: 'solana-chain',
+        confidence: 'exact'
+      },
+      {
+        walletAddress: 'wallet-1',
+        tokenMint: 'mint-right',
+        tokenSymbol: 'RIGHT',
+        poolAddress: 'pool-1',
+        positionAddress: 'position-1',
+        openedAt: '2026-04-22T13:00:00.000Z',
+        closedAt: '2026-04-22T14:00:00.000Z',
+        depositSol: 0.05,
+        depositTokenAmount: 0,
+        withdrawSol: 0,
+        withdrawTokenAmount: 2,
+        withdrawTokenValueSol: 0.04,
+        feeSol: 0.001,
+        feeTokenAmount: 0,
+        feeTokenValueSol: 0,
+        pnlSol: -0.009,
+        source: 'solana-chain',
+        confidence: 'exact'
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const rows = db.prepare(`
+      SELECT token_mint, token_symbol, deposit_sol
+      FROM closed_position_snapshots
+      WHERE wallet_address = 'wallet-1'
+      ORDER BY token_mint ASC
+    `).all() as Array<{
+      token_mint: string;
+      token_symbol: string;
+      deposit_sol: number;
+    }>;
+    db.close();
+
+    expect(rows).toEqual([
+      {
+        token_mint: 'mint-right',
+        token_symbol: 'RIGHT',
+        deposit_sol: 0.05
+      }
+    ]);
+  });
+
   it('writes and queries mirrored evolution research rows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-evolution-'));
     directories.push(root);
