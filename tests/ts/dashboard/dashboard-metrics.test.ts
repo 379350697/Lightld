@@ -313,7 +313,7 @@ describe('buildCashflowMetrics', () => {
           positionId: 'position-strong',
           chainPositionAddress: 'chain-pos-strong',
           filledSol: 0,
-          recordedAt: '2026-04-18T08:12:00.000Z'
+          recordedAt: '2026-04-18T08:02:00.000Z'
         },
         {
           tokenMint: 'mint-strong',
@@ -324,7 +324,7 @@ describe('buildCashflowMetrics', () => {
           positionId: 'position-strong',
           chainPositionAddress: 'chain-pos-strong',
           filledSol: 0,
-          recordedAt: '2026-04-18T09:12:00.000Z'
+          recordedAt: '2026-04-18T09:02:00.000Z'
         }
       ],
       orderFallback: [
@@ -364,8 +364,8 @@ describe('buildCashflowMetrics', () => {
           idempotencyKey: 'order-noise-open',
           requestedPositionSol: 0.61,
           confirmationStatus: 'confirmed',
-          createdAt: '2026-04-18T08:11:55.000Z',
-          updatedAt: '2026-04-18T08:11:56.000Z'
+          createdAt: '2026-04-18T08:01:55.000Z',
+          updatedAt: '2026-04-18T08:01:56.000Z'
         },
         {
           tokenMint: 'mint-strong',
@@ -375,8 +375,8 @@ describe('buildCashflowMetrics', () => {
           idempotencyKey: 'order-noise-close',
           requestedPositionSol: 0.91,
           confirmationStatus: 'confirmed',
-          createdAt: '2026-04-18T09:11:55.000Z',
-          updatedAt: '2026-04-18T09:11:56.000Z'
+          createdAt: '2026-04-18T09:01:55.000Z',
+          updatedAt: '2026-04-18T09:01:56.000Z'
         }
       ],
       limit: 5
@@ -389,7 +389,7 @@ describe('buildCashflowMetrics', () => {
         tokenSymbol: 'STR',
         action: 'add-lp -> withdraw-lp',
         amountSol: 0.6,
-        recordedAt: '2026-04-18T09:12:00.000Z',
+        recordedAt: '2026-04-18T09:02:00.000Z',
         source: 'matched',
         confirmationStatus: 'ok'
       },
@@ -398,7 +398,99 @@ describe('buildCashflowMetrics', () => {
         tokenSymbol: 'STR',
         action: 'add-lp -> withdraw-lp',
         amountSol: 0.61,
-        recordedAt: '2026-04-18T09:11:56.000Z',
+        recordedAt: '2026-04-18T09:01:56.000Z',
+        source: 'error',
+        confirmationStatus: 'missing-chain'
+      }
+    ]);
+  });
+
+  it('does not strong-match records when token mint differs even if identity matches', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-chain',
+          tokenSymbol: 'CHAIN',
+          side: 'unknown',
+          submissionId: '',
+          openIntentId: 'intent-shared',
+          positionId: 'position-shared',
+          chainPositionAddress: 'chain-pos-shared',
+          filledSol: 0,
+          recordedAt: '2026-04-18T08:02:00.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-local',
+          tokenSymbol: 'LOCAL',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-local-open',
+          openIntentId: 'intent-shared',
+          positionId: 'position-shared',
+          chainPositionAddress: 'chain-pos-shared',
+          requestedPositionSol: 0.4,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:02:01.000Z',
+          updatedAt: '2026-04-18T08:02:02.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
+      {
+        tokenMint: 'mint-local',
+        tokenSymbol: 'LOCAL',
+        action: 'add-lp',
+        source: 'error',
+        confirmationStatus: 'missing-chain'
+      }
+    ]);
+  });
+
+  it('does not strong-match open records when chain and local open times differ by more than 3 minutes', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-open-window',
+          tokenSymbol: 'WIN',
+          side: 'unknown',
+          submissionId: '',
+          openIntentId: 'intent-window',
+          positionId: 'position-window',
+          chainPositionAddress: 'chain-pos-window',
+          filledSol: 0,
+          recordedAt: '2026-04-18T08:10:00.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-open-window',
+          tokenSymbol: 'WIN',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-window-open',
+          openIntentId: 'intent-window',
+          positionId: 'position-window',
+          chainPositionAddress: 'chain-pos-window',
+          requestedPositionSol: 0.4,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
+      {
+        tokenMint: 'mint-open-window',
+        tokenSymbol: 'WIN',
+        action: 'add-lp',
         source: 'error',
         confirmationStatus: 'missing-chain'
       }

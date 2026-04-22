@@ -237,6 +237,25 @@ function toRecordedAtMillis(recordedAt: string) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
+function isStrongHistoricalMatchAllowed(fill: HistoricalFill, order: HistoricalOrderFallback) {
+  if (fill.tokenMint.length > 0 && order.tokenMint.length > 0 && fill.tokenMint !== order.tokenMint) {
+    return false;
+  }
+
+  if (!isHistoricalOpenAction(order.action)) {
+    return true;
+  }
+
+  const fillRecordedAtMs = toRecordedAtMillis(fill.recordedAt);
+  const orderRecordedAtMs = toRecordedAtMillis(order.updatedAt || order.createdAt);
+
+  if (!Number.isFinite(fillRecordedAtMs) || !Number.isFinite(orderRecordedAtMs)) {
+    return false;
+  }
+
+  return Math.abs(fillRecordedAtMs - orderRecordedAtMs) <= 180_000;
+}
+
 function pickNearestOrderMatch(input: {
   fill: HistoricalFill;
   orders: HistoricalOrderFallback[];
@@ -318,6 +337,10 @@ function findDirectOrderMatch(input: {
   for (const key of identityKeys) {
     const matches = input.ordersByIdentity.get(key) ?? [];
     for (const match of matches) {
+      if (!isStrongHistoricalMatchAllowed(input.fill, match)) {
+        continue;
+      }
+
       const orderKey = toHistoricalMatchKey({
         submissionId: match.submissionId,
         idempotencyKey: match.idempotencyKey,
@@ -356,6 +379,10 @@ function findDirectOrderMatch(input: {
       continue;
     }
     for (const match of matches) {
+      if (!isStrongHistoricalMatchAllowed(input.fill, match)) {
+        continue;
+      }
+
       const orderKey = toHistoricalMatchKey({
         submissionId: match.submissionId,
         idempotencyKey: match.idempotencyKey,
@@ -592,11 +619,14 @@ export function buildHistoricalActivity(input: {
 
   for (const [key, chainEntries] of chainByKey.entries()) {
     for (const fill of chainEntries) {
-      const directOrder = localByKey.get(key) ?? findDirectOrderMatch({
-        fill,
-        ordersByIdentity,
-        usedOrderKeys
-      });
+      const keyedOrder = localByKey.get(key);
+      const directOrder = keyedOrder && isStrongHistoricalMatchAllowed(fill, keyedOrder)
+        ? keyedOrder
+        : findDirectOrderMatch({
+            fill,
+            ordersByIdentity,
+            usedOrderKeys
+          });
       const fallbackOrder = directOrder ?? pickNearestOrderMatch({
         fill,
         orders,
