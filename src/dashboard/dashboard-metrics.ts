@@ -1,3 +1,5 @@
+import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
+
 type CashflowFill = {
   side: string;
   filledSol: number;
@@ -579,6 +581,54 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   };
 }
 
+function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): DashboardHistoricalActivityEntry {
+  const investedSol = snapshot.depositSol;
+  const feeEarnedSol = snapshot.feeSol + snapshot.feeTokenValueSol;
+  const feeEarnedPct = investedSol > 0 ? (feeEarnedSol / investedSol) * 100 : null;
+  const totalExitValueSol = snapshot.withdrawSol
+    + snapshot.withdrawTokenValueSol
+    + snapshot.feeSol
+    + snapshot.feeTokenValueSol;
+  const pnlSol = snapshot.pnlSol;
+  const pnlPct = investedSol > 0 ? (pnlSol / investedSol) * 100 : null;
+
+  return {
+    tokenMint: snapshot.tokenMint,
+    tokenSymbol: snapshot.tokenSymbol,
+    action: 'add-lp -> withdraw-lp',
+    amountSol: investedSol,
+    recordedAt: snapshot.closedAt,
+    source: 'matched',
+    confirmationStatus: 'ok',
+    openedAt: snapshot.openedAt,
+    closedAt: snapshot.closedAt,
+    investedSol,
+    feeEarnedSol,
+    feeEarnedPct,
+    pnlSol,
+    pnlPct,
+    dprPct: pnlPct
+  };
+}
+
+function matchesClosedPositionSnapshot(
+  entry: DashboardHistoricalActivityEntry,
+  snapshot: ClosedPositionSnapshot
+) {
+  if (entry.tokenMint !== snapshot.tokenMint) {
+    return false;
+  }
+
+  const entryClosedAtMs = toRecordedAtMillis(entry.closedAt ?? entry.recordedAt);
+  const snapshotClosedAtMs = toRecordedAtMillis(snapshot.closedAt);
+
+  if (!Number.isFinite(entryClosedAtMs) || !Number.isFinite(snapshotClosedAtMs)) {
+    return false;
+  }
+
+  return Math.abs(entryClosedAtMs - snapshotClosedAtMs) <= 180_000;
+}
+
 export function buildCashflowMetrics(input: {
   fills: CashflowFill[];
   orderFallback?: CashflowOrderFallback[];
@@ -654,6 +704,7 @@ export function buildHistoricalActivity(input: {
   fills: HistoricalFill[];
   orderFallback?: HistoricalOrderFallback[];
   decisionFallback?: HistoricalDecisionFallback[];
+  chainSnapshots?: ClosedPositionSnapshot[];
   limit?: number;
 }): DashboardHistoricalActivityEntry[] {
   const fills = input.fills
@@ -852,11 +903,20 @@ export function buildHistoricalActivity(input: {
     lifecycles.push(lifecycle);
   }
 
-  return sortByRecordedAtDesc(
-    lifecycles
-      .map((lifecycle) => buildLifecycleEntry(lifecycle))
-      .filter((entry): entry is DashboardHistoricalActivityEntry => entry !== null)
-  ).slice(0, input.limit ?? 20);
+  const chainSnapshots = (input.chainSnapshots ?? [])
+    .filter((snapshot) => snapshot.tokenMint.length > 0 && snapshot.closedAt.length > 0);
+  const localEntries = lifecycles
+    .map((lifecycle) => buildLifecycleEntry(lifecycle))
+    .filter((entry): entry is DashboardHistoricalActivityEntry => entry !== null);
+  const filteredLocalEntries = localEntries.filter((entry) =>
+    !chainSnapshots.some((snapshot) => matchesClosedPositionSnapshot(entry, snapshot))
+  );
+  const snapshotEntries = chainSnapshots.map((snapshot) => buildClosedPositionSnapshotEntry(snapshot));
+
+  return sortByRecordedAtDesc([
+    ...filteredLocalEntries,
+    ...snapshotEntries
+  ]).slice(0, input.limit ?? 20);
 }
 
 export function buildEquityMetrics(input: {

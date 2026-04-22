@@ -85,6 +85,84 @@ describe('buildCashflowMetrics', () => {
     ]);
   });
 
+  it('prefers solana-chain closed position snapshots over local estimated LP history', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          side: 'withdraw-lp',
+          submissionId: 'sub-close',
+          filledSol: 0,
+          recordedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          action: 'add-lp',
+          submissionId: 'sub-open',
+          idempotencyKey: 'order-open',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T13:07:01.000Z',
+          updatedAt: '2026-04-22T13:07:07.000Z'
+        },
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          action: 'withdraw-lp',
+          submissionId: 'sub-close',
+          idempotencyKey: 'order-close',
+          requestedPositionSol: 0.02,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T14:39:40.000Z',
+          updatedAt: '2026-04-22T14:39:45.000Z'
+        }
+      ],
+      chainSnapshots: [
+        {
+          walletAddress: 'wallet-1',
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          openedAt: '2026-04-22T13:07:07.421Z',
+          closedAt: '2026-04-22T14:39:45.589Z',
+          depositSol: 0.05,
+          depositTokenAmount: 0,
+          withdrawSol: 0,
+          withdrawTokenAmount: 33102.757743,
+          withdrawTokenValueSol: 0.0356656507,
+          feeSol: 0.001827296,
+          feeTokenAmount: 3387.359479,
+          feeTokenValueSol: 0.0036496159,
+          pnlSol: -0.0088574374,
+          source: 'solana-chain',
+          confidence: 'exact'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-earth',
+      tokenSymbol: 'earthcoin',
+      action: 'add-lp -> withdraw-lp',
+      source: 'matched',
+      confirmationStatus: 'ok',
+      openedAt: '2026-04-22T13:07:07.421Z',
+      closedAt: '2026-04-22T14:39:45.589Z',
+      investedSol: 0.05,
+    });
+    expect(result[0]?.feeEarnedSol).toBeCloseTo(0.0054769119);
+    expect(result[0]?.pnlSol).toBeCloseTo(-0.0088574374);
+    expect(result[0]?.pnlPct).toBeCloseTo(-17.7148748);
+    expect(result[0]?.dprPct).toBeCloseTo(-17.7148748);
+  });
+
   it('collapses one matched add and withdraw lifecycle into a single historical order', () => {
     const result = buildHistoricalActivity({
       fills: [

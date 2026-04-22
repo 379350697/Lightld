@@ -15,6 +15,7 @@
     "show:status": "node --experimental-strip-types src/cli/show-runtime-status-main.ts",
     "convert:phantom-key": "node --experimental-strip-types src/cli/convert-phantom-key.ts",
     "run:solana-execution": "node --experimental-strip-types --use-env-proxy src/cli/run-solana-execution-main.ts",
+    "run:sync-closed-position-snapshots": "node --experimental-strip-types --use-env-proxy src/cli/sync-closed-position-snapshots-main.ts",
     "run:dashboard": "node --experimental-strip-types src/dashboard/dashboard-server.ts"
   },
   "devDependencies": {

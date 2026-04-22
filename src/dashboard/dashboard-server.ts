@@ -153,6 +153,27 @@ type PositionFallbackOrderRow = {
   updated_at: string;
 };
 
+type ClosedPositionSnapshotRow = {
+  walletAddress: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  poolAddress: string;
+  positionAddress: string;
+  openedAt: string;
+  closedAt: string;
+  depositSol: number;
+  depositTokenAmount: number;
+  withdrawSol: number;
+  withdrawTokenAmount: number;
+  withdrawTokenValueSol: number;
+  feeSol: number;
+  feeTokenAmount: number;
+  feeTokenValueSol: number;
+  pnlSol: number;
+  source: 'solana-chain';
+  confidence: 'exact' | 'partial';
+};
+
 async function handleStatus(): Promise<StatusResponse> {
   const evolutionPaths = resolveEvolutionPaths(STRATEGY_ID === 'large-pool-v1' ? 'large-pool-v1' : 'new-token-v1', join(STATE_ROOT_DIR, 'evolution'));
   const [health, position, runtime] = await Promise.all([
@@ -703,11 +724,38 @@ async function readHistoryDecisionFallback() {
     .filter((entry) => entry.tokenMint.length > 0 && entry.recordedAt.length > 0);
 }
 
+async function handleClosedPositionSnapshots() {
+  return queryAll<ClosedPositionSnapshotRow>(`
+    SELECT
+      wallet_address AS walletAddress,
+      token_mint AS tokenMint,
+      token_symbol AS tokenSymbol,
+      pool_address AS poolAddress,
+      position_address AS positionAddress,
+      opened_at AS openedAt,
+      closed_at AS closedAt,
+      deposit_sol AS depositSol,
+      deposit_token_amount AS depositTokenAmount,
+      withdraw_sol AS withdrawSol,
+      withdraw_token_amount AS withdrawTokenAmount,
+      withdraw_token_value_sol AS withdrawTokenValueSol,
+      fee_sol AS feeSol,
+      fee_token_amount AS feeTokenAmount,
+      fee_token_value_sol AS feeTokenValueSol,
+      pnl_sol AS pnlSol,
+      source,
+      confidence
+    FROM closed_position_snapshots
+    ORDER BY closed_at DESC
+  `);
+}
+
 async function handleHistory() {
-  const [orders, fills, decisionFallback] = await Promise.all([
+  const [orders, fills, decisionFallback, chainSnapshots] = await Promise.all([
     handleOrders(),
     handleFills(),
-    readHistoryDecisionFallback()
+    readHistoryDecisionFallback(),
+    handleClosedPositionSnapshots()
   ]);
 
   const entries = buildHistoricalActivity({
@@ -738,6 +786,7 @@ async function handleHistory() {
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),
     decisionFallback,
+    chainSnapshots
   });
 
   return paginateHistoryEntries(entries, {
@@ -758,10 +807,11 @@ async function handleHistoryPage(input?: {
   page?: number;
   pageSize?: number;
 }) {
-  const [orders, fills, decisionFallback] = await Promise.all([
+  const [orders, fills, decisionFallback, chainSnapshots] = await Promise.all([
     handleOrders(),
     handleFills(),
-    readHistoryDecisionFallback()
+    readHistoryDecisionFallback(),
+    handleClosedPositionSnapshots()
   ]);
 
   const entries = buildHistoricalActivity({
@@ -791,7 +841,8 @@ async function handleHistoryPage(input?: {
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),
-    decisionFallback
+    decisionFallback,
+    chainSnapshots
   });
 
   return paginateHistoryEntries(entries, {

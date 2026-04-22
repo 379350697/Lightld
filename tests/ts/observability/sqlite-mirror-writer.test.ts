@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SqliteMirrorWriter } from '../../../src/observability/sqlite-mirror-writer';
+import type { ClosedPositionSnapshot } from '../../../src/history/solana-closed-position-reconstructor';
 
 describe('SqliteMirrorWriter', () => {
   const directories: string[] = [];
@@ -279,6 +280,90 @@ describe('SqliteMirrorWriter', () => {
       open_intent_id: 'intent-1',
       position_id: 'position-1',
       chain_position_address: 'chain-pos-1'
+    });
+  });
+
+  it('creates and upserts closed position snapshot rows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-closed-snapshots-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+    const snapshot: ClosedPositionSnapshot = {
+      walletAddress: 'wallet-1',
+      tokenMint: 'mint-earth',
+      tokenSymbol: 'earthcoin',
+      poolAddress: 'pool-1',
+      positionAddress: 'position-1',
+      openedAt: '2026-04-22T13:07:07.421Z',
+      closedAt: '2026-04-22T14:39:45.589Z',
+      depositSol: 0.05,
+      depositTokenAmount: 0,
+      withdrawSol: 0,
+      withdrawTokenAmount: 33102.757743,
+      withdrawTokenValueSol: 0.0356656507,
+      feeSol: 0.001827296,
+      feeTokenAmount: 3387.359479,
+      feeTokenValueSol: 0.0036496159,
+      pnlSol: -0.0088574374,
+      source: 'solana-chain',
+      confidence: 'exact'
+    };
+
+    await writer.open();
+    await writer.writeClosedPositionSnapshots([snapshot]);
+    await writer.writeClosedPositionSnapshots([
+      {
+        ...snapshot,
+        pnlSol: -0.0088574375
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const rowCount = db.prepare('SELECT COUNT(*) AS count FROM closed_position_snapshots').get() as { count: number };
+    const row = db.prepare(`
+      SELECT
+        wallet_address,
+        token_mint,
+        token_symbol,
+        pool_address,
+        position_address,
+        deposit_sol,
+        withdraw_token_value_sol,
+        fee_token_value_sol,
+        pnl_sol,
+        source,
+        confidence
+      FROM closed_position_snapshots
+      WHERE wallet_address = 'wallet-1'
+    `).get() as {
+      wallet_address: string;
+      token_mint: string;
+      token_symbol: string;
+      pool_address: string;
+      position_address: string;
+      deposit_sol: number;
+      withdraw_token_value_sol: number;
+      fee_token_value_sol: number;
+      pnl_sol: number;
+      source: string;
+      confidence: string;
+    };
+    db.close();
+
+    expect(rowCount.count).toBe(1);
+    expect(row).toEqual({
+      wallet_address: 'wallet-1',
+      token_mint: 'mint-earth',
+      token_symbol: 'earthcoin',
+      pool_address: 'pool-1',
+      position_address: 'position-1',
+      deposit_sol: 0.05,
+      withdraw_token_value_sol: 0.0356656507,
+      fee_token_value_sol: 0.0036496159,
+      pnl_sol: -0.0088574375,
+      source: 'solana-chain',
+      confidence: 'exact'
     });
   });
 

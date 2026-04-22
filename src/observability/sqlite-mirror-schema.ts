@@ -66,6 +66,31 @@ export const SQLITE_MIRROR_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_fills_submission_id ON fills (submission_id, recorded_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_recorded_at ON fills (recorded_at DESC)`,
   `
+    CREATE TABLE IF NOT EXISTS closed_position_snapshots (
+      wallet_address TEXT NOT NULL,
+      token_mint TEXT NOT NULL,
+      token_symbol TEXT NOT NULL DEFAULT '',
+      pool_address TEXT NOT NULL DEFAULT '',
+      position_address TEXT NOT NULL DEFAULT '',
+      opened_at TEXT NOT NULL,
+      closed_at TEXT NOT NULL,
+      deposit_sol REAL NOT NULL,
+      deposit_token_amount REAL NOT NULL,
+      withdraw_sol REAL NOT NULL,
+      withdraw_token_amount REAL NOT NULL,
+      withdraw_token_value_sol REAL NOT NULL DEFAULT 0,
+      fee_sol REAL NOT NULL,
+      fee_token_amount REAL NOT NULL,
+      fee_token_value_sol REAL NOT NULL DEFAULT 0,
+      pnl_sol REAL NOT NULL,
+      source TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      PRIMARY KEY (wallet_address, token_mint, position_address, closed_at)
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_closed_position_snapshots_closed_at ON closed_position_snapshots (closed_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_closed_position_snapshots_token_mint ON closed_position_snapshots (token_mint, closed_at DESC)`,
+  `
     CREATE TABLE IF NOT EXISTS reconciliations (
       cycle_id TEXT PRIMARY KEY,
       wallet_sol REAL NOT NULL,

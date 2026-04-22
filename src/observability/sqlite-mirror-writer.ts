@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
 import type {
   CandidateScanMirrorPayload,
   FillMirrorPayload,
@@ -28,6 +29,7 @@ type PruneTableCounts = {
   cycleRuns: number;
   orders: number;
   fills: number;
+  closedPositionSnapshots: number;
   reconciliations: number;
   incidents: number;
   runtimeSnapshots: number;
@@ -156,6 +158,87 @@ export class SqliteMirrorWriter {
       .get() as { count: number };
 
     return row.count;
+  }
+
+  async writeClosedPositionSnapshots(rows: ClosedPositionSnapshot[]) {
+    if (rows.length === 0) {
+      return;
+    }
+
+    const database = this.requireDatabase();
+    database.exec('BEGIN IMMEDIATE');
+
+    try {
+      const statement = database.prepare(`
+        INSERT INTO closed_position_snapshots (
+          wallet_address,
+          token_mint,
+          token_symbol,
+          pool_address,
+          position_address,
+          opened_at,
+          closed_at,
+          deposit_sol,
+          deposit_token_amount,
+          withdraw_sol,
+          withdraw_token_amount,
+          withdraw_token_value_sol,
+          fee_sol,
+          fee_token_amount,
+          fee_token_value_sol,
+          pnl_sol,
+          source,
+          confidence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(wallet_address, token_mint, position_address, closed_at) DO UPDATE SET
+          token_symbol=excluded.token_symbol,
+          pool_address=excluded.pool_address,
+          opened_at=excluded.opened_at,
+          deposit_sol=excluded.deposit_sol,
+          deposit_token_amount=excluded.deposit_token_amount,
+          withdraw_sol=excluded.withdraw_sol,
+          withdraw_token_amount=excluded.withdraw_token_amount,
+          withdraw_token_value_sol=excluded.withdraw_token_value_sol,
+          fee_sol=excluded.fee_sol,
+          fee_token_amount=excluded.fee_token_amount,
+          fee_token_value_sol=excluded.fee_token_value_sol,
+          pnl_sol=excluded.pnl_sol,
+          source=excluded.source,
+          confidence=excluded.confidence
+      `);
+
+      for (const row of rows) {
+        statement.run(
+          row.walletAddress,
+          row.tokenMint,
+          row.tokenSymbol,
+          row.poolAddress,
+          row.positionAddress,
+          row.openedAt,
+          row.closedAt,
+          row.depositSol,
+          row.depositTokenAmount,
+          row.withdrawSol,
+          row.withdrawTokenAmount,
+          row.withdrawTokenValueSol,
+          row.feeSol,
+          row.feeTokenAmount,
+          row.feeTokenValueSol,
+          row.pnlSol,
+          row.source,
+          row.confidence
+        );
+      }
+
+      database.exec('COMMIT');
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        // ignore rollback failures
+      }
+      throw error;
+    }
   }
 
   async readRecentIncidents(limit = 5): Promise<RecentIncidentRow[]> {
@@ -298,6 +381,7 @@ export class SqliteMirrorWriter {
       cycleRuns: 0,
       orders: 0,
       fills: 0,
+      closedPositionSnapshots: 0,
       reconciliations: 0,
       incidents: 0,
       runtimeSnapshots: 0,
@@ -311,6 +395,7 @@ export class SqliteMirrorWriter {
       deletedByTable.cycleRuns = this.deleteOlderThan('cycle_runs', 'finished_at', cutoffIso);
       deletedByTable.orders = this.deleteOlderThan('orders', 'updated_at', cutoffIso);
       deletedByTable.fills = this.deleteOlderThan('fills', 'recorded_at', cutoffIso);
+      deletedByTable.closedPositionSnapshots = this.deleteOlderThan('closed_position_snapshots', 'closed_at', cutoffIso);
       deletedByTable.reconciliations = this.deleteOlderThan('reconciliations', 'recorded_at', cutoffIso);
       deletedByTable.incidents = this.deleteOlderThan('incidents', 'recorded_at', cutoffIso);
       deletedByTable.runtimeSnapshots = this.deleteOlderThan('runtime_snapshots', 'snapshot_at', cutoffIso);
