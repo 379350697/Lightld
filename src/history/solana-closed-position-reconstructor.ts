@@ -42,6 +42,13 @@ type ParsedTransaction = {
 };
 
 const DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+const DLMM_INSTRUCTION_NAMES = new Set([
+  'InitializePosition',
+  'AddLiquidityByStrategy2',
+  'RemoveLiquidityByRange2',
+  'ClaimFee2',
+  'ClosePositionIfEmpty'
+]);
 
 export type ClosedPositionSnapshot = {
   walletAddress: string;
@@ -126,7 +133,7 @@ function resolveInstructionIndexes(input: {
       const match = message.match(/Instruction:\s+([A-Za-z0-9]+)/);
       return match?.[1] ?? '';
     })
-    .filter((name) => name.length > 0);
+    .filter((name) => DLMM_INSTRUCTION_NAMES.has(name));
 
   const namesByIndex = new Map<number, string>();
   for (let index = 0; index < customInstructionIndexes.length; index += 1) {
