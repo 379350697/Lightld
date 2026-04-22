@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { buildDashboardHtml } from './dashboard-html.ts';
+import { limitDecisionLogEntries } from './decision-log-limit.ts';
 import { normalizeDashboardJournalFill } from './fill-normalization.ts';
 import {
   buildCashflowMetrics,
@@ -581,7 +582,7 @@ async function handleIncidents() {
 
 async function handleLogs() {
   const entries = await readJournalEntries(`${STRATEGY_ID}-decision-audit`, 200);
-  return entries.reverse().map(e => ({
+  return limitDecisionLogEntries(entries).map(e => ({
     recordedAt: e.recordedAt ?? '',
     action: e.action ?? '',
     stage: e.stage ?? '',
