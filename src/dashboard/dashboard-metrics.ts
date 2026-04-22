@@ -111,6 +111,8 @@ export type DashboardHistoricalActivityEntry = {
   dprPct: number | null;
 };
 
+const HISTORY_ERROR_RETENTION_MS = 24 * 60 * 60 * 1000;
+
 type ReconciledHistoricalAction = {
   lifecycleKey: string;
   tokenMint: string;
@@ -158,6 +160,27 @@ function sum(values: number[]) {
 
 function sortByRecordedAtDesc<T extends { recordedAt: string }>(rows: T[]) {
   return [...rows].sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
+}
+
+function shouldKeepHistoricalEntry(
+  entry: DashboardHistoricalActivityEntry,
+  now: Date,
+  hasChainTruthSnapshots: boolean
+) {
+  if (entry.source === 'matched') {
+    return true;
+  }
+
+  if (!hasChainTruthSnapshots) {
+    return true;
+  }
+
+  const recordedAtMs = toRecordedAtMillis(entry.recordedAt);
+  if (!Number.isFinite(recordedAtMs)) {
+    return false;
+  }
+
+  return (now.getTime() - recordedAtMs) <= HISTORY_ERROR_RETENTION_MS;
 }
 
 function toHistoricalMatchKey(input: {
@@ -710,7 +733,9 @@ export function buildHistoricalActivity(input: {
   decisionFallback?: HistoricalDecisionFallback[];
   chainSnapshots?: ClosedPositionSnapshot[];
   limit?: number;
+  now?: Date;
 }): DashboardHistoricalActivityEntry[] {
+  const now = input.now ?? new Date();
   const fills = input.fills
     .filter((fill) =>
       fill.recordedAt
@@ -923,11 +948,14 @@ export function buildHistoricalActivity(input: {
     ...snapshot,
     tokenSymbol: resolveHistoricalTokenSymbol(snapshot.tokenMint, snapshot.tokenSymbol, tokenSymbolMap)
   }));
+  const hasChainTruthSnapshots = snapshotEntries.length > 0;
 
   return sortByRecordedAtDesc([
     ...filteredLocalEntries,
     ...snapshotEntries
-  ]).slice(0, input.limit ?? 20);
+  ])
+    .filter((entry) => shouldKeepHistoricalEntry(entry, now, hasChainTruthSnapshots))
+    .slice(0, input.limit ?? 20);
 }
 
 export function buildEquityMetrics(input: {

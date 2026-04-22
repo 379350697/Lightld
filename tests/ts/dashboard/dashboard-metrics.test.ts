@@ -195,6 +195,84 @@ describe('buildCashflowMetrics', () => {
     expect(result).toEqual([]);
   });
 
+  it('hides stale missing-chain history residue older than one day', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [
+        {
+          tokenMint: 'mint-old',
+          tokenSymbol: 'OLD',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-old',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-20T16:09:46.743Z',
+          updatedAt: '2026-04-20T16:10:30.908Z'
+        }
+      ],
+      chainSnapshots: [
+        {
+          walletAddress: 'wallet-1',
+          tokenMint: 'mint-real',
+          tokenSymbol: 'REAL',
+          poolAddress: 'pool-real',
+          positionAddress: 'position-real',
+          openedAt: '2026-04-22T10:00:00.000Z',
+          closedAt: '2026-04-22T12:00:00.000Z',
+          depositSol: 0.05,
+          depositTokenAmount: 0,
+          withdrawSol: 0.04,
+          withdrawTokenAmount: 0,
+          withdrawTokenValueSol: 0,
+          feeSol: 0.001,
+          feeTokenAmount: 0,
+          feeTokenValueSol: 0,
+          pnlSol: -0.009,
+          source: 'solana-chain',
+          confidence: 'exact'
+        }
+      ],
+      now: new Date('2026-04-23T02:00:00.000Z'),
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-real',
+      source: 'matched',
+      confirmationStatus: 'ok'
+    });
+  });
+
+  it('keeps recent missing-chain history errors within one day', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [
+        {
+          tokenMint: 'mint-recent',
+          tokenSymbol: 'REC',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-recent',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T18:09:46.743Z',
+          updatedAt: '2026-04-22T18:10:30.908Z'
+        }
+      ],
+      now: new Date('2026-04-23T02:00:00.000Z'),
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-recent',
+      source: 'error',
+      confirmationStatus: 'missing-chain'
+    });
+  });
+
   it('collapses one matched add and withdraw lifecycle into a single historical order', () => {
     const result = buildHistoricalActivity({
       fills: [
