@@ -105,4 +105,78 @@ describe('solana rpc config policy', () => {
       'https://read-2.example'
     ]);
   });
+
+  it('requests signatures for an address with a limit', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const client = new SolanaRpcClient({
+      rpcUrl: 'https://read-primary.example',
+      fetchImpl: async (input, init) => {
+        calls.push({
+          url: String(input),
+          body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        });
+
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: [{ signature: 'sig-1', slot: 1, blockTime: 1_700_000_000 }]
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.getSignaturesForAddress('wallet-1', { limit: 5 });
+
+    expect(result).toEqual([{ signature: 'sig-1', slot: 1, blockTime: 1_700_000_000 }]);
+    expect(calls).toEqual([{
+      url: 'https://read-primary.example',
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getSignaturesForAddress',
+        params: ['wallet-1', { limit: 5 }]
+      }
+    }]);
+  });
+
+  it('requests parsed transactions for a signature', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const client = new SolanaRpcClient({
+      rpcUrl: 'https://read-primary.example',
+      fetchImpl: async (input, init) => {
+        calls.push({
+          url: String(input),
+          body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        });
+
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            slot: 10,
+            blockTime: 1_700_000_000,
+            meta: {},
+            transaction: { signatures: ['sig-1'] }
+          }
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.getTransaction('sig-1');
+
+    expect(result).toEqual({
+      slot: 10,
+      blockTime: 1_700_000_000,
+      meta: {},
+      transaction: { signatures: ['sig-1'] }
+    });
+    expect(calls).toEqual([{
+      url: 'https://read-primary.example',
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTransaction',
+        params: ['sig-1', { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]
+      }
+    }]);
+  });
 });

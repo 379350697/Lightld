@@ -27,6 +27,12 @@ type SignatureStatus = {
   confirmationStatus: 'processed' | 'confirmed' | 'finalized' | null;
 };
 
+type AddressSignatureInfo = {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+};
+
 type TokenAccount = {
   pubkey: string;
   account: {
@@ -186,6 +192,23 @@ export class SolanaRpcClient {
     return this.call<{ value: (SignatureStatus | null)[] }>(
       'getSignatureStatuses',
       [signatures, { searchTransactionHistory: true }]
+    );
+  }
+
+  async getSignaturesForAddress(
+    address: string,
+    options: { before?: string; until?: string; limit?: number } = {}
+  ): Promise<AddressSignatureInfo[]> {
+    return this.call<AddressSignatureInfo[]>(
+      'getSignaturesForAddress',
+      [address, options]
+    );
+  }
+
+  async getTransaction<T = unknown>(signature: string): Promise<T | null> {
+    return this.call<T | null>(
+      'getTransaction',
+      [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]
     );
   }
 
