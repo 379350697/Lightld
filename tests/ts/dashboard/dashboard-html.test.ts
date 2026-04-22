@@ -18,6 +18,21 @@ describe('buildDashboardHtml', () => {
 
     expect(html).toContain('id="history-tbody"');
     expect(html).toContain('id="history-empty"');
+    expect(html).toContain('id="history-pagination"');
+    expect(html).toContain('id="history-prev-page"');
+    expect(html).toContain('id="history-next-page"');
     expect(html).not.toContain('暂未接入真实 historical 数据');
+  });
+
+  it('includes the richer open and historical position table columns from the redesigned layout', () => {
+    const html = buildDashboardHtml();
+
+    expect(html).toContain('Claimed | Unclaim Fee');
+    expect(html).toContain('uPnL');
+    expect(html).toContain('Age');
+    expect(html).toContain('Invested');
+    expect(html).toContain('Fee Earned');
+    expect(html).toContain('PnL');
+    expect(html).toContain('Closed At');
   });
 });

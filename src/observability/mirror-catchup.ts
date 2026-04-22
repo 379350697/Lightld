@@ -140,10 +140,19 @@ async function readRotatedJsonLinesSinceOffset<T>(path: string, lastOffset: numb
         continue;
       }
 
+      if (parsedLine.invalid) {
+        lines.push({
+          offset,
+          value: null,
+          invalid: true
+        });
+        continue;
+      }
+
       lines.push({
         offset,
         value: parsedLine.value,
-        invalid: parsedLine.invalid
+        invalid: false
       });
     }
   }

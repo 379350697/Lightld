@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { buildDashboardHtml } from './dashboard-html.ts';
 import { limitDecisionLogEntries } from './decision-log-limit.ts';
 import { normalizeDashboardJournalFill } from './fill-normalization.ts';
+import { paginateHistoryEntries } from './history-pagination.ts';
 import {
   buildCashflowMetrics,
   buildEquityMetrics,
@@ -22,6 +23,7 @@ const MIRROR_DB_PATH = process.env.LIVE_DB_MIRROR_PATH ?? join(STATE_ROOT_DIR, '
 const STRATEGY_ID = process.env.LIVE_STRATEGY_ID ?? 'new-token-v1';
 const ACCOUNT_STATE_URL = process.env.LIVE_ACCOUNT_STATE_URL ?? 'http://127.0.0.1:8791/account-state';
 const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
+const HISTORY_PAGE_SIZE = 10;
 
 // ── SQLite helpers (lazy, read-only) ──
 
@@ -298,6 +300,9 @@ type PositionResponse = Array<{
   mint: string;
   poolAddress: string;
   positionAddress: string;
+  tokenSymbol: string;
+  openedAt: string | null;
+  entrySol: number | null;
   currentValueSol: number | null;
   unclaimedFeeSol: number | null;
   currentPrice: number | null;
@@ -320,29 +325,62 @@ async function handlePositions(): Promise<PositionResponse> {
     await readJsonSafe<AccountStateSnapshot>(join(STATE_ROOT_DIR, 'account-state.json'))
     ?? await fetchJsonSafe<AccountStateSnapshot>(ACCOUNT_STATE_URL);
   const walletLpPositions = accountState?.walletLpPositions ?? [];
+  const positionOrders = await queryAll<{
+    chain_position_address: string;
+    token_mint: string;
+    pool_address: string;
+    token_symbol: string;
+    requested_position_sol: number;
+    created_at: string;
+    updated_at: string;
+  }>(`
+    SELECT
+      chain_position_address,
+      token_mint,
+      pool_address,
+      token_symbol,
+      requested_position_sol,
+      created_at,
+      updated_at
+    FROM orders
+    WHERE action IN ('add-lp', 'deploy', 'rebalance-lp')
+    ORDER BY COALESCE(updated_at, created_at) DESC
+    LIMIT 500
+  `);
 
   return walletLpPositions
     .filter((position) => position.hasLiquidity ?? true)
-    .map((position) => ({
-      mint: position.mint,
-      poolAddress: position.poolAddress,
-      positionAddress: position.positionAddress,
-      currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
-      unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
-      currentPrice: typeof position.currentPrice === 'number' ? position.currentPrice : null,
-      lowerPrice: typeof position.lowerPrice === 'number' ? position.lowerPrice : null,
-      upperPrice: typeof position.upperPrice === 'number' ? position.upperPrice : null,
-      priceProgress: typeof position.priceProgress === 'number' ? position.priceProgress : null,
-      binCount: typeof position.binCount === 'number' ? position.binCount : null,
-      fundedBinCount: typeof position.fundedBinCount === 'number' ? position.fundedBinCount : null,
-      lowerBinId: typeof position.lowerBinId === 'number' ? position.lowerBinId : null,
-      upperBinId: typeof position.upperBinId === 'number' ? position.upperBinId : null,
-      activeBinId: typeof position.activeBinId === 'number' ? position.activeBinId : null,
-      solSide: position.solSide ?? '',
-      solDepletedBins: typeof position.solDepletedBins === 'number' ? position.solDepletedBins : null,
-      hasLiquidity: Boolean(position.hasLiquidity ?? true),
-      hasClaimableFees: Boolean(position.hasClaimableFees ?? false),
-    }));
+    .map((position) => {
+      const matchedOrder = positionOrders.find((order) =>
+        (order.chain_position_address && order.chain_position_address === position.positionAddress)
+        || ((order.token_mint && order.token_mint === position.mint)
+          && (order.pool_address && order.pool_address === position.poolAddress))
+      );
+
+      return {
+        mint: position.mint,
+        poolAddress: position.poolAddress,
+        positionAddress: position.positionAddress,
+        tokenSymbol: matchedOrder?.token_symbol ?? '',
+        openedAt: matchedOrder?.updated_at || matchedOrder?.created_at || null,
+        entrySol: typeof matchedOrder?.requested_position_sol === 'number' ? matchedOrder.requested_position_sol : null,
+        currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
+        unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
+        currentPrice: typeof position.currentPrice === 'number' ? position.currentPrice : null,
+        lowerPrice: typeof position.lowerPrice === 'number' ? position.lowerPrice : null,
+        upperPrice: typeof position.upperPrice === 'number' ? position.upperPrice : null,
+        priceProgress: typeof position.priceProgress === 'number' ? position.priceProgress : null,
+        binCount: typeof position.binCount === 'number' ? position.binCount : null,
+        fundedBinCount: typeof position.fundedBinCount === 'number' ? position.fundedBinCount : null,
+        lowerBinId: typeof position.lowerBinId === 'number' ? position.lowerBinId : null,
+        upperBinId: typeof position.upperBinId === 'number' ? position.upperBinId : null,
+        activeBinId: typeof position.activeBinId === 'number' ? position.activeBinId : null,
+        solSide: position.solSide ?? '',
+        solDepletedBins: typeof position.solDepletedBins === 'number' ? position.solDepletedBins : null,
+        hasLiquidity: Boolean(position.hasLiquidity ?? true),
+        hasClaimableFees: Boolean(position.hasClaimableFees ?? false),
+      };
+    });
 }
 
 type PnlResponse = {
@@ -616,7 +654,7 @@ async function handleHistory() {
     handleFills()
   ]);
 
-  return buildHistoricalActivity({
+  const entries = buildHistoricalActivity({
     fills: fills.map((fill) => ({
       tokenMint: String(fill.tokenMint ?? ''),
       tokenSymbol: String(fill.tokenSymbol ?? ''),
@@ -643,7 +681,63 @@ async function handleHistory() {
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),
-    limit: 20
+  });
+
+  return paginateHistoryEntries(entries, {
+    page: 1,
+    pageSize: HISTORY_PAGE_SIZE
+  });
+}
+
+function parsePositiveInteger(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+async function handleHistoryPage(input?: {
+  page?: number;
+  pageSize?: number;
+}) {
+  const [orders, fills] = await Promise.all([
+    handleOrders(),
+    handleFills()
+  ]);
+
+  const entries = buildHistoricalActivity({
+    fills: fills.map((fill) => ({
+      tokenMint: String(fill.tokenMint ?? ''),
+      tokenSymbol: String(fill.tokenSymbol ?? ''),
+      side: String(fill.side ?? ''),
+      submissionId: String(fill.submissionId ?? ''),
+      openIntentId: String(fill.openIntentId ?? ''),
+      positionId: String(fill.positionId ?? ''),
+      chainPositionAddress: String(fill.chainPositionAddress ?? ''),
+      filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
+      recordedAt: String(fill.recordedAt ?? ''),
+      confirmationStatus: 'confirmed'
+    })),
+    orderFallback: orders.map((order) => ({
+      tokenMint: String(order.tokenMint ?? ''),
+      tokenSymbol: String(order.tokenSymbol ?? ''),
+      action: String(order.action ?? ''),
+      submissionId: String(order.submissionId ?? ''),
+      idempotencyKey: String(order.idempotencyKey ?? ''),
+      openIntentId: String(order.openIntentId ?? ''),
+      positionId: String(order.positionId ?? ''),
+      chainPositionAddress: String(order.chainPositionAddress ?? ''),
+      requestedPositionSol: Number(order.requestedPositionSol ?? 0),
+      confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
+      createdAt: String(order.createdAt ?? ''),
+      updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
+    }))
+  });
+
+  return paginateHistoryEntries(entries, {
+    page: input?.page ?? 1,
+    pageSize: input?.pageSize ?? HISTORY_PAGE_SIZE
   });
 }
 
@@ -677,21 +771,22 @@ function sendNotFound(res: ServerResponse) {
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const url = req.url ?? '/';
+  const requestUrl = new URL(url, `http://127.0.0.1:${PORT}`);
 
   try {
-    if (url === '/' || url === '/index.html') {
+    if (requestUrl.pathname === '/' || requestUrl.pathname === '/index.html') {
       return sendHtml(res);
     }
 
-    if (url === '/api/status') {
+    if (requestUrl.pathname === '/api/status') {
       return sendJson(res, await handleStatus());
     }
 
-    if (url === '/api/pnl') {
+    if (requestUrl.pathname === '/api/pnl') {
       return sendJson(res, await handlePnl());
     }
 
-    if (url === '/api/overview') {
+    if (requestUrl.pathname === '/api/overview') {
       const [status, positions, pnl, equity, orders, fills, incidents, logs, history] = await Promise.all([
         handleStatus(),
         handlePositions(),
@@ -717,31 +812,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       });
     }
 
-    if (url === '/api/positions') {
+    if (requestUrl.pathname === '/api/positions') {
       return sendJson(res, await handlePositions());
     }
 
-    if (url === '/api/equity') {
+    if (requestUrl.pathname === '/api/equity') {
       return sendJson(res, await handleEquity());
     }
 
-    if (url === '/api/orders') {
+    if (requestUrl.pathname === '/api/orders') {
       return sendJson(res, await handleOrders());
     }
 
-    if (url === '/api/fills') {
+    if (requestUrl.pathname === '/api/fills') {
       return sendJson(res, await handleFills());
     }
 
-    if (url === '/api/history') {
-      return sendJson(res, await handleHistory());
+    if (requestUrl.pathname === '/api/history') {
+      return sendJson(res, await handleHistoryPage({
+        page: parsePositiveInteger(requestUrl.searchParams.get('page'), 1),
+        pageSize: parsePositiveInteger(requestUrl.searchParams.get('pageSize'), HISTORY_PAGE_SIZE)
+      }));
     }
 
-    if (url === '/api/incidents') {
+    if (requestUrl.pathname === '/api/incidents') {
       return sendJson(res, await handleIncidents());
     }
 
-    if (url === '/api/logs') {
+    if (requestUrl.pathname === '/api/logs') {
       return sendJson(res, await handleLogs());
     }
 

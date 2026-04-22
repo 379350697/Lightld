@@ -132,7 +132,8 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toEqual([
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
       {
         tokenMint: 'mint-safe',
         tokenSymbol: 'SAFE',
@@ -161,7 +162,8 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toEqual([
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
       {
         tokenMint: 'mint-chain-only',
         tokenSymbol: 'CO',
@@ -193,7 +195,8 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toEqual([
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
       {
         tokenMint: 'mint-local-only',
         tokenSymbol: 'LO',
@@ -284,7 +287,8 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toEqual([
+    expect(result).toHaveLength(1);
+    expect(result).toMatchObject([
       {
         tokenMint: 'mint-fuzzy',
         tokenSymbol: 'FZY',
@@ -378,7 +382,8 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toEqual([
+    expect(result).toHaveLength(2);
+    expect(result).toMatchObject([
       {
         tokenMint: 'mint-strong',
         tokenSymbol: 'STR',

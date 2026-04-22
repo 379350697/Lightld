@@ -88,6 +88,14 @@ export type DashboardHistoricalActivityEntry = {
   recordedAt: string;
   source: 'matched' | 'error';
   confirmationStatus: string;
+  openedAt: string | null;
+  closedAt: string | null;
+  investedSol: number | null;
+  feeEarnedSol: number | null;
+  feeEarnedPct: number | null;
+  pnlSol: number | null;
+  pnlPct: number | null;
+  dprPct: number | null;
 };
 
 type ReconciledHistoricalAction = {
@@ -138,12 +146,27 @@ function sortByRecordedAtDesc<T extends { recordedAt: string }>(rows: T[]) {
 function toHistoricalMatchKey(input: {
   submissionId?: string;
   idempotencyKey?: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   tokenMint: string;
   action: string;
   recordedAt: string;
 }) {
   if (input.submissionId && input.submissionId.length > 0) {
     return `submission:${input.submissionId}`;
+  }
+
+  if (input.chainPositionAddress && input.chainPositionAddress.length > 0) {
+    return `chain-position:${input.chainPositionAddress}:${input.action}`;
+  }
+
+  if (input.positionId && input.positionId.length > 0) {
+    return `position:${input.positionId}:${input.action}`;
+  }
+
+  if (input.openIntentId && input.openIntentId.length > 0) {
+    return `intent:${input.openIntentId}:${input.action}`;
   }
 
   if (input.idempotencyKey && input.idempotencyKey.length > 0) {
@@ -369,6 +392,14 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const amountSol = openAction?.amountSol ?? closeAction?.amountSol ?? 0;
   const tokenMint = lifecycle.tokenMint;
   const tokenSymbol = lifecycle.tokenSymbol;
+  const investedSol = openAction?.amountSol ?? null;
+  const closedSol = closeAction?.amountSol ?? null;
+  const pnlSol = typeof investedSol === 'number' && typeof closedSol === 'number'
+    ? closedSol - investedSol
+    : null;
+  const pnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof pnlSol === 'number'
+    ? (pnlSol / investedSol) * 100
+    : null;
 
   if (
     openAction
@@ -383,7 +414,15 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       amountSol,
       recordedAt,
       source: 'matched',
-      confirmationStatus: 'ok'
+      confirmationStatus: 'ok',
+      openedAt: openAction.recordedAt,
+      closedAt: closeAction.recordedAt,
+      investedSol,
+      feeEarnedSol: null,
+      feeEarnedPct: null,
+      pnlSol,
+      pnlPct,
+      dprPct: pnlPct
     };
   }
 
@@ -403,7 +442,15 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     amountSol,
     recordedAt,
     source: 'error',
-    confirmationStatus: errorStatus
+    confirmationStatus: errorStatus,
+    openedAt: openAction?.recordedAt ?? null,
+    closedAt: closeAction?.recordedAt ?? null,
+    investedSol,
+    feeEarnedSol: null,
+    feeEarnedPct: null,
+    pnlSol,
+    pnlPct,
+    dprPct: pnlPct
   };
 }
 

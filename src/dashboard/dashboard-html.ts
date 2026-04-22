@@ -185,24 +185,38 @@ export function buildDashboardHtml(): string {
       margin-top: 4px;
       font-family: var(--font-mono);
     }
-    .positions-header, .logs-header { padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .positions-title, .logs-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
-    .positions-summary { display: flex; align-items: center; gap: 20px; font-size: 13px; color: var(--text-secondary); flex-wrap: wrap; }
-    .positions-summary b { color: var(--text-primary); font-weight: 600; }
-    .positions-summary .green { color: var(--green); }
-    .positions-summary .red { color: var(--red); }
+    .positions-header, .logs-header { padding: 20px 24px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .positions-title, .logs-title { font-size: 17px; font-weight: 700; color: var(--text-primary); }
+    .positions-header-main { display: flex; flex-direction: column; gap: 14px; flex: 1; min-width: 0; }
+    .positions-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 10px 26px; }
+    .positions-summary-item { display: flex; align-items: baseline; gap: 8px; color: var(--text-secondary); font-size: 13px; }
+    .positions-summary-label { color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+    .positions-summary-value { color: var(--text-primary); font-size: 14px; font-weight: 700; }
+    .positions-summary-value.green { color: var(--green); }
+    .positions-summary-value.red { color: #ff6f6f; }
+    .positions-toolbar { display: flex; align-items: center; gap: 18px; color: var(--text-secondary); flex-wrap: wrap; justify-content: flex-end; }
+    .toolbar-label { color: var(--text-primary); font-size: 13px; font-weight: 700; }
+    .toolbar-chip {
+      display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px;
+      border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.03);
+      color: var(--text-secondary); font-size: 12px; font-weight: 600;
+    }
+    .toolbar-icon { font-size: 12px; color: var(--text-muted); }
     .view-btn {
-      padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent;
-      color: var(--text-muted); font-size: 12px; font-weight: 500;
+      padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent;
+      color: var(--text-muted); font-size: 12px; font-weight: 600;
     }
     .view-btn.active { background: rgba(255,255,255,0.08); color: var(--text-primary); }
     .pos-table { width: 100%; border-collapse: collapse; }
     .pos-table th {
-      text-align: left; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+      text-align: left; padding: 16px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted);
       border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); background: var(--bg-surface); white-space: nowrap;
     }
-    .pos-table td { padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 13px; color: var(--text-secondary); vertical-align: middle; }
-    .token-cell { display: flex; align-items: center; gap: 12px; }
+    .pos-table td { padding: 18px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 13px; color: var(--text-secondary); vertical-align: middle; }
+    .token-cell { display: flex; align-items: center; gap: 12px; min-width: 240px; }
+    .position-side-icon {
+      width: 24px; color: var(--text-muted); font-size: 16px; text-align: center; flex-shrink: 0;
+    }
     .token-avatar {
       width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
       font-size: 14px; font-weight: 700; color: #fff; flex-shrink: 0; background: linear-gradient(135deg, #6366f1, #8b5cf6);
@@ -211,20 +225,39 @@ export function buildDashboardHtml(): string {
     .token-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
     .token-meta { display: flex; align-items: center; gap: 6px; }
     .dlmm-badge { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; background: var(--green-bg); color: var(--green); font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+    .token-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-secondary); font-size: 10px; font-weight: 700; }
     .pool-addr, .cell-sub, .log-time, .log-token { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); }
     .cell-main { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--font-mono); }
     .cell-green { color: var(--green); }
     .cell-red { color: var(--red); }
+    .cell-metric { display: flex; flex-direction: column; gap: 4px; }
+    .cell-metric .cell-main { font-size: 16px; }
+    .cell-metric .cell-sub { font-size: 12px; font-family: var(--font-sans); }
+    .cell-muted { color: var(--text-secondary); }
     .fee-unclaim { padding: 2px 8px; border-radius: 4px; background: var(--green-bg); color: var(--green); font-size: 12px; font-weight: 500; }
     .dpr-value { font-size: 14px; font-weight: 600; font-family: var(--font-mono); color: var(--green); }
     .hist-action-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text-primary); font-size: 11px; font-weight: 600; }
     .hist-source-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: var(--bg-surface); color: var(--text-secondary); font-size: 10px; font-weight: 600; text-transform: uppercase; }
-    .range-bar { display: flex; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 4px 0; min-width: 120px; }
-    .range-fill.blue { background: var(--blue); }
-    .range-fill.yellow { background: var(--yellow); }
-    .range-fill.red { background: var(--red); }
-    .range-labels { display: flex; justify-content: space-between; font-size: 9px; font-family: var(--font-mono); color: var(--text-dim); }
+    .range-shell { min-width: 220px; }
+    .range-bar { position: relative; height: 6px; background: rgba(255,255,255,0.12); border-radius: 999px; overflow: visible; margin: 8px 0 4px; min-width: 180px; }
+    .range-fill.blue { position: absolute; inset: 0; background: linear-gradient(90deg, #4ea4ff, #2d8cff); border-radius: 999px; }
+    .range-marker { position: absolute; top: -6px; width: 4px; height: 18px; border-radius: 999px; transform: translateX(-50%); }
+    .range-marker.current { background: #ffe150; }
+    .range-marker.lower { background: #ff3b30; }
+    .range-marker.upper { background: #4ea4ff; right: 0; transform: none; }
+    .range-labels { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--font-mono); color: var(--text-dim); }
     .action-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
+    .history-pagination {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px 24px; border-top: 1px solid var(--border); background: rgba(255,255,255,0.02);
+    }
+    .history-pagination-info { color: var(--text-secondary); font-size: 12px; }
+    .history-pagination-controls { display: flex; align-items: center; gap: 8px; }
+    .pagination-btn {
+      min-width: 40px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 600;
+    }
+    .pagination-btn:disabled { opacity: 0.35; cursor: not-allowed; }
     .logs-header { border-bottom: 1px solid var(--border); cursor: pointer; }
     .logs-count { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,0.08); color: var(--text-secondary); font-family: var(--font-mono); }
     .logs-toggle { font-size: 12px; color: var(--text-muted); }
@@ -242,6 +275,9 @@ export function buildDashboardHtml(): string {
       .portfolio-stats { border-right: none; border-bottom: 1px solid var(--border); }
       .header { padding: 0 12px; }
       .main { padding: 16px; }
+      .positions-summary-grid { grid-template-columns: 1fr; }
+      .positions-header { flex-direction: column; align-items: stretch; }
+      .positions-toolbar { justify-content: flex-start; }
     }
   </style>
 </head>
@@ -316,25 +352,28 @@ export function buildDashboardHtml(): string {
 
     <div class="positions-section">
       <div class="positions-header">
-        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+        <div class="positions-header-main">
           <div class="positions-title" id="open-title">Open positions (0)</div>
-          <div class="positions-summary" id="open-summary"></div>
+          <div class="positions-summary-grid" id="open-summary"></div>
         </div>
-        <button class="view-btn active">▨ Table</button>
+        <div class="positions-toolbar">
+          <span class="toolbar-label">Type</span>
+          <span class="toolbar-chip"><span class="toolbar-icon">⛃</span> Filter</span>
+          <button class="view-btn">◫ Card</button>
+          <button class="view-btn active">▦ Table</button>
+        </div>
       </div>
       <div style="overflow-x:auto;">
         <table class="pos-table">
           <thead>
             <tr>
-              <th style="width:20px;"></th>
               <th>Position/Pool</th>
+              <th>Age</th>
               <th>Value</th>
-              <th>Unclaimed Fee</th>
-              <th>Current Price</th>
-              <th>Coverage</th>
-              <th>Price Range</th>
-              <th>SOL Side</th>
-              <th>Action</th>
+              <th>Claimed | Unclaim Fee</th>
+              <th>uPnL</th>
+              <th>DPR</th>
+              <th>Range</th>
             </tr>
           </thead>
           <tbody id="open-tbody"></tbody>
@@ -345,26 +384,41 @@ export function buildDashboardHtml(): string {
 
     <div class="positions-section">
       <div class="positions-header">
-        <div class="positions-title">Historical positions</div>
-        <button class="view-btn active">▨ Table</button>
+        <div class="positions-header-main">
+          <div class="positions-title">Historical positions</div>
+        </div>
+        <div class="positions-toolbar">
+          <span class="toolbar-label">Type</span>
+          <span class="toolbar-chip"><span class="toolbar-icon">⛃</span> Filter</span>
+          <span class="toolbar-chip">Hide small PnL positions</span>
+          <button class="view-btn">◫ Card</button>
+          <button class="view-btn active">▦ Table</button>
+        </div>
       </div>
       <div style="overflow-x:auto;">
         <table class="pos-table">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>Token</th>
-              <th>Action</th>
-              <th>Amount</th>
-              <th>Source</th>
-              <th>Status</th>
+              <th>Position/Pool</th>
+              <th>Age</th>
+              <th>Invested</th>
+              <th>Fee Earned</th>
+              <th>PnL</th>
+              <th>DPR</th>
+              <th>Closed At</th>
             </tr>
           </thead>
           <tbody id="history-tbody"></tbody>
         </table>
       </div>
       <div class="empty-state" id="history-empty" style="display:none;">最近还没有可展示的真实历史记录</div>
-      <div class="section-note">展示最近真实的 LP 开仓、平仓与费用事件。</div>
+      <div class="history-pagination" id="history-pagination">
+        <div class="history-pagination-info" id="history-page-info">Page 1 / 1</div>
+        <div class="history-pagination-controls">
+          <button class="pagination-btn" id="history-prev-page">上一页</button>
+          <button class="pagination-btn" id="history-next-page">下一页</button>
+        </div>
+      </div>
     </div>
 
     <div class="logs-section">
@@ -382,8 +436,17 @@ export function buildDashboardHtml(): string {
     function escHtml(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
     function truncAddr(a) { if (!a || a.length < 12) return a || '--'; return a.slice(0, 6) + '...' + a.slice(-4); }
     function fmtSol(v) { return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : '--'; }
+    function fmtSignedSol(v) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return '--';
+      return (v > 0 ? '+' : '') + v.toFixed(2);
+    }
+    function fmtPct(v) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return '--';
+      return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+    }
     function fmtPrice(v) { return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : '--'; }
     function fmtTime(iso) { if (!iso) return '--'; try { return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false }); } catch { return '--'; } }
+    function fmtDateTime(iso) { if (!iso) return '--'; try { return new Date(iso).toLocaleString('zh-CN', { hour12: false }); } catch { return '--'; } }
     function timeAgo(iso) {
       if (!iso) return '--';
       var ms = Date.now() - new Date(iso).getTime();
@@ -393,6 +456,32 @@ export function buildDashboardHtml(): string {
       var hr = Math.floor(min / 60);
       if (hr < 24) return hr + ' hours ago';
       return Math.floor(hr / 24) + ' days ago';
+    }
+    function durationLabel(startIso, endIso) {
+      if (!startIso || !endIso) return '--';
+      var ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+      if (!Number.isFinite(ms) || ms <= 0) return '--';
+      var minutes = Math.floor(ms / 60000);
+      if (minutes < 60) return minutes + 'm';
+      var hours = ms / 3600000;
+      if (hours < 24) return hours.toFixed(2).replace(/\.00$/, '') + 'h';
+      var days = hours / 24;
+      return days.toFixed(days >= 10 ? 0 : 1).replace(/\.0$/, '') + 'd';
+    }
+    function ageLabel(iso) {
+      if (!iso) return '--';
+      var ms = Date.now() - new Date(iso).getTime();
+      if (!Number.isFinite(ms) || ms < 0) return '--';
+      var minutes = Math.floor(ms / 60000);
+      if (minutes < 60) return minutes + 'm';
+      var hours = minutes / 60;
+      if (hours < 24) return hours < 2 ? 'an hour' : Math.floor(hours) + ' hours';
+      var days = hours / 24;
+      return Math.floor(days) + ' days';
+    }
+    function metricClass(v) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return 'cell-muted';
+      return v >= 0 ? 'cell-green' : 'cell-red';
     }
     function fetchJson(url) { return fetch(url).then(function(res) { if (!res.ok) return null; return res.json(); }).catch(function() { return null; }); }
     function renderChart(dailyEquity) {
@@ -497,42 +586,72 @@ export function buildDashboardHtml(): string {
       var data = Array.isArray(positions) ? positions : [];
       var tbody = $('#open-tbody');
       var empty = $('#open-empty');
-      var totalValue = 0, totalFees = 0;
-      data.forEach(function(p) { totalValue += Number(p.currentValueSol) || 0; totalFees += Number(p.unclaimedFeeSol) || 0; });
+      var totalValue = 0, totalFees = 0, totalUPnl = 0, totalClaimed = 0;
+      data.forEach(function(p) {
+        var value = Number(p.currentValueSol) || 0;
+        var fee = Number(p.unclaimedFeeSol) || 0;
+        var entry = Number(p.entrySol);
+        totalValue += value;
+        totalFees += fee;
+        totalClaimed += 0;
+        if (Number.isFinite(entry) && entry > 0) {
+          totalUPnl += value + fee - entry;
+        }
+      });
       $('#open-title').textContent = 'Open positions (' + data.length + ')';
-      $('#open-summary').innerHTML = 'Total value <b>' + fmtSol(totalValue) + ' SOL</b> &nbsp; Total unclaimed fee <b>' + fmtSol(totalFees) + ' SOL</b>';
+      var totalUPnlPctBase = data.reduce(function(sum, p) { return sum + (Number(p.entrySol) || 0); }, 0);
+      var totalUPnlPct = totalUPnlPctBase > 0 ? (totalUPnl / totalUPnlPctBase) * 100 : null;
+      $('#open-summary').innerHTML = ''
+        + '<div class="positions-summary-item"><span class="positions-summary-label">Total value</span><span class="positions-summary-value">' + fmtSol(totalValue) + ' SOL</span></div>'
+        + '<div class="positions-summary-item"><span class="positions-summary-label">Total uPnL</span><span class="positions-summary-value ' + (totalUPnl >= 0 ? 'green' : 'red') + '">' + fmtSignedSol(totalUPnl) + ' SOL ' + (typeof totalUPnlPct === 'number' ? fmtPct(totalUPnlPct) : '--') + '</span></div>'
+        + '<div class="positions-summary-item"><span class="positions-summary-label">Total claimed fee</span><span class="positions-summary-value">' + fmtSol(totalClaimed) + ' SOL</span></div>'
+        + '<div class="positions-summary-item"><span class="positions-summary-label">Total unclaim fee</span><span class="positions-summary-value green">' + fmtSol(totalFees) + ' SOL</span></div>';
       $('#stat-open-count').textContent = String(data.length);
       $('#stat-fee-earned').textContent = fmtSol(totalFees);
       if (!data.length) { tbody.innerHTML = ''; empty.style.display = ''; return; }
       empty.style.display = 'none';
-      tbody.innerHTML = data.map(function(p, i) {
+      tbody.innerHTML = data.map(function(p) {
         var mint = p.mint || '--';
-        var pool = p.poolAddress || '--';
-        var coverage = (typeof p.fundedBinCount === 'number' && typeof p.binCount === 'number') ? (p.fundedBinCount + '/' + p.binCount) : '--';
-        var rawRange = (typeof p.lowerBinId === 'number' && typeof p.upperBinId === 'number') ? (p.lowerBinId + ' → ' + p.upperBinId) : '--';
+        var symbol = p.tokenSymbol || 'N/A';
+        var positionAddr = p.positionAddress || '--';
         var currentPrice = typeof p.currentPrice === 'number' ? p.currentPrice : null;
         var lowerPrice = typeof p.lowerPrice === 'number' ? p.lowerPrice : null;
         var upperPrice = typeof p.upperPrice === 'number' ? p.upperPrice : null;
         var priceProgress = typeof p.priceProgress === 'number' ? p.priceProgress : null;
-        var leftPct = priceProgress !== null ? Math.round(priceProgress * 100) : ((typeof p.fundedBinCount === 'number' && typeof p.binCount === 'number' && p.binCount > 0) ? Math.round((p.fundedBinCount / p.binCount) * 100) : 50);
+        var leftPct = priceProgress !== null ? Math.max(0, Math.min(100, Math.round(priceProgress * 100))) : 50;
+        var entrySol = Number(p.entrySol);
+        var currentValue = Number(p.currentValueSol);
+        var unclaimedFee = Number(p.unclaimedFeeSol);
+        var uPnl = Number.isFinite(entrySol) && entrySol > 0 ? (currentValue + unclaimedFee - entrySol) : null;
+        var uPnlPct = Number.isFinite(entrySol) && entrySol > 0 && typeof uPnl === 'number' ? (uPnl / entrySol) * 100 : null;
         var av = mint.charAt(0).toUpperCase() || '?';
         return '<tr>' +
-          '<td style="width:20px;color:var(--text-dim);font-size:14px;">↗</td>' +
-          '<td><div class="token-cell"><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(truncAddr(mint)) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(pool)) + '</span></div></div></div></td>' +
-          '<td><div class="cell-main">' + fmtSol(Number(p.currentValueSol)) + '</div><div class="cell-sub">SOL</div></td>' +
-          '<td><span class="fee-unclaim">' + fmtSol(Number(p.unclaimedFeeSol)) + ' SOL</span></td>' +
-          '<td><div class="cell-main">' + fmtPrice(currentPrice) + '</div><div class="cell-sub">SOL/token</div></td>' +
-          '<td><span class="cell-main">' + escHtml(coverage) + '</span></td>' +
-          '<td><div class="range-labels"><span>' + fmtPrice(lowerPrice) + '</span><span>' + fmtPrice(upperPrice) + '</span></div><div class="range-bar"><div class="range-fill blue" style="width:' + leftPct + '%"></div><div class="range-fill yellow" style="width:' + (100 - leftPct) + '%"></div></div><div class="cell-sub">raw bins ' + escHtml(rawRange) + '</div></td>' +
-          '<td><span class="cell-sub">' + escHtml(p.solSide || '--') + '</span></td>' +
-          '<td><button class="action-btn" title="position address">↗</button></td>' +
+          '<td><div class="token-cell"><div class="position-side-icon">↗</div><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(symbol) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(positionAddr)) + '</span></div></div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + escHtml(ageLabel(p.openedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(p.openedAt)) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(fmtPrice(currentPrice)) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">0.00 SOL | <span class="cell-green">' + fmtSol(unclaimedFee) + ' SOL</span></div><div class="cell-sub">' + (Number.isFinite(entrySol) && entrySol > 0 ? fmtPct((unclaimedFee / entrySol) * 100) : '--') + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnl) + '">' + fmtSignedSol(uPnl) + ' SOL</div><div class="cell-sub ' + metricClass(uPnl) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnlPct) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
+          '<td><div class="range-shell"><div class="range-labels"><span>' + fmtPrice(lowerPrice) + '</span><span>' + fmtPrice(upperPrice) + '</span></div><div class="range-bar"><div class="range-fill blue"></div><div class="range-marker lower" style="left:0%;"></div><div class="range-marker current" style="left:' + leftPct + '%;"></div><div class="range-marker upper"></div></div><div class="cell-sub">' + escHtml(p.solSide || '--') + '</div></div></td>' +
         '</tr>';
       }).join('');
     }
-    function renderHistoricalPositions(history) {
-      var data = Array.isArray(history) ? history : [];
+    function renderHistoryPagination(pageData) {
+      var info = $('#history-page-info');
+      var prev = $('#history-prev-page');
+      var next = $('#history-next-page');
+      var page = pageData && typeof pageData.page === 'number' ? pageData.page : 1;
+      var totalPages = pageData && typeof pageData.totalPages === 'number' ? pageData.totalPages : 1;
+      var totalEntries = pageData && typeof pageData.totalEntries === 'number' ? pageData.totalEntries : 0;
+      info.textContent = 'Page ' + page + ' / ' + totalPages + ' · ' + totalEntries + ' rows';
+      prev.disabled = !(pageData && pageData.hasPrevPage);
+      next.disabled = !(pageData && pageData.hasNextPage);
+    }
+    function renderHistoricalPositions(historyPage) {
+      var data = historyPage && Array.isArray(historyPage.entries) ? historyPage.entries : [];
       var tbody = $('#history-tbody');
       var empty = $('#history-empty');
+      renderHistoryPagination(historyPage);
       if (!data.length) {
         tbody.innerHTML = '';
         empty.style.display = '';
@@ -542,14 +661,18 @@ export function buildDashboardHtml(): string {
       tbody.innerHTML = data.map(function(row) {
         var tokenMint = row.tokenMint || '--';
         var tokenSymbol = row.tokenSymbol || '';
-        var label = tokenSymbol ? tokenSymbol + ' / ' + truncAddr(tokenMint) : truncAddr(tokenMint);
+        var label = tokenSymbol ? tokenSymbol + ' / SOL' : 'N/A / SOL';
+        var pnl = Number(row.pnlSol);
+        var pnlPct = Number(row.pnlPct);
+        var dpr = Number(row.dprPct);
         return '<tr>'
-          + '<td><div class="cell-main">' + escHtml(fmtTime(row.recordedAt)) + '</div><div class="cell-sub">' + escHtml(timeAgo(row.recordedAt)) + '</div></td>'
-          + '<td><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="pool-addr">' + escHtml(tokenMint) + '</div></div></td>'
-          + '<td><span class="hist-action-chip">' + escHtml(row.action || '--') + '</span></td>'
-          + '<td><div class="cell-main">' + fmtSol(Number(row.amountSol)) + '</div><div class="cell-sub">SOL</div></td>'
-          + '<td><span class="hist-source-chip">' + escHtml(row.source || '--') + '</span></td>'
-          + '<td><div class="cell-main">' + escHtml(row.confirmationStatus || '--') + '</div></td>'
+          + '<td><div class="token-cell"><div class="position-side-icon">↘</div><div class="token-avatar">' + escHtml((tokenMint || '?').charAt(0).toUpperCase()) + '</div><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(tokenMint)) + '</span><span class="token-tag">' + escHtml(row.source || '--') + '</span></div></div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(durationLabel(row.openedAt, row.closedAt)) + '</div><div class="cell-sub">' + escHtml(row.confirmationStatus || '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(Number(row.investedSol != null ? row.investedSol : row.amountSol)) + ' ◎</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main cell-green">' + (typeof row.feeEarnedSol === 'number' ? fmtSignedSol(Number(row.feeEarnedSol)) + ' SOL' : '--') + '</div><div class="cell-sub cell-green">' + (typeof row.feeEarnedPct === 'number' ? fmtPct(Number(row.feeEarnedPct)) : '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main ' + metricClass(pnl) + '">' + (typeof row.pnlSol === 'number' ? fmtSignedSol(pnl) + ' SOL' : '--') + '</div><div class="cell-sub ' + metricClass(pnl) + '">' + (typeof row.pnlPct === 'number' ? fmtPct(pnlPct) : '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main ' + metricClass(dpr) + '">' + (typeof row.dprPct === 'number' ? fmtPct(dpr) : '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(timeAgo(row.closedAt || row.recordedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(row.closedAt || row.recordedAt)) + '</div></div></td>'
           + '</tr>';
       }).join('');
     }
@@ -565,10 +688,22 @@ export function buildDashboardHtml(): string {
       }).join('') : '<div class="empty-state">暂无真实日志</div>';
     }
     var logsCollapsed = false;
+    var historyPage = 1;
+    var historyPageSize = 10;
     $('#logs-header-toggle').addEventListener('click', function() {
       logsCollapsed = !logsCollapsed;
       $('#logs-body').classList.toggle('collapsed', logsCollapsed);
       $('#logs-chevron').textContent = logsCollapsed ? '▶' : '▼';
+    });
+    $('#history-prev-page').addEventListener('click', function() {
+      if (historyPage > 1) {
+        historyPage -= 1;
+        refreshAll();
+      }
+    });
+    $('#history-next-page').addEventListener('click', function() {
+      historyPage += 1;
+      refreshAll();
     });
     $('#copy-btn').addEventListener('click', function() {
       var addr = $('#wallet-full-addr').dataset.full;
@@ -576,13 +711,16 @@ export function buildDashboardHtml(): string {
       navigator.clipboard.writeText(addr).then(function() { $('#copy-btn').textContent = '✓ Copied'; setTimeout(function() { $('#copy-btn').textContent = '📋 Copy'; }, 1200); });
     });
     function refreshAll() {
-      Promise.all([fetchJson('/api/overview')]).then(function(results) {
+      Promise.all([
+        fetchJson('/api/overview'),
+        fetchJson('/api/history?page=' + historyPage + '&pageSize=' + historyPageSize)
+      ]).then(function(results) {
         var overview = results[0] || {};
+        var historyPageData = results[1] || { entries: [], page: 1, totalPages: 1, totalEntries: 0, hasPrevPage: false, hasNextPage: false };
         var status = overview.status || null;
         var positions = overview.positions || [];
         var pnl = overview.pnl || {};
         var equity = overview.equity || {};
-        var history = overview.history || [];
         var logs = overview.logs || [];
         if (status) {
           var addr = status.activePoolAddress || status.activeMint || '--';
@@ -641,7 +779,10 @@ export function buildDashboardHtml(): string {
         $('#stat-monthly-profit').className = 'stat-value ' + (monthCashflow >= 0 ? 'green' : 'red');
         renderChart(dailyEquity);
         renderOpenPositions(Array.isArray(positions) ? positions : []);
-        renderHistoricalPositions(Array.isArray(history) ? history : []);
+        if (typeof historyPageData.page === 'number') {
+          historyPage = historyPageData.page;
+        }
+        renderHistoricalPositions(historyPageData);
         renderLogs(Array.isArray(logs) ? logs : []);
       });
     }
