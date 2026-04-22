@@ -20,6 +20,9 @@ export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
   return {
     fillId: String(row.fillId ?? row.submissionId ?? row.cycleId ?? ''),
     submissionId: String(row.submissionId ?? ''),
+    openIntentId: String(row.openIntentId ?? ''),
+    positionId: String(row.positionId ?? ''),
+    chainPositionAddress: String(row.chainPositionAddress ?? row.positionAddress ?? ''),
     tokenMint: String(row.tokenMint ?? ''),
     tokenSymbol: String(row.tokenSymbol ?? ''),
     side: String(row.side ?? 'unknown'),

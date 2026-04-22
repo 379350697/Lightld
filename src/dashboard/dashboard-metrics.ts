@@ -16,6 +16,9 @@ type HistoricalFill = {
   tokenSymbol: string;
   side: string;
   submissionId?: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   filledSol: number;
   recordedAt: string;
   confirmationStatus?: string;
@@ -27,6 +30,9 @@ type HistoricalOrderFallback = {
   action: string;
   submissionId?: string;
   idempotencyKey?: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
   requestedPositionSol: number;
   confirmationStatus?: string;
   updatedAt: string;
@@ -85,6 +91,7 @@ export type DashboardHistoricalActivityEntry = {
 };
 
 type ReconciledHistoricalAction = {
+  lifecycleKey: string;
   tokenMint: string;
   tokenSymbol: string;
   action: string;
@@ -144,6 +151,50 @@ function toHistoricalMatchKey(input: {
   }
 
   return `unmatched:${input.tokenMint}:${input.action}:${input.recordedAt}`;
+}
+
+function listHistoricalIdentityKeys(input: {
+  submissionId?: string;
+  idempotencyKey?: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
+}) {
+  const keys: string[] = [];
+  if (input.submissionId && input.submissionId.length > 0) {
+    keys.push(`submission:${input.submissionId}`);
+  }
+  if (input.chainPositionAddress && input.chainPositionAddress.length > 0) {
+    keys.push(`chain-position:${input.chainPositionAddress}`);
+  }
+  if (input.positionId && input.positionId.length > 0) {
+    keys.push(`position:${input.positionId}`);
+  }
+  if (input.openIntentId && input.openIntentId.length > 0) {
+    keys.push(`intent:${input.openIntentId}`);
+  }
+  if (input.idempotencyKey && input.idempotencyKey.length > 0) {
+    keys.push(`order:${input.idempotencyKey}`);
+  }
+  return keys;
+}
+
+function toHistoricalLifecycleKey(input: {
+  tokenMint: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
+}) {
+  if (input.chainPositionAddress && input.chainPositionAddress.length > 0) {
+    return `chain-position:${input.chainPositionAddress}`;
+  }
+  if (input.positionId && input.positionId.length > 0) {
+    return `position:${input.positionId}`;
+  }
+  if (input.openIntentId && input.openIntentId.length > 0) {
+    return `intent:${input.openIntentId}`;
+  }
+  return `token:${input.tokenMint}`;
 }
 
 function isHistoricalOpenAction(action: string) {
@@ -223,6 +274,79 @@ function pickNearestOrderMatch(input: {
   }
 
   return bestMatch;
+}
+
+function findDirectOrderMatch(input: {
+  fill: HistoricalFill;
+  ordersByIdentity: Map<string, HistoricalOrderFallback[]>;
+  usedOrderKeys: Set<string>;
+}) {
+  const identityKeys = listHistoricalIdentityKeys({
+    submissionId: input.fill.submissionId,
+    openIntentId: input.fill.openIntentId,
+    positionId: input.fill.positionId,
+    chainPositionAddress: input.fill.chainPositionAddress
+  });
+
+  let bestMatch: HistoricalOrderFallback | null = null;
+  let bestDistanceMs = Number.POSITIVE_INFINITY;
+  const fillRecordedAtMs = toRecordedAtMillis(input.fill.recordedAt);
+
+  for (const key of identityKeys) {
+    const matches = input.ordersByIdentity.get(key) ?? [];
+    for (const match of matches) {
+      const orderKey = toHistoricalMatchKey({
+        submissionId: match.submissionId,
+        idempotencyKey: match.idempotencyKey,
+        tokenMint: match.tokenMint,
+        action: match.action,
+        recordedAt: match.updatedAt || match.createdAt
+      });
+
+      if (input.usedOrderKeys.has(orderKey)) {
+        continue;
+      }
+
+      if (isSupportedHistoricalAction(input.fill.side) && input.fill.side !== match.action) {
+        continue;
+      }
+
+      const orderRecordedAtMs = toRecordedAtMillis(match.updatedAt || match.createdAt);
+      const distanceMs = Number.isFinite(fillRecordedAtMs) && Number.isFinite(orderRecordedAtMs)
+        ? Math.abs(fillRecordedAtMs - orderRecordedAtMs)
+        : Number.POSITIVE_INFINITY;
+
+      if (distanceMs < bestDistanceMs) {
+        bestMatch = match;
+        bestDistanceMs = distanceMs;
+      }
+    }
+  }
+
+  if (bestMatch) {
+    return bestMatch;
+  }
+
+  for (const key of identityKeys) {
+    const matches = input.ordersByIdentity.get(key) ?? [];
+    if (matches.length === 0) {
+      continue;
+    }
+    for (const match of matches) {
+      const orderKey = toHistoricalMatchKey({
+        submissionId: match.submissionId,
+        idempotencyKey: match.idempotencyKey,
+        tokenMint: match.tokenMint,
+        action: match.action,
+        recordedAt: match.updatedAt || match.createdAt
+      });
+      if (!input.usedOrderKeys.has(orderKey)) {
+        return match;
+      }
+    }
+  }
+
+  return null;
 }
 
 function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistoricalActivityEntry | null {
@@ -376,20 +500,37 @@ export function buildHistoricalActivity(input: {
     );
 
   const localByKey = new Map<string, HistoricalOrderFallback>();
+  const ordersByIdentity = new Map<string, HistoricalOrderFallback[]>();
   for (const order of orders) {
-    localByKey.set(toHistoricalMatchKey({
+    const orderKey = toHistoricalMatchKey({
       submissionId: order.submissionId,
       idempotencyKey: order.idempotencyKey,
       tokenMint: order.tokenMint,
       action: order.action,
       recordedAt: order.updatedAt || order.createdAt
-    }), order);
+    });
+    localByKey.set(orderKey, order);
+
+    for (const identityKey of listHistoricalIdentityKeys({
+      submissionId: order.submissionId,
+      idempotencyKey: order.idempotencyKey,
+      openIntentId: order.openIntentId,
+      positionId: order.positionId,
+      chainPositionAddress: order.chainPositionAddress
+    })) {
+      const matches = ordersByIdentity.get(identityKey) ?? [];
+      matches.push(order);
+      ordersByIdentity.set(identityKey, matches);
+    }
   }
 
   const chainByKey = new Map<string, HistoricalFill[]>();
   for (const fill of fills) {
     const key = toHistoricalMatchKey({
       submissionId: fill.submissionId,
+      openIntentId: fill.openIntentId,
+      positionId: fill.positionId,
+      chainPositionAddress: fill.chainPositionAddress,
       tokenMint: fill.tokenMint,
       action: fill.side,
       recordedAt: fill.recordedAt
@@ -404,7 +545,11 @@ export function buildHistoricalActivity(input: {
 
   for (const [key, chainEntries] of chainByKey.entries()) {
     for (const fill of chainEntries) {
-      const directOrder = localByKey.get(key);
+      const directOrder = localByKey.get(key) ?? findDirectOrderMatch({
+        fill,
+        ordersByIdentity,
+        usedOrderKeys
+      });
       const fallbackOrder = directOrder ?? pickNearestOrderMatch({
         fill,
         orders,
@@ -437,6 +582,12 @@ export function buildHistoricalActivity(input: {
       }
 
       reconciledActions.push({
+        lifecycleKey: toHistoricalLifecycleKey({
+          tokenMint: fill.tokenMint,
+          openIntentId: fill.openIntentId ?? matchedOrder?.openIntentId,
+          positionId: fill.positionId ?? matchedOrder?.positionId,
+          chainPositionAddress: fill.chainPositionAddress ?? matchedOrder?.chainPositionAddress
+        }),
         tokenMint: fill.tokenMint,
         tokenSymbol: fill.tokenSymbol || matchedOrder?.tokenSymbol || '',
         action,
@@ -454,6 +605,12 @@ export function buildHistoricalActivity(input: {
     }
 
     reconciledActions.push({
+      lifecycleKey: toHistoricalLifecycleKey({
+        tokenMint: order.tokenMint,
+        openIntentId: order.openIntentId,
+        positionId: order.positionId,
+        chainPositionAddress: order.chainPositionAddress
+      }),
       tokenMint: order.tokenMint,
       tokenSymbol: order.tokenSymbol,
       action: order.action,
@@ -466,18 +623,17 @@ export function buildHistoricalActivity(input: {
   reconciledActions.sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
 
   const lifecycles: HistoricalLifecycle[] = [];
-  const currentLifecycleByToken = new Map<string, HistoricalLifecycle>();
+  const currentLifecycleByKey = new Map<string, HistoricalLifecycle>();
 
   for (const action of reconciledActions) {
-    const tokenKey = action.tokenMint;
-    const current = currentLifecycleByToken.get(tokenKey);
+    const current = currentLifecycleByKey.get(action.lifecycleKey);
 
     if (isHistoricalOpenAction(action.action)) {
       if (current) {
         lifecycles.push(current);
       }
 
-      currentLifecycleByToken.set(tokenKey, {
+      currentLifecycleByKey.set(action.lifecycleKey, {
         tokenMint: action.tokenMint,
         tokenSymbol: action.tokenSymbol,
         openAction: action
@@ -489,7 +645,7 @@ export function buildHistoricalActivity(input: {
       if (current) {
         current.closeAction = action;
         lifecycles.push(current);
-        currentLifecycleByToken.delete(tokenKey);
+        currentLifecycleByKey.delete(action.lifecycleKey);
       } else {
         lifecycles.push({
           tokenMint: action.tokenMint,
@@ -500,7 +656,7 @@ export function buildHistoricalActivity(input: {
     }
   }
 
-  for (const lifecycle of currentLifecycleByToken.values()) {
+  for (const lifecycle of currentLifecycleByKey.values()) {
     lifecycles.push(lifecycle);
   }
 

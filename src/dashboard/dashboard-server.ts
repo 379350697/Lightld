@@ -444,6 +444,9 @@ async function handleEquity(): Promise<EquityResponse> {
 type OrderRow = {
   idempotency_key: string;
   submission_id: string;
+  open_intent_id: string;
+  position_id: string;
+  chain_position_address: string;
   token_mint: string;
   token_symbol: string;
   action: string;
@@ -457,7 +460,7 @@ type OrderRow = {
 async function handleOrders() {
   const rows = await queryAll<OrderRow>(`
     SELECT
-      idempotency_key, submission_id, token_mint,
+      idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, token_mint,
       token_symbol, action, requested_position_sol,
       confirmation_status, finality, created_at, updated_at
     FROM orders
@@ -469,6 +472,9 @@ async function handleOrders() {
     return rows.map(r => ({
       idempotencyKey: r.idempotency_key,
       submissionId: r.submission_id,
+      openIntentId: r.open_intent_id,
+      positionId: r.position_id,
+      chainPositionAddress: r.chain_position_address,
       tokenMint: r.token_mint,
       tokenSymbol: r.token_symbol,
       action: r.action,
@@ -484,6 +490,9 @@ async function handleOrders() {
   return journalRows.reverse().map(r => ({
     idempotencyKey: String(r.idempotencyKey ?? ''),
     submissionId: String(r.submissionId ?? ''),
+    openIntentId: String(r.openIntentId ?? ''),
+    positionId: String(r.positionId ?? ''),
+    chainPositionAddress: String(r.chainPositionAddress ?? r.positionAddress ?? ''),
     tokenMint: String(r.tokenMint ?? ''),
     tokenSymbol: String(r.tokenSymbol ?? ''),
     action: String(r.side ?? r.action ?? 'unknown'),
@@ -498,6 +507,9 @@ async function handleOrders() {
 type FillRow = {
   fill_id: string;
   submission_id: string;
+  open_intent_id: string;
+  position_id: string;
+  chain_position_address: string;
   token_mint: string;
   token_symbol: string;
   side: string;
@@ -509,7 +521,7 @@ type FillRow = {
 async function handleFills() {
   const rows = await queryAll<FillRow>(`
     SELECT
-      fill_id, submission_id, token_mint, token_symbol,
+      fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
       side, amount, filled_sol, recorded_at
     FROM fills
     ORDER BY recorded_at DESC
@@ -520,6 +532,9 @@ async function handleFills() {
     return rows.map(r => ({
       fillId: r.fill_id,
       submissionId: r.submission_id,
+      openIntentId: r.open_intent_id,
+      positionId: r.position_id,
+      chainPositionAddress: r.chain_position_address,
       tokenMint: r.token_mint,
       tokenSymbol: r.token_symbol,
       side: r.side,
@@ -607,6 +622,9 @@ async function handleHistory() {
       tokenSymbol: String(fill.tokenSymbol ?? ''),
       side: String(fill.side ?? ''),
       submissionId: String(fill.submissionId ?? ''),
+      openIntentId: String(fill.openIntentId ?? ''),
+      positionId: String(fill.positionId ?? ''),
+      chainPositionAddress: String(fill.chainPositionAddress ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
       recordedAt: String(fill.recordedAt ?? ''),
       confirmationStatus: 'confirmed'
@@ -617,6 +635,9 @@ async function handleHistory() {
       action: String(order.action ?? ''),
       submissionId: String(order.submissionId ?? ''),
       idempotencyKey: String(order.idempotencyKey ?? ''),
+      openIntentId: String(order.openIntentId ?? ''),
+      positionId: String(order.positionId ?? ''),
+      chainPositionAddress: String(order.chainPositionAddress ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
       createdAt: String(order.createdAt ?? ''),

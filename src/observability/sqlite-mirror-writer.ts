@@ -116,6 +116,8 @@ export class SqliteMirrorWriter {
     }
 
     this.ensureRuntimeSnapshotColumns(database);
+    this.ensureOrderIdentityColumns(database);
+    this.ensureFillIdentityColumns(database);
 
     this.database = database;
   }
@@ -188,6 +190,33 @@ export class SqliteMirrorWriter {
     for (const [columnName, columnType] of requiredColumns) {
       if (!existingColumns.has(columnName)) {
         database.exec(`ALTER TABLE runtime_snapshots ADD COLUMN ${columnName} ${columnType}`);
+      }
+    }
+  }
+
+  private ensureOrderIdentityColumns(database: DatabaseSync) {
+    this.ensureTableColumns(database, 'orders', [
+      ['open_intent_id', "TEXT NOT NULL DEFAULT ''"],
+      ['position_id', "TEXT NOT NULL DEFAULT ''"],
+      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"]
+    ]);
+  }
+
+  private ensureFillIdentityColumns(database: DatabaseSync) {
+    this.ensureTableColumns(database, 'fills', [
+      ['open_intent_id', "TEXT NOT NULL DEFAULT ''"],
+      ['position_id', "TEXT NOT NULL DEFAULT ''"],
+      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"]
+    ]);
+  }
+
+  private ensureTableColumns(database: DatabaseSync, tableName: string, columns: ReadonlyArray<readonly [string, string]>) {
+    const existingColumns = new Set((database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
+      .map((column) => column.name));
+
+    for (const [columnName, columnType] of columns) {
+      if (!existingColumns.has(columnName)) {
+        database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`);
       }
     }
   }
@@ -412,6 +441,9 @@ export class SqliteMirrorWriter {
         cycle_id,
         strategy_id,
         submission_id,
+        open_intent_id,
+        position_id,
+        chain_position_address,
         confirmation_signature,
         pool_address,
         token_mint,
@@ -424,11 +456,14 @@ export class SqliteMirrorWriter {
         finality,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(idempotency_key) DO UPDATE SET
         cycle_id=excluded.cycle_id,
         strategy_id=excluded.strategy_id,
         submission_id=excluded.submission_id,
+        open_intent_id=excluded.open_intent_id,
+        position_id=excluded.position_id,
+        chain_position_address=excluded.chain_position_address,
         confirmation_signature=excluded.confirmation_signature,
         pool_address=excluded.pool_address,
         token_mint=excluded.token_mint,
@@ -445,6 +480,9 @@ export class SqliteMirrorWriter {
       payload.cycleId,
       payload.strategyId,
       payload.submissionId,
+      payload.openIntentId ?? '',
+      payload.positionId ?? '',
+      payload.chainPositionAddress ?? '',
       payload.confirmationSignature,
       payload.poolAddress,
       payload.tokenMint,
@@ -465,6 +503,9 @@ export class SqliteMirrorWriter {
       INSERT INTO fills (
         fill_id,
         submission_id,
+        open_intent_id,
+        position_id,
+        chain_position_address,
         confirmation_signature,
         cycle_id,
         token_mint,
@@ -473,11 +514,14 @@ export class SqliteMirrorWriter {
         amount,
         filled_sol,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(fill_id) DO NOTHING
     `).run(
       payload.fillId,
       payload.submissionId,
+      payload.openIntentId ?? '',
+      payload.positionId ?? '',
+      payload.chainPositionAddress ?? '',
       payload.confirmationSignature,
       payload.cycleId,
       payload.tokenMint,

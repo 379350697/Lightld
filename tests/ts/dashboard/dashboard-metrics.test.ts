@@ -296,4 +296,107 @@ describe('buildCashflowMetrics', () => {
       }
     ]);
   });
+
+  it('prefers chain position identity over fuzzy time matching', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          side: 'unknown',
+          submissionId: '',
+          openIntentId: 'intent-strong',
+          positionId: 'position-strong',
+          chainPositionAddress: 'chain-pos-strong',
+          filledSol: 0,
+          recordedAt: '2026-04-18T08:12:00.000Z'
+        },
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          side: 'unknown',
+          submissionId: '',
+          openIntentId: 'intent-strong',
+          positionId: 'position-strong',
+          chainPositionAddress: 'chain-pos-strong',
+          filledSol: 0,
+          recordedAt: '2026-04-18T09:12:00.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-strong-open',
+          openIntentId: 'intent-strong',
+          positionId: 'position-strong',
+          chainPositionAddress: 'chain-pos-strong',
+          requestedPositionSol: 0.6,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        },
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-strong-close',
+          openIntentId: 'intent-strong',
+          positionId: 'position-strong',
+          chainPositionAddress: 'chain-pos-strong',
+          requestedPositionSol: 0.9,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T09:00:00.000Z',
+          updatedAt: '2026-04-18T09:00:01.000Z'
+        },
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-noise-open',
+          requestedPositionSol: 0.61,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:11:55.000Z',
+          updatedAt: '2026-04-18T08:11:56.000Z'
+        },
+        {
+          tokenMint: 'mint-strong',
+          tokenSymbol: 'STR',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-noise-close',
+          requestedPositionSol: 0.91,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T09:11:55.000Z',
+          updatedAt: '2026-04-18T09:11:56.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([
+      {
+        tokenMint: 'mint-strong',
+        tokenSymbol: 'STR',
+        action: 'add-lp -> withdraw-lp',
+        amountSol: 0.6,
+        recordedAt: '2026-04-18T09:12:00.000Z',
+        source: 'matched',
+        confirmationStatus: 'ok'
+      },
+      {
+        tokenMint: 'mint-strong',
+        tokenSymbol: 'STR',
+        action: 'add-lp -> withdraw-lp',
+        amountSol: 0.61,
+        recordedAt: '2026-04-18T09:11:56.000Z',
+        source: 'error',
+        confirmationStatus: 'missing-chain'
+      }
+    ]);
+  });
 });

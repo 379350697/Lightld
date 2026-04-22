@@ -133,6 +133,155 @@ describe('SqliteMirrorWriter', () => {
     ]));
   });
 
+  it('migrates orders and fills tables to include reconciliation identity columns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-identity-migrate-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const bootstrap = new DatabaseSync(path);
+
+    bootstrap.exec(`
+      CREATE TABLE orders (
+        idempotency_key TEXT PRIMARY KEY,
+        cycle_id TEXT NOT NULL,
+        strategy_id TEXT NOT NULL,
+        submission_id TEXT NOT NULL,
+        confirmation_signature TEXT NOT NULL,
+        pool_address TEXT NOT NULL,
+        token_mint TEXT NOT NULL,
+        token_symbol TEXT NOT NULL,
+        action TEXT NOT NULL,
+        requested_position_sol REAL NOT NULL,
+        quoted_output_sol REAL NOT NULL,
+        broadcast_status TEXT NOT NULL,
+        confirmation_status TEXT NOT NULL,
+        finality TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE fills (
+        fill_id TEXT PRIMARY KEY,
+        submission_id TEXT NOT NULL,
+        confirmation_signature TEXT NOT NULL,
+        cycle_id TEXT NOT NULL,
+        token_mint TEXT NOT NULL,
+        token_symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        amount REAL NOT NULL,
+        filled_sol REAL NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+    bootstrap.close();
+
+    const writer = new SqliteMirrorWriter({ path });
+    await writer.open();
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const orderColumns = db.prepare('PRAGMA table_info(orders)').all() as Array<{ name: string }>;
+    const fillColumns = db.prepare('PRAGMA table_info(fills)').all() as Array<{ name: string }>;
+    db.close();
+
+    expect(orderColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'open_intent_id',
+      'position_id',
+      'chain_position_address'
+    ]));
+    expect(fillColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'open_intent_id',
+      'position_id',
+      'chain_position_address'
+    ]));
+  });
+
+  it('persists reconciliation identity columns for orders and fills', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-identity-write-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+
+    await writer.open();
+    await writer.writeBatch([
+      {
+        type: 'order',
+        priority: 'high',
+        payload: {
+          idempotencyKey: 'order-1',
+          cycleId: 'cycle-1',
+          strategyId: 'new-token-v1',
+          submissionId: 'sub-1',
+          openIntentId: 'intent-1',
+          positionId: 'position-1',
+          chainPositionAddress: 'chain-pos-1',
+          confirmationSignature: 'sig-1',
+          poolAddress: 'pool-1',
+          tokenMint: 'mint-1',
+          tokenSymbol: 'SAFE',
+          action: 'add-lp',
+          requestedPositionSol: 0.5,
+          quotedOutputSol: 0.48,
+          broadcastStatus: 'submitted',
+          confirmationStatus: 'submitted',
+          finality: 'unknown',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        }
+      },
+      {
+        type: 'fill',
+        priority: 'high',
+        payload: {
+          fillId: 'fill-1',
+          submissionId: 'sub-1',
+          openIntentId: 'intent-1',
+          positionId: 'position-1',
+          chainPositionAddress: 'chain-pos-1',
+          confirmationSignature: 'sig-1',
+          cycleId: 'cycle-1',
+          tokenMint: 'mint-1',
+          tokenSymbol: 'SAFE',
+          side: 'buy',
+          amount: 0.5,
+          filledSol: 0.5,
+          recordedAt: '2026-04-18T08:00:02.000Z'
+        }
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const order = db.prepare(`
+      SELECT open_intent_id, position_id, chain_position_address
+      FROM orders
+      WHERE idempotency_key = 'order-1'
+    `).get() as {
+      open_intent_id: string;
+      position_id: string;
+      chain_position_address: string;
+    };
+    const fill = db.prepare(`
+      SELECT open_intent_id, position_id, chain_position_address
+      FROM fills
+      WHERE fill_id = 'fill-1'
+    `).get() as {
+      open_intent_id: string;
+      position_id: string;
+      chain_position_address: string;
+    };
+    db.close();
+
+    expect(order).toEqual({
+      open_intent_id: 'intent-1',
+      position_id: 'position-1',
+      chain_position_address: 'chain-pos-1'
+    });
+    expect(fill).toEqual({
+      open_intent_id: 'intent-1',
+      position_id: 'position-1',
+      chain_position_address: 'chain-pos-1'
+    });
+  });
+
   it('writes and queries mirrored evolution research rows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-evolution-'));
     directories.push(root);
