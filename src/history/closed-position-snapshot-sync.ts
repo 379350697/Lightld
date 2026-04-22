@@ -25,6 +25,12 @@ export type ClosedPositionOrderSeed = {
   closeSignature: string;
 };
 
+type AddressSignatureInfo = {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+};
+
 function toLifecycleKey(row: ClosedPositionOrderSeedRow) {
   if (row.positionAddress.length > 0) {
     return `position:${row.positionAddress}`;
@@ -41,7 +47,7 @@ export function buildClosedPositionOrderSeeds(rows: ClosedPositionOrderSeedRow[]
   const rowsByLifecycle = new Map<string, ClosedPositionOrderSeedRow[]>();
 
   for (const row of rows) {
-    if ((row.action !== 'add-lp' && row.action !== 'withdraw-lp') || row.signature.length === 0) {
+    if (row.action !== 'add-lp' && row.action !== 'withdraw-lp') {
       continue;
     }
 
@@ -82,6 +88,7 @@ export async function syncClosedPositionSnapshots(input: {
   seeds: ClosedPositionOrderSeed[];
   rpcClient: {
     getTransaction: (signature: string) => Promise<unknown | null>;
+    getSignaturesForAddress?: (address: string, options?: { limit?: number }) => Promise<AddressSignatureInfo[]>;
   };
   loadTokenPriceInSol: (seed: ClosedPositionOrderSeed) => Promise<number>;
   writer?: {
@@ -91,10 +98,29 @@ export async function syncClosedPositionSnapshots(input: {
   const snapshots: ClosedPositionSnapshot[] = [];
 
   for (const seed of input.seeds) {
-    const [openTransaction, closeTransaction, tokenPriceInSol] = await Promise.all([
-      input.rpcClient.getTransaction(seed.openSignature),
-      input.rpcClient.getTransaction(seed.closeSignature),
+    const [openSignature, closeSignature, tokenPriceInSol] = await Promise.all([
+      seed.openSignature.length > 0
+        ? Promise.resolve(seed.openSignature)
+        : resolveLifecycleSignature({
+            rpcClient: input.rpcClient,
+            addressCandidates: [seed.positionAddress, seed.poolAddress],
+            targetAt: seed.openedAt,
+            instructionName: 'AddLiquidityByStrategy2'
+          }),
+      seed.closeSignature.length > 0
+        ? Promise.resolve(seed.closeSignature)
+        : resolveLifecycleSignature({
+            rpcClient: input.rpcClient,
+            addressCandidates: [seed.positionAddress, seed.poolAddress],
+            targetAt: seed.closedAt,
+            instructionName: 'RemoveLiquidityByRange2'
+          }),
       input.loadTokenPriceInSol(seed)
+    ]);
+
+    const [openTransaction, closeTransaction] = await Promise.all([
+      openSignature ? input.rpcClient.getTransaction(openSignature) : Promise.resolve(null),
+      closeSignature ? input.rpcClient.getTransaction(closeSignature) : Promise.resolve(null)
     ]);
 
     if (!openTransaction || !closeTransaction) {
@@ -142,4 +168,48 @@ export async function syncClosedPositionSnapshots(input: {
   }
 
   return snapshots;
+}
+
+async function resolveLifecycleSignature(input: {
+  rpcClient: {
+    getSignaturesForAddress?: (address: string, options?: { limit?: number }) => Promise<AddressSignatureInfo[]>;
+    getTransaction: (signature: string) => Promise<unknown | null>;
+  };
+  addressCandidates: string[];
+  targetAt: string;
+  instructionName: 'AddLiquidityByStrategy2' | 'RemoveLiquidityByRange2';
+}) {
+  if (!input.rpcClient.getSignaturesForAddress) {
+    return '';
+  }
+
+  const targetMillis = Date.parse(input.targetAt);
+  if (!Number.isFinite(targetMillis)) {
+    return '';
+  }
+
+  for (const address of input.addressCandidates) {
+    if (address.length === 0) {
+      continue;
+    }
+
+    const signatures = await input.rpcClient.getSignaturesForAddress(address, { limit: 20 });
+    const ordered = [...signatures].sort((left, right) => {
+      const leftMillis = typeof left.blockTime === 'number' ? left.blockTime * 1000 : Number.POSITIVE_INFINITY;
+      const rightMillis = typeof right.blockTime === 'number' ? right.blockTime * 1000 : Number.POSITIVE_INFINITY;
+      return Math.abs(leftMillis - targetMillis) - Math.abs(rightMillis - targetMillis);
+    });
+
+    for (const candidate of ordered) {
+      const transaction = await input.rpcClient.getTransaction(candidate.signature) as {
+        meta?: { logMessages?: string[] };
+      } | null;
+
+      if (transaction?.meta?.logMessages?.some((message) => message.includes(`Instruction: ${input.instructionName}`))) {
+        return candidate.signature;
+      }
+    }
+  }
+
+  return '';
 }
