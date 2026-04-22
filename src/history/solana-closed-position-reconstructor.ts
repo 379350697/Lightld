@@ -13,6 +13,8 @@ export type SolanaClosedPositionLifecycleEvent = {
 };
 
 type ParsedInstruction = {
+  programId?: string;
+  accounts?: string[];
   program?: string;
   parsed?: {
     type?: string;
@@ -38,6 +40,8 @@ type ParsedTransaction = {
     innerInstructions?: ParsedInnerInstructionGroup[];
   };
 };
+
+const DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 
 export type ClosedPositionSnapshot = {
   walletAddress: string;
@@ -104,13 +108,17 @@ function findInstructionName(logMessages: string[] | undefined, name: string) {
   return logMessages?.some((message) => message.includes(`Instruction: ${name}`)) ?? false;
 }
 
+function isDlmmInstruction(instruction: ParsedInstruction) {
+  return instruction.program === 'meteora' || instruction.programId === DLMM_PROGRAM_ID;
+}
+
 function resolveInstructionIndexes(input: {
   instructions: ParsedInstruction[];
   logMessages?: string[];
 }) {
   const customInstructionIndexes = input.instructions
     .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.program === 'meteora')
+    .filter(({ instruction }) => isDlmmInstruction(instruction))
     .map(({ index }) => index);
 
   const names = (input.logMessages ?? [])
@@ -187,12 +195,16 @@ export function extractLifecycleEventsFromTransaction(input: {
   tokenMint: string;
   tokenSymbol: string;
   tokenPriceInSol?: number;
+  poolAddress?: string;
+  positionAddress?: string;
   transaction: ParsedTransaction;
 }): SolanaClosedPositionLifecycleEvent[] {
   const topLevelInstructions = input.transaction.transaction?.message?.instructions ?? [];
   const signature = input.transaction.transaction?.signatures?.[0] ?? '';
   const recordedAt = toIsoString(input.transaction.blockTime);
-  const { poolAddress, positionAddress } = resolveIdentity(topLevelInstructions);
+  const identity = resolveIdentity(topLevelInstructions);
+  const poolAddress = input.poolAddress && input.poolAddress.length > 0 ? input.poolAddress : identity.poolAddress;
+  const positionAddress = input.positionAddress && input.positionAddress.length > 0 ? input.positionAddress : identity.positionAddress;
   const instructionNames = resolveInstructionIndexes({
     instructions: topLevelInstructions,
     logMessages: input.transaction.meta?.logMessages

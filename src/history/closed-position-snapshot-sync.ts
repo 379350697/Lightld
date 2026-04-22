@@ -133,6 +133,8 @@ export async function syncClosedPositionSnapshots(input: {
         tokenMint: seed.tokenMint,
         tokenSymbol: seed.tokenSymbol,
         tokenPriceInSol,
+        poolAddress: seed.poolAddress,
+        positionAddress: seed.positionAddress,
         transaction: openTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
       }),
       ...extractLifecycleEventsFromTransaction({
@@ -140,6 +142,8 @@ export async function syncClosedPositionSnapshots(input: {
         tokenMint: seed.tokenMint,
         tokenSymbol: seed.tokenSymbol,
         tokenPriceInSol,
+        poolAddress: seed.poolAddress,
+        positionAddress: seed.positionAddress,
         transaction: closeTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
       })
     ];
