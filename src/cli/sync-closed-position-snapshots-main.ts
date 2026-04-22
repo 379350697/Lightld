@@ -60,7 +60,6 @@ function readOrderSeedRows(path: string) {
       FROM orders
       WHERE action IN ('add-lp', 'withdraw-lp')
         AND token_mint <> ''
-        AND COALESCE(NULLIF(confirmation_signature, ''), NULLIF(submission_id, ''), '') <> ''
       ORDER BY created_at ASC
     `).all() as ClosedPositionOrderSeedRow[];
   } finally {
