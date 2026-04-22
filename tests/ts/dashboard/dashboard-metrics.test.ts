@@ -236,4 +236,64 @@ describe('buildCashflowMetrics', () => {
 
     expect(result).toEqual([]);
   });
+
+  it('matches chain fills to nearby local orders when fill side and amount are missing', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-fuzzy',
+          tokenSymbol: 'FZY',
+          side: 'unknown',
+          submissionId: 'chain-open',
+          filledSol: 0,
+          recordedAt: '2026-04-18T08:00:06.000Z'
+        },
+        {
+          tokenMint: 'mint-fuzzy',
+          tokenSymbol: 'FZY',
+          side: 'unknown',
+          submissionId: 'chain-close',
+          filledSol: 0,
+          recordedAt: '2026-04-18T09:00:08.000Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-fuzzy',
+          tokenSymbol: 'FZY',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-open',
+          requestedPositionSol: 0.9,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:02.000Z'
+        },
+        {
+          tokenMint: 'mint-fuzzy',
+          tokenSymbol: 'FZY',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-close',
+          requestedPositionSol: 1.1,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-18T09:00:00.000Z',
+          updatedAt: '2026-04-18T09:00:03.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toEqual([
+      {
+        tokenMint: 'mint-fuzzy',
+        tokenSymbol: 'FZY',
+        action: 'add-lp -> withdraw-lp',
+        amountSol: 0.9,
+        recordedAt: '2026-04-18T09:00:08.000Z',
+        source: 'matched',
+        confirmationStatus: 'ok'
+      }
+    ]);
+  });
 });

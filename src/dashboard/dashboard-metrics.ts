@@ -154,6 +154,77 @@ function isHistoricalCloseAction(action: string) {
   return action === 'withdraw-lp';
 }
 
+function isSupportedHistoricalAction(action: string) {
+  return isHistoricalOpenAction(action) || isHistoricalCloseAction(action);
+}
+
+function toRecordedAtMillis(recordedAt: string) {
+  const parsed = Date.parse(recordedAt);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function pickNearestOrderMatch(input: {
+  fill: HistoricalFill;
+  orders: HistoricalOrderFallback[];
+  usedOrderKeys: Set<string>;
+  maxDistanceMs?: number;
+}) {
+  const fillRecordedAtMs = toRecordedAtMillis(input.fill.recordedAt);
+  const maxDistanceMs = input.maxDistanceMs ?? 30_000;
+  let bestMatch: HistoricalOrderFallback | null = null;
+  let bestDistanceMs = Number.POSITIVE_INFINITY;
+  let bestAmountDelta = Number.POSITIVE_INFINITY;
+  const fillAmountSol = input.fill.filledSol > 0 ? input.fill.filledSol : Number.NaN;
+
+  for (const order of input.orders) {
+    const orderKey = toHistoricalMatchKey({
+      submissionId: order.submissionId,
+      idempotencyKey: order.idempotencyKey,
+      tokenMint: order.tokenMint,
+      action: order.action,
+      recordedAt: order.updatedAt || order.createdAt
+    });
+
+    if (input.usedOrderKeys.has(orderKey)) {
+      continue;
+    }
+
+    if (order.tokenMint !== input.fill.tokenMint || !isSupportedHistoricalAction(order.action)) {
+      continue;
+    }
+
+    if (isSupportedHistoricalAction(input.fill.side) && input.fill.side !== order.action) {
+      continue;
+    }
+
+    const orderRecordedAtMs = toRecordedAtMillis(order.updatedAt || order.createdAt);
+    if (!Number.isFinite(fillRecordedAtMs) || !Number.isFinite(orderRecordedAtMs)) {
+      continue;
+    }
+
+    const distanceMs = Math.abs(fillRecordedAtMs - orderRecordedAtMs);
+    if (distanceMs > maxDistanceMs) {
+      continue;
+    }
+
+    const amountDelta = Number.isFinite(fillAmountSol)
+      ? Math.abs(fillAmountSol - order.requestedPositionSol)
+      : Number.POSITIVE_INFINITY;
+    const isBetterAmountMatch = amountDelta < bestAmountDelta;
+    const isSameAmountMatchButCloser = amountDelta === bestAmountDelta && distanceMs < bestDistanceMs;
+
+    if (!isBetterAmountMatch && !isSameAmountMatchButCloser && distanceMs >= bestDistanceMs) {
+      continue;
+    }
+
+    bestMatch = order;
+    bestDistanceMs = distanceMs;
+    bestAmountDelta = amountDelta;
+  }
+
+  return bestMatch;
+}
+
 function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistoricalActivityEntry | null {
   const openAction = lifecycle.openAction;
   const closeAction = lifecycle.closeAction;
@@ -291,9 +362,7 @@ export function buildHistoricalActivity(input: {
   const fills = input.fills
     .filter((fill) =>
       fill.recordedAt
-      && Number.isFinite(fill.filledSol)
-      && fill.filledSol > 0
-      && fill.side.length > 0
+      && (fill.submissionId?.length || fill.side.length > 0)
     );
 
   const orders = (input.orderFallback ?? [])
@@ -317,51 +386,84 @@ export function buildHistoricalActivity(input: {
     }), order);
   }
 
-  const chainByKey = new Map<string, HistoricalFill>();
+  const chainByKey = new Map<string, HistoricalFill[]>();
   for (const fill of fills) {
-    chainByKey.set(toHistoricalMatchKey({
+    const key = toHistoricalMatchKey({
       submissionId: fill.submissionId,
       tokenMint: fill.tokenMint,
       action: fill.side,
       recordedAt: fill.recordedAt
-    }), fill);
+    });
+    const existing = chainByKey.get(key) ?? [];
+    existing.push(fill);
+    chainByKey.set(key, existing);
   }
 
-  const reconciledActions = Array.from(new Set([
-    ...localByKey.keys(),
-    ...chainByKey.keys()
-  ]))
-    .map((key): ReconciledHistoricalAction | null => {
-      const order = localByKey.get(key);
-      const fill = chainByKey.get(key);
-      const tokenMint = fill?.tokenMint ?? order?.tokenMint ?? '';
-      const tokenSymbol = fill?.tokenSymbol ?? order?.tokenSymbol ?? '';
-      const action = fill?.side ?? order?.action ?? '';
+  const reconciledActions: ReconciledHistoricalAction[] = [];
+  const usedOrderKeys = new Set<string>();
 
-      if (
-        tokenMint.length === 0
-        || action.length === 0
-        || (!isHistoricalOpenAction(action) && !isHistoricalCloseAction(action))
-      ) {
-        return null;
+  for (const [key, chainEntries] of chainByKey.entries()) {
+    for (const fill of chainEntries) {
+      const directOrder = localByKey.get(key);
+      const fallbackOrder = directOrder ?? pickNearestOrderMatch({
+        fill,
+        orders,
+        usedOrderKeys
+      });
+      const matchedOrder = fallbackOrder ?? null;
+      const matchedOrderKey = matchedOrder
+        ? toHistoricalMatchKey({
+            submissionId: matchedOrder.submissionId,
+            idempotencyKey: matchedOrder.idempotencyKey,
+            tokenMint: matchedOrder.tokenMint,
+            action: matchedOrder.action,
+            recordedAt: matchedOrder.updatedAt || matchedOrder.createdAt
+          })
+        : '';
+      const action = isSupportedHistoricalAction(fill.side)
+        ? fill.side
+        : matchedOrder?.action ?? '';
+
+      if (matchedOrder && matchedOrderKey.length > 0) {
+        usedOrderKeys.add(matchedOrderKey);
       }
 
-      return {
-        tokenMint,
-        tokenSymbol,
+      if (
+        fill.tokenMint.length === 0
+        || action.length === 0
+        || !isSupportedHistoricalAction(action)
+      ) {
+        continue;
+      }
+
+      reconciledActions.push({
+        tokenMint: fill.tokenMint,
+        tokenSymbol: fill.tokenSymbol || matchedOrder?.tokenSymbol || '',
         action,
-        amountSol: fill?.filledSol ?? order?.requestedPositionSol ?? 0,
-        recordedAt: [fill?.recordedAt ?? '', order?.updatedAt ?? order?.createdAt ?? '']
+        amountSol: fill.filledSol > 0 ? fill.filledSol : matchedOrder?.requestedPositionSol ?? 0,
+        recordedAt: [fill.recordedAt, matchedOrder?.updatedAt ?? matchedOrder?.createdAt ?? '']
           .sort((left, right) => right.localeCompare(left))[0] ?? '',
-        status: order && fill
-          ? 'ok'
-          : order
-            ? 'missing-chain'
-            : 'missing-local'
-      };
-    })
-    .filter((entry): entry is ReconciledHistoricalAction => entry !== null)
-    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+        status: matchedOrder ? 'ok' : 'missing-local'
+      });
+    }
+  }
+
+  for (const [key, order] of localByKey.entries()) {
+    if (usedOrderKeys.has(key) || !isSupportedHistoricalAction(order.action)) {
+      continue;
+    }
+
+    reconciledActions.push({
+      tokenMint: order.tokenMint,
+      tokenSymbol: order.tokenSymbol,
+      action: order.action,
+      amountSol: order.requestedPositionSol,
+      recordedAt: order.updatedAt || order.createdAt,
+      status: 'missing-chain'
+    });
+  }
+
+  reconciledActions.sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
 
   const lifecycles: HistoricalLifecycle[] = [];
   const currentLifecycleByToken = new Map<string, HistoricalLifecycle>();
