@@ -612,6 +612,7 @@ async function handleFills(): Promise<Array<{
   amount: number;
   filledSol: number;
   recordedAt: string;
+  lifecycleStatus: string;
   confirmationStatus: string;
 }>> {
   const rows = await queryAll<FillRow>(`
@@ -637,6 +638,7 @@ async function handleFills(): Promise<Array<{
       amount: r.amount,
       filledSol: r.filled_sol,
       recordedAt: r.recorded_at,
+      lifecycleStatus: toExecutionLifecycleStatus({ historyStatus: 'ok' }),
       confirmationStatus: r.confirmation_status ?? 'confirmed',
     }));
   }
@@ -645,6 +647,9 @@ async function handleFills(): Promise<Array<{
   return journalRows.reverse().map((row) => ({
     lifecycleKey: String(row.lifecycleKey ?? ''),
     ...normalizeDashboardJournalFill(row),
+    lifecycleStatus: toExecutionLifecycleStatus({
+      confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
+    }),
     confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
   }));
 }
@@ -681,6 +686,7 @@ async function handleIncidents() {
       reason: r.reason,
       runtimeMode: r.runtime_mode,
       tokenSymbol: r.token_symbol,
+      lifecycleStatus: 'unresolved',
       recordedAt: r.recorded_at,
     }));
   }
@@ -695,6 +701,7 @@ async function handleIncidents() {
     reason: String(r.reason ?? ''),
     runtimeMode: String(r.runtimeMode ?? ''),
     tokenSymbol: String(r.tokenSymbol ?? ''),
+    lifecycleStatus: 'unresolved',
     recordedAt: String(r.recordedAt ?? ''),
   }));
 }
