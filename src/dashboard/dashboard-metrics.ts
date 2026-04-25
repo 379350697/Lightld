@@ -15,6 +15,7 @@ type CashflowOrderFallback = {
 };
 
 type HistoricalFill = {
+  lifecycleKey?: string;
   tokenMint: string;
   tokenSymbol: string;
   side: string;
@@ -28,6 +29,7 @@ type HistoricalFill = {
 };
 
 type HistoricalOrderFallback = {
+  lifecycleKey?: string;
   tokenMint: string;
   tokenSymbol: string;
   action: string;
@@ -186,6 +188,7 @@ function shouldKeepHistoricalEntry(
 }
 
 function toHistoricalMatchKey(input: {
+  lifecycleKey?: string;
   submissionId?: string;
   idempotencyKey?: string;
   openIntentId?: string;
@@ -195,6 +198,10 @@ function toHistoricalMatchKey(input: {
   action: string;
   recordedAt: string;
 }) {
+  if (input.lifecycleKey && input.lifecycleKey.length > 0) {
+    return `lifecycle:${input.lifecycleKey}:${input.action}`;
+  }
+
   if (input.submissionId && input.submissionId.length > 0) {
     return `submission:${input.submissionId}`;
   }
@@ -219,22 +226,30 @@ function toHistoricalMatchKey(input: {
 }
 
 function listHistoricalIdentityKeys(input: {
+  lifecycleKey?: string;
   submissionId?: string;
   idempotencyKey?: string;
   openIntentId?: string;
   positionId?: string;
   chainPositionAddress?: string;
 }) {
-  return listExecutionIdentityKeys(input);
+  const keys = listExecutionIdentityKeys(input);
+  if (input.lifecycleKey && input.lifecycleKey.length > 0) {
+    keys.unshift(`lifecycle:${input.lifecycleKey}`);
+  }
+  return keys;
 }
 
 function toHistoricalLifecycleKey(input: {
+  lifecycleKey?: string;
   tokenMint: string;
   openIntentId?: string;
   positionId?: string;
   chainPositionAddress?: string;
 }) {
-  return buildExecutionLifecycleKey(input);
+  return input.lifecycleKey && input.lifecycleKey.length > 0
+    ? input.lifecycleKey
+    : buildExecutionLifecycleKey(input);
 }
 
 function isHistoricalOpenAction(action: string) {
@@ -426,6 +441,7 @@ function findDirectOrderMatch(input: {
   usedOrderKeys: Set<string>;
 }) {
   const identityKeys = listHistoricalIdentityKeys({
+    lifecycleKey: input.fill.lifecycleKey,
     submissionId: input.fill.submissionId,
     openIntentId: input.fill.openIntentId,
     positionId: input.fill.positionId,
@@ -444,6 +460,7 @@ function findDirectOrderMatch(input: {
       }
 
       const orderKey = toHistoricalMatchKey({
+        lifecycleKey: match.lifecycleKey,
         submissionId: match.submissionId,
         idempotencyKey: match.idempotencyKey,
         tokenMint: match.tokenMint,
@@ -486,6 +503,7 @@ function findDirectOrderMatch(input: {
       }
 
       const orderKey = toHistoricalMatchKey({
+        lifecycleKey: match.lifecycleKey,
         submissionId: match.submissionId,
         idempotencyKey: match.idempotencyKey,
         tokenMint: match.tokenMint,
@@ -767,6 +785,7 @@ export function buildHistoricalActivity(input: {
   const ordersByIdentity = new Map<string, HistoricalOrderFallback[]>();
   for (const order of orders) {
     const orderKey = toHistoricalMatchKey({
+      lifecycleKey: order.lifecycleKey,
       submissionId: order.submissionId,
       idempotencyKey: order.idempotencyKey,
       tokenMint: order.tokenMint,
@@ -776,6 +795,7 @@ export function buildHistoricalActivity(input: {
     localByKey.set(orderKey, order);
 
     for (const identityKey of listHistoricalIdentityKeys({
+      lifecycleKey: order.lifecycleKey,
       submissionId: order.submissionId,
       idempotencyKey: order.idempotencyKey,
       openIntentId: order.openIntentId,
@@ -791,6 +811,7 @@ export function buildHistoricalActivity(input: {
   const chainByKey = new Map<string, HistoricalFill[]>();
   for (const fill of fills) {
     const key = toHistoricalMatchKey({
+      lifecycleKey: fill.lifecycleKey,
       submissionId: fill.submissionId,
       openIntentId: fill.openIntentId,
       positionId: fill.positionId,
@@ -825,6 +846,7 @@ export function buildHistoricalActivity(input: {
       const matchedOrder = fallbackOrder ?? null;
       const matchedOrderKey = matchedOrder
         ? toHistoricalMatchKey({
+            lifecycleKey: matchedOrder.lifecycleKey,
             submissionId: matchedOrder.submissionId,
             idempotencyKey: matchedOrder.idempotencyKey,
             tokenMint: matchedOrder.tokenMint,
@@ -852,6 +874,7 @@ export function buildHistoricalActivity(input: {
       const hasReliableIdentity = hasSufficientHistoricalFillIdentity(fill);
       reconciledActions.push({
         lifecycleKey: toHistoricalLifecycleKey({
+          lifecycleKey: fill.lifecycleKey ?? matchedOrder?.lifecycleKey,
           tokenMint: resolvedTokenMint,
           openIntentId: fill.openIntentId ?? matchedOrder?.openIntentId,
           positionId: fill.positionId ?? matchedOrder?.positionId,

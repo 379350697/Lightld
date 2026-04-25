@@ -502,6 +502,7 @@ async function handleEquity(): Promise<EquityResponse> {
 }
 
 type OrderRow = {
+  lifecycle_key: string;
   idempotency_key: string;
   submission_id: string;
   open_intent_id: string;
@@ -521,7 +522,7 @@ type OrderRow = {
 async function handleOrders() {
   const rows = await queryAll<OrderRow>(`
     SELECT
-      idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, token_mint,
+      lifecycle_key, idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, token_mint,
       token_symbol, action, requested_position_sol,
       broadcast_status, confirmation_status, finality, created_at, updated_at
     FROM orders
@@ -531,6 +532,7 @@ async function handleOrders() {
 
   if (rows.length > 0) {
     return rows.map(r => ({
+      lifecycleKey: r.lifecycle_key,
       idempotencyKey: r.idempotency_key,
       submissionId: r.submission_id,
       openIntentId: r.open_intent_id,
@@ -550,6 +552,7 @@ async function handleOrders() {
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
   return journalRows.reverse().map(r => ({
+    lifecycleKey: String(r.lifecycleKey ?? ''),
     idempotencyKey: String(r.idempotencyKey ?? ''),
     submissionId: String(r.submissionId ?? ''),
     openIntentId: String(r.openIntentId ?? ''),
@@ -568,6 +571,7 @@ async function handleOrders() {
 }
 
 type FillRow = {
+  lifecycle_key: string;
   fill_id: string;
   submission_id: string;
   open_intent_id: string;
@@ -583,6 +587,7 @@ type FillRow = {
 };
 
 async function handleFills(): Promise<Array<{
+  lifecycleKey: string;
   fillId: string;
   submissionId: string;
   openIntentId: string;
@@ -598,7 +603,7 @@ async function handleFills(): Promise<Array<{
 }>> {
   const rows = await queryAll<FillRow>(`
     SELECT
-      fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
+      lifecycle_key, fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
       side, amount, filled_sol, recorded_at, 'confirmed' AS confirmation_status
     FROM fills
     ORDER BY recorded_at DESC
@@ -607,6 +612,7 @@ async function handleFills(): Promise<Array<{
 
   if (rows.length > 0) {
     return rows.map(r => ({
+      lifecycleKey: r.lifecycle_key,
       fillId: r.fill_id,
       submissionId: r.submission_id,
       openIntentId: r.open_intent_id,
@@ -624,6 +630,7 @@ async function handleFills(): Promise<Array<{
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
   return journalRows.reverse().map((row) => ({
+    lifecycleKey: String(row.lifecycleKey ?? ''),
     ...normalizeDashboardJournalFill(row),
     confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
   }));
@@ -781,6 +788,7 @@ async function handleHistory() {
 
   const entries = buildHistoricalActivity({
     fills: fills.map((fill) => ({
+      lifecycleKey: String(fill.lifecycleKey ?? ''),
       tokenMint: String(fill.tokenMint ?? ''),
       tokenSymbol: String(fill.tokenSymbol ?? ''),
       side: String(fill.side ?? ''),
@@ -793,6 +801,7 @@ async function handleHistory() {
       confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),
     orderFallback: orders.map((order) => ({
+      lifecycleKey: String(order.lifecycleKey ?? ''),
       tokenMint: String(order.tokenMint ?? ''),
       tokenSymbol: String(order.tokenSymbol ?? ''),
       action: String(order.action ?? ''),
@@ -838,6 +847,7 @@ async function handleHistoryPage(input?: {
 
   const entries = buildHistoricalActivity({
     fills: fills.map((fill) => ({
+      lifecycleKey: String(fill.lifecycleKey ?? ''),
       tokenMint: String(fill.tokenMint ?? ''),
       tokenSymbol: String(fill.tokenSymbol ?? ''),
       side: String(fill.side ?? ''),
@@ -850,6 +860,7 @@ async function handleHistoryPage(input?: {
       confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),
     orderFallback: orders.map((order) => ({
+      lifecycleKey: String(order.lifecycleKey ?? ''),
       tokenMint: String(order.tokenMint ?? ''),
       tokenSymbol: String(order.tokenSymbol ?? ''),
       action: String(order.action ?? ''),
