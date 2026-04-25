@@ -1,6 +1,7 @@
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 import { toExecutionLifecycleStatus } from './execution-lifecycle-status.ts';
+import { toExecutionTerminalStatus } from './execution-terminal-status.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
@@ -22,13 +23,15 @@ export function resolveRecoveredOrderTerminalStatus(reason: PendingRecoveryReaso
   confirmationStatus: ConfirmationStatus;
   finality: 'confirmed' | 'finalized' | 'unknown';
   lifecycleStatus: 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local';
+  terminalStatus: 'confirmed' | 'failed' | 'unknown_pending_reconciliation' | 'manual-review';
 } | null {
   if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
     return {
       broadcastStatus: 'submitted',
       confirmationStatus: 'confirmed',
       finality: 'confirmed',
-      lifecycleStatus: toExecutionLifecycleStatus({ recoveryReason: reason })
+      lifecycleStatus: toExecutionLifecycleStatus({ recoveryReason: reason }),
+      terminalStatus: toExecutionTerminalStatus({ recoveryReason: reason })
     };
   }
 
@@ -37,7 +40,8 @@ export function resolveRecoveredOrderTerminalStatus(reason: PendingRecoveryReaso
       broadcastStatus: 'failed',
       confirmationStatus: 'failed',
       finality: 'unknown',
-      lifecycleStatus: toExecutionLifecycleStatus({ recoveryReason: reason })
+      lifecycleStatus: toExecutionLifecycleStatus({ recoveryReason: reason }),
+      terminalStatus: toExecutionTerminalStatus({ recoveryReason: reason })
     };
   }
 
