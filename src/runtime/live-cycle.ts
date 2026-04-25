@@ -71,6 +71,7 @@ import {
 } from './live-cycle-outcomes.ts';
 import { resolveMintPositionAggregate } from './mint-position-aggregate.ts';
 import {
+  resolveRecoveredOrderTerminalStatus,
   runAccountReconciliationGate,
   runPendingRecoveryGate
 } from './live-cycle-preflight.ts';
@@ -1105,13 +1106,15 @@ function emitRecoveredOrderState(input: {
     return;
   }
 
-  const isResolvedSuccess = input.recoveryReason === 'pending-submission-confirmed' || input.recoveryReason === 'pending-submission-filled';
-  const confirmationStatus = isResolvedSuccess
-    ? 'confirmed' as const
-    : input.pendingSubmission.confirmationStatus;
-  const finality = isResolvedSuccess
+  const terminalStatus = resolveRecoveredOrderTerminalStatus(input.recoveryReason);
+  if (!terminalStatus) {
+    return;
+  }
+
+  const confirmationStatus = terminalStatus.confirmationStatus;
+  const finality = terminalStatus.finality === 'confirmed'
     ? (input.pendingSubmission.finality === 'finalized' ? 'finalized' : 'confirmed')
-    : (input.pendingSubmission.finality ?? 'unknown');
+    : terminalStatus.finality;
 
   emitMirrorEvent(input.mirrorSink, () => {
     input.mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
@@ -1129,7 +1132,7 @@ function emitRecoveredOrderState(input: {
       action: input.pendingSubmission.orderAction ?? 'unknown',
       requestedPositionSol: 0,
       quotedOutputSol: 0,
-      broadcastStatus: confirmationStatus === 'failed' ? 'failed' : 'submitted',
+      broadcastStatus: terminalStatus.broadcastStatus,
       confirmationStatus,
       finality,
       createdAt: input.pendingSubmission.createdAt,

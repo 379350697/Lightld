@@ -1,3 +1,4 @@
+import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
@@ -6,6 +7,38 @@ import { reconcileLiveState } from './reconcile-live-state.ts';
 import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-types.ts';
 import { classifyAction } from './action-semantics.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
+
+export type PendingRecoveryReason =
+  | 'clear'
+  | 'pending-submission-confirmed'
+  | 'pending-submission-failed'
+  | 'pending-submission-filled'
+  | 'pending-submission-recovery-required'
+  | 'pending-submission-timeout';
+
+export function resolveRecoveredOrderTerminalStatus(reason: PendingRecoveryReason): {
+  broadcastStatus: 'submitted' | 'failed';
+  confirmationStatus: ConfirmationStatus;
+  finality: 'confirmed' | 'finalized' | 'unknown';
+} | null {
+  if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
+    return {
+      broadcastStatus: 'submitted',
+      confirmationStatus: 'confirmed',
+      finality: 'confirmed'
+    };
+  }
+
+  if (reason === 'pending-submission-failed') {
+    return {
+      broadcastStatus: 'failed',
+      confirmationStatus: 'failed',
+      finality: 'unknown'
+    };
+  }
+
+  return null;
+}
 
 export async function runPendingRecoveryGate(input: {
   pendingSubmissionStore: PendingSubmissionStore;
@@ -77,7 +110,7 @@ export function runAccountReconciliationGate(accountState: LiveAccountState | un
 
 function resolveLifecycleAfterRecovery(
   currentLifecycleState: PositionLifecycleState,
-  reason: 'clear' | 'pending-submission-confirmed' | 'pending-submission-failed' | 'pending-submission-filled' | 'pending-submission-recovery-required' | 'pending-submission-timeout',
+  reason: PendingRecoveryReason,
   pendingSubmission: PendingSubmissionSnapshot | null,
   accountState?: LiveAccountState
 ): PositionLifecycleState {
