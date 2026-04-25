@@ -55,6 +55,7 @@ import {
   type LiveAction
 } from './action-semantics.ts';
 import { createOpenIntentId, createPositionId } from './lp-position-record.ts';
+import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
 import {
   buildPendingTimeoutAt,
   isFullPositionExitAction,
@@ -1091,6 +1092,15 @@ function getBroadcastTrackedSubmissions(result: LiveBroadcastResult | undefined)
   }];
 }
 
+function buildMirrorLifecycleKey(input: {
+  tokenMint: string;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
+}) {
+  return buildExecutionLifecycleKey(input);
+}
+
 function emitRecoveredOrderState(input: {
   mirrorSink?: MirrorEventSink;
   pendingSubmission: PendingSubmissionSnapshot;
@@ -1118,6 +1128,12 @@ function emitRecoveredOrderState(input: {
 
   emitMirrorEvent(input.mirrorSink, () => {
     input.mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+      lifecycleKey: buildMirrorLifecycleKey({
+        tokenMint: input.pendingSubmission.tokenMint ?? input.tokenMint,
+        openIntentId: input.pendingSubmission.openIntentId,
+        positionId: input.pendingSubmission.positionId,
+        chainPositionAddress: input.pendingSubmission.chainPositionAddress
+      }),
       idempotencyKey: input.pendingSubmission.idempotencyKey,
       cycleId: input.cycleId,
       strategyId: input.strategyId,
@@ -1303,6 +1319,9 @@ async function appendIncident(
   });
   emitMirrorEvent(mirrorSink, () => {
     mirrorSink!.enqueue(toIncidentMirrorEvent({
+      lifecycleKey: buildMirrorLifecycleKey({
+        tokenMint: logContext.tokenMint
+      }),
       incidentId: `${logContext.cycleId}:${entry.stage}:${recordedAt}`,
       cycleId: logContext.cycleId,
       stage: entry.stage,
@@ -2056,6 +2075,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
   emitMirrorEvent(mirrorSink, () => {
     mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+      lifecycleKey: buildMirrorLifecycleKey({
+        tokenMint: logContext.tokenMint,
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress
+      }),
       idempotencyKey: orderIntent.idempotencyKey,
       cycleId: logContext.cycleId,
       strategyId: input.strategy,
@@ -2102,6 +2127,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       await pendingSubmissionStore.write(pendingSubmission);
       emitMirrorEvent(mirrorSink, () => {
         mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+          lifecycleKey: buildMirrorLifecycleKey({
+            tokenMint: logContext.tokenMint,
+            openIntentId: actionIdentity.openIntentId,
+            positionId: actionIdentity.positionId,
+            chainPositionAddress: actionIdentity.chainPositionAddress
+          }),
           idempotencyKey: orderIntent.idempotencyKey,
           cycleId: logContext.cycleId,
           strategyId: input.strategy,
@@ -2149,6 +2180,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+        lifecycleKey: buildMirrorLifecycleKey({
+          tokenMint: logContext.tokenMint,
+          openIntentId: actionIdentity.openIntentId,
+          positionId: actionIdentity.positionId,
+          chainPositionAddress: actionIdentity.chainPositionAddress
+        }),
         idempotencyKey: orderIntent.idempotencyKey,
         cycleId: logContext.cycleId,
         strategyId: input.strategy,
@@ -2260,6 +2297,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
   emitMirrorEvent(mirrorSink, () => {
     mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+      lifecycleKey: buildMirrorLifecycleKey({
+        tokenMint: logContext.tokenMint,
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress
+      }),
       idempotencyKey: orderIntent.idempotencyKey,
       cycleId: logContext.cycleId,
       strategyId: input.strategy,
@@ -2305,6 +2348,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toFillMirrorEvent({
+        lifecycleKey: buildMirrorLifecycleKey({
+          tokenMint: logContext.tokenMint,
+          openIntentId: actionIdentity.openIntentId,
+          positionId: actionIdentity.positionId,
+          chainPositionAddress: actionIdentity.chainPositionAddress
+        }),
         fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
         submissionId: broadcastResult.submissionId,
         openIntentId: actionIdentity.openIntentId,

@@ -539,6 +539,7 @@ export class SqliteMirrorWriter {
     this.requireDatabase().prepare(`
       INSERT INTO orders (
         idempotency_key,
+        lifecycle_key,
         cycle_id,
         strategy_id,
         submission_id,
@@ -557,7 +558,7 @@ export class SqliteMirrorWriter {
         finality,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(idempotency_key) DO UPDATE SET
         cycle_id=excluded.cycle_id,
         strategy_id=excluded.strategy_id,
@@ -578,6 +579,7 @@ export class SqliteMirrorWriter {
         updated_at=excluded.updated_at
     `).run(
       payload.idempotencyKey,
+      payload.lifecycleKey ?? '',
       payload.cycleId,
       payload.strategyId,
       payload.submissionId,
@@ -603,6 +605,7 @@ export class SqliteMirrorWriter {
     this.requireDatabase().prepare(`
       INSERT INTO fills (
         fill_id,
+        lifecycle_key,
         submission_id,
         open_intent_id,
         position_id,
@@ -615,10 +618,11 @@ export class SqliteMirrorWriter {
         amount,
         filled_sol,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(fill_id) DO NOTHING
     `).run(
       payload.fillId,
+      payload.lifecycleKey ?? '',
       payload.submissionId,
       payload.openIntentId ?? '',
       payload.positionId ?? '',
@@ -673,6 +677,7 @@ export class SqliteMirrorWriter {
     this.requireDatabase().prepare(`
       INSERT INTO incidents (
         incident_id,
+        lifecycle_key,
         cycle_id,
         stage,
         severity,
@@ -682,10 +687,11 @@ export class SqliteMirrorWriter {
         token_mint,
         token_symbol,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(incident_id) DO NOTHING
     `).run(
       payload.incidentId,
+      payload.lifecycleKey ?? '',
       payload.cycleId,
       payload.stage,
       payload.severity,

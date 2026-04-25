@@ -1,5 +1,6 @@
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import { summarizeAccountEquity } from '../runtime/account-equity.ts';
+import { buildExecutionLifecycleKey } from '../runtime/execution-lifecycle-key.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
 import type { HealthReport, PendingFinality, RuntimeMode } from '../runtime/state-types.ts';
 import type {
@@ -85,7 +86,15 @@ export function toFillMirrorEvent(payload: FillMirrorPayload): FillMirrorEvent {
   return {
     type: 'fill',
     priority: 'high',
-    payload
+    payload: {
+      ...payload,
+      lifecycleKey: payload.lifecycleKey ?? buildExecutionLifecycleKey({
+        tokenMint: payload.tokenMint,
+        openIntentId: payload.openIntentId,
+        positionId: payload.positionId,
+        chainPositionAddress: payload.chainPositionAddress
+      })
+    }
   };
 }
 
@@ -103,11 +112,17 @@ export function toIncidentMirrorEvent(payload: IncidentMirrorPayload): IncidentM
   return {
     type: 'incident',
     priority: 'high',
-    payload
+    payload: {
+      ...payload,
+      lifecycleKey: payload.lifecycleKey ?? buildExecutionLifecycleKey({
+        tokenMint: payload.tokenMint
+      })
+    }
   };
 }
 
 export function buildOrderMirrorPayload(input: {
+  lifecycleKey: string;
   idempotencyKey: string;
   cycleId: string;
   strategyId: string;
@@ -129,6 +144,12 @@ export function buildOrderMirrorPayload(input: {
   updatedAt: string;
 }): OrderMirrorPayload {
   return {
+    lifecycleKey: input.lifecycleKey ?? buildExecutionLifecycleKey({
+      tokenMint: input.tokenMint,
+      openIntentId: input.openIntentId,
+      positionId: input.positionId,
+      chainPositionAddress: input.chainPositionAddress
+    }),
     idempotencyKey: input.idempotencyKey,
     cycleId: input.cycleId,
     strategyId: input.strategyId,

@@ -24,6 +24,7 @@ export const SQLITE_MIRROR_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS orders (
       idempotency_key TEXT PRIMARY KEY,
+      lifecycle_key TEXT NOT NULL DEFAULT '',
       cycle_id TEXT NOT NULL,
       strategy_id TEXT NOT NULL,
       submission_id TEXT NOT NULL,
@@ -45,10 +46,12 @@ export const SQLITE_MIRROR_SCHEMA = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS idx_orders_submission_id ON orders (submission_id, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_key ON orders (lifecycle_key, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON orders (updated_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS fills (
       fill_id TEXT PRIMARY KEY,
+      lifecycle_key TEXT NOT NULL DEFAULT '',
       submission_id TEXT NOT NULL,
       open_intent_id TEXT NOT NULL DEFAULT '',
       position_id TEXT NOT NULL DEFAULT '',
@@ -64,6 +67,7 @@ export const SQLITE_MIRROR_SCHEMA = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS idx_fills_submission_id ON fills (submission_id, recorded_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_fills_lifecycle_key ON fills (lifecycle_key, recorded_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_recorded_at ON fills (recorded_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS closed_position_snapshots (
@@ -107,6 +111,7 @@ export const SQLITE_MIRROR_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS incidents (
       incident_id TEXT PRIMARY KEY,
+      lifecycle_key TEXT NOT NULL DEFAULT '',
       cycle_id TEXT NOT NULL,
       stage TEXT NOT NULL,
       severity TEXT NOT NULL,
@@ -119,6 +124,7 @@ export const SQLITE_MIRROR_SCHEMA = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS idx_incidents_recorded_at ON incidents (recorded_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_incidents_lifecycle_key ON incidents (lifecycle_key, recorded_at DESC)`,
   `
     CREATE TABLE IF NOT EXISTS runtime_snapshots (
       snapshot_at TEXT PRIMARY KEY,

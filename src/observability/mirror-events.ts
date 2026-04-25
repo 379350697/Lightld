@@ -25,6 +25,7 @@ export type CycleRunMirrorPayload = {
 };
 
 export type OrderMirrorPayload = {
+  lifecycleKey?: string;
   idempotencyKey: string;
   cycleId: string;
   strategyId: string;
@@ -47,6 +48,7 @@ export type OrderMirrorPayload = {
 };
 
 export type FillMirrorPayload = {
+  lifecycleKey?: string;
   fillId: string;
   submissionId: string;
   openIntentId?: string;
@@ -75,6 +77,7 @@ export type ReconciliationMirrorPayload = {
 };
 
 export type IncidentMirrorPayload = {
+  lifecycleKey?: string;
   incidentId: string;
   cycleId: string;
   stage: string;
