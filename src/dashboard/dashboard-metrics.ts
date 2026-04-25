@@ -98,6 +98,7 @@ export type DashboardEquityMetrics = {
 };
 
 export type DashboardHistoricalActivityEntry = {
+  lifecycleKey?: string;
   tokenMint: string;
   tokenSymbol: string;
   action: string;
@@ -579,6 +580,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     && closeAction.status === 'ok'
   ) {
     return {
+      lifecycleKey: openAction.lifecycleKey || closeAction.lifecycleKey,
       tokenMint,
       tokenSymbol,
       action: `${openAction.action} -> ${closeAction.action}`,
@@ -607,6 +609,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     : openAction?.action ?? closeAction?.action ?? 'unknown';
 
   return {
+    lifecycleKey: openAction?.lifecycleKey || closeAction?.lifecycleKey,
     tokenMint,
     tokenSymbol,
     action,
@@ -637,6 +640,10 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
   const pnlPct = investedSol > 0 ? (pnlSol / investedSol) * 100 : null;
 
   return {
+    lifecycleKey: buildExecutionLifecycleKey({
+      tokenMint: snapshot.tokenMint,
+      chainPositionAddress: snapshot.positionAddress || undefined
+    }),
     tokenMint: snapshot.tokenMint,
     tokenSymbol: snapshot.tokenSymbol,
     action: 'add-lp -> withdraw-lp',
