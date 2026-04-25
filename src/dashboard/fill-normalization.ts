@@ -14,8 +14,8 @@ function toFiniteNumber(value: unknown) {
 }
 
 export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
-  const amount = toFiniteNumber(row.amount ?? row.filledSol ?? row.requestedPositionSol);
-  const filledSol = toFiniteNumber(row.filledSol ?? row.amount ?? row.requestedPositionSol);
+  const amount = toFiniteNumber(row.amount ?? row.filledSol);
+  const filledSol = toFiniteNumber(row.filledSol ?? row.amount);
 
   return {
     fillId: String(row.fillId ?? row.submissionId ?? row.cycleId ?? ''),
@@ -23,8 +23,8 @@ export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
     openIntentId: String(row.openIntentId ?? ''),
     positionId: String(row.positionId ?? ''),
     chainPositionAddress: String(row.chainPositionAddress ?? row.positionAddress ?? ''),
-    tokenMint: String(row.tokenMint ?? ''),
-    tokenSymbol: String(row.tokenSymbol ?? ''),
+    tokenMint: String(row.tokenMint ?? row.mint ?? ''),
+    tokenSymbol: String(row.tokenSymbol ?? row.symbol ?? ''),
     side: String(row.side ?? 'unknown'),
     amount,
     filledSol,

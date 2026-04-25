@@ -750,6 +750,8 @@ export function buildHistoricalActivity(input: {
     .filter((fill) =>
       fill.recordedAt
       && (fill.submissionId?.length || fill.side.length > 0)
+      && fill.confirmationStatus !== 'submitted'
+      && fill.confirmationStatus !== 'unknown'
     );
 
   const orders = (input.orderFallback ?? [])
@@ -892,7 +894,10 @@ export function buildHistoricalActivity(input: {
       action: order.action,
       amountSol: order.requestedPositionSol,
       recordedAt: order.updatedAt || order.createdAt,
-      status: 'missing-chain',
+      status:
+        order.confirmationStatus === 'submitted' || order.confirmationStatus === 'unknown'
+          ? 'unresolved'
+          : 'missing-chain',
       entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
         ? decision.entrySol
         : undefined,

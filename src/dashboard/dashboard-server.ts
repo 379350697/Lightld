@@ -576,13 +576,27 @@ type FillRow = {
   amount: number;
   filled_sol: number;
   recorded_at: string;
+  confirmation_status?: string;
 };
 
-async function handleFills() {
+async function handleFills(): Promise<Array<{
+  fillId: string;
+  submissionId: string;
+  openIntentId: string;
+  positionId: string;
+  chainPositionAddress: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  side: string;
+  amount: number;
+  filledSol: number;
+  recordedAt: string;
+  confirmationStatus: string;
+}>> {
   const rows = await queryAll<FillRow>(`
     SELECT
       fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
-      side, amount, filled_sol, recorded_at
+      side, amount, filled_sol, recorded_at, 'confirmed' AS confirmation_status
     FROM fills
     ORDER BY recorded_at DESC
     LIMIT 50
@@ -601,11 +615,15 @@ async function handleFills() {
       amount: r.amount,
       filledSol: r.filled_sol,
       recordedAt: r.recorded_at,
+      confirmationStatus: r.confirmation_status ?? 'confirmed',
     }));
   }
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
-  return journalRows.reverse().map((row) => normalizeDashboardJournalFill(row));
+  return journalRows.reverse().map((row) => ({
+    ...normalizeDashboardJournalFill(row),
+    confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
+  }));
 }
 
 type IncidentRow = {
@@ -769,7 +787,7 @@ async function handleHistory() {
       chainPositionAddress: String(fill.chainPositionAddress ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
       recordedAt: String(fill.recordedAt ?? ''),
-      confirmationStatus: 'confirmed'
+      confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),
     orderFallback: orders.map((order) => ({
       tokenMint: String(order.tokenMint ?? ''),
@@ -825,7 +843,7 @@ async function handleHistoryPage(input?: {
       chainPositionAddress: String(fill.chainPositionAddress ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
       recordedAt: String(fill.recordedAt ?? ''),
-      confirmationStatus: 'confirmed'
+      confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),
     orderFallback: orders.map((order) => ({
       tokenMint: String(order.tokenMint ?? ''),
