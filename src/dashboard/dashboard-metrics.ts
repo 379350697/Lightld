@@ -120,7 +120,7 @@ type ReconciledHistoricalAction = {
   action: string;
   amountSol: number;
   recordedAt: string;
-  status: 'ok' | 'missing-local' | 'missing-chain';
+  status: 'ok' | 'missing-local' | 'missing-chain' | 'unresolved';
   entrySol?: number;
   exitValueSol?: number;
   feeEarnedSol?: number;
@@ -352,6 +352,16 @@ function findDecisionFallback(input: {
   return bestMatch;
 }
 
+function hasSufficientHistoricalFillIdentity(fill: HistoricalFill) {
+  return Boolean(
+    fill.tokenMint.length > 0
+    || fill.submissionId?.length
+    || fill.openIntentId?.length
+    || fill.positionId?.length
+    || fill.chainPositionAddress?.length
+  );
+}
+
 function isStrongHistoricalMatchAllowed(fill: HistoricalFill, order: HistoricalOrderFallback) {
   if (fill.tokenMint.length > 0 && order.tokenMint.length > 0 && fill.tokenMint !== order.tokenMint) {
     return false;
@@ -525,7 +535,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   if (
     openAction
     && !closeAction
-    && openAction.status === 'ok'
+    && (openAction.status === 'ok' || openAction.status === 'unresolved')
   ) {
     return null;
   }
@@ -835,28 +845,30 @@ export function buildHistoricalActivity(input: {
         usedOrderKeys.add(matchedOrderKey);
       }
 
+      const resolvedTokenMint = fill.tokenMint || matchedOrder?.tokenMint || '';
       if (
-        fill.tokenMint.length === 0
+        resolvedTokenMint.length === 0
         || action.length === 0
         || !isSupportedHistoricalAction(action)
       ) {
         continue;
       }
 
+      const hasReliableIdentity = hasSufficientHistoricalFillIdentity(fill);
       reconciledActions.push({
         lifecycleKey: toHistoricalLifecycleKey({
-          tokenMint: fill.tokenMint,
+          tokenMint: resolvedTokenMint,
           openIntentId: fill.openIntentId ?? matchedOrder?.openIntentId,
           positionId: fill.positionId ?? matchedOrder?.positionId,
           chainPositionAddress: fill.chainPositionAddress ?? matchedOrder?.chainPositionAddress
         }),
-        tokenMint: fill.tokenMint,
-        tokenSymbol: resolveHistoricalTokenSymbol(fill.tokenMint, fill.tokenSymbol || matchedOrder?.tokenSymbol || '', tokenSymbolMap),
+        tokenMint: resolvedTokenMint,
+        tokenSymbol: resolveHistoricalTokenSymbol(resolvedTokenMint, fill.tokenSymbol || matchedOrder?.tokenSymbol || '', tokenSymbolMap),
         action,
         amountSol: fill.filledSol > 0 ? fill.filledSol : matchedOrder?.requestedPositionSol ?? 0,
         recordedAt: [fill.recordedAt, matchedOrder?.updatedAt ?? matchedOrder?.createdAt ?? '']
           .sort((left, right) => right.localeCompare(left))[0] ?? '',
-        status: matchedOrder ? 'ok' : 'missing-local'
+        status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved')
       });
     }
   }
