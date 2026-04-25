@@ -77,7 +77,7 @@ import {
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
-import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState } from './state-types.ts';
+import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState, PendingSubmissionSnapshot } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
   'new-token-v1': 'src/config/strategies/new-token-v1.yaml',
@@ -1090,6 +1090,54 @@ function getBroadcastTrackedSubmissions(result: LiveBroadcastResult | undefined)
   }];
 }
 
+function emitRecoveredOrderState(input: {
+  mirrorSink?: MirrorEventSink;
+  pendingSubmission: PendingSubmissionSnapshot;
+  recoveryReason: 'pending-submission-confirmed' | 'pending-submission-filled' | 'pending-submission-failed';
+  cycleId: string;
+  strategyId: StrategyId;
+  poolAddress: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  updatedAt: string;
+}) {
+  if (!input.pendingSubmission.idempotencyKey) {
+    return;
+  }
+
+  const isResolvedSuccess = input.recoveryReason === 'pending-submission-confirmed' || input.recoveryReason === 'pending-submission-filled';
+  const confirmationStatus = isResolvedSuccess
+    ? 'confirmed' as const
+    : input.pendingSubmission.confirmationStatus;
+  const finality = isResolvedSuccess
+    ? (input.pendingSubmission.finality === 'finalized' ? 'finalized' : 'confirmed')
+    : (input.pendingSubmission.finality ?? 'unknown');
+
+  emitMirrorEvent(input.mirrorSink, () => {
+    input.mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+      idempotencyKey: input.pendingSubmission.idempotencyKey,
+      cycleId: input.cycleId,
+      strategyId: input.strategyId,
+      submissionId: input.pendingSubmission.submissionId,
+      openIntentId: input.pendingSubmission.openIntentId,
+      positionId: input.pendingSubmission.positionId,
+      chainPositionAddress: input.pendingSubmission.chainPositionAddress,
+      confirmationSignature: input.pendingSubmission.confirmationSignature,
+      poolAddress: input.pendingSubmission.poolAddress ?? input.poolAddress,
+      tokenMint: input.pendingSubmission.tokenMint ?? input.tokenMint,
+      tokenSymbol: input.pendingSubmission.tokenSymbol ?? input.tokenSymbol,
+      action: input.pendingSubmission.orderAction ?? 'unknown',
+      requestedPositionSol: 0,
+      quotedOutputSol: 0,
+      broadcastStatus: confirmationStatus === 'failed' ? 'failed' : 'submitted',
+      confirmationStatus,
+      finality,
+      createdAt: input.pendingSubmission.createdAt,
+      updatedAt: input.updatedAt
+    })));
+  });
+}
+
 function aggregateTrackedConfirmations(results: Array<{
   status: ConfirmationStatus;
   submissionId?: string;
@@ -1573,6 +1621,29 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
     currentLifecycleState = recoveryGate.lifecycleState;
     context.trader.lifecycleState = currentLifecycleState;
+
+    if (
+      !recoveryGate.blocked
+      && pendingSubmission
+      && (
+        recoveryGate.reason === 'pending-submission-confirmed'
+        || recoveryGate.reason === 'pending-submission-filled'
+        || recoveryGate.reason === 'pending-submission-failed'
+      )
+    ) {
+      emitRecoveredOrderState({
+        mirrorSink,
+        pendingSubmission,
+        recoveryReason: recoveryGate.reason,
+        cycleId: logContext.cycleId,
+        strategyId: input.strategy,
+        poolAddress: logContext.poolAddress,
+        tokenMint: logContext.tokenMint,
+        tokenSymbol: logContext.tokenSymbol,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
     pendingSubmission = await pendingSubmissionStore.read();
 
     if (recoveryGate.blocked) {
