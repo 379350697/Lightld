@@ -2179,42 +2179,43 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const fillRecordedAt = new Date().toISOString();
   const isConfirmedFill = isResolvedConfirmation(confirmation.status, confirmationFinality);
-  const mirroredFilledSol = isConfirmedFill ? requestedPositionSol : 0;
-  const mirroredFillStatus = isConfirmedFill ? 'confirmed' : 'submitted';
-  await journals.fills.append({
-    cycleId: logContext.cycleId,
-    submissionId: broadcastResult.submissionId,
-    strategyId: input.strategy,
-    openIntentId: actionIdentity.openIntentId,
-    positionId: actionIdentity.positionId,
-    chainPositionAddress: actionIdentity.chainPositionAddress,
-    mint: logContext.tokenMint,
-    symbol: tokenSymbol,
-    side: actionableAction,
-    amount: mirroredFilledSol,
-    filledSol: mirroredFilledSol,
-    status: mirroredFillStatus,
-    confirmationStatus: confirmation.status,
-    requestedPositionSol,
-    recordedAt: fillRecordedAt
-  });
-  emitMirrorEvent(mirrorSink, () => {
-    mirrorSink!.enqueue(toFillMirrorEvent({
-      fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
+  if (isConfirmedFill) {
+    const mirroredFilledSol = requestedPositionSol;
+    await journals.fills.append({
+      cycleId: logContext.cycleId,
       submissionId: broadcastResult.submissionId,
+      strategyId: input.strategy,
       openIntentId: actionIdentity.openIntentId,
       positionId: actionIdentity.positionId,
       chainPositionAddress: actionIdentity.chainPositionAddress,
-      confirmationSignature: broadcastResult.confirmationSignature ?? '',
-      cycleId: logContext.cycleId,
-      tokenMint: logContext.tokenMint,
-      tokenSymbol,
-      side: resolveFillMirrorSide(actionableAction),
+      mint: logContext.tokenMint,
+      symbol: tokenSymbol,
+      side: actionableAction,
       amount: mirroredFilledSol,
       filledSol: mirroredFilledSol,
+      status: 'confirmed',
+      confirmationStatus: confirmation.status,
+      requestedPositionSol,
       recordedAt: fillRecordedAt
-    }));
-  });
+    });
+    emitMirrorEvent(mirrorSink, () => {
+      mirrorSink!.enqueue(toFillMirrorEvent({
+        fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
+        submissionId: broadcastResult.submissionId,
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress,
+        confirmationSignature: broadcastResult.confirmationSignature ?? '',
+        cycleId: logContext.cycleId,
+        tokenMint: logContext.tokenMint,
+        tokenSymbol,
+        side: resolveFillMirrorSide(actionableAction),
+        amount: mirroredFilledSol,
+        filledSol: mirroredFilledSol,
+        recordedAt: fillRecordedAt
+      }));
+    });
+  }
   await appendDecision(journals, logContext, {
     stage: 'broadcast',
     mode: 'LIVE',

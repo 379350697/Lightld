@@ -309,8 +309,8 @@ function toFillCatchupEvent(
         side === 'rebalance-lp'
           ? side
           : 'unknown',
-      amount: readNumber(value, ['amount', 'filledSol', 'requestedPositionSol']),
-      filledSol: readNumber(value, ['filledSol', 'amount', 'requestedPositionSol']),
+      amount: readNumber(value, ['amount', 'filledSol']),
+      filledSol: readNumber(value, ['filledSol', 'amount']),
       recordedAt: recordedAt || new Date(0).toISOString()
     }
   };
