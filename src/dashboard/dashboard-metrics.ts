@@ -525,6 +525,22 @@ function findDirectOrderMatch(input: {
   return null;
 }
 
+function toDashboardHistoryStatus(status: ReconciledHistoricalAction['status'] | 'missing-close') {
+  if (status === 'ok') {
+    return 'confirmed';
+  }
+
+  if (status === 'missing-local') {
+    return 'missing-local';
+  }
+
+  if (status === 'missing-chain') {
+    return 'missing-chain';
+  }
+
+  return 'unresolved';
+}
+
 function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistoricalActivityEntry | null {
   const openAction = lifecycle.openAction;
   const closeAction = lifecycle.closeAction;
@@ -575,7 +591,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       amountSol,
       recordedAt,
       source: 'matched',
-      confirmationStatus: 'ok',
+      confirmationStatus: 'confirmed',
       openedAt: openAction.recordedAt,
       closedAt: closeAction.recordedAt,
       investedSol,
@@ -603,7 +619,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     amountSol,
     recordedAt,
     source: 'error',
-    confirmationStatus: errorStatus,
+    confirmationStatus: toDashboardHistoryStatus(errorStatus),
     openedAt: openAction?.recordedAt ?? null,
     closedAt: closeAction?.recordedAt ?? null,
     investedSol,
@@ -633,7 +649,7 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     amountSol: investedSol,
     recordedAt: snapshot.closedAt,
     source: 'matched',
-    confirmationStatus: 'ok',
+    confirmationStatus: 'confirmed',
     openedAt: snapshot.openedAt,
     closedAt: snapshot.closedAt,
     investedSol,
