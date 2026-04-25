@@ -511,6 +511,7 @@ type OrderRow = {
   token_symbol: string;
   action: string;
   requested_position_sol: number;
+  broadcast_status: string;
   confirmation_status: string;
   finality: string;
   created_at: string;
@@ -522,7 +523,7 @@ async function handleOrders() {
     SELECT
       idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, token_mint,
       token_symbol, action, requested_position_sol,
-      confirmation_status, finality, created_at, updated_at
+      broadcast_status, confirmation_status, finality, created_at, updated_at
     FROM orders
     ORDER BY updated_at DESC
     LIMIT 50
@@ -539,6 +540,7 @@ async function handleOrders() {
       tokenSymbol: r.token_symbol,
       action: r.action,
       requestedPositionSol: r.requested_position_sol,
+      broadcastStatus: r.broadcast_status,
       confirmationStatus: r.confirmation_status,
       finality: r.finality,
       createdAt: r.created_at,
@@ -557,6 +559,7 @@ async function handleOrders() {
     tokenSymbol: String(r.tokenSymbol ?? ''),
     action: String(r.side ?? r.action ?? 'unknown'),
     requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
+    broadcastStatus: String(r.broadcastStatus ?? 'pending'),
     confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
     finality: String(r.finality ?? 'unknown'),
     createdAt: String(r.createdAt ?? ''),
@@ -799,6 +802,7 @@ async function handleHistory() {
       positionId: String(order.positionId ?? ''),
       chainPositionAddress: String(order.chainPositionAddress ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
+      broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
@@ -855,6 +859,7 @@ async function handleHistoryPage(input?: {
       positionId: String(order.positionId ?? ''),
       chainPositionAddress: String(order.chainPositionAddress ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
+      broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')

@@ -36,6 +36,7 @@ type HistoricalOrderFallback = {
   positionId?: string;
   chainPositionAddress?: string;
   requestedPositionSol: number;
+  broadcastStatus?: string;
   confirmationStatus?: string;
   updatedAt: string;
   createdAt: string;
@@ -895,7 +896,9 @@ export function buildHistoricalActivity(input: {
       amountSol: order.requestedPositionSol,
       recordedAt: order.updatedAt || order.createdAt,
       status:
-        order.confirmationStatus === 'submitted' || order.confirmationStatus === 'unknown'
+        order.broadcastStatus === 'unknown'
+        || order.confirmationStatus === 'submitted'
+        || order.confirmationStatus === 'unknown'
           ? 'unresolved'
           : 'missing-chain',
       entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
