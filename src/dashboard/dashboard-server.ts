@@ -781,10 +781,35 @@ async function handleClosedPositionSnapshots() {
   `);
 }
 
+function attachHistoryIncidents(entries: Array<Record<string, unknown>>, incidents: Array<Record<string, unknown>>) {
+  const incidentsByLifecycleKey = new Map<string, Array<Record<string, unknown>>>();
+
+  for (const incident of incidents) {
+    const lifecycleKey = String(incident.lifecycleKey ?? '');
+    if (lifecycleKey.length === 0) {
+      continue;
+    }
+    const matches = incidentsByLifecycleKey.get(lifecycleKey) ?? [];
+    matches.push(incident);
+    incidentsByLifecycleKey.set(lifecycleKey, matches);
+  }
+
+  return entries.map((entry) => {
+    const lifecycleKey = String(entry.lifecycleKey ?? '');
+    return {
+      ...entry,
+      relatedIncidents: lifecycleKey.length > 0
+        ? (incidentsByLifecycleKey.get(lifecycleKey) ?? []).slice(0, 5)
+        : []
+    };
+  });
+}
+
 async function handleHistory() {
-  const [orders, fills, decisionFallback, chainSnapshots] = await Promise.all([
+  const [orders, fills, incidents, decisionFallback, chainSnapshots] = await Promise.all([
     handleOrders(),
     handleFills(),
+    handleIncidents(),
     readHistoryDecisionFallback(),
     handleClosedPositionSnapshots()
   ]);
@@ -823,7 +848,7 @@ async function handleHistory() {
     chainSnapshots
   });
 
-  return paginateHistoryEntries(entries, {
+  return paginateHistoryEntries(attachHistoryIncidents(entries, incidents), {
     page: 1,
     pageSize: HISTORY_PAGE_SIZE
   });
@@ -841,9 +866,10 @@ async function handleHistoryPage(input?: {
   page?: number;
   pageSize?: number;
 }) {
-  const [orders, fills, decisionFallback, chainSnapshots] = await Promise.all([
+  const [orders, fills, incidents, decisionFallback, chainSnapshots] = await Promise.all([
     handleOrders(),
     handleFills(),
+    handleIncidents(),
     readHistoryDecisionFallback(),
     handleClosedPositionSnapshots()
   ]);
@@ -882,7 +908,7 @@ async function handleHistoryPage(input?: {
     chainSnapshots
   });
 
-  return paginateHistoryEntries(entries, {
+  return paginateHistoryEntries(attachHistoryIncidents(entries, incidents), {
     page: input?.page ?? 1,
     pageSize: input?.pageSize ?? HISTORY_PAGE_SIZE
   });
