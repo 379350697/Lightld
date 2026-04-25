@@ -913,8 +913,10 @@ export function buildHistoricalActivity(input: {
       recordedAt: order.updatedAt || order.createdAt,
       status:
         order.broadcastStatus === 'unknown'
+        || order.broadcastStatus === 'failed'
         || order.confirmationStatus === 'submitted'
         || order.confirmationStatus === 'unknown'
+        || order.confirmationStatus === 'failed'
           ? 'unresolved'
           : 'missing-chain',
       entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
