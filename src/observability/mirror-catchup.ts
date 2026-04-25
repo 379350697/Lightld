@@ -6,6 +6,7 @@ import {
   resolveEvolutionPaths,
   WatchlistSnapshotRecordSchema
 } from '../evolution/index.ts';
+import { buildExecutionLifecycleKey } from '../runtime/execution-lifecycle-key.ts';
 import type {
   CandidateScanMirrorEvent,
   FillMirrorEvent,
@@ -226,6 +227,10 @@ function toFinality(value: string) {
     : 'unknown';
 }
 
+function readLifecycleKey(payload: Record<string, unknown>) {
+  return readString(payload, ['lifecycleKey', 'lifecycle_key']);
+}
+
 function toOrderCatchupEvent(
   value: unknown,
   strategyId: string
@@ -246,6 +251,12 @@ function toOrderCatchupEvent(
     type: 'order',
     priority: 'low',
     payload: {
+      lifecycleKey: readLifecycleKey(value) || buildExecutionLifecycleKey({
+        tokenMint: readString(value, ['tokenMint', 'mint']),
+        openIntentId: readString(value, ['openIntentId']) || undefined,
+        positionId: readString(value, ['positionId']) || undefined,
+        chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined
+      }),
       idempotencyKey,
       cycleId: readString(value, ['cycleId']),
       strategyId: readString(value, ['strategyId']) || strategyId,
@@ -291,6 +302,12 @@ function toFillCatchupEvent(
     type: 'fill',
     priority: 'low',
     payload: {
+      lifecycleKey: readLifecycleKey(value) || buildExecutionLifecycleKey({
+        tokenMint: readString(value, ['tokenMint', 'mint']),
+        openIntentId: readString(value, ['openIntentId']) || undefined,
+        positionId: readString(value, ['positionId']) || undefined,
+        chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined
+      }),
       fillId: `${submissionId || 'fill'}:${recordedAt || offset}:${offset}`,
       submissionId,
       openIntentId: readString(value, ['openIntentId']) || undefined,
@@ -336,6 +353,12 @@ function toIncidentCatchupEvent(
     type: 'incident',
     priority: 'low',
     payload: {
+      lifecycleKey: readLifecycleKey(value) || buildExecutionLifecycleKey({
+        tokenMint: readString(value, ['tokenMint']),
+        openIntentId: readString(value, ['openIntentId']) || undefined,
+        positionId: readString(value, ['positionId']) || undefined,
+        chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined
+      }),
       incidentId: `${readString(value, ['cycleId']) || 'incident'}:${offset}`,
       cycleId: readString(value, ['cycleId']),
       stage: readString(value, ['stage']),
