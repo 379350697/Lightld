@@ -342,24 +342,11 @@ export async function recoverPendingSubmission(
   }
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
-    const isReduceRisk = nextPendingSubmission.orderAction && classifyAction(nextPendingSubmission.orderAction) === 'reduce_risk';
-    const isMissingSubmissionId = !nextPendingSubmission.submissionId;
-
-    if (isMissingSubmissionId || isReduceRisk) {
-      return {
-        blocked: false,
-        resolved: true,
-        clearPending: true,
-        reason: 'pending-submission-failed'
-      };
-    }
-
     return {
-      blocked: true,
-      resolved: false,
-      clearPending: false,
-      reason: 'pending-submission-timeout',
-      nextPendingSubmission
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
     };
   }
 
