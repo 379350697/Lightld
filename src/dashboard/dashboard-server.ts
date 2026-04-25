@@ -11,8 +11,11 @@ import {
   buildEquityMetrics,
   buildHistoricalActivity
 } from './dashboard-metrics.ts';
+import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
+import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
+import type { PendingFinality } from '../runtime/state-types.ts';
 
 // ── Configuration ──
 
@@ -544,6 +547,11 @@ async function handleOrders() {
       requestedPositionSol: r.requested_position_sol,
       broadcastStatus: r.broadcast_status,
       confirmationStatus: r.confirmation_status,
+      lifecycleStatus: toExecutionLifecycleStatus({
+        broadcastStatus: r.broadcast_status,
+        confirmationStatus: r.confirmation_status as ConfirmationStatus,
+        finality: r.finality as PendingFinality | 'unknown'
+      }),
       finality: r.finality,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -564,6 +572,11 @@ async function handleOrders() {
     requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
     broadcastStatus: String(r.broadcastStatus ?? 'pending'),
     confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
+    lifecycleStatus: toExecutionLifecycleStatus({
+      broadcastStatus: String(r.broadcastStatus ?? 'pending'),
+      confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
+      finality: String(r.finality ?? 'unknown') as PendingFinality | 'unknown'
+    }),
     finality: String(r.finality ?? 'unknown'),
     createdAt: String(r.createdAt ?? ''),
     updatedAt: String(r.updatedAt ?? r.createdAt ?? ''),
