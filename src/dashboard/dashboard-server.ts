@@ -637,6 +637,7 @@ async function handleFills(): Promise<Array<{
 }
 
 type IncidentRow = {
+  lifecycle_key: string;
   incident_id: string;
   cycle_id: string;
   stage: string;
@@ -650,7 +651,7 @@ type IncidentRow = {
 async function handleIncidents() {
   const rows = await queryAll<IncidentRow>(`
     SELECT
-      incident_id, cycle_id, stage, severity,
+      lifecycle_key, incident_id, cycle_id, stage, severity,
       reason, runtime_mode, token_symbol, recorded_at
     FROM incidents
     ORDER BY recorded_at DESC
@@ -659,6 +660,7 @@ async function handleIncidents() {
 
   if (rows.length > 0) {
     return rows.map(r => ({
+      lifecycleKey: r.lifecycle_key,
       incidentId: r.incident_id,
       cycleId: r.cycle_id,
       stage: r.stage,
@@ -672,6 +674,7 @@ async function handleIncidents() {
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-incidents`, 200);
   return journalRows.reverse().map(r => ({
+    lifecycleKey: String(r.lifecycleKey ?? ''),
     incidentId: String(r.incidentId ?? r.cycleId ?? ''),
     cycleId: String(r.cycleId ?? ''),
     stage: String(r.stage ?? ''),
