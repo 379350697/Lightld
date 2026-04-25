@@ -105,6 +105,7 @@ export type DashboardHistoricalActivityEntry = {
   amountSol: number;
   recordedAt: string;
   source: 'matched' | 'error';
+  lifecycleStatus: 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local';
   confirmationStatus: string;
   openedAt: string | null;
   closedAt: string | null;
@@ -587,6 +588,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       amountSol,
       recordedAt,
       source: 'matched',
+      lifecycleStatus: 'confirmed',
       confirmationStatus: 'confirmed',
       openedAt: openAction.recordedAt,
       closedAt: closeAction.recordedAt,
@@ -616,6 +618,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     amountSol,
     recordedAt,
     source: 'error',
+    lifecycleStatus: toDashboardHistoryStatus(errorStatus),
     confirmationStatus: toDashboardHistoryStatus(errorStatus),
     openedAt: openAction?.recordedAt ?? null,
     closedAt: closeAction?.recordedAt ?? null,
@@ -650,6 +653,7 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     amountSol: investedSol,
     recordedAt: snapshot.closedAt,
     source: 'matched',
+    lifecycleStatus: 'confirmed',
     confirmationStatus: 'confirmed',
     openedAt: snapshot.openedAt,
     closedAt: snapshot.closedAt,
