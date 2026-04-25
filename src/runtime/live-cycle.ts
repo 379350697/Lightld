@@ -502,21 +502,39 @@ function dedupeLiveFills(fills: LiveFillEntry[]) {
 
 function mergeHistoricalFills(accountState: LiveAccountState | undefined, journalFills: Record<string, unknown>[]): LiveFillEntry[] {
   const normalizedJournalFills = journalFills.flatMap((entry) => {
-    const mint = typeof entry.mint === 'string' ? entry.mint : '';
+    const mint = typeof entry.mint === 'string'
+      ? entry.mint
+      : typeof entry.tokenMint === 'string'
+        ? entry.tokenMint
+        : '';
+    const symbol = typeof entry.symbol === 'string'
+      ? entry.symbol
+      : typeof entry.tokenSymbol === 'string'
+        ? entry.tokenSymbol
+        : undefined;
     const side = entry.side;
     const amount = typeof entry.amount === 'number'
       ? entry.amount
       : typeof entry.filledSol === 'number'
         ? entry.filledSol
-        : typeof entry.requestedPositionSol === 'number'
-          ? entry.requestedPositionSol
-          : undefined;
+        : undefined;
+    const confirmationStatus = typeof entry.confirmationStatus === 'string' ? entry.confirmationStatus : '';
+    const status = typeof entry.status === 'string' ? entry.status : '';
     const recordedAt = typeof entry.recordedAt === 'string' ? entry.recordedAt : '';
+
+    if (
+      confirmationStatus === 'submitted'
+      || confirmationStatus === 'unknown'
+      || status === 'submitted'
+    ) {
+      return [];
+    }
 
     if (
       !mint ||
       !recordedAt ||
       typeof amount !== 'number' ||
+      amount <= 0 ||
       !(
         side === 'buy' ||
         side === 'sell' ||
@@ -540,7 +558,7 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
           ? entry.positionAddress
           : undefined,
       mint,
-      symbol: typeof entry.symbol === 'string' ? entry.symbol : undefined,
+      symbol,
       side,
       amount,
       recordedAt
