@@ -1589,6 +1589,19 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
 
     if (
+      recoveryGate.reason === 'pending-submission-confirmed'
+      || recoveryGate.reason === 'pending-submission-filled'
+    ) {
+      await appendDecision(journals, logContext, {
+        stage: 'recovery',
+        mode: 'LIVE',
+        action: 'hold',
+        reason: recoveryGate.reason,
+        liveOrderSubmitted: false
+      });
+    }
+
+    if (
       activeMint &&
       lifecycleBeforeRecovery === 'open_pending' &&
       recoveryGate.reason === 'pending-submission-failed'
