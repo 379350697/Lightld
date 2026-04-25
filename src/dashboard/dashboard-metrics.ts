@@ -1,4 +1,5 @@
 import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
+import { buildExecutionLifecycleKey, listExecutionIdentityKeys } from '../runtime/execution-lifecycle-key.ts';
 
 type CashflowFill = {
   side: string;
@@ -224,23 +225,7 @@ function listHistoricalIdentityKeys(input: {
   positionId?: string;
   chainPositionAddress?: string;
 }) {
-  const keys: string[] = [];
-  if (input.submissionId && input.submissionId.length > 0) {
-    keys.push(`submission:${input.submissionId}`);
-  }
-  if (input.chainPositionAddress && input.chainPositionAddress.length > 0) {
-    keys.push(`chain-position:${input.chainPositionAddress}`);
-  }
-  if (input.positionId && input.positionId.length > 0) {
-    keys.push(`position:${input.positionId}`);
-  }
-  if (input.openIntentId && input.openIntentId.length > 0) {
-    keys.push(`intent:${input.openIntentId}`);
-  }
-  if (input.idempotencyKey && input.idempotencyKey.length > 0) {
-    keys.push(`order:${input.idempotencyKey}`);
-  }
-  return keys;
+  return listExecutionIdentityKeys(input);
 }
 
 function toHistoricalLifecycleKey(input: {
@@ -249,16 +234,7 @@ function toHistoricalLifecycleKey(input: {
   positionId?: string;
   chainPositionAddress?: string;
 }) {
-  if (input.chainPositionAddress && input.chainPositionAddress.length > 0) {
-    return `chain-position:${input.chainPositionAddress}`;
-  }
-  if (input.positionId && input.positionId.length > 0) {
-    return `position:${input.positionId}`;
-  }
-  if (input.openIntentId && input.openIntentId.length > 0) {
-    return `intent:${input.openIntentId}`;
-  }
-  return `token:${input.tokenMint}`;
+  return buildExecutionLifecycleKey(input);
 }
 
 function isHistoricalOpenAction(action: string) {
