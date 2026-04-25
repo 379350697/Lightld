@@ -1,5 +1,6 @@
 import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
 import { buildExecutionLifecycleKey, listExecutionIdentityKeys } from '../runtime/execution-lifecycle-key.ts';
+import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
 
 type CashflowFill = {
   side: string;
@@ -522,19 +523,7 @@ function findDirectOrderMatch(input: {
 }
 
 function toDashboardHistoryStatus(status: ReconciledHistoricalAction['status'] | 'missing-close') {
-  if (status === 'ok') {
-    return 'confirmed';
-  }
-
-  if (status === 'missing-local') {
-    return 'missing-local';
-  }
-
-  if (status === 'missing-chain') {
-    return 'missing-chain';
-  }
-
-  return 'unresolved';
+  return toExecutionLifecycleStatus({ historyStatus: status });
 }
 
 function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistoricalActivityEntry | null {
@@ -921,14 +910,14 @@ export function buildHistoricalActivity(input: {
       action: order.action,
       amountSol: order.requestedPositionSol,
       recordedAt: order.updatedAt || order.createdAt,
-      status:
-        order.broadcastStatus === 'unknown'
-        || order.broadcastStatus === 'failed'
-        || order.confirmationStatus === 'submitted'
-        || order.confirmationStatus === 'unknown'
-        || order.confirmationStatus === 'failed'
-          ? 'unresolved'
-          : 'missing-chain',
+      status: (() => {
+        const lifecycleStatus = toExecutionLifecycleStatus({
+          broadcastStatus: order.broadcastStatus,
+          confirmationStatus: order.confirmationStatus,
+          historyStatus: 'missing-chain'
+        });
+        return lifecycleStatus === 'confirmed' ? 'missing-chain' : lifecycleStatus;
+      })(),
       entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
         ? decision.entrySol
         : undefined,
