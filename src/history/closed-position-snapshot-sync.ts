@@ -31,6 +31,55 @@ type AddressSignatureInfo = {
   blockTime: number | null;
 };
 
+function looksLikeBase58Address(value: string) {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function buildRowIdentity(row: ClosedPositionOrderSeedRow) {
+  return [
+    row.action,
+    row.tokenMint,
+    row.poolAddress,
+    row.positionAddress,
+    row.createdAt
+  ].join('|');
+}
+
+function buildLifecycleDedupKey(row: ClosedPositionOrderSeedRow) {
+  if (looksLikeBase58Address(row.positionAddress)) {
+    return `${row.action}|position|${row.positionAddress}`;
+  }
+
+  return `${row.action}|pool-token|${row.poolAddress}|${row.tokenMint}`;
+}
+
+function dedupeLifecycleRows(rows: ClosedPositionOrderSeedRow[]) {
+  const deduped = new Map<string, ClosedPositionOrderSeedRow>();
+
+  for (const row of rows) {
+    const dedupKey = buildLifecycleDedupKey(row);
+    const existing = deduped.get(dedupKey);
+
+    if (!existing) {
+      deduped.set(dedupKey, row);
+      continue;
+    }
+
+    if (row.action === 'withdraw-lp') {
+      if (existing.createdAt.localeCompare(row.createdAt) < 0) {
+        deduped.set(dedupKey, row);
+      }
+      continue;
+    }
+
+    if (existing.createdAt.localeCompare(row.createdAt) > 0) {
+      deduped.set(dedupKey, row);
+    }
+  }
+
+  return Array.from(deduped.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
 function rowsCanShareLifecycle(open: ClosedPositionOrderSeedRow, close: ClosedPositionOrderSeedRow) {
   if (open.tokenMint !== close.tokenMint) {
     return false;
@@ -52,12 +101,14 @@ function rowsCanShareLifecycle(open: ClosedPositionOrderSeedRow, close: ClosedPo
 }
 
 export function buildClosedPositionOrderSeeds(rows: ClosedPositionOrderSeedRow[]) {
-  const opens = rows
+  const dedupedRows = dedupeLifecycleRows(rows);
+  const opens = dedupedRows
     .filter((row) => row.action === 'add-lp')
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-  const closes = rows
+  const closes = dedupedRows
     .filter((row) => row.action === 'withdraw-lp')
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const usedSeedKeys = new Set<string>();
   const usedOpenIndexes = new Set<number>();
   const seeds: ClosedPositionOrderSeed[] = [];
 
@@ -78,12 +129,21 @@ export function buildClosedPositionOrderSeeds(rows: ClosedPositionOrderSeedRow[]
     }
 
     const open = opens[matchedOpenIndex];
+    const seedKey = `${buildRowIdentity(open)}=>${buildRowIdentity(close)}`;
+
+    if (usedSeedKeys.has(seedKey)) {
+      continue;
+    }
+
     usedOpenIndexes.add(matchedOpenIndex);
+    usedSeedKeys.add(seedKey);
     seeds.push({
       tokenMint: open.tokenMint,
       tokenSymbol: open.tokenSymbol || close.tokenSymbol,
       poolAddress: open.poolAddress || close.poolAddress,
-      positionAddress: open.positionAddress || close.positionAddress,
+      positionAddress: looksLikeBase58Address(open.positionAddress)
+        ? open.positionAddress
+        : close.positionAddress,
       openedAt: open.createdAt,
       closedAt: close.createdAt,
       openSignature: open.signature,
@@ -208,7 +268,7 @@ async function resolveLifecycleSignature(input: {
   }
 
   for (const address of input.addressCandidates) {
-    if (address.length === 0) {
+    if (address.length === 0 || !looksLikeBase58Address(address)) {
       continue;
     }
 

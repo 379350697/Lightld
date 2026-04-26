@@ -5,6 +5,9 @@ import {
   syncClosedPositionSnapshots
 } from '../../../src/history/closed-position-snapshot-sync';
 
+const POSITION_ADDRESS = '11111111111111111111111111111111';
+const BAD_POSITION_ADDRESS = '33333333333333333333333333333333';
+
 describe('buildClosedPositionOrderSeeds', () => {
   it('pairs one open and one close order into a closed lifecycle seed', () => {
     const seeds = buildClosedPositionOrderSeeds([
@@ -12,7 +15,7 @@ describe('buildClosedPositionOrderSeeds', () => {
         tokenMint: 'mint-earth',
         tokenSymbol: 'earthcoin',
         poolAddress: 'pool-1',
-        positionAddress: 'position-1',
+        positionAddress: POSITION_ADDRESS,
         action: 'add-lp',
         createdAt: '2026-04-22T13:07:01.000Z',
         signature: 'sig-open'
@@ -21,7 +24,7 @@ describe('buildClosedPositionOrderSeeds', () => {
         tokenMint: 'mint-earth',
         tokenSymbol: 'earthcoin',
         poolAddress: 'pool-1',
-        positionAddress: 'position-1',
+        positionAddress: POSITION_ADDRESS,
         action: 'withdraw-lp',
         createdAt: '2026-04-22T14:39:45.000Z',
         signature: 'sig-close'
@@ -33,7 +36,7 @@ describe('buildClosedPositionOrderSeeds', () => {
         tokenMint: 'mint-earth',
         tokenSymbol: 'earthcoin',
         poolAddress: 'pool-1',
-        positionAddress: 'position-1',
+        positionAddress: POSITION_ADDRESS,
         openedAt: '2026-04-22T13:07:01.000Z',
         closedAt: '2026-04-22T14:39:45.000Z',
         openSignature: 'sig-open',
@@ -48,7 +51,7 @@ describe('buildClosedPositionOrderSeeds', () => {
         tokenMint: 'mint-earth',
         tokenSymbol: 'earthcoin',
         poolAddress: 'pool-1',
-        positionAddress: 'position-1',
+        positionAddress: POSITION_ADDRESS,
         action: 'withdraw-lp',
         createdAt: '2026-04-22T14:39:45.000Z',
         signature: 'sig-close-earth'
@@ -57,7 +60,7 @@ describe('buildClosedPositionOrderSeeds', () => {
         tokenMint: 'mint-terminal',
         tokenSymbol: 'terminal',
         poolAddress: 'pool-2',
-        positionAddress: 'position-1',
+        positionAddress: POSITION_ADDRESS,
         action: 'add-lp',
         createdAt: '2026-04-22T14:40:37.000Z',
         signature: 'sig-open-terminal'
@@ -78,7 +81,7 @@ describe('syncClosedPositionSnapshots', () => {
           tokenMint: 'mint-earth',
           tokenSymbol: 'earthcoin',
           poolAddress: 'pool-1',
-          positionAddress: 'position-1',
+          positionAddress: POSITION_ADDRESS,
           openedAt: '2026-04-22T13:07:01.000Z',
           closedAt: '2026-04-22T14:39:45.000Z',
           openSignature: 'sig-open',
@@ -109,7 +112,7 @@ describe('syncClosedPositionSnapshots', () => {
                       parsed: {
                         info: {
                           pool: 'pool-1',
-                          position: 'position-1'
+                          position: POSITION_ADDRESS
                         }
                       }
                     }
@@ -136,7 +139,7 @@ describe('syncClosedPositionSnapshots', () => {
                     parsed: {
                       info: {
                         pool: 'pool-1',
-                        position: 'position-1'
+                        position: POSITION_ADDRESS
                       }
                     }
                   },
@@ -145,7 +148,7 @@ describe('syncClosedPositionSnapshots', () => {
                     parsed: {
                       info: {
                         pool: 'pool-1',
-                        position: 'position-1'
+                        position: POSITION_ADDRESS
                       }
                     }
                   }
@@ -222,7 +225,7 @@ describe('syncClosedPositionSnapshots', () => {
       tokenMint: 'mint-earth',
       tokenSymbol: 'earthcoin',
       poolAddress: 'pool-1',
-      positionAddress: 'position-1',
+      positionAddress: POSITION_ADDRESS,
       depositSol: 0.05,
       withdrawSol: 0,
       withdrawTokenAmount: 33102.757743,
@@ -261,7 +264,7 @@ describe('syncClosedPositionSnapshots', () => {
                   parsed: {
                     info: {
                       pool: 'pool-1',
-                      position: 'position-1'
+                      position: POSITION_ADDRESS
                     }
                   }
                 }
@@ -289,7 +292,7 @@ describe('syncClosedPositionSnapshots', () => {
                   parsed: {
                     info: {
                       pool: 'pool-1',
-                      position: 'position-1'
+                      position: POSITION_ADDRESS
                     }
                   }
                 },
@@ -298,7 +301,7 @@ describe('syncClosedPositionSnapshots', () => {
                   parsed: {
                     info: {
                       pool: 'pool-1',
-                      position: 'position-1'
+                      position: POSITION_ADDRESS
                     }
                   }
                 }
@@ -373,7 +376,7 @@ describe('syncClosedPositionSnapshots', () => {
                 parsed: {
                   info: {
                     pool: 'pool-1',
-                    position: 'position-1'
+                    position: POSITION_ADDRESS
                   }
                 }
               }
@@ -395,7 +398,7 @@ describe('syncClosedPositionSnapshots', () => {
           tokenMint: 'mint-earth',
           tokenSymbol: 'earthcoin',
           poolAddress: 'pool-1',
-          positionAddress: 'position-1',
+          positionAddress: POSITION_ADDRESS,
           openedAt: '2026-04-22T13:07:01.000Z',
           closedAt: '2026-04-22T14:39:45.000Z',
           openSignature: '',
@@ -404,7 +407,7 @@ describe('syncClosedPositionSnapshots', () => {
       ],
       rpcClient: {
         getSignaturesForAddress: vi.fn(async (address: string) => {
-          if (address === 'position-1') {
+          if (address === POSITION_ADDRESS) {
             return [
               { signature: 'sig-close', slot: 2, blockTime: 1_777_777_877 },
               { signature: 'sig-open', slot: 1, blockTime: 1_777_777_777 }
@@ -421,7 +424,7 @@ describe('syncClosedPositionSnapshots', () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0]?.positionAddress).toBe('position-1');
+    expect(result[0]?.positionAddress).toBe(POSITION_ADDRESS);
     expect(getTransaction).toHaveBeenCalledWith('sig-open');
     expect(getTransaction).toHaveBeenCalledWith('sig-close');
   });
@@ -434,7 +437,7 @@ describe('syncClosedPositionSnapshots', () => {
           tokenMint: 'mint-bad',
           tokenSymbol: 'BAD',
           poolAddress: 'pool-bad',
-          positionAddress: 'position-bad',
+          positionAddress: BAD_POSITION_ADDRESS,
           openedAt: '2026-04-22T14:40:37.000Z',
           closedAt: '2026-04-22T14:39:45.000Z',
           openSignature: 'sig-open-bad',
@@ -455,7 +458,7 @@ describe('syncClosedPositionSnapshots', () => {
                       parsed: {
                         info: {
                           pool: 'pool-bad',
-                          position: 'position-bad'
+                          position: BAD_POSITION_ADDRESS
                         }
                       }
                     }
@@ -481,7 +484,7 @@ describe('syncClosedPositionSnapshots', () => {
                     parsed: {
                       info: {
                         pool: 'pool-bad',
-                        position: 'position-bad'
+                        position: BAD_POSITION_ADDRESS
                       }
                     }
                   }
