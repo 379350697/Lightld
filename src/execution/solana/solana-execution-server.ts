@@ -81,6 +81,7 @@ const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
 const WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS = 6;
 const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
 const RESIDUAL_TOKEN_SWEEP_PASSES = 3;
+const RESIDUAL_TOKEN_MIN_SOL_VALUE = 0.1;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -164,7 +165,7 @@ async function liquidateResidualTokensToSol(input: {
       .filter((token) => token.mint !== SOL_MINT && token.amount > 0 && !soldMints.has(token.mint));
 
     if (sellable.length === 0) {
-      return;
+      return false;
     }
 
     let soldAny = false;
@@ -174,6 +175,14 @@ async function liquidateResidualTokensToSol(input: {
         const quoteResponse = await input.jupiterClient.getQuote(
           input.jupiterClient.buildSellQuoteParams(token.mint, token.amount, input.defaultSlippageBps)
         );
+        const outAmountLamports = Number(quoteResponse.outAmount ?? 0);
+        const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
+
+        if (!Number.isFinite(outAmountSol) || outAmountSol < RESIDUAL_TOKEN_MIN_SOL_VALUE) {
+          soldMints.add(token.mint);
+          continue;
+        }
+
         const swapResponse = await input.jupiterClient.getSwapTransaction(
           quoteResponse,
           input.walletPublicKey,
@@ -195,11 +204,13 @@ async function liquidateResidualTokensToSol(input: {
     }
 
     if (!soldAny) {
-      return;
+      return false;
     }
 
     await sleep(RESIDUAL_BALANCE_CHECK_DELAY_MS);
   }
+
+  return true;
 }
 
 function durationMs(startedAt: number) {
