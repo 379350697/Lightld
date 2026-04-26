@@ -49,6 +49,7 @@ import { buildDecisionContext, type DecisionContextInput } from './build-decisio
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
+import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
 import {
   classifyAction,
@@ -1401,6 +1402,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
   let tokenSymbol = firstString(context.token.symbol, context.route.token, context.token.mint);
   let poolAddress = firstString(context.pool.address, context.route.poolAddress, 'live-pool');
+  const targetOpenCooldownStore = new TargetOpenCooldownStore(resolveStateRootDir(input.strategy, input.stateRootDir));
+  await targetOpenCooldownStore.pruneExpired();
   const ingestBlockReason = firstString(context.route.blockReason, context.pool.blockReason, context.token.blockReason);
   const pendingSubmissionStore = new PendingSubmissionStore(
     resolveStateRootDir(input.strategy, input.stateRootDir)
@@ -1876,6 +1879,31 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       failureSource: 'runtime-policy',
       quoteCollected: false
     });
+  }
+
+  if (
+    !multiLpExit &&
+    activeMint &&
+    (runtimeAction.action === 'deploy' || runtimeAction.action === 'add-lp')
+  ) {
+    const activeTargetCooldown = await targetOpenCooldownStore.readActive({
+      poolAddress,
+      tokenMint: activeMint
+    });
+
+    if (activeTargetCooldown) {
+      return blockCycle({
+        stage: 'runtime-policy',
+        action: 'hold',
+        reason: `open-rate-limit-cooldown:${activeMint}`,
+        audit: {
+          reason: `open-rate-limit-cooldown:${activeMint}`
+        },
+        severity: 'warning',
+        failureSource: 'runtime-policy',
+        quoteCollected: false
+      });
+    }
   }
 
   if (

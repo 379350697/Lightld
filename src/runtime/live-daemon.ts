@@ -19,7 +19,7 @@ import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
-import { isExposureReducingAction } from './action-semantics.ts';
+import { classifyAction, isExposureReducingAction } from './action-semantics.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
 import type { AlertSink } from './alert-sink.ts';
@@ -28,6 +28,7 @@ import { ExecutionRequestError } from '../execution/error-classification.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { createPositionId, markOrphanedLpPosition } from './lp-position-record.ts';
+import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -469,6 +470,22 @@ function resolveNextTickDelayMs(input: {
   return input.baseTickIntervalMs;
 }
 
+function isOpenPathFetchFailure(input: {
+  action?: string;
+  failureSource?: string;
+  reason?: string;
+}) {
+  if (input.failureSource !== 'broadcast') {
+    return false;
+  }
+
+  if (input.action !== 'deploy' && input.action !== 'add-lp') {
+    return false;
+  }
+
+  return input.reason === 'fetch failed' || input.reason === 'rate-limited' || /429|rate-limit/i.test(input.reason ?? '');
+}
+
 async function warmAccountProvider(accountProvider?: LiveAccountStateProvider) {
   if (!accountProvider) {
     return;
@@ -804,6 +821,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+  const targetOpenCooldownStore = new TargetOpenCooldownStore(stateRootDir);
   let dependencyHealth =
     (await runtimeStateStore.readDependencyHealth()) ?? createDependencyHealthSnapshot();
   let runtimeState = (await runtimeStateStore.readRuntimeState()) ?? {
@@ -940,7 +958,30 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             );
           }
 
-          if (result.failureKind === 'unknown') {
+          if (isOpenPathFetchFailure({
+            action: result.action,
+            failureSource: result.failureSource,
+            reason: result.reason
+          })) {
+            const cooldownNow = nowIso();
+            await targetOpenCooldownStore.upsert({
+              poolAddress: typeof result.context.pool.address === 'string' ? result.context.pool.address : '',
+              tokenMint: typeof result.context.token.mint === 'string' ? result.context.token.mint : '',
+              reason: result.reason,
+              cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+              lastFailedAt: cooldownNow,
+              updatedAt: cooldownNow
+            });
+          }
+
+          if (
+            result.failureKind === 'unknown' &&
+            !isOpenPathFetchFailure({
+              action: result.action,
+              failureSource: result.failureSource,
+              reason: result.reason
+            })
+          ) {
             runtimeState = {
               ...runtimeState,
               mode: 'circuit_open',

@@ -152,6 +152,17 @@ export const HealthReportSchema = z.object({
 export type HealthReport = z.infer<typeof HealthReportSchema>;
 export type { MirrorMetricsSnapshot };
 
+export const TargetOpenCooldownSnapshotSchema = z.object({
+  poolAddress: z.string(),
+  tokenMint: z.string(),
+  reason: z.string(),
+  cooldownUntil: z.string(),
+  lastFailedAt: z.string(),
+  updatedAt: z.string()
+});
+
+export type TargetOpenCooldownSnapshot = z.infer<typeof TargetOpenCooldownSnapshotSchema>;
+
 export function toPendingConfirmationStatus(
   status: ConfirmationStatus
 ): PendingConfirmationStatus {
