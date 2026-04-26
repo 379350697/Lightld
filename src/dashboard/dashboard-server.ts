@@ -15,6 +15,7 @@ import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
+import { toExecutionTerminalStatus } from '../runtime/execution-terminal-status.ts';
 import type { PendingFinality } from '../runtime/state-types.ts';
 
 // ── Configuration ──
@@ -552,6 +553,11 @@ async function handleOrders() {
         confirmationStatus: r.confirmation_status as ConfirmationStatus,
         finality: r.finality as PendingFinality | 'unknown'
       }),
+      terminalStatus: toExecutionTerminalStatus({
+        broadcastStatus: r.broadcast_status,
+        confirmationStatus: r.confirmation_status,
+        finality: r.finality
+      }),
       finality: r.finality,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -576,6 +582,11 @@ async function handleOrders() {
       broadcastStatus: String(r.broadcastStatus ?? 'pending'),
       confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
       finality: String(r.finality ?? 'unknown') as PendingFinality | 'unknown'
+    }),
+    terminalStatus: toExecutionTerminalStatus({
+      broadcastStatus: String(r.broadcastStatus ?? 'pending'),
+      confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
+      finality: String(r.finality ?? 'unknown')
     }),
     finality: String(r.finality ?? 'unknown'),
     createdAt: String(r.createdAt ?? ''),
