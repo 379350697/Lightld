@@ -631,6 +631,9 @@ async function handleFills(): Promise<Array<{
       lifecycle_key, fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
       side, amount, filled_sol, recorded_at, 'confirmed' AS confirmation_status
     FROM fills
+    WHERE side <> 'unknown'
+      AND token_mint <> ''
+      AND (amount > 0 OR filled_sol > 0)
     ORDER BY recorded_at DESC
     LIMIT 50
   `);
