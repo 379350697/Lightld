@@ -127,6 +127,7 @@ export class SqliteMirrorWriter {
     this.ensureOrderIdentityColumns(database);
     this.ensureFillIdentityColumns(database);
     this.ensureLifecycleKeyColumns(database);
+    this.backfillLifecycleKeys(database);
 
     this.database = database;
   }
@@ -329,6 +330,39 @@ export class SqliteMirrorWriter {
     database.exec('CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_key ON orders (lifecycle_key, updated_at DESC)');
     database.exec('CREATE INDEX IF NOT EXISTS idx_fills_lifecycle_key ON fills (lifecycle_key, recorded_at DESC)');
     database.exec('CREATE INDEX IF NOT EXISTS idx_incidents_lifecycle_key ON incidents (lifecycle_key, recorded_at DESC)');
+  }
+
+  private backfillLifecycleKeys(database: DatabaseSync) {
+    database.exec(`
+      UPDATE orders
+      SET lifecycle_key = CASE
+        WHEN chain_position_address <> '' THEN 'chain-position:' || chain_position_address
+        WHEN position_id <> '' THEN 'position:' || position_id
+        WHEN open_intent_id <> '' THEN 'intent:' || open_intent_id
+        WHEN token_mint <> '' THEN 'token:' || token_mint
+        ELSE ''
+      END
+      WHERE lifecycle_key = ''
+    `);
+    database.exec(`
+      UPDATE fills
+      SET lifecycle_key = CASE
+        WHEN chain_position_address <> '' THEN 'chain-position:' || chain_position_address
+        WHEN position_id <> '' THEN 'position:' || position_id
+        WHEN open_intent_id <> '' THEN 'intent:' || open_intent_id
+        WHEN token_mint <> '' THEN 'token:' || token_mint
+        ELSE ''
+      END
+      WHERE lifecycle_key = ''
+    `);
+    database.exec(`
+      UPDATE incidents
+      SET lifecycle_key = CASE
+        WHEN token_mint <> '' THEN 'token:' || token_mint
+        ELSE ''
+      END
+      WHERE lifecycle_key = ''
+    `);
   }
 
   private ensureTableColumns(database: DatabaseSync, tableName: string, columns: ReadonlyArray<readonly [string, string]>) {
