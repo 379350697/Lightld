@@ -78,7 +78,18 @@ export function toOrderMirrorEvent(payload: OrderMirrorPayload): OrderMirrorEven
   return {
     type: 'order',
     priority: 'high',
-    payload
+    payload: {
+      ...payload,
+      lifecycleKey: coalesceLifecycleKey(
+        payload.lifecycleKey,
+        buildExecutionLifecycleKey({
+          tokenMint: payload.tokenMint,
+          openIntentId: payload.openIntentId,
+          positionId: payload.positionId,
+          chainPositionAddress: payload.chainPositionAddress
+        })
+      )
+    }
   };
 }
 
@@ -88,12 +99,15 @@ export function toFillMirrorEvent(payload: FillMirrorPayload): FillMirrorEvent {
     priority: 'high',
     payload: {
       ...payload,
-      lifecycleKey: payload.lifecycleKey ?? buildExecutionLifecycleKey({
-        tokenMint: payload.tokenMint,
-        openIntentId: payload.openIntentId,
-        positionId: payload.positionId,
-        chainPositionAddress: payload.chainPositionAddress
-      })
+      lifecycleKey: coalesceLifecycleKey(
+        payload.lifecycleKey,
+        buildExecutionLifecycleKey({
+          tokenMint: payload.tokenMint,
+          openIntentId: payload.openIntentId,
+          positionId: payload.positionId,
+          chainPositionAddress: payload.chainPositionAddress
+        })
+      )
     }
   };
 }
@@ -114,9 +128,12 @@ export function toIncidentMirrorEvent(payload: IncidentMirrorPayload): IncidentM
     priority: 'high',
     payload: {
       ...payload,
-      lifecycleKey: payload.lifecycleKey ?? buildExecutionLifecycleKey({
-        tokenMint: payload.tokenMint
-      })
+      lifecycleKey: coalesceLifecycleKey(
+        payload.lifecycleKey,
+        buildExecutionLifecycleKey({
+          tokenMint: payload.tokenMint
+        })
+      )
     }
   };
 }
@@ -144,12 +161,15 @@ export function buildOrderMirrorPayload(input: {
   updatedAt: string;
 }): OrderMirrorPayload {
   return {
-    lifecycleKey: input.lifecycleKey ?? buildExecutionLifecycleKey({
-      tokenMint: input.tokenMint,
-      openIntentId: input.openIntentId,
-      positionId: input.positionId,
-      chainPositionAddress: input.chainPositionAddress
-    }),
+    lifecycleKey: coalesceLifecycleKey(
+      input.lifecycleKey,
+      buildExecutionLifecycleKey({
+        tokenMint: input.tokenMint,
+        openIntentId: input.openIntentId,
+        positionId: input.positionId,
+        chainPositionAddress: input.chainPositionAddress
+      })
+    ),
     idempotencyKey: input.idempotencyKey,
     cycleId: input.cycleId,
     strategyId: input.strategyId,
@@ -170,6 +190,10 @@ export function buildOrderMirrorPayload(input: {
     createdAt: input.createdAt,
     updatedAt: input.updatedAt
   };
+}
+
+function coalesceLifecycleKey(primary: string | undefined, fallback: string) {
+  return primary && primary.length > 0 ? primary : fallback;
 }
 
 export function buildCycleRunMirrorPayload(input: {
