@@ -1146,6 +1146,18 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           : isExposureReducingAction(result.action)
             ? undefined
             : positionState?.openedAt;
+        if (failedOpenCooldownMint.length > 0 && persistedPoolAddress.length > 0) {
+          const cooldownNow = nowIso();
+          await targetOpenCooldownStore.upsert({
+            poolAddress: persistedPoolAddress,
+            tokenMint: failedOpenCooldownMint,
+            reason: result.reason,
+            cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+            lastFailedAt: cooldownNow,
+            updatedAt: cooldownNow
+          });
+        }
+
         const persistedIdentity = resolvePersistedLpIdentity({
           lifecycleState: persistedLifecycleState,
           pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
