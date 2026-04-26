@@ -613,6 +613,24 @@ function applyTransientCircuitAutoHeal(input: {
   };
 }
 
+function hasMatchingLpPosition(input: {
+  accountState?: LiveAccountState;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ];
+
+  return positions.some((position) =>
+    isManageableLpPosition(position) && (
+      (input.activeMint && position.mint === input.activeMint) ||
+      (input.activePoolAddress && position.poolAddress === input.activePoolAddress)
+    )
+  );
+}
+
 function hasOpenInventory(accountState?: LiveAccountState) {
   return Boolean(
     accountState?.walletTokens?.some((token) => token.amount > 0
@@ -748,10 +766,20 @@ function resolveLifecycleStateForPersist(input: {
   lastAction?: string;
   lastReason?: string;
   activeMint?: string;
+  activePoolAddress?: string;
 }): PositionLifecycleState {
   const hasInventory = hasOpenInventory(input.accountState);
+  const hasMatchingPosition = hasMatchingLpPosition({
+    accountState: input.accountState,
+    activeMint: input.activeMint,
+    activePoolAddress: input.activePoolAddress
+  });
 
   if (input.nextLifecycleState === 'closed' && hasInventory) {
+    return 'open';
+  }
+
+  if (input.nextLifecycleState === 'open_pending' && !input.pendingSubmission && (hasInventory || hasMatchingPosition)) {
     return 'open';
   }
 
@@ -786,11 +814,11 @@ function resolveLifecycleStateForPersist(input: {
     return 'open_pending';
   }
 
-  if (unresolvedOpen && (input.pendingSubmission || hasInventory)) {
+  if (unresolvedOpen && (input.pendingSubmission || hasInventory || hasMatchingPosition)) {
     return 'open';
   }
 
-  if (hasInventory) {
+  if (hasInventory || hasMatchingPosition) {
     return 'open';
   }
 
@@ -1122,7 +1150,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           accountState: effectiveAccountState,
           lastAction: result.action,
           lastReason: result.reason,
-          activeMint: persistedActiveMint
+          activeMint: persistedActiveMint,
+          activePoolAddress: positionState?.activePoolAddress
         });
 
         const failedOpenCooldownMint = result.reason.startsWith('failed-open-cooldown:')

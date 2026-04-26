@@ -10,6 +10,8 @@ import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-
 import { classifyAction } from './action-semantics.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 
+const OPEN_PENDING_RECONCILIATION_GRACE_MS = 60_000;
+
 export type PendingRecoveryReason =
   | 'clear'
   | 'pending-submission-confirmed'
@@ -64,13 +66,23 @@ export async function runPendingRecoveryGate(input: {
     };
   }
 
+  const nowMs = (input.now ?? new Date()).getTime();
+  const createdAtMs = input.pendingSubmission.createdAt
+    ? Date.parse(input.pendingSubmission.createdAt)
+    : Number.NaN;
+  const timeoutAtMs = input.pendingSubmission.timeoutAt
+    ? Date.parse(input.pendingSubmission.timeoutAt)
+    : Number.NaN;
+  const openPendingGraceExpired = Number.isFinite(timeoutAtMs)
+    ? nowMs >= timeoutAtMs
+    : Number.isFinite(createdAtMs) && nowMs - createdAtMs >= OPEN_PENDING_RECONCILIATION_GRACE_MS;
+
   if (
     input.currentLifecycleState === 'open_pending' &&
     input.accountState &&
     !hasAnyWalletEvidenceForPendingSubmission(input.pendingSubmission, input.accountState) &&
     input.pendingSubmission.orderAction &&
-    input.pendingSubmission.createdAt &&
-    (input.now ?? new Date()).getTime() - Date.parse(input.pendingSubmission.createdAt) >= 5_000
+    openPendingGraceExpired
   ) {
     await input.pendingSubmissionStore.clear();
     return {
