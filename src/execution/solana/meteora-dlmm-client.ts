@@ -161,10 +161,10 @@ function computeSolValueFromPairAmounts(input: {
   }
 
   if (input.solSide === 'tokenX') {
-    return tokenXAmount + (tokenYAmount / pricePerToken);
+    return tokenXAmount + (tokenYAmount * pricePerToken);
   }
 
-  return tokenYAmount + (tokenXAmount * pricePerToken);
+  return tokenYAmount + (tokenXAmount / pricePerToken);
 }
 
 function resolveTokenDecimals(tokenReserve: unknown) {
