@@ -56,6 +56,8 @@ const DEFAULT_OPTIONS = {
   maxWaitMs: 1_000
 } satisfies Required<RpcEndpointRegistryOptions>;
 
+const MAX_RATE_LIMIT_COOLDOWN_MULTIPLIER = 4;
+
 function sleep(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
@@ -74,6 +76,15 @@ function formatEndpointHost(url: string) {
 
 function toIso(timestamp: number) {
   return timestamp > 0 ? new Date(timestamp).toISOString() : '';
+}
+
+function scaleRateLimitCooldown(baseCooldownMs: number, consecutiveFailures: number) {
+  const multiplier = Math.min(
+    MAX_RATE_LIMIT_COOLDOWN_MULTIPLIER,
+    Math.max(1, consecutiveFailures)
+  );
+
+  return baseCooldownMs * multiplier;
 }
 
 function extractStatus(error: Error) {
@@ -242,14 +253,16 @@ export class RpcEndpointRegistry {
             throw error;
           }
 
-          const cooldownMs = disposition.cooldownMs ?? 0;
           state.consecutiveFailures += 1;
+          const cooldownMs = disposition.reason === 'rate-limited'
+            ? scaleRateLimitCooldown(disposition.cooldownMs ?? 0, state.consecutiveFailures)
+            : (disposition.cooldownMs ?? 0);
           state.lastFailureReason = disposition.reason;
           state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + cooldownMs);
           lastError = toError(error);
 
           console.warn(
-            `[RpcEndpointRegistry] endpoint cooling down kind=${options.kind} host=${formatEndpointHost(url)} reason=${disposition.reason} cooldownMs=${cooldownMs}`
+            `[RpcEndpointRegistry] endpoint cooling down kind=${options.kind} host=${formatEndpointHost(url)} reason=${disposition.reason} failures=${state.consecutiveFailures} cooldownMs=${cooldownMs}`
           );
         } finally {
           state.inFlight = Math.max(0, state.inFlight - 1);
