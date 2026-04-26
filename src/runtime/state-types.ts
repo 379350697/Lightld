@@ -104,6 +104,7 @@ export const PositionStateSnapshotSchema = z.object({
   flattenOnly: z.boolean(),
   lastAction: z.string(),
   lastReason: z.string().optional(),
+  lastOrderIdempotencyKey: z.string().optional(),
   openIntentId: z.string().optional(),
   positionId: z.string().optional(),
   chainPositionAddress: z.string().optional(),

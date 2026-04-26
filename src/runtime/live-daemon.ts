@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createDependencyHealthSnapshot, markDependencyFailure, markDependencySuccess } from './dependency-health.ts';
 import { buildHealthReport } from './health-report.ts';
 import { enqueueMirrorCatchupFromJournals } from '../observability/mirror-catchup.ts';
-import { toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
+import { buildOrderMirrorPayload, toOrderMirrorEvent, toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
 import type { MirrorRuntime } from '../observability/mirror-runtime.ts';
 import {
   LiveCycleOutcomeStore,
@@ -71,6 +71,55 @@ function enqueueRuntimeSnapshot(
   }
 
   mirrorRuntime.enqueue(toRuntimeSnapshotEvent(report, accountState));
+}
+
+function enqueueResolvedOpenOrderMirror(input: {
+  mirrorRuntime?: MirrorRuntime;
+  idempotencyKey?: string;
+  cycleId: string;
+  strategyId: StrategyId;
+  openIntentId?: string;
+  chainPositionAddress?: string;
+  poolAddress?: string;
+  tokenMint?: string;
+  tokenSymbol?: string;
+  requestedPositionSol?: number;
+  createdAt?: string;
+  updatedAt: string;
+}) {
+  if (
+    !input.mirrorRuntime ||
+    !input.idempotencyKey ||
+    !input.chainPositionAddress ||
+    !input.poolAddress ||
+    !input.tokenMint ||
+    !input.createdAt
+  ) {
+    return;
+  }
+
+  input.mirrorRuntime.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+    idempotencyKey: input.idempotencyKey,
+    lifecycleKey: `chain-position:${input.chainPositionAddress}`,
+    cycleId: input.cycleId,
+    strategyId: input.strategyId,
+    submissionId: '',
+    openIntentId: input.openIntentId,
+    positionId: input.chainPositionAddress,
+    chainPositionAddress: input.chainPositionAddress,
+    confirmationSignature: '',
+    poolAddress: input.poolAddress,
+    tokenMint: input.tokenMint,
+    tokenSymbol: input.tokenSymbol ?? '',
+    action: 'add-lp',
+    requestedPositionSol: input.requestedPositionSol ?? 0,
+    quotedOutputSol: 0,
+    broadcastStatus: 'submitted',
+    confirmationStatus: 'confirmed',
+    finality: 'confirmed',
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt
+  })));
 }
 
 function buildWatchId(strategy: StrategyId, tokenMint: string, poolAddress: string) {
@@ -1225,6 +1274,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
           lastReason: result.reason,
+          lastOrderIdempotencyKey: result.orderIntent?.idempotencyKey ?? positionState?.lastOrderIdempotencyKey,
           openIntentId: persistedIdentity.openIntentId,
           positionId: persistedIdentity.positionId,
           chainPositionAddress: persistedIdentity.chainPositionAddress,
@@ -1239,6 +1289,20 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,
           walletSol: effectiveAccountState?.walletSol,
+          updatedAt: nowIso()
+        });
+        enqueueResolvedOpenOrderMirror({
+          mirrorRuntime,
+          idempotencyKey: result.orderIntent?.idempotencyKey ?? positionState?.lastOrderIdempotencyKey,
+          cycleId: `${options.strategy}:${nowIso()}`,
+          strategyId: options.strategy,
+          openIntentId: persistedIdentity.openIntentId,
+          chainPositionAddress: persistedIdentity.chainPositionAddress,
+          poolAddress: persistedPoolAddress,
+          tokenMint: persistedActiveMint,
+          tokenSymbol: typeof result.context?.token?.symbol === 'string' ? result.context.token.symbol : '',
+          requestedPositionSol: persistedEntrySol,
+          createdAt: inferredPositionMetadata.openedAt ?? positionState?.openedAt,
           updatedAt: nowIso()
         });
         await runtimeStateStore.writeHealthReport(report);
@@ -1340,6 +1404,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
+          lastOrderIdempotencyKey: positionState?.lastOrderIdempotencyKey,
           activeMint: positionState?.activeMint,
           openIntentId: persistedIdentity.openIntentId,
           positionId: persistedIdentity.positionId,
