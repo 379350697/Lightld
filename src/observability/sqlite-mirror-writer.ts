@@ -120,6 +120,7 @@ export class SqliteMirrorWriter {
     this.ensureRuntimeSnapshotColumns(database);
     this.ensureOrderIdentityColumns(database);
     this.ensureFillIdentityColumns(database);
+    this.ensureLifecycleKeyColumns(database);
 
     this.database = database;
   }
@@ -307,6 +308,21 @@ export class SqliteMirrorWriter {
       ['position_id', "TEXT NOT NULL DEFAULT ''"],
       ['chain_position_address', "TEXT NOT NULL DEFAULT ''"]
     ]);
+  }
+
+  private ensureLifecycleKeyColumns(database: DatabaseSync) {
+    this.ensureTableColumns(database, 'orders', [
+      ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"]
+    ]);
+    this.ensureTableColumns(database, 'fills', [
+      ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"]
+    ]);
+    this.ensureTableColumns(database, 'incidents', [
+      ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"]
+    ]);
+    database.exec('CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_key ON orders (lifecycle_key, updated_at DESC)');
+    database.exec('CREATE INDEX IF NOT EXISTS idx_fills_lifecycle_key ON fills (lifecycle_key, recorded_at DESC)');
+    database.exec('CREATE INDEX IF NOT EXISTS idx_incidents_lifecycle_key ON incidents (lifecycle_key, recorded_at DESC)');
   }
 
   private ensureTableColumns(database: DatabaseSync, tableName: string, columns: ReadonlyArray<readonly [string, string]>) {
