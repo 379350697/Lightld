@@ -913,8 +913,7 @@ export function buildHistoricalActivity(input: {
       status: (() => {
         const lifecycleStatus = toExecutionLifecycleStatus({
           broadcastStatus: order.broadcastStatus,
-          confirmationStatus: order.confirmationStatus,
-          historyStatus: 'missing-chain'
+          confirmationStatus: order.confirmationStatus
         });
         return lifecycleStatus === 'confirmed' ? 'missing-chain' : lifecycleStatus;
       })(),
