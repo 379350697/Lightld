@@ -80,6 +80,7 @@ const RESIDUAL_BALANCE_CHECK_ATTEMPTS = 6;
 const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
 const WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS = 6;
 const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
+const RESIDUAL_TOKEN_SWEEP_PASSES = 3;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -140,6 +141,65 @@ async function waitForConfirmedSignatures(
   }
 
   return false;
+}
+
+async function liquidateResidualTokensToSol(input: {
+  rpcClient: SolanaRpcClient;
+  jupiterClient: JupiterClient;
+  keypair: Keypair;
+  walletPublicKey: string;
+  defaultSlippageBps: number;
+  jitoTipLamports?: number;
+  sendTxMs: number[];
+}) {
+  const soldMints = new Set<string>();
+
+  for (let pass = 0; pass < RESIDUAL_TOKEN_SWEEP_PASSES; pass += 1) {
+    const tokenAccounts = await input.rpcClient.getTokenAccountsByOwner(input.walletPublicKey);
+    const sellable = tokenAccounts
+      .map((account) => ({
+        mint: account.account.data.parsed.info.mint as string,
+        amount: Number(account.account.data.parsed.info.tokenAmount.amount)
+      }))
+      .filter((token) => token.mint !== SOL_MINT && token.amount > 0 && !soldMints.has(token.mint));
+
+    if (sellable.length === 0) {
+      return;
+    }
+
+    let soldAny = false;
+
+    for (const token of sellable) {
+      try {
+        const quoteResponse = await input.jupiterClient.getQuote(
+          input.jupiterClient.buildSellQuoteParams(token.mint, token.amount, input.defaultSlippageBps)
+        );
+        const swapResponse = await input.jupiterClient.getSwapTransaction(
+          quoteResponse,
+          input.walletPublicKey,
+          { jitoTipLamports: input.jitoTipLamports }
+        );
+        const residualSignedBase64 = signSwapTransaction(
+          swapResponse.swapTransaction,
+          input.keypair
+        );
+        const residualSendStartedAt = Date.now();
+        await input.rpcClient.sendRawTransaction(residualSignedBase64);
+        input.sendTxMs.push(durationMs(residualSendStartedAt));
+        soldMints.add(token.mint);
+        soldAny = true;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(`[Execution] Residual token liquidation skipped for ${token.mint}: ${reason}`);
+      }
+    }
+
+    if (!soldAny) {
+      return;
+    }
+
+    await sleep(RESIDUAL_BALANCE_CHECK_DELAY_MS);
+  }
 }
 
 function durationMs(startedAt: number) {
@@ -424,6 +484,16 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
                     sendTxMs.push(durationMs(residualSendStartedAt));
                   }
+
+                  await liquidateResidualTokensToSol({
+                    rpcClient,
+                    jupiterClient,
+                    keypair,
+                    walletPublicKey,
+                    defaultSlippageBps,
+                    jitoTipLamports: options.jitoTipLamports,
+                    sendTxMs
+                  });
                 }
               }
 
