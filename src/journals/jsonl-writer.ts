@@ -152,7 +152,13 @@ export async function readJsonLines<T>(path: string): Promise<T[]> {
     return content
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as T);
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as T];
+        } catch {
+          return [];
+        }
+      });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return [];

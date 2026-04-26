@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 
@@ -15,6 +15,17 @@ describe('jsonl writer', () => {
 
     await appendJsonLine(path, { id: 'one' });
     await appendJsonLine(path, { id: 'two' });
+
+    await expect(readJsonLines<{ id: string }>(path)).resolves.toEqual([
+      { id: 'one' },
+      { id: 'two' }
+    ]);
+  });
+
+  it('skips malformed JSONL lines while preserving valid records', async () => {
+    const path = 'tmp/journals/test-jsonl-malformed.jsonl';
+    await rm(path, { force: true });
+    await writeFile(path, '{"id":"one"}\nnot-json\n{"id":"two"}\n', 'utf8');
 
     await expect(readJsonLines<{ id: string }>(path)).resolves.toEqual([
       { id: 'one' },
