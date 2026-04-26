@@ -114,7 +114,13 @@ export class SqliteMirrorWriter {
     `);
 
     for (const statement of SQLITE_MIRROR_SCHEMA) {
-      database.exec(statement);
+      try {
+        database.exec(statement);
+      } catch (error) {
+        if (!shouldDeferLifecycleKeyIndex(statement, error)) {
+          throw error;
+        }
+      }
     }
 
     this.ensureRuntimeSnapshotColumns(database);
@@ -900,4 +906,9 @@ export class SqliteMirrorWriter {
 
 function booleanToInteger(value: boolean) {
   return value ? 1 : 0;
+}
+
+function shouldDeferLifecycleKeyIndex(statement: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return statement.includes('lifecycle_key') && message.includes('no such column: lifecycle_key');
 }
