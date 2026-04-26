@@ -128,6 +128,11 @@ function parsePositiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parsePositiveNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const runtimeConfig = loadLiveRuntimeConfig();
@@ -220,6 +225,18 @@ async function main() {
     stateRootDir: args.stateRootDir,
     journalRootDir: args.journalRootDir,
     tickIntervalMs: args.tickIntervalMs,
+    residualTokenSweepIntervalMs: parsePositiveInteger(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS,
+      5 * 60_000
+    ),
+    residualTokenSweepCooldownMs: parsePositiveInteger(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS,
+      30 * 60_000
+    ),
+    residualTokenSweepMinValueSol: parsePositiveNumber(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL,
+      0.1
+    ),
     maxTicks: args.maxTicks,
     accountProvider: executionAdapters.accountProvider,
     confirmationProvider: executionAdapters.confirmationProvider,

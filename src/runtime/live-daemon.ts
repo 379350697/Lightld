@@ -26,8 +26,11 @@ import type { AlertSink } from './alert-sink.ts';
 import { NoopAlertSink, shouldSendAlert } from './alert-sink.ts';
 import { ExecutionRequestError } from '../execution/error-classification.ts';
 import type { LiveConfirmationProvider } from '../execution/live-confirmation-provider.ts';
+import { buildOrderIntent } from '../execution/order-intent-builder.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { createPositionId, markOrphanedLpPosition } from './lp-position-record.ts';
+import { isResolvedConfirmation } from './live-cycle-state.ts';
+import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 
 type LiveDaemonOptions = {
@@ -37,6 +40,9 @@ type LiveDaemonOptions = {
   tickIntervalMs?: number;
   hotTickIntervalMs?: number;
   rateLimitBackoffIntervalMs?: number;
+  residualTokenSweepIntervalMs?: number;
+  residualTokenSweepCooldownMs?: number;
+  residualTokenSweepMinValueSol?: number;
   maxTicks?: number;
   buildCycleInput?: (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'>;
   alertSink?: AlertSink;
@@ -60,6 +66,9 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
+const DEFAULT_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS = 30 * 60_000;
+const DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL = 0.1;
 
 function enqueueRuntimeSnapshot(
   mirrorRuntime: MirrorRuntime | undefined,
@@ -461,6 +470,152 @@ async function runPreIngestPendingRecovery(input: {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+type ResidualSweepExecutionResult = {
+  dependencyHealth: ReturnType<typeof createDependencyHealthSnapshot>;
+  nextSweepAt: string;
+};
+
+async function runResidualTokenSweepIfDue(input: {
+  strategy: StrategyId;
+  accountState?: LiveAccountState;
+  runtimeMode: RuntimeMode;
+  pendingSubmission: boolean;
+  signer?: Omit<LiveCycleInput, 'strategy'>['signer'];
+  broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
+  confirmationProvider?: LiveConfirmationProvider;
+  dependencyHealth: ReturnType<typeof createDependencyHealthSnapshot>;
+  residualTokenSweepStore: ResidualTokenSweepStore;
+  residualTokenSweepIntervalMs: number;
+  residualTokenSweepCooldownMs: number;
+  residualTokenSweepMinValueSol: number;
+  nextSweepAt: string;
+}) : Promise<ResidualSweepExecutionResult> {
+  const now = new Date();
+  const nowIsoValue = now.toISOString();
+  let dependencyHealth = input.dependencyHealth;
+
+  if (input.nextSweepAt && input.nextSweepAt > nowIsoValue) {
+    return { dependencyHealth, nextSweepAt: input.nextSweepAt };
+  }
+
+  const nextSweepAt = new Date(now.getTime() + input.residualTokenSweepIntervalMs).toISOString();
+
+  if (
+    (input.runtimeMode !== 'healthy' && input.runtimeMode !== 'degraded' && input.runtimeMode !== 'flatten_only')
+    || input.pendingSubmission
+    || !input.signer
+    || !input.broadcaster
+  ) {
+    return { dependencyHealth, nextSweepAt };
+  }
+
+  await input.residualTokenSweepStore.pruneExpired(nowIsoValue);
+  const eligibleTokens = (input.accountState?.walletTokens ?? [])
+    .filter((token) =>
+      token.amount > 0
+      && isNonStableMint(token.mint)
+      && typeof token.currentValueSol === 'number'
+      && token.currentValueSol >= input.residualTokenSweepMinValueSol
+    )
+    .sort((left, right) => (right.currentValueSol ?? 0) - (left.currentValueSol ?? 0));
+
+  for (const token of eligibleTokens) {
+    const activeCooldown = await input.residualTokenSweepStore.readActive(token.mint, nowIsoValue);
+    if (activeCooldown) {
+      continue;
+    }
+
+    const orderIntent = buildOrderIntent({
+      strategyId: input.strategy,
+      poolAddress: '',
+      outputSol: token.currentValueSol ?? 0,
+      side: 'sell',
+      tokenMint: token.mint,
+      fullPositionExit: true
+    });
+
+    let attemptRecorded = false;
+    const recordAttempt = async () => {
+      if (attemptRecorded) {
+        return;
+      }
+
+      attemptRecorded = true;
+      await input.residualTokenSweepStore.upsert({
+        mint: token.mint,
+        lastAttemptAt: nowIsoValue,
+        cooldownUntil: new Date(now.getTime() + input.residualTokenSweepCooldownMs).toISOString(),
+        updatedAt: nowIsoValue
+      });
+    };
+
+    try {
+      const signedIntent = await input.signer.sign(orderIntent);
+      dependencyHealth = markDependencySuccess(dependencyHealth, 'signer', nowIso());
+      const broadcastResult = await input.broadcaster.broadcast(signedIntent);
+
+      await recordAttempt();
+
+      if (broadcastResult.status !== 'submitted') {
+        dependencyHealth = markDependencyFailure(
+          dependencyHealth,
+          'broadcaster',
+          broadcastResult.reason,
+          nowIso()
+        );
+        return { dependencyHealth, nextSweepAt };
+      }
+
+      dependencyHealth = markDependencySuccess(dependencyHealth, 'broadcaster', nowIso());
+
+      if (input.confirmationProvider && broadcastResult.submissionId) {
+        const confirmation = await input.confirmationProvider.poll({
+          submissionId: broadcastResult.submissionId,
+          confirmationSignature: broadcastResult.confirmationSignature
+        });
+
+        if (isResolvedConfirmation(confirmation.status, confirmation.finality)) {
+          dependencyHealth = markDependencySuccess(dependencyHealth, 'confirmation', nowIso());
+        } else if (confirmation.status === 'failed') {
+          dependencyHealth = markDependencyFailure(
+            dependencyHealth,
+            'confirmation',
+            confirmation.reason ?? 'maintenance-confirmation-failed',
+            nowIso()
+          );
+        }
+      }
+
+      return { dependencyHealth, nextSweepAt };
+    } catch (error) {
+      await recordAttempt();
+
+      if (error instanceof ExecutionRequestError) {
+        const dependencyKey = error.operation === 'broadcast'
+          ? 'broadcaster'
+          : error.operation === 'confirmation'
+            ? 'confirmation'
+            : error.operation === 'account'
+              ? 'account'
+              : error.operation === 'quote'
+                ? 'quote'
+                : 'signer';
+        dependencyHealth = markDependencyFailure(
+          dependencyHealth,
+          dependencyKey,
+          error.reason,
+          nowIso()
+        );
+        return { dependencyHealth, nextSweepAt };
+      }
+
+      throw error;
+    }
+  }
+
+  return { dependencyHealth, nextSweepAt };
 }
 
 function wait(delayMs: number) {
@@ -880,6 +1035,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const tickIntervalMs = options.tickIntervalMs ?? 30_000;
   const hotTickIntervalMs = Math.min(options.hotTickIntervalMs ?? 10_000, tickIntervalMs);
   const rateLimitBackoffIntervalMs = options.rateLimitBackoffIntervalMs ?? Math.max(60_000, tickIntervalMs * 2);
+  const residualTokenSweepIntervalMs = options.residualTokenSweepIntervalMs ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS;
+  const residualTokenSweepCooldownMs = options.residualTokenSweepCooldownMs ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS;
+  const residualTokenSweepMinValueSol = options.residualTokenSweepMinValueSol ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL;
   const sleep = options.sleep ?? wait;
   const maxTicks = options.maxTicks ?? Number.POSITIVE_INFINITY;
   const buildCycleInput:
@@ -898,6 +1056,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+  const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
   const targetOpenCooldownStore = new TargetOpenCooldownStore(stateRootDir);
   let dependencyHealth =
     (await runtimeStateStore.readDependencyHealth()) ?? createDependencyHealthSnapshot();
@@ -911,6 +1070,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
     updatedAt: nowIso()
   };
   let tickCount = 0;
+  let nextResidualTokenSweepAt = '';
 
   await mirrorRuntime?.start();
   await warmAccountProvider(options.accountProvider);
@@ -1160,6 +1320,24 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             now: nowIso()
           });
         }
+
+        const residualSweepResult = await runResidualTokenSweepIfDue({
+          strategy: options.strategy,
+          accountState: effectiveAccountState,
+          runtimeMode: runtimeState.mode,
+          pendingSubmission: postTickPendingSubmission !== null,
+          signer: cycleInput.signer,
+          broadcaster: cycleInput.broadcaster,
+          confirmationProvider,
+          dependencyHealth,
+          residualTokenSweepStore,
+          residualTokenSweepIntervalMs,
+          residualTokenSweepCooldownMs,
+          residualTokenSweepMinValueSol,
+          nextSweepAt: nextResidualTokenSweepAt
+        });
+        dependencyHealth = residualSweepResult.dependencyHealth;
+        nextResidualTokenSweepAt = residualSweepResult.nextSweepAt;
 
         runtimeState = applyTransientCircuitAutoHeal({
           tickStartState: tickStartRuntimeState,

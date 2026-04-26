@@ -12,6 +12,7 @@ import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 import { runLiveDaemon } from '../../../src/runtime/live-daemon';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
+import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 
 describe('runLiveDaemon', () => {
@@ -1291,7 +1292,7 @@ describe('runLiveDaemon', () => {
       orderAction: 'add-lp',
       createdAt: '2026-03-22T00:00:00.000Z',
       updatedAt: '2026-03-22T00:00:00.000Z',
-      timeoutAt: '2026-03-22T00:02:00.000Z'
+      timeoutAt: '2099-03-22T00:02:00.000Z'
     }, { rotateDaily: false });
 
     await runLiveDaemon({
@@ -1745,6 +1746,152 @@ describe('runLiveDaemon', () => {
     expect(seenActions).toEqual(['withdraw-lp', 'sell']);
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
     expect(positionState?.lastAction).toBe('dca-out');
+  });
+
+  it('runs maintenance sell sweeps from runtime wallet inventory and records mint cooldown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-maintenance-sweep-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
+    const seenMints: string[] = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      residualTokenSweepIntervalMs: 60_000,
+      residualTokenSweepCooldownMs: 120_000,
+      maxTicks: 2,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [
+            { mint: 'mint-maint-1', symbol: 'M1', amount: 10, currentValueSol: 0.35 },
+            { mint: 'mint-maint-2', symbol: 'M2', amount: 8, currentValueSol: 0.2 }
+          ],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'maintenance-signer',
+            signedAt: '2026-04-27T00:00:00.000Z',
+            signature: 'maintenance-signature'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => {
+            seenMints.push(signedIntent.intent.tokenMint ?? '');
+            return {
+              status: 'submitted' as const,
+              submissionId: `maintenance-${seenMints.length}`,
+              idempotencyKey: signedIntent.intent.idempotencyKey,
+              confirmationSignature: `maintenance-tx-${seenMints.length}`
+            };
+          }
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: '2026-04-27T00:00:01.000Z'
+          })
+        }
+      })
+    });
+
+    const cooldown = await residualTokenSweepStore.readActive('mint-maint-1', '2000-01-01T00:00:00.000Z');
+
+    expect(seenMints).toEqual(['mint-maint-1']);
+    expect(cooldown).toMatchObject({ mint: 'mint-maint-1' });
+    expect(await residualTokenSweepStore.readActive('mint-maint-2', '2000-01-01T00:00:00.000Z')).toBeNull();
+  });
+
+  it('honors mint cooldowns when the global maintenance sweep interval is due again', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-27T00:00:00.000Z'));
+
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-maintenance-cooldown-'));
+      const stateRootDir = join(root, 'state');
+      const journalRootDir = join(root, 'journals');
+      const seenMints: string[] = [];
+
+      await runLiveDaemon({
+        strategy: 'new-token-v1',
+        stateRootDir,
+        journalRootDir,
+        tickIntervalMs: 1,
+        residualTokenSweepIntervalMs: 1,
+        residualTokenSweepCooldownMs: 60_000,
+        maxTicks: 2,
+        sleep: async () => {
+          vi.advanceTimersByTime(5_000);
+        },
+        buildCycleInput: async () => ({
+          requestedPositionSol: 0.1,
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [
+              { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, currentValueSol: 0.4 }
+            ],
+            journalTokens: [],
+            fills: []
+          },
+          context: {
+            pool: { address: 'pool-1', liquidityUsd: 10_000 },
+            token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          },
+          signer: {
+            sign: async (intent) => ({
+              intent,
+              signerId: 'maintenance-signer',
+              signedAt: '2026-04-27T00:00:00.000Z',
+              signature: 'maintenance-signature'
+            })
+          },
+          broadcaster: {
+            broadcast: async (signedIntent) => {
+              seenMints.push(signedIntent.intent.tokenMint ?? '');
+              return {
+                status: 'submitted' as const,
+                submissionId: `maintenance-${seenMints.length}`,
+                idempotencyKey: signedIntent.intent.idempotencyKey,
+                confirmationSignature: `maintenance-tx-${seenMints.length}`
+              };
+            }
+          },
+          confirmationProvider: {
+            poll: async ({ submissionId, confirmationSignature }) => ({
+              submissionId,
+              confirmationSignature,
+              status: 'confirmed' as const,
+              finality: 'finalized' as const,
+              checkedAt: '2026-04-27T00:00:01.000Z'
+            })
+          }
+        })
+      });
+
+      expect(seenMints).toEqual(['mint-maint-cooldown']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('uses the hot polling interval when LP exit signals are near thresholds', async () => {
