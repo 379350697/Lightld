@@ -658,14 +658,20 @@ async function handleFills(): Promise<Array<{
   }
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
-  return journalRows.reverse().map((row) => ({
-    lifecycleKey: String(row.lifecycleKey ?? ''),
-    ...normalizeDashboardJournalFill(row),
-    lifecycleStatus: toExecutionLifecycleStatus({
+  return journalRows.reverse()
+    .map((row) => ({
+      lifecycleKey: String(row.lifecycleKey ?? ''),
+      ...normalizeDashboardJournalFill(row),
+      lifecycleStatus: toExecutionLifecycleStatus({
+        confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
+      }),
       confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
-    }),
-    confirmationStatus: String(row.confirmationStatus ?? row.status ?? 'confirmed')
-  }));
+    }))
+    .filter((row) =>
+      row.side !== 'unknown'
+      && row.tokenMint.length > 0
+      && (row.amount > 0 || row.filledSol > 0)
+    );
 }
 
 type IncidentRow = {
