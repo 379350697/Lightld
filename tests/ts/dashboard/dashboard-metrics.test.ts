@@ -757,6 +757,49 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]?.pnlPct).toBeCloseTo(-1.6066779999999994);
   });
 
+  it('does not fabricate pnl from local-only close requestedPositionSol without trusted exit metrics', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [
+        {
+          tokenMint: 'mint-local-pnl',
+          tokenSymbol: 'LPNL',
+          action: 'add-lp',
+          submissionId: '',
+          idempotencyKey: 'order-local-pnl-open',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T13:07:01.715Z',
+          updatedAt: '2026-04-22T13:07:01.722Z'
+        },
+        {
+          tokenMint: 'mint-local-pnl',
+          tokenSymbol: 'LPNL',
+          action: 'withdraw-lp',
+          submissionId: '',
+          idempotencyKey: 'order-local-pnl-close',
+          requestedPositionSol: 0.02,
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T14:39:45.571Z',
+          updatedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-local-pnl',
+      action: 'add-lp -> withdraw-lp',
+      source: 'error',
+      confirmationStatus: 'unresolved',
+      investedSol: 0.05,
+      pnlSol: null,
+      pnlPct: null,
+      dprPct: null
+    });
+  });
+
   it('prefers exit value over pnl percent when reconstructing historical lp pnl', () => {
     const result = buildHistoricalActivity({
       fills: [],
