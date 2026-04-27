@@ -55,6 +55,11 @@ type TokenAccount = {
   };
 };
 
+const SPL_TOKEN_PROGRAM_IDS = [
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+] as const;
+
 export class SolanaRpcClient {
   private readonly writeUrls: string[];
   private readonly readUrls: string[];
@@ -223,15 +228,20 @@ export class SolanaRpcClient {
   async getTokenAccountsByOwner(
     publicKey: string
   ): Promise<TokenAccount[]> {
-    const result = await this.call<{ value: TokenAccount[] }>(
-      'getTokenAccountsByOwner',
-      [
-        publicKey,
-        { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
-        { encoding: 'jsonParsed', commitment: 'confirmed' }
-      ]
+    const results = await Promise.all(
+      SPL_TOKEN_PROGRAM_IDS.map(async (programId) => {
+        const result = await this.call<{ value: TokenAccount[] }>(
+          'getTokenAccountsByOwner',
+          [
+            publicKey,
+            { programId },
+            { encoding: 'jsonParsed', commitment: 'confirmed' }
+          ]
+        );
+        return result.value;
+      })
     );
-    return result.value;
+    return results.flat();
   }
 
   async getLatestBlockhash(): Promise<{

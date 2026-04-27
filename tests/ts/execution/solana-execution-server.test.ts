@@ -233,7 +233,7 @@ describe('createSolanaExecutionServer', () => {
       } as any,
       jupiterClient: {
         buildSellQuoteParams: vi.fn(() => ({ inputMint: 'earthcoin-mint' })),
-        getQuote: vi.fn(async () => ({ routePlan: [] })),
+        getQuote: vi.fn(async () => ({ routePlan: [], outAmount: String(0.02 * 1_000_000_000) })),
         getSwapTransaction: vi.fn(async () => ({ swapTransaction: 'signed-swap-ignored-by-mock' }))
       } as any,
       dlmmClient: {
@@ -267,9 +267,83 @@ describe('createSolanaExecutionServer', () => {
       submissionIds: ['sig-1', 'sig-2', 'sig-3']
     });
     expect(getSignatureStatuses).toHaveBeenCalledTimes(1);
-    expect(getTokenAccountsByOwner).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['status:sig-1,sig-2', 'token-accounts']);
+    expect(getTokenAccountsByOwner).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(['status:sig-1,sig-2', 'token-accounts', 'token-accounts']);
     expect(sent).toEqual(['close-1', 'close-2', 'residual-swap']);
+
+    await server.stop();
+  });
+
+  it('serves account-state with Token-2022 balances and currentValueSol on walletTokens', async () => {
+    const keypair = Keypair.generate();
+    const getQuote = vi.fn(async () => ({ outAmount: String(0.18 * 1_000_000_000), routePlan: [] }));
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000,
+        getTokenAccountsByOwner: async () => [
+          {
+            pubkey: 'token-account-2022',
+            account: {
+              data: {
+                parsed: {
+                  info: {
+                    mint: 'token-2022-mint',
+                    owner: keypair.publicKey.toBase58(),
+                    tokenAmount: {
+                      amount: '2500000',
+                      decimals: 6,
+                      uiAmount: 2.5,
+                      uiAmountString: '2.5'
+                    }
+                  },
+                  type: 'account'
+                },
+                program: 'spl-token-2022'
+              }
+            }
+          }
+        ]
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn((mint: string, amount: number) => ({ mint, amount })),
+        getQuote
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/account-state`, {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.walletSol).toBe(2);
+    expect(payload.walletTokens).toEqual([
+      expect.objectContaining({
+        mint: 'token-2022-mint',
+        amount: 2.5,
+        currentValueSol: 0.18
+      })
+    ]);
+    expect(payload.journalTokens).toEqual(payload.walletTokens);
+
+    const secondResponse = await fetch(`${server.origin}/account-state`, {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+    const secondPayload = await secondResponse.json();
+    expect(secondResponse.status).toBe(200);
+    expect(secondPayload.walletTokens).toEqual(payload.walletTokens);
+    expect(getQuote).toHaveBeenCalledTimes(1);
 
     await server.stop();
   });

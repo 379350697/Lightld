@@ -49,6 +49,8 @@ type LiveDaemonOptions = {
   mirrorRuntime?: MirrorRuntime;
   housekeepingRunner?: HousekeepingRunner;
   accountProvider?: LiveAccountStateProvider;
+  signer?: Omit<LiveCycleInput, 'strategy'>['signer'];
+  broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
   confirmationProvider?: LiveConfirmationProvider;
   evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
   evolutionOutcomeStore?: Pick<LiveCycleOutcomeStore, 'appendOutcome'>;
@@ -481,6 +483,7 @@ async function runResidualTokenSweepIfDue(input: {
   strategy: StrategyId;
   accountState?: LiveAccountState;
   runtimeMode: RuntimeMode;
+  runtimeReason?: string;
   pendingSubmission: boolean;
   signer?: Omit<LiveCycleInput, 'strategy'>['signer'];
   broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
@@ -501,9 +504,14 @@ async function runResidualTokenSweepIfDue(input: {
   }
 
   const nextSweepAt = new Date(now.getTime() + input.residualTokenSweepIntervalMs).toISOString();
+  const runtimeAllowsMaintenance =
+    input.runtimeMode === 'healthy'
+    || input.runtimeMode === 'degraded'
+    || input.runtimeMode === 'flatten_only'
+    || (input.runtimeMode === 'circuit_open' && input.runtimeReason === 'fetch failed');
 
   if (
-    (input.runtimeMode !== 'healthy' && input.runtimeMode !== 'degraded' && input.runtimeMode !== 'flatten_only')
+    !runtimeAllowsMaintenance
     || input.pendingSubmission
     || !input.signer
     || !input.broadcaster
@@ -1144,6 +1152,31 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: nowIso()
         });
 
+        if (!effectiveAccountState && options.accountProvider && options.signer && options.broadcaster) {
+          effectiveAccountState = await options.accountProvider.readState();
+        }
+
+        if (options.signer && options.broadcaster) {
+          const preIngestResidualSweepResult = await runResidualTokenSweepIfDue({
+            strategy: options.strategy,
+            accountState: effectiveAccountState,
+            runtimeMode: runtimeState.mode,
+            runtimeReason: runtimeState.circuitReason,
+            pendingSubmission: hasPendingSubmission,
+            signer: options.signer,
+            broadcaster: options.broadcaster,
+            confirmationProvider: options.confirmationProvider,
+            dependencyHealth,
+            residualTokenSweepStore,
+            residualTokenSweepIntervalMs,
+            residualTokenSweepCooldownMs,
+            residualTokenSweepMinValueSol,
+            nextSweepAt: nextResidualTokenSweepAt
+          });
+          dependencyHealth = preIngestResidualSweepResult.dependencyHealth;
+          nextResidualTokenSweepAt = preIngestResidualSweepResult.nextSweepAt;
+        }
+
         cycleInput = await buildCycleInput(tickCount);
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         pendingSubmission = await pendingSubmissionStore.read();
@@ -1325,9 +1358,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           strategy: options.strategy,
           accountState: effectiveAccountState,
           runtimeMode: runtimeState.mode,
+          runtimeReason: runtimeState.circuitReason,
           pendingSubmission: postTickPendingSubmission !== null,
-          signer: cycleInput.signer,
-          broadcaster: cycleInput.broadcaster,
+          signer: cycleInput.signer ?? options.signer,
+          broadcaster: cycleInput.broadcaster ?? options.broadcaster,
           confirmationProvider,
           dependencyHealth,
           residualTokenSweepStore,

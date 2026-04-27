@@ -239,6 +239,8 @@ async function main() {
     ),
     maxTicks: args.maxTicks,
     accountProvider: executionAdapters.accountProvider,
+    signer: executionAdapters.signer,
+    broadcaster: executionAdapters.broadcaster,
     confirmationProvider: executionAdapters.confirmationProvider,
     mirrorRuntime,
     housekeepingRunner,

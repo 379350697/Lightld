@@ -144,6 +144,56 @@ async function waitForConfirmedSignatures(
   return false;
 }
 
+async function resolveTokenCurrentValueSol(input: {
+  jupiterClient: JupiterClient;
+  mint: string;
+  amountLamports: number;
+  defaultSlippageBps: number;
+}) {
+  if (!Number.isFinite(input.amountLamports) || input.amountLamports <= 0) {
+    return undefined;
+  }
+
+  const quoteResponse = await input.jupiterClient.getQuote(
+    input.jupiterClient.buildSellQuoteParams(input.mint, input.amountLamports, input.defaultSlippageBps)
+  );
+  const outAmountLamports = Number(quoteResponse.outAmount ?? 0);
+  const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
+  return Number.isFinite(outAmountSol) && outAmountSol >= 0 ? outAmountSol : undefined;
+}
+
+const ACCOUNT_STATE_TOKEN_VALUE_CACHE_TTL_MS = 5 * 60_000;
+const ACCOUNT_STATE_TOKEN_VALUE_MAX_QUOTES_PER_REQUEST = 3;
+
+type TokenValueCacheEntry = {
+  currentValueSol?: number;
+  updatedAt: number;
+};
+
+function readFreshTokenValueCache(
+  cache: Map<string, TokenValueCacheEntry>,
+  mint: string,
+  now = Date.now()
+) {
+  const entry = cache.get(mint);
+  if (!entry) {
+    return undefined;
+  }
+
+  if (now - entry.updatedAt > ACCOUNT_STATE_TOKEN_VALUE_CACHE_TTL_MS) {
+    return undefined;
+  }
+
+  return entry.currentValueSol;
+}
+
+function isRateLimitLikeError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('429')
+    || message.includes('rate-limited')
+    || message.includes('no endpoint available');
+}
+
 async function liquidateResidualTokensToSol(input: {
   rpcClient: SolanaRpcClient;
   jupiterClient: JupiterClient;
@@ -243,6 +293,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
+  const tokenValueCache = new Map<string, TokenValueCacheEntry>();
   const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
   const buildSubmittedBroadcastResult = (input: {
     idempotencyKey: string;
@@ -651,7 +702,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const lamports = await rpcClient.getBalance(walletPublicKey);
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
-            let walletTokens: { mint: string; symbol: string; amount: number }[] = [];
+            let walletTokens: { mint: string; symbol: string; amount: number; currentValueSol?: number }[] = [];
             let walletLpPositions: Array<{
               poolAddress: string;
               positionAddress: string;
@@ -672,14 +723,44 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             try {
               const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
-              walletTokens = tokenAccounts.map((account) => {
+              const now = Date.now();
+              const walletTokenCandidates = tokenAccounts.map((account) => {
                 const info = account.account.data.parsed.info;
+                const amountLamports = Number(info.tokenAmount.amount ?? 0);
                 return {
                   mint: info.mint,
                   symbol: '',
-                  amount: info.tokenAmount.uiAmount ?? 0
+                  amount: info.tokenAmount.uiAmount ?? 0,
+                  amountLamports,
+                  currentValueSol: readFreshTokenValueCache(tokenValueCache, info.mint, now)
                 };
               });
+
+              const quoteCandidates = walletTokenCandidates
+                .filter((token) => token.amountLamports > 0 && typeof token.currentValueSol !== 'number')
+                .sort((left, right) => right.amountLamports - left.amountLamports)
+                .slice(0, ACCOUNT_STATE_TOKEN_VALUE_MAX_QUOTES_PER_REQUEST);
+
+              for (const token of quoteCandidates) {
+                try {
+                  token.currentValueSol = await resolveTokenCurrentValueSol({
+                    jupiterClient,
+                    mint: token.mint,
+                    amountLamports: token.amountLamports,
+                    defaultSlippageBps
+                  });
+                  tokenValueCache.set(token.mint, {
+                    currentValueSol: token.currentValueSol,
+                    updatedAt: Date.now()
+                  });
+                } catch (error) {
+                  if (isRateLimitLikeError(error)) {
+                    break;
+                  }
+                }
+              }
+
+              walletTokens = walletTokenCandidates.map(({ amountLamports: _amountLamports, ...token }) => token);
             } catch {
               // Token accounts query may fail on free RPC
             }

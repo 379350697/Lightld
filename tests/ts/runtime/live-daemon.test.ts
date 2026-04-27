@@ -1894,6 +1894,90 @@ describe('runLiveDaemon', () => {
     }
   });
 
+  it('runs maintenance sweep before ingest when runtime is circuit_open from fetch failed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-pre-ingest-maintenance-sweep-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
+    const seenMints: string[] = [];
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'fetch failed',
+      cooldownUntil: '2099-01-01T00:00:00.000Z',
+      transientAutoHealEligible: false,
+      transientRecoverySuccessTicks: 0,
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z'
+    });
+    await runtimeStateStore.writeDependencyHealth({
+      quote: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      signer: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      broadcaster: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      account: { consecutiveFailures: 1, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: 'fetch failed' },
+      confirmation: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' }
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      residualTokenSweepIntervalMs: 60_000,
+      residualTokenSweepCooldownMs: 120_000,
+      residualTokenSweepMinValueSol: 0.2,
+      maxTicks: 1,
+      accountProvider: {
+        readState: async () => ({
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [
+            { mint: 'mint-pre-ingest-maint', symbol: 'PIM', amount: 10, currentValueSol: 0.35 }
+          ],
+          journalTokens: [],
+          fills: []
+        })
+      },
+      signer: {
+        sign: async (intent) => ({
+          intent,
+          signerId: 'maintenance-signer',
+          signedAt: '2026-04-27T00:00:00.000Z',
+          signature: 'maintenance-signature'
+        })
+      },
+      broadcaster: {
+        broadcast: async (signedIntent) => {
+          seenMints.push(signedIntent.intent.tokenMint ?? '');
+          return {
+            status: 'submitted' as const,
+            submissionId: 'maintenance-1',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'maintenance-tx-1'
+          };
+        }
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: '2026-04-27T00:00:01.000Z'
+        })
+      },
+      buildCycleInput: async () => {
+        throw new Error('fetch failed');
+      }
+    });
+
+    expect(seenMints).toEqual(['mint-pre-ingest-maint']);
+    expect(await residualTokenSweepStore.readActive('mint-pre-ingest-maint', '2000-01-01T00:00:00.000Z')).toMatchObject({
+      mint: 'mint-pre-ingest-maint'
+    });
+  });
+
   it('uses the hot polling interval when LP exit signals are near thresholds', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-hot-interval-'));
     const waits: number[] = [];
