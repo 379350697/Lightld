@@ -116,6 +116,7 @@ export type DashboardHistoricalActivityEntry = {
   pnlSol: number | null;
   pnlPct: number | null;
   dprPct: number | null;
+  profitTrust: 'trusted' | 'estimated' | 'untrusted';
 };
 
 const HISTORY_ERROR_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -128,6 +129,8 @@ type ReconciledHistoricalAction = {
   amountSol: number;
   recordedAt: string;
   status: 'ok' | 'missing-local' | 'missing-chain' | 'unresolved';
+  provenance: 'chain' | 'local';
+  hasRealizedChainAmount?: boolean;
   entrySol?: number;
   exitValueSol?: number;
   feeEarnedSol?: number;
@@ -547,39 +550,48 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const tokenMint = lifecycle.tokenMint;
   const tokenSymbol = lifecycle.tokenSymbol;
   const investedSol = openAction?.entrySol ?? openAction?.amountSol ?? closeAction?.entrySol ?? null;
-  const feeEarnedSol = closeAction?.feeEarnedSol ?? openAction?.feeEarnedSol ?? null;
-  const feeEarnedPct = typeof investedSol === 'number' && investedSol > 0 && typeof feeEarnedSol === 'number'
-    ? (feeEarnedSol / investedSol) * 100
-    : null;
+  const rawFeeEarnedSol = closeAction?.feeEarnedSol ?? openAction?.feeEarnedSol ?? null;
   const hasTrustedCloseMetrics = Boolean(
     closeAction && (
       typeof closeAction.exitValueSol === 'number'
       || typeof closeAction.pnlPct === 'number'
-      || closeAction.status === 'ok'
+      || closeAction.hasRealizedChainAmount === true
     )
   );
   const totalExitValueSol = typeof closeAction?.exitValueSol === 'number'
     ? closeAction.exitValueSol
-    : closeAction?.status === 'ok'
+    : closeAction?.hasRealizedChainAmount === true
       ? closeAction.amountSol
       : null;
-  const pnlSol = typeof investedSol === 'number' && typeof totalExitValueSol === 'number'
+  const rawPnlSol = typeof investedSol === 'number' && typeof totalExitValueSol === 'number'
     ? totalExitValueSol - investedSol
     : hasTrustedCloseMetrics && typeof investedSol === 'number' && investedSol > 0 && typeof closeAction?.pnlPct === 'number'
       ? investedSol * (closeAction.pnlPct / 100)
       : null;
-  const pnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof pnlSol === 'number'
-    ? (pnlSol / investedSol) * 100
+  const rawPnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof rawPnlSol === 'number'
+    ? (rawPnlSol / investedSol) * 100
     : hasTrustedCloseMetrics && typeof closeAction?.pnlPct === 'number'
       ? closeAction.pnlPct
       : null;
 
-  if (
+  const isMatchedLifecycle = Boolean(
     openAction
     && closeAction
     && openAction.status === 'ok'
     && closeAction.status === 'ok'
-  ) {
+  );
+  const hasAnyProfitMetrics = [rawFeeEarnedSol, rawPnlSol, rawPnlPct].some((value) => typeof value === 'number');
+  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = isMatchedLifecycle
+    ? (hasTrustedCloseMetrics ? 'trusted' : (hasAnyProfitMetrics ? 'estimated' : 'untrusted'))
+    : (hasAnyProfitMetrics ? 'estimated' : 'untrusted');
+  const feeEarnedSol = profitTrust === 'untrusted' ? null : rawFeeEarnedSol;
+  const feeEarnedPct = profitTrust !== 'untrusted' && typeof investedSol === 'number' && investedSol > 0 && typeof feeEarnedSol === 'number'
+    ? (feeEarnedSol / investedSol) * 100
+    : null;
+  const pnlSol = profitTrust === 'untrusted' ? null : rawPnlSol;
+  const pnlPct = profitTrust === 'untrusted' ? null : rawPnlPct;
+
+  if (isMatchedLifecycle && openAction && closeAction) {
     return {
       lifecycleKey: openAction.lifecycleKey || closeAction.lifecycleKey,
       tokenMint,
@@ -597,7 +609,8 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       feeEarnedPct,
       pnlSol,
       pnlPct,
-      dprPct: pnlPct
+      dprPct: pnlPct,
+      profitTrust
     };
   }
 
@@ -627,7 +640,8 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     feeEarnedPct,
     pnlSol,
     pnlPct,
-    dprPct: pnlPct
+    dprPct: pnlPct,
+    profitTrust
   };
 }
 
@@ -662,7 +676,8 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     feeEarnedPct,
     pnlSol,
     pnlPct,
-    dprPct: pnlPct
+    dprPct: pnlPct,
+    profitTrust: 'trusted'
   };
 }
 
@@ -897,7 +912,9 @@ export function buildHistoricalActivity(input: {
         amountSol: fill.filledSol > 0 ? fill.filledSol : matchedOrder?.requestedPositionSol ?? 0,
         recordedAt: [fill.recordedAt, matchedOrder?.updatedAt ?? matchedOrder?.createdAt ?? '']
           .sort((left, right) => right.localeCompare(left))[0] ?? '',
-        status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved')
+        status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved'),
+        provenance: 'chain',
+        hasRealizedChainAmount: fill.filledSol > 0
       });
     }
   }
@@ -928,6 +945,8 @@ export function buildHistoricalActivity(input: {
         });
         return lifecycleStatus === 'confirmed' ? 'missing-chain' : lifecycleStatus;
       })(),
+      provenance: 'local',
+      hasRealizedChainAmount: false,
       entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
         ? decision.entrySol
         : undefined,

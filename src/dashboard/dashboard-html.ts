@@ -226,6 +226,9 @@ export function buildDashboardHtml(): string {
     .token-meta { display: flex; align-items: center; gap: 6px; }
     .dlmm-badge { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; background: var(--green-bg); color: var(--green); font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
     .token-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+    .history-trust-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 10px; font-weight: 700; }
+    .history-trust-badge.estimated { color: #fbbf24; background: rgba(251,191,36,0.10); }
+    .history-trust-badge.untrusted { color: var(--text-muted); background: rgba(255,255,255,0.03); }
     .pool-addr, .cell-sub, .log-time, .log-token { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); }
     .cell-main { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--font-mono); }
     .cell-green { color: var(--green); }
@@ -483,6 +486,19 @@ export function buildDashboardHtml(): string {
       if (typeof v !== 'number' || !Number.isFinite(v)) return 'cell-muted';
       return v >= 0 ? 'cell-green' : 'cell-red';
     }
+    function historyTrustLabel(trust) {
+      if (trust === 'estimated') return '收益估算';
+      if (trust === 'untrusted') return '收益不可信';
+      return '';
+    }
+    function historyMetricClass(value, trust) {
+      return trust === 'trusted' ? metricClass(value) : 'cell-muted';
+    }
+    function historyMetricSubtext(value, trust) {
+      if (trust === 'estimated') return value ? value + ' · 估算' : '估算';
+      if (trust === 'untrusted') return value ? value + ' · 不可信' : '不可信';
+      return value || '--';
+    }
     function fetchJson(url) { return fetch(url).then(function(res) { if (!res.ok) return null; return res.json(); }).catch(function() { return null; }); }
     function renderChart(dailyEquity) {
       var data = Array.isArray(dailyEquity) ? dailyEquity : [];
@@ -665,13 +681,22 @@ export function buildDashboardHtml(): string {
         var pnl = Number(row.pnlSol);
         var pnlPct = Number(row.pnlPct);
         var dpr = Number(row.dprPct);
+        var profitTrust = row.profitTrust || 'untrusted';
+        var trustBadge = profitTrust === 'trusted'
+          ? ''
+          : '<span class="history-trust-badge ' + escHtml(profitTrust) + '">' + escHtml(historyTrustLabel(profitTrust)) + '</span>';
+        var feeValue = typeof row.feeEarnedSol === 'number' ? fmtSignedSol(Number(row.feeEarnedSol)) + ' SOL' : '--';
+        var feePct = typeof row.feeEarnedPct === 'number' ? fmtPct(Number(row.feeEarnedPct)) : '';
+        var pnlValue = typeof row.pnlSol === 'number' ? fmtSignedSol(pnl) + ' SOL' : '--';
+        var pnlPctText = typeof row.pnlPct === 'number' ? fmtPct(pnlPct) : '';
+        var dprText = typeof row.dprPct === 'number' ? fmtPct(dpr) : '--';
         return '<tr>'
-          + '<td><div class="token-cell"><div class="position-side-icon">↘</div><div class="token-avatar">' + escHtml((tokenMint || '?').charAt(0).toUpperCase()) + '</div><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(tokenMint)) + '</span><span class="token-tag">' + escHtml(row.source || '--') + '</span></div></div></div></td>'
+          + '<td><div class="token-cell"><div class="position-side-icon">↘</div><div class="token-avatar">' + escHtml((tokenMint || '?').charAt(0).toUpperCase()) + '</div><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(tokenMint)) + '</span><span class="token-tag">' + escHtml(row.source || '--') + '</span>' + trustBadge + '</div></div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(durationLabel(row.openedAt, row.closedAt)) + '</div><div class="cell-sub">' + escHtml(row.confirmationStatus || '--') + '</div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(Number(row.investedSol != null ? row.investedSol : row.amountSol)) + ' ◎</div></div></td>'
-          + '<td><div class="cell-metric"><div class="cell-main cell-green">' + (typeof row.feeEarnedSol === 'number' ? fmtSignedSol(Number(row.feeEarnedSol)) + ' SOL' : '--') + '</div><div class="cell-sub cell-green">' + (typeof row.feeEarnedPct === 'number' ? fmtPct(Number(row.feeEarnedPct)) : '--') + '</div></div></td>'
-          + '<td><div class="cell-metric"><div class="cell-main ' + metricClass(pnl) + '">' + (typeof row.pnlSol === 'number' ? fmtSignedSol(pnl) + ' SOL' : '--') + '</div><div class="cell-sub ' + metricClass(pnl) + '">' + (typeof row.pnlPct === 'number' ? fmtPct(pnlPct) : '--') + '</div></div></td>'
-          + '<td><div class="cell-metric"><div class="cell-main ' + metricClass(dpr) + '">' + (typeof row.dprPct === 'number' ? fmtPct(dpr) : '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main ' + historyMetricClass(Number(row.feeEarnedSol), profitTrust) + '">' + feeValue + '</div><div class="cell-sub ' + historyMetricClass(Number(row.feeEarnedSol), profitTrust) + '">' + escHtml(historyMetricSubtext(feePct, profitTrust)) + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main ' + historyMetricClass(pnl, profitTrust) + '">' + pnlValue + '</div><div class="cell-sub ' + historyMetricClass(pnl, profitTrust) + '">' + escHtml(historyMetricSubtext(pnlPctText, profitTrust)) + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main ' + historyMetricClass(dpr, profitTrust) + '">' + dprText + '</div><div class="cell-sub ' + historyMetricClass(dpr, profitTrust) + '">' + escHtml(historyMetricSubtext('', profitTrust)) + '</div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(timeAgo(row.closedAt || row.recordedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(row.closedAt || row.recordedAt)) + '</div></div></td>'
           + '</tr>';
       }).join('');

@@ -152,10 +152,11 @@ describe('buildCashflowMetrics', () => {
       tokenSymbol: 'earthcoin',
       action: 'add-lp -> withdraw-lp',
       source: 'matched',
-      confirmationStatus: 'ok',
+      confirmationStatus: 'confirmed',
       openedAt: '2026-04-22T13:07:07.421Z',
       closedAt: '2026-04-22T14:39:45.589Z',
       investedSol: 0.05,
+      profitTrust: 'trusted'
     });
     expect(result[0]?.feeEarnedSol).toBeCloseTo(0.0054769119);
     expect(result[0]?.pnlSol).toBeCloseTo(-0.0088574374);
@@ -241,7 +242,7 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]).toMatchObject({
       tokenMint: 'mint-real',
       source: 'matched',
-      confirmationStatus: 'ok'
+      confirmationStatus: 'confirmed'
     });
   });
 
@@ -269,7 +270,7 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]).toMatchObject({
       tokenMint: 'mint-recent',
       source: 'error',
-      confirmationStatus: 'missing-chain'
+      confirmationStatus: 'unresolved'
     });
   });
 
@@ -329,7 +330,7 @@ describe('buildCashflowMetrics', () => {
         amountSol: 1,
         recordedAt: '2026-04-18T09:00:01.000Z',
         source: 'matched',
-        confirmationStatus: 'ok'
+        confirmationStatus: 'confirmed'
       }
     ]);
   });
@@ -484,7 +485,7 @@ describe('buildCashflowMetrics', () => {
         amountSol: 0.9,
         recordedAt: '2026-04-18T09:00:08.000Z',
         source: 'matched',
-        confirmationStatus: 'ok'
+        confirmationStatus: 'confirmed'
       }
     ]);
   });
@@ -579,7 +580,7 @@ describe('buildCashflowMetrics', () => {
         amountSol: 0.6,
         recordedAt: '2026-04-18T09:02:00.000Z',
         source: 'matched',
-        confirmationStatus: 'ok'
+        confirmationStatus: 'confirmed'
       },
       {
         tokenMint: 'mint-strong',
@@ -746,11 +747,12 @@ describe('buildCashflowMetrics', () => {
         tokenSymbol: 'earthcoin',
         action: 'add-lp -> withdraw-lp',
         source: 'error',
-        confirmationStatus: 'missing-chain',
+        confirmationStatus: 'unresolved',
         openedAt: '2026-04-22T13:07:07.421Z',
         closedAt: '2026-04-22T14:39:45.589Z',
         investedSol: 0.05,
-        feeEarnedSol: 0.006224571
+        feeEarnedSol: 0.006224571,
+        profitTrust: 'estimated'
       }
     ]);
     expect(result[0]?.pnlSol).toBeCloseTo(-0.0008033389999999997);
@@ -794,6 +796,66 @@ describe('buildCashflowMetrics', () => {
       source: 'error',
       confirmationStatus: 'unresolved',
       investedSol: 0.05,
+      profitTrust: 'untrusted',
+      pnlSol: null,
+      pnlPct: null,
+      dprPct: null
+    });
+  });
+
+  it('does not mark requestedPositionSol fallback as trusted pnl for matched chain closes', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-fallback-close',
+          tokenSymbol: 'FBC',
+          side: 'add-lp',
+          submissionId: 'sub-fallback-open',
+          filledSol: 0.05,
+          recordedAt: '2026-04-22T13:07:07.421Z'
+        },
+        {
+          tokenMint: 'mint-fallback-close',
+          tokenSymbol: 'FBC',
+          side: 'withdraw-lp',
+          submissionId: 'sub-fallback-close',
+          filledSol: 0,
+          recordedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-fallback-close',
+          tokenSymbol: 'FBC',
+          action: 'add-lp',
+          submissionId: 'sub-fallback-open',
+          idempotencyKey: 'order-fallback-open',
+          requestedPositionSol: 0.05,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T13:07:01.715Z',
+          updatedAt: '2026-04-22T13:07:01.722Z'
+        },
+        {
+          tokenMint: 'mint-fallback-close',
+          tokenSymbol: 'FBC',
+          action: 'withdraw-lp',
+          submissionId: 'sub-fallback-close',
+          idempotencyKey: 'order-fallback-close',
+          requestedPositionSol: 0.02,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T14:39:45.571Z',
+          updatedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-fallback-close',
+      source: 'matched',
+      confirmationStatus: 'confirmed',
+      profitTrust: 'untrusted',
       pnlSol: null,
       pnlPct: null,
       dprPct: null

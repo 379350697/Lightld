@@ -24,15 +24,11 @@ describe('buildDashboardHtml', () => {
     expect(html).not.toContain('暂未接入真实 historical 数据');
   });
 
-  it('includes the richer open and historical position table columns from the redesigned layout', () => {
+  it('includes the historical trust badge copy for estimated and untrusted rows', () => {
     const html = buildDashboardHtml();
 
-    expect(html).toContain('Claimed | Unclaim Fee');
-    expect(html).toContain('uPnL');
-    expect(html).toContain('Age');
-    expect(html).toContain('Invested');
-    expect(html).toContain('Fee Earned');
-    expect(html).toContain('PnL');
-    expect(html).toContain('Closed At');
+    expect(html).toContain('收益估算');
+    expect(html).toContain('收益不可信');
+    expect(html).toContain('history-trust-badge');
   });
 });
