@@ -389,6 +389,23 @@ npm run show:status -- --state-root-dir state
 
 If the SQLite mirror is enabled and healthy, `show:status` will also include recent incidents and recent order summaries from the mirror. If the mirror is unavailable, the CLI falls back to the file-backed health snapshot automatically.
 
+## Dashboard
+
+The bundled dashboard is a read-only monitoring surface, not a trading control plane. Start it with:
+
+```bash
+npm run run:dashboard
+```
+
+By default it listens on `DASHBOARD_PORT` or port `8899`.
+
+The browser UI fetches aggregated monitoring data from:
+
+- `GET /api/overview`
+- `GET /api/history?page=<page>&pageSize=<pageSize>`
+
+The dashboard server also exposes read-only status slices such as `/api/status`, `/api/pnl`, `/api/positions`, `/api/orders`, `/api/fills`, `/api/incidents`, and `/api/logs` for operator inspection. It does not expose order placement, pause, resume, signing, or broadcast controls. Live trading remains owned by the daemon execution path: strategy cycle -> signer -> broadcaster or Solana execution sidecar -> confirmation and reconciliation.
+
 ## Journals
 
 Live runtime journals are written to `tmp/journals/`:
