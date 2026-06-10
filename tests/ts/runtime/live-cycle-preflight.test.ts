@@ -129,7 +129,7 @@ describe('live-cycle preflight helpers', () => {
         createdAt: '2026-03-22T00:00:00.000Z',
         updatedAt: '2026-03-22T00:00:00.000Z'
       },
-      now: new Date('2026-03-22T00:00:10.000Z'),
+      now: new Date('2026-03-22T00:01:01.000Z'),
       accountState: {
         walletSol: 1,
         journalSol: 1,

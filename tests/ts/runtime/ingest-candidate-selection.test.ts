@@ -183,4 +183,53 @@ describe('ingest candidate helpers', () => {
     expect(filtered[0]?.safetyScore).toBe(90);
     expect(logger.log).toHaveBeenCalled();
   });
+
+  it('fails closed and records rejected diagnostics when safety fetching throws', async () => {
+    const logger = {
+      log: vi.fn(),
+      warn: vi.fn()
+    };
+    const diagnostics = vi.fn();
+
+    const filtered = await applySafetyFilter([
+      makeCandidate({ mint: 'mint-risky', symbol: 'RSK' })
+    ], {
+      safetyConfig: {
+        disabled: false,
+        minHolders: 0,
+        minBluechipPct: 0,
+        minSafetyScore: 50
+      },
+      maxBatchSize: 50,
+      fetchSafety: async () => {
+        throw new Error('gmgn safety outage');
+      },
+      logger,
+      onDiagnostics: diagnostics
+    });
+
+    expect(filtered).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Safety filter failed closed')
+    );
+    expect(diagnostics).toHaveBeenCalledWith({
+      checkedMints: ['mint-risky'],
+      results: [
+        expect.objectContaining({
+          mint: 'mint-risky',
+          safe: false,
+          safetyScore: 0,
+          maxScore: 120,
+          error: 'gmgn safety outage'
+        })
+      ],
+      rejected: [
+        expect.objectContaining({
+          symbol: 'RSK',
+          mint: 'mint-risky',
+          error: 'gmgn safety outage'
+        })
+      ]
+    });
+  });
 });

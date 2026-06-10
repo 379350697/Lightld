@@ -20,6 +20,8 @@ const SolanaExecutionConfigSchema = z.object({
   rpcEndpointMaxWaitMs: z.number().int().nonnegative().default(1_000),
   keypairPath: z.string().min(1),
   expectedPublicKey: z.string().min(1).optional(),
+  stateRootDir: z.string().min(1).default('state/solana-execution'),
+  expectedSignerPublicKeys: z.array(z.string().min(1)).default([]),
   jupiterApiUrl: z.string().min(1).default('https://api.jup.ag'),
   jupiterApiKey: z.string().min(1).optional(),
   authToken: z.string().min(1).optional(),
@@ -29,6 +31,13 @@ const SolanaExecutionConfigSchema = z.object({
 });
 
 export type SolanaExecutionConfig = z.infer<typeof SolanaExecutionConfigSchema>;
+
+function splitCsv(value: string | undefined) {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
 
 export function loadSolanaExecutionConfig(
   env: Record<string, string | undefined> = process.env
@@ -69,6 +78,10 @@ export function loadSolanaExecutionConfig(
       : 1_000,
     keypairPath: env.SOLANA_KEYPAIR_PATH,
     expectedPublicKey: env.SOLANA_EXPECTED_PUBLIC_KEY,
+    stateRootDir: env.SOLANA_EXECUTION_STATE_DIR ?? 'state/solana-execution',
+    expectedSignerPublicKeys: splitCsv(
+      env.SOLANA_EXPECTED_SIGNER_PUBLIC_KEYS ?? env.SOLANA_EXPECTED_SIGNERS
+    ),
     jupiterApiUrl: env.JUPITER_API_URL ?? 'https://api.jup.ag',
     jupiterApiKey: env.JUPITER_API_KEY,
     authToken: env.SOLANA_EXECUTION_AUTH_TOKEN ?? env.LIVE_AUTH_TOKEN,

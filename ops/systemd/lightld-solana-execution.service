@@ -1,0 +1,17 @@
+[Unit]
+Description=Lightld Solana execution sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lightld
+ExecStart=/usr/bin/node --experimental-strip-types --use-env-proxy src/cli/run-solana-execution-main.ts
+Restart=always
+RestartSec=5
+User=lightld
+EnvironmentFile=/etc/lightld-solana-execution.env
+ReadOnlyPaths=/opt/lightld/secrets
+ReadWritePaths=/opt/lightld/state
+
+[Install]
+WantedBy=multi-user.target

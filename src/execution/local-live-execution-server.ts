@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, verify as verifyBuffer } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -7,20 +7,16 @@ import { z } from 'zod';
 
 import { readJsonIfExists, writeJsonAtomically } from '../runtime/atomic-file.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
+import { verifySignedIntent } from './signed-intent-verifier.ts';
 import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
-import type { SignedLiveOrderIntent } from './live-signer.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
-import { decodeBase58 } from '../shared/base58.ts';
-import { stableStringify } from '../shared/canonical-json.ts';
 import {
   hasExpectedBearerToken,
   readBody,
   writeJson,
   writeText
 } from '../shared/http-server.ts';
-
-const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 const SignedIntentSchema = z.object({
   intent: z.object({
@@ -143,20 +139,6 @@ type LocalLiveExecutionServerOptions = {
   maxOutputSol?: number;
 };
 
-function createPublicKeyFromBase58(value: string) {
-  const raw = Buffer.from(decodeBase58(value));
-
-  if (raw.length !== 32) {
-    throw new Error(`Expected a 32-byte signer public key, received ${raw.length}`);
-  }
-
-  return createPublicKey({
-    key: Buffer.concat([ED25519_SPKI_PREFIX, raw]),
-    format: 'der',
-    type: 'spki'
-  });
-}
-
 function hashValue(value: string) {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -209,27 +191,6 @@ async function readAccountState(path: string | undefined): Promise<LiveAccountSt
     }
 
     throw error;
-  }
-}
-
-function verifySignedIntent(
-  signedIntent: SignedLiveOrderIntent,
-  expectedSignerPublicKeys: string[]
-) {
-  if (expectedSignerPublicKeys.length > 0 && !expectedSignerPublicKeys.includes(signedIntent.signerId)) {
-    throw new Error(`Signer ${signedIntent.signerId} is not in the allowed signer list`);
-  }
-
-  const publicKey = createPublicKeyFromBase58(signedIntent.signerId);
-  const verified = verifyBuffer(
-    null,
-    Buffer.from(stableStringify(signedIntent.intent), 'utf8'),
-    publicKey,
-    Buffer.from(signedIntent.signature, 'base64')
-  );
-
-  if (!verified) {
-    throw new Error('Signed intent verification failed');
   }
 }
 

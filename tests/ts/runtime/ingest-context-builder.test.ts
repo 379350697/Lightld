@@ -568,6 +568,55 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('ModuleNotFoundError');
   });
 
+  it('fails closed with a safety-specific fallback reason when GMGN safety fetching throws', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-risky',
+          baseMint: 'mint-risky',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'RSK',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-risky',
+          symbol: 'RSK',
+          holders: 50,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => {
+        throw new Error('gmgn safety outage');
+      }
+    });
+
+    expect(result.context.pool).toMatchObject({
+      address: '',
+      hasSolRoute: false
+    });
+    expect(result.context.route).toMatchObject({
+      poolAddress: '',
+      blockReason: 'gmgn-safety-check-failed'
+    });
+    expect((result.context.route as { blockDetails?: string }).blockDetails).toContain('gmgn safety outage');
+  });
+
   it('continues through safety and selects a candidate outside the old scan window gate', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

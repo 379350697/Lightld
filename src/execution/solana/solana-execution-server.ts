@@ -1,13 +1,19 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import type { Keypair } from '@solana/web3.js';
 
 import { z } from 'zod';
 
+import { readJsonIfExists, writeJsonAtomically } from '../../runtime/atomic-file.ts';
 import { validateIntentAllowlist } from '../../risk/instruction-allowlist.ts';
 import { JupiterClient, LAMPORTS_PER_SOL, SOL_MINT } from './jupiter-client.ts';
 import { SolanaRpcClient } from './solana-rpc-client.ts';
 import { signSwapTransaction } from './solana-transaction-signer.ts';
 import { MeteoraDlmmClient } from './meteora-dlmm-client.ts';
+import {
+  signedIntentIdempotencyFingerprint,
+  verifySignedIntent
+} from '../signed-intent-verifier.ts';
 import type { LiveBroadcastResult } from '../live-broadcaster.ts';
 import type { LiveConfirmationResult } from '../live-confirmation-provider.ts';
 import { collectLiveQuote } from '../live-quote-service.ts';
@@ -42,14 +48,44 @@ const ConfirmationRequestSchema = z.object({
   confirmationSignature: z.string().optional()
 });
 
+const BroadcastResultSchema = z.object({
+  status: z.literal('submitted'),
+  submissionId: z.string(),
+  idempotencyKey: z.string(),
+  confirmationSignature: z.string().optional(),
+  submissionIds: z.array(z.string()).optional(),
+  confirmationSignatures: z.array(z.string()).optional(),
+  batchStatus: z.enum(['complete', 'partial']).optional(),
+  reason: z.string().optional()
+});
+
+const SubmissionEntrySchema = z.object({
+  idempotencyKey: z.string().min(1),
+  signedIntentFingerprint: z.string().min(1),
+  signedIntent: BroadcastRequestSchema.shape.intent,
+  status: z.enum(['pending', 'submitted']).default('submitted'),
+  result: BroadcastResultSchema.optional(),
+  receivedAt: z.string().min(1),
+  updatedAt: z.string().min(1).optional()
+});
+
+const SubmissionStoreSchema = z.object({
+  submissions: z.array(SubmissionEntrySchema)
+});
+
+type SubmissionStore = z.infer<typeof SubmissionStoreSchema>;
+type SignedBroadcastIntent = z.infer<typeof BroadcastRequestSchema>['intent'];
+
 type SolanaExecutionServerOptions = {
   host: string;
   port: number;
+  stateRootDir?: string;
   keypair: Keypair;
   rpcClient: SolanaRpcClient;
   jupiterClient: JupiterClient;
   dlmmClient?: MeteoraDlmmClient;
   authToken?: string;
+  expectedSignerPublicKeys?: string[];
   maxOutputSol?: number;
   defaultSlippageBps?: number;
   jitoTipLamports?: number;
@@ -283,6 +319,36 @@ function logBroadcastOutcome(payload: BroadcastLogPayload) {
   console.info(line);
 }
 
+class SolanaExecutionStateStore {
+  private readonly path: string | undefined;
+  private memoryStore: SubmissionStore = { submissions: [] };
+
+  constructor(rootDir: string | undefined) {
+    this.path = rootDir ? join(rootDir, 'solana-execution-submissions.json') : undefined;
+  }
+
+  async read() {
+    if (!this.path) {
+      return this.memoryStore;
+    }
+
+    return (await readJsonIfExists(this.path, SubmissionStoreSchema)) ?? {
+      submissions: []
+    } satisfies SubmissionStore;
+  }
+
+  async write(store: SubmissionStore) {
+    const parsed = SubmissionStoreSchema.parse(store);
+
+    if (!this.path) {
+      this.memoryStore = parsed;
+      return;
+    }
+
+    await writeJsonAtomically(this.path, parsed);
+  }
+}
+
 export function createSolanaExecutionServer(options: SolanaExecutionServerOptions) {
   const {
     keypair,
@@ -293,6 +359,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
+  const store = new SolanaExecutionStateStore(options.stateRootDir);
+  const expectedSignerPublicKeys = options.expectedSignerPublicKeys ?? [];
+  const idempotencyLocks = new Map<string, Promise<void>>();
   const tokenValueCache = new Map<string, TokenValueCacheEntry>();
   const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
   const buildSubmittedBroadcastResult = (input: {
@@ -310,6 +379,137 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     batchStatus: input.batchStatus ?? 'complete',
     reason: input.reason
   });
+  const withIdempotencyLock = async <T>(idempotencyKey: string, action: () => Promise<T>): Promise<T> => {
+    const prior = idempotencyLocks.get(idempotencyKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prior.catch(() => undefined).then(() => current);
+    idempotencyLocks.set(idempotencyKey, chained);
+
+    await prior.catch(() => undefined);
+
+    try {
+      return await action();
+    } finally {
+      release();
+      if (idempotencyLocks.get(idempotencyKey) === chained) {
+        idempotencyLocks.delete(idempotencyKey);
+      }
+    }
+  };
+
+  const reserveIdempotencySubmission = async (signedIntent: SignedBroadcastIntent) => {
+    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+    const idempotencyKey = signedIntent.intent.idempotencyKey;
+    const snapshot = await store.read();
+    const existing = snapshot.submissions.find(
+      (submission) => submission.idempotencyKey === idempotencyKey
+    );
+
+    if (existing) {
+      if (existing.signedIntentFingerprint !== signedIntentFingerprint) {
+        return {
+          status: 'conflict' as const
+        };
+      }
+
+      if (existing.status === 'submitted' && existing.result) {
+        return {
+          status: 'replay' as const,
+          result: existing.result
+        };
+      }
+
+      return {
+        status: 'pending' as const
+      };
+    }
+
+    const now = new Date().toISOString();
+    await store.write({
+      submissions: [
+        ...snapshot.submissions,
+        {
+          idempotencyKey,
+          signedIntentFingerprint,
+          signedIntent,
+          status: 'pending',
+          receivedAt: now,
+          updatedAt: now
+        }
+      ]
+    });
+
+    return {
+      status: 'reserved' as const
+    };
+  };
+
+  const completeIdempotencySubmission = async (
+    signedIntent: SignedBroadcastIntent,
+    result: LiveBroadcastResult
+  ) => {
+    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+    const idempotencyKey = signedIntent.intent.idempotencyKey;
+    const snapshot = await store.read();
+    const now = new Date().toISOString();
+    const parsedResult = BroadcastResultSchema.parse(result);
+    let replaced = false;
+    const submissions = snapshot.submissions.map((submission) => {
+      if (submission.idempotencyKey !== idempotencyKey) {
+        return submission;
+      }
+
+      replaced = true;
+      return {
+        ...submission,
+        signedIntentFingerprint,
+        signedIntent,
+        status: 'submitted' as const,
+        result: parsedResult,
+        updatedAt: now
+      };
+    });
+
+    if (!replaced) {
+      submissions.push({
+        idempotencyKey,
+        signedIntentFingerprint,
+        signedIntent,
+        status: 'submitted',
+        result: parsedResult,
+        receivedAt: now,
+        updatedAt: now
+      });
+    }
+
+    await store.write({ submissions });
+  };
+
+  const releaseIdempotencyReservation = async (signedIntent: SignedBroadcastIntent) => {
+    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+    const idempotencyKey = signedIntent.intent.idempotencyKey;
+    const snapshot = await store.read();
+
+    await store.write({
+      submissions: snapshot.submissions.filter((submission) => !(
+        submission.idempotencyKey === idempotencyKey
+        && submission.signedIntentFingerprint === signedIntentFingerprint
+        && submission.status === 'pending'
+      ))
+    });
+  };
+
+  const writeStoredBroadcastResult = async (
+    response: ServerResponse,
+    signedIntent: SignedBroadcastIntent,
+    result: LiveBroadcastResult
+  ) => {
+    await completeIdempotencySubmission(signedIntent, result);
+    writeJson(response, 200, result);
+  };
 
   return {
     get origin() {
@@ -350,6 +550,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           if (request.method === 'POST' && request.url === '/broadcast') {
             const body = await readBody(request);
             const payload = BroadcastRequestSchema.parse(JSON.parse(body));
+            verifySignedIntent(payload.intent, expectedSignerPublicKeys);
             const intent = payload.intent.intent;
             const broadcastStartedAt = Date.now();
 
@@ -368,6 +569,30 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
             }
 
+            await withIdempotencyLock(intent.idempotencyKey, async () => {
+              const reservation = await reserveIdempotencySubmission(payload.intent);
+
+              if (reservation.status === 'conflict') {
+                writeJson(response, 409, {
+                  error: 'idempotency key conflict',
+                  detail: `Existing submission for ${intent.idempotencyKey} used a different signed intent`
+                });
+                return;
+              }
+
+              if (reservation.status === 'pending') {
+                writeJson(response, 409, {
+                  error: 'idempotency key pending',
+                  detail: `Submission ${intent.idempotencyKey} is reserved but has no recorded result`
+                });
+                return;
+              }
+
+              if (reservation.status === 'replay') {
+                writeJson(response, 200, reservation.result);
+                return;
+              }
+
             const side = intent.side ?? 'buy';
             const tokenMint = intent.tokenMint ?? intent.poolAddress;
             let buildMs: number | undefined;
@@ -376,6 +601,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let signMs: number | undefined;
             let blockhashMs: number | undefined;
             const sendTxMs: number[] = [];
+            let broadcastAttempted = false;
 
             try {
               let signedBase64: string;
@@ -473,6 +699,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   txParams.sign(...signers);
                   signedBase64 = txParams.serialize().toString('base64');
                   const sendStartedAt = Date.now();
+                  broadcastAttempted = true;
                   txSignatures.push(await rpcClient.sendRawTransaction(signedBase64));
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
@@ -500,7 +727,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     reason
                   });
 
-                  writeJson(response, 200, buildSubmittedBroadcastResult({
+                  await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
                     batchStatus: 'partial',
@@ -543,6 +770,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
 
                     const residualSendStartedAt = Date.now();
+                    broadcastAttempted = true;
                     txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
                     sendTxMs.push(durationMs(residualSendStartedAt));
                   }
@@ -577,7 +805,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 totalMs: durationMs(broadcastStartedAt)
               });
 
-              writeJson(response, 200, buildSubmittedBroadcastResult({
+              await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
                 signatures: txSignatures
               }));
@@ -586,6 +814,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
               // Send to Solana RPC
               const sendStartedAt = Date.now();
+              broadcastAttempted = true;
               const txSignature = await rpcClient.sendRawTransaction(signedBase64);
               sendTxMs.push(durationMs(sendStartedAt));
               logBroadcastOutcome({
@@ -606,13 +835,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 totalMs: durationMs(broadcastStartedAt)
               });
 
-              writeJson(response, 200, buildSubmittedBroadcastResult({
+              await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
                 signatures: [txSignature]
               }));
               return;
             } catch (error) {
               const reason = error instanceof Error ? error.message : String(error);
+              if (!broadcastAttempted) {
+                await releaseIdempotencyReservation(payload.intent);
+              }
+
               logBroadcastOutcome({
                 event: 'solana-execution-broadcast',
                 recordedAt: new Date().toISOString(),
@@ -635,6 +868,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               });
               throw error;
             }
+            });
+            return;
           }
 
           // Confirmation — poll Solana RPC for transaction status

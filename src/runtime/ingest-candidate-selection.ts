@@ -227,15 +227,33 @@ export async function applySafetyFilter(
 
     return filtered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedResults = uniqueMints.map((mint) => ({
+      mint,
+      safe: false,
+      safetyScore: 0,
+      maxScore: 120,
+      error: message
+    } satisfies TokenSafetyResult));
+    const rejected = candidates
+      .filter((candidate) => uniqueMints.includes(candidate.mint))
+      .map((candidate) => ({
+        symbol: candidate.symbol,
+        mint: candidate.mint,
+        rejectReasons: [],
+        safetyScore: 0,
+        error: message
+      }));
+
     options.logger?.warn(
-      `[Ingest] Safety filter failed, preserving ${candidates.length} original candidates: ${error instanceof Error ? error.message : String(error)}`
+      `[Ingest] Safety filter failed closed, rejecting ${candidates.length} original candidates: ${message}`
     );
     options.onDiagnostics?.({
       checkedMints: uniqueMints,
-      results: [],
-      rejected: []
+      results: failedResults,
+      rejected
     });
-    return candidates;
+    return [];
   }
 }
 

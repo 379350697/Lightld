@@ -343,10 +343,11 @@ export async function recoverPendingSubmission(
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
     return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-failed'
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-timeout',
+      nextPendingSubmission
     };
   }
 

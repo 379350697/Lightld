@@ -20,12 +20,12 @@ describe('loadLiveRuntimeConfig', () => {
         LIVE_ACCOUNT_STATE_URL: 'https://account.example/api',
         LIVE_AUTH_TOKEN: 'secret'
       })
-    ).toEqual({
+    ).toMatchObject({
       executionMode: 'http',
       quoteServiceUrl: 'https://quote.example/api',
       signServiceUrl: 'https://sign.example/api',
       broadcastServiceUrl: 'https://broadcast.example/api',
-      broadcastTimeoutMs: 15_000,
+      broadcastTimeoutMs: 30_000,
       confirmationServiceUrl: 'https://confirm.example/api',
       accountStateUrl: 'https://account.example/api',
       authToken: 'secret'

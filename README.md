@@ -160,6 +160,43 @@ export LIVE_AUTH_TOKEN="replace-me"
 
 The sidecar verifies the signer signature, records local submissions in a file-backed store, and serves confirmation state based on a lightweight local lifecycle. It accepts swap actions and LP-oriented actions from the runtime contract. `account-state` reads from the JSON file you provide at `LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH`, so you can keep wallet and journal snapshots under your own operational control.
 
+### Self-Hosted Solana Execution Sidecar
+
+`npm run run:solana-execution` is the true Solana transaction sidecar. It is separate from `npm run run:execution`, which is the local lifecycle/testing sidecar above.
+
+Start it with:
+
+```bash
+export SOLANA_KEYPAIR_PATH="/opt/lightld/secrets/id.json"
+export SOLANA_EXPECTED_PUBLIC_KEY="your-wallet-public-key"
+export SOLANA_EXECUTION_AUTH_TOKEN="replace-me"
+export SOLANA_EXPECTED_SIGNER_PUBLIC_KEYS="daemon-signer-public-key"
+export SOLANA_EXECUTION_STATE_DIR="/opt/lightld/state/solana-execution"
+export SOLANA_EXECUTION_HOST="127.0.0.1"
+export SOLANA_EXECUTION_PORT="8791"
+export SOLANA_MAX_OUTPUT_SOL="0.15"
+export SOLANA_DEFAULT_SLIPPAGE_BPS="100"
+export SOLANA_RPC_WRITE_URLS="https://write-rpc-a.example,https://write-rpc-b.example"
+export SOLANA_RPC_READ_URLS="https://read-rpc-a.example,https://read-rpc-b.example"
+export SOLANA_DLMM_RPC_URL="https://dlmm-rpc.example"
+export JUPITER_API_URL="https://api.jup.ag"
+
+npm run run:solana-execution
+```
+
+Then point the daemon at it:
+
+```bash
+export LIVE_BROADCAST_URL="http://127.0.0.1:8791/broadcast"
+export LIVE_CONFIRMATION_URL="http://127.0.0.1:8791/confirmation"
+export LIVE_ACCOUNT_STATE_URL="http://127.0.0.1:8791/account-state"
+export LIVE_AUTH_TOKEN="replace-me"
+```
+
+The Solana sidecar verifies the signed order intent before constructing transactions, optionally restricts accepted signer public keys with `SOLANA_EXPECTED_SIGNER_PUBLIC_KEYS`, enforces `SOLANA_MAX_OUTPUT_SOL`, and stores submitted broadcast results under `SOLANA_EXECUTION_STATE_DIR` for idempotent retry handling. Reusing an `idempotencyKey` with the same signed intent returns the original result; reusing the key with a different signed intent is rejected.
+
+For systemd, use `ops/systemd/lightld-solana-execution.service` with an `/etc/lightld-solana-execution.env` file containing the variables above. Keep the Solana wallet keypair readable only by the `lightld` service user.
+
 ### Confirmation Service Contract
 
 The confirmation service is now part of the real-money safety path. It must accept:

@@ -69,11 +69,13 @@ async function main() {
   const server = createSolanaExecutionServer({
     host: config.host,
     port: config.port,
+    stateRootDir: config.stateRootDir,
     keypair,
     rpcClient,
     jupiterClient,
     dlmmClient,
     authToken: config.authToken,
+    expectedSignerPublicKeys: config.expectedSignerPublicKeys,
     maxOutputSol: config.maxOutputSol,
     defaultSlippageBps: config.defaultSlippageBps,
     jitoTipLamports: config.jitoTipLamports

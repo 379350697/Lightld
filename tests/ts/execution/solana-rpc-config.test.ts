@@ -66,6 +66,16 @@ describe('solana rpc config policy', () => {
     ]);
   });
 
+  it('loads solana execution state and expected signer allowlist config', () => {
+    const config = loadSolanaExecutionConfig(envBase({
+      SOLANA_EXECUTION_STATE_DIR: '/var/lib/lightld/solana-execution',
+      SOLANA_EXPECTED_SIGNER_PUBLIC_KEYS: 'signer-a, signer-b'
+    }));
+
+    expect(config.stateRootDir).toBe('/var/lib/lightld/solana-execution');
+    expect(config.expectedSignerPublicKeys).toEqual(['signer-a', 'signer-b']);
+  });
+
   it('rpc client retries write and read urls in order', async () => {
     const calls: string[] = [];
     const registry = new RpcEndpointRegistry({ maxWaitMs: 0 });

@@ -1,3 +1,8 @@
+import { generateKeyPairSync, sign as signBuffer } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Keypair } from '@solana/web3.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -5,7 +10,12 @@ vi.mock('../../../src/execution/solana/solana-transaction-signer.ts', () => ({
   signSwapTransaction: vi.fn(() => Buffer.from('residual-swap', 'utf8').toString('base64'))
 }));
 
+import { encodeBase58 } from '../../../src/shared/base58';
+import { stableStringify } from '../../../src/shared/canonical-json';
 import { createSolanaExecutionServer } from '../../../src/execution/solana/solana-execution-server';
+import { signedIntentIdempotencyFingerprint } from '../../../src/execution/signed-intent-verifier';
+
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 class FakeTransaction {
   recentBlockhash?: string;
@@ -23,28 +33,68 @@ class FakeTransaction {
   }
 }
 
-function buildBroadcastPayload(
-  side: 'add-lp' | 'withdraw-lp' | 'claim-fee',
-  intentOverrides: Partial<{
-    tokenMint: string;
-    liquidateResidualTokenToSol: boolean;
-  }> = {}
-) {
+type BroadcastSide = 'add-lp' | 'withdraw-lp' | 'claim-fee';
+
+type BroadcastIntentOverrides = Partial<{
+  tokenMint: string;
+  liquidateResidualTokenToSol: boolean;
+  idempotencyKey: string;
+  outputSol: number;
+}>;
+
+function createIntentSigner() {
+  const keypair = generateKeyPairSync('ed25519');
+  const spki = Buffer.from(keypair.publicKey.export({
+    format: 'der',
+    type: 'spki'
+  }));
+
+  if (spki.subarray(0, ED25519_SPKI_PREFIX.length).compare(ED25519_SPKI_PREFIX) !== 0) {
+    throw new Error('Unexpected Ed25519 public key format');
+  }
+
+  const signerId = encodeBase58(spki.subarray(ED25519_SPKI_PREFIX.length));
+
   return {
-    intent: {
-      intent: {
-        strategyId: 'new-token-v1',
-        poolAddress: 'pool-1',
-        outputSol: 0.1,
-        createdAt: '2026-04-16T00:00:00.000Z',
-        idempotencyKey: `k-${side}`,
-        side,
-        ...intentOverrides
-      },
-      signerId: 'signer-1',
-      signedAt: '2026-04-16T00:00:00.000Z',
-      signature: 'sig'
+    signerId,
+    sign(intent: ReturnType<typeof buildIntent>) {
+      return {
+        intent,
+        signerId,
+        signedAt: '2026-04-16T00:00:00.000Z',
+        signature: signBuffer(
+          null,
+          Buffer.from(stableStringify(intent), 'utf8'),
+          keypair.privateKey
+        ).toString('base64')
+      };
     }
+  };
+}
+
+const defaultIntentSigner = createIntentSigner();
+
+function buildIntent(side: BroadcastSide, intentOverrides: BroadcastIntentOverrides = {}) {
+  return {
+    strategyId: 'new-token-v1',
+    poolAddress: 'pool-1',
+    outputSol: 0.1,
+    createdAt: '2026-04-16T00:00:00.000Z',
+    idempotencyKey: `k-${side}`,
+    side,
+    ...intentOverrides
+  };
+}
+
+function buildBroadcastPayload(
+  side: BroadcastSide,
+  intentOverrides: BroadcastIntentOverrides = {},
+  signer = defaultIntentSigner
+) {
+  const intent = buildIntent(side, intentOverrides);
+
+  return {
+    intent: signer.sign(intent)
   };
 }
 
@@ -123,6 +173,385 @@ describe('createSolanaExecutionServer', () => {
     expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"sendTxMs":[');
 
     await server.stop();
+  });
+
+  it('rejects a broadcast when the signed intent signature is invalid before sending transactions', async () => {
+    const keypair = Keypair.generate();
+    const sendRawTransaction = vi.fn(async () => 'sig-1');
+    const payload = buildBroadcastPayload('add-lp');
+    payload.intent.signature = Buffer.from('invalid-signature').toString('base64');
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('Signed intent verification failed');
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+
+    await server.stop();
+  });
+
+  it('rejects a broadcast from a signer outside the allowed signer list before sending transactions', async () => {
+    const keypair = Keypair.generate();
+    const allowedSigner = createIntentSigner();
+    const rejectedSigner = createIntentSigner();
+    const sendRawTransaction = vi.fn(async () => 'sig-1');
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token',
+      expectedSignerPublicKeys: [allowedSigner.signerId]
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {}, rejectedSigner))
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('not in the allowed signer list');
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+
+    await server.stop();
+  });
+
+  it('returns the first broadcast result for duplicate idempotency keys without resending transactions', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    const sent: string[] = [];
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    try {
+      await server.start();
+      const request = {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'same-key'
+        }))
+      };
+
+      const firstResponse = await fetch(`${server.origin}/broadcast`, request);
+      const firstPayload = await firstResponse.json();
+      const secondResponse = await fetch(`${server.origin}/broadcast`, request);
+      const secondPayload = await secondResponse.json();
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(200);
+      expect(secondPayload).toEqual(firstPayload);
+      expect(sent).toEqual(['open-1']);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes concurrent duplicate idempotency keys before broadcasting transactions', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    const sent: string[] = [];
+    let firstSendStarted: (() => void) | undefined;
+    const firstSendStartedPromise = new Promise<void>((resolve) => {
+      firstSendStarted = resolve;
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          firstSendStarted?.();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          return `sig-${sent.length}`;
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    try {
+      await server.start();
+      const request = {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'same-key'
+        }))
+      };
+
+      const first = fetch(`${server.origin}/broadcast`, request);
+      await firstSendStartedPromise;
+      const second = fetch(`${server.origin}/broadcast`, request);
+      const [firstResponse, secondResponse] = await Promise.all([first, second]);
+      const [firstPayload, secondPayload] = await Promise.all([
+        firstResponse.json(),
+        secondResponse.json()
+      ]);
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(200);
+      expect(secondPayload).toEqual(firstPayload);
+      expect(sent).toEqual(['open-1']);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects duplicate idempotency keys when the signed intent changes', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    const sent: string[] = [];
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction(`open-${sent.length + 1}`)
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    try {
+      await server.start();
+
+      const firstResponse = await fetch(`${server.origin}/broadcast`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'same-key',
+          outputSol: 0.1
+        }))
+      });
+      const secondResponse = await fetch(`${server.origin}/broadcast`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'same-key',
+          outputSol: 0.11
+        }))
+      });
+      const secondPayload = await secondResponse.json();
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(409);
+      expect(secondPayload.error).toContain('idempotency key conflict');
+      expect(sent).toEqual(['open-1']);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed without rebroadcasting when an idempotency key is still pending', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    const payload = buildBroadcastPayload('add-lp', {
+      idempotencyKey: 'pending-key'
+    });
+    const sendRawTransaction = vi.fn(async () => 'sig-1');
+
+    await writeFile(join(stateRootDir, 'solana-execution-submissions.json'), JSON.stringify({
+      submissions: [
+        {
+          idempotencyKey: 'pending-key',
+          signedIntentFingerprint: signedIntentIdempotencyFingerprint(payload.intent),
+          signedIntent: payload.intent,
+          status: 'pending',
+          receivedAt: '2026-04-16T00:00:00.000Z',
+          updatedAt: '2026-04-16T00:00:00.000Z'
+        }
+      ]
+    }), 'utf8');
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    try {
+      await server.start();
+
+      const response = await fetch(`${server.origin}/broadcast`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      const body = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('idempotency key pending');
+      expect(sendRawTransaction).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the idempotency key pending when rpc send fails after a broadcast attempt', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    const sendRawTransaction = vi.fn(async () => {
+      throw new Error('rpc write timeout');
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token'
+    });
+
+    try {
+      await server.start();
+      const request = {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'unknown-send-key'
+        }))
+      };
+
+      const firstResponse = await fetch(`${server.origin}/broadcast`, request);
+      const secondResponse = await fetch(`${server.origin}/broadcast`, request);
+      const secondBody = await secondResponse.json();
+
+      expect(firstResponse.status).toBe(400);
+      expect(secondResponse.status).toBe(409);
+      expect(secondBody.error).toBe('idempotency key pending');
+      expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
   });
 
   it('broadcasts every tx returned by Meteora close batches', async () => {

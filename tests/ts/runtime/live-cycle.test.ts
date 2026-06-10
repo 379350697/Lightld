@@ -62,13 +62,7 @@ describe('runLiveCycle', () => {
       outputSol: 0.1,
       requestedPositionSol: 0.1
     });
-    expect(fillJournal[0]).toMatchObject({
-      strategyId: 'new-token-v1',
-      side: 'withdraw-lp',
-      status: 'submitted',
-      confirmationStatus: 'submitted'
-    });
-    expect(fillJournal[0]).toHaveProperty('mint');
+    expect(fillJournal).toEqual([]);
     expect(decisionJournal[0]).toMatchObject({
       strategyId: 'new-token-v1',
       stage: 'broadcast',
@@ -495,7 +489,7 @@ describe('runLiveCycle', () => {
 
     expect(result.mode).toBe('LIVE');
     expect(events.some((event) => event.type === 'order')).toBe(true);
-    expect(events.some((event) => event.type === 'fill')).toBe(true);
+    expect(events.some((event) => event.type === 'fill')).toBe(false);
     expect(events.some((event) => event.type === 'cycle_run')).toBe(true);
   });
 

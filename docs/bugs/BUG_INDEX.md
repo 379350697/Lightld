@@ -1,0 +1,8 @@
+# Bug Index
+
+| Date | Cluster | Family | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-11 | CL-001-solana-execution-signed-intent-idempotency | `solana.execution.signed_intent_unverified.idempotency_missing` | fixed-local-full-green / deploy pending | targeted tests pass; build passes; full test pass; diff check pass | Solana execution sidecar verifies signed intents, supports optional signer allowlist, serializes duplicate idempotency keys, and fails closed on pending or unknown-state send reservations. Production must remain single-instance per state dir until cross-process idempotency locking exists. |
+| 2026-06-11 | CL-002-gmgn-safety-filter-fail-closed | `ingest.gmgn_safety.failure_preserves_candidates` | fixed-local-full-green / deploy pending | targeted tests pass; build passes; full test pass | Safety fetch/script exceptions now reject live candidates and preserve rejected diagnostics. |
+| 2026-06-11 | CL-003-solana-production-deploy-runbook-gap | `ops.solana_execution.production_sidecar_missing_runbook` | fixed-local-full-green / deploy pending | static docs + build pass; full test pass; diff check pass | True Solana execution now has a dedicated systemd template and README runbook; no deploy verification claimed. Real systemd/env/RPC/port verification is still required before production closure. |
+| 2026-06-11 | CL-004-runtime-recovery-and-test-closure | `runtime.pending_submission_timeout_clears_state.test_drift` | fixed-local-full-green / deploy pending | full test pass | Pending submission timeout now blocks instead of clearing state; stale tests were aligned with confirmed-only fills, 30s broadcast timeout, and 60s open retry grace. |
