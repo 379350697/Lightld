@@ -117,7 +117,7 @@ const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
 const WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS = 6;
 const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
 const RESIDUAL_TOKEN_SWEEP_PASSES = 3;
-const RESIDUAL_TOKEN_MIN_SOL_VALUE = 0.1;
+const RESIDUAL_TOKEN_MIN_SOL_VALUE = 0;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -239,8 +239,9 @@ async function liquidateResidualTokensToSol(input: {
   jitoTipLamports?: number;
   sendRawTransaction: (signedTransactionBase64: string) => Promise<string>;
   sendTxMs: number[];
+  excludedMints?: string[];
 }) {
-  const soldMints = new Set<string>();
+  const soldMints = new Set<string>(input.excludedMints ?? []);
 
   for (let pass = 0; pass < RESIDUAL_TOKEN_SWEEP_PASSES; pass += 1) {
     const tokenAccounts = await input.rpcClient.getTokenAccountsByOwner(input.walletPublicKey);
@@ -265,7 +266,7 @@ async function liquidateResidualTokensToSol(input: {
         const outAmountLamports = Number(quoteResponse.outAmount ?? 0);
         const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
 
-        if (!Number.isFinite(outAmountSol) || outAmountSol < RESIDUAL_TOKEN_MIN_SOL_VALUE) {
+        if (!Number.isFinite(outAmountSol) || outAmountSol <= RESIDUAL_TOKEN_MIN_SOL_VALUE) {
           soldMints.add(token.mint);
           continue;
         }
@@ -766,87 +767,116 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               if (side === 'withdraw-lp' && intent.liquidateResidualTokenToSol && intent.tokenMint) {
                 const withdrawConfirmed = await waitForConfirmedSignatures(rpcClient, txSignatures);
 
-                if (withdrawConfirmed) {
-                  const tokenLamports = await findTokenLamportsWithRetry(
-                    rpcClient,
-                    walletPublicKey,
-                    intent.tokenMint
-                  );
-
-                  if (tokenLamports > 0) {
-                    try {
-                      const residualQuoteStartedAt = Date.now();
-                      const quoteResponse = await jupiterClient.getQuote(
-                        jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
-                      );
-                      quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
-
-                      const residualSwapBuildStartedAt = Date.now();
-                      const swapResponse = await jupiterClient.getSwapTransaction(
-                        quoteResponse,
-                        walletPublicKey,
-                        { jitoTipLamports: options.jitoTipLamports }
-                      );
-                      swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
-
-                      const residualSignStartedAt = Date.now();
-                      const residualSignedBase64 = signSwapTransaction(
-                        swapResponse.swapTransaction,
-                        keypair
-                      );
-                      signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
-
-                      const residualSendStartedAt = Date.now();
-                      broadcastAttempted = true;
-                      txSignatures.push(await sendVisibleRawTransaction(residualSignedBase64));
-                      visibleBroadcastRecorded = true;
-                      sendTxMs.push(durationMs(residualSendStartedAt));
-                    } catch (error) {
-                      const reason = error instanceof Error ? error.message : String(error);
-
-                      options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
-                      logBroadcastOutcome({
-                        event: "solana-execution-broadcast",
-                        recordedAt: new Date().toISOString(),
-                        strategyId: intent.strategyId,
-                        idempotencyKey: intent.idempotencyKey,
-                        side,
-                        poolAddress: intent.poolAddress,
-                        tokenMint: intent.tokenMint,
-                        outputSol: intent.outputSol,
-                        result: 'partial',
-                        acceptedSignatureCount: txSignatures.length,
-                        buildMs,
-                        quoteMs,
-                        swapBuildMs,
-                        signMs,
-                        blockhashMs,
-                        sendTxMs,
-                        totalMs: durationMs(broadcastStartedAt),
-                        reason
-                      });
-
-                      await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
-                        idempotencyKey: intent.idempotencyKey,
-                        signatures: txSignatures,
-                        batchStatus: 'partial',
-                        reason
-                      }));
-                      return;
-                    }
-                  }
-
-                  await liquidateResidualTokensToSol({
-                    rpcClient,
-                    jupiterClient,
-                    keypair,
-                    walletPublicKey,
-                    defaultSlippageBps,
-                    jitoTipLamports: options.jitoTipLamports,
-                    sendRawTransaction: sendVisibleRawTransaction,
-                    sendTxMs
+                if (!withdrawConfirmed) {
+                  const reason = 'withdraw confirmation not visible before residual token liquidation';
+                  options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+                  logBroadcastOutcome({
+                    event: 'solana-execution-broadcast',
+                    recordedAt: new Date().toISOString(),
+                    strategyId: intent.strategyId,
+                    idempotencyKey: intent.idempotencyKey,
+                    side,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint,
+                    outputSol: intent.outputSol,
+                    result: 'partial',
+                    acceptedSignatureCount: txSignatures.length,
+                    buildMs,
+                    blockhashMs,
+                    sendTxMs,
+                    totalMs: durationMs(broadcastStartedAt),
+                    reason
                   });
+
+                  await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                    idempotencyKey: intent.idempotencyKey,
+                    signatures: txSignatures,
+                    batchStatus: 'partial',
+                    reason
+                  }));
+                  return;
                 }
+
+                const tokenLamports = await findTokenLamportsWithRetry(
+                  rpcClient,
+                  walletPublicKey,
+                  intent.tokenMint
+                );
+
+                if (tokenLamports > 0) {
+                  try {
+                    const residualQuoteStartedAt = Date.now();
+                    const quoteResponse = await jupiterClient.getQuote(
+                      jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
+                    );
+                    quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
+
+                    const residualSwapBuildStartedAt = Date.now();
+                    const swapResponse = await jupiterClient.getSwapTransaction(
+                      quoteResponse,
+                      walletPublicKey,
+                      { jitoTipLamports: options.jitoTipLamports }
+                    );
+                    swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
+
+                    const residualSignStartedAt = Date.now();
+                    const residualSignedBase64 = signSwapTransaction(
+                      swapResponse.swapTransaction,
+                      keypair
+                    );
+                    signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
+
+                    const residualSendStartedAt = Date.now();
+                    broadcastAttempted = true;
+                    txSignatures.push(await sendVisibleRawTransaction(residualSignedBase64));
+                    visibleBroadcastRecorded = true;
+                    sendTxMs.push(durationMs(residualSendStartedAt));
+                  } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+
+                    options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+                    logBroadcastOutcome({
+                      event: 'solana-execution-broadcast',
+                      recordedAt: new Date().toISOString(),
+                      strategyId: intent.strategyId,
+                      idempotencyKey: intent.idempotencyKey,
+                      side,
+                      poolAddress: intent.poolAddress,
+                      tokenMint: intent.tokenMint,
+                      outputSol: intent.outputSol,
+                      result: 'partial',
+                      acceptedSignatureCount: txSignatures.length,
+                      buildMs,
+                      quoteMs,
+                      swapBuildMs,
+                      signMs,
+                      blockhashMs,
+                      sendTxMs,
+                      totalMs: durationMs(broadcastStartedAt),
+                      reason
+                    });
+
+                    await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                      idempotencyKey: intent.idempotencyKey,
+                      signatures: txSignatures,
+                      batchStatus: 'partial',
+                      reason
+                    }));
+                    return;
+                  }
+                }
+
+                await liquidateResidualTokensToSol({
+                  rpcClient,
+                  jupiterClient,
+                  keypair,
+                  walletPublicKey,
+                  defaultSlippageBps,
+                  jitoTipLamports: options.jitoTipLamports,
+                  sendRawTransaction: sendVisibleRawTransaction,
+                  sendTxMs,
+                  excludedMints: tokenLamports > 0 ? [intent.tokenMint] : []
+                });
               }
 
               options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);

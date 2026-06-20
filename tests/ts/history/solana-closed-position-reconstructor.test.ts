@@ -248,7 +248,7 @@ describe('reconstructClosedPositionSnapshot', () => {
       feeTokenAmount: 3390,
       feeTokenValueSol: 0.0032,
       source: 'solana-chain',
-      confidence: 'exact'
+      confidence: 'partial'
     });
     expect(result?.pnlSol).toBeCloseTo(-0.0134);
   });

@@ -156,6 +156,14 @@ function resolveLifecycleAfterRecovery(
     }
 
     if (currentLifecycleState === 'lp_exit_pending') {
+      if (
+        pendingSubmission &&
+        accountState &&
+        !hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)
+      ) {
+        return 'closed';
+      }
+
       return 'inventory_exit_ready';
     }
 

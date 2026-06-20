@@ -38,6 +38,52 @@ describe('live-cycle preflight helpers', () => {
     expect(result.lifecycleState).toBe('inventory_exit_ready');
   });
 
+  it('closes a recovered LP exit when the wallet has no LP or token inventory left', async () => {
+    const store = {
+      clear: async () => {},
+      write: async () => {}
+    } as unknown as PendingSubmissionStore;
+
+    const result = await runPendingRecoveryGate({
+      pendingSubmissionStore: store,
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-flat-exit',
+        submissionId: 'sub-1',
+        confirmationSignature: 'tx-1',
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'withdraw-lp',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed',
+          finality: 'finalized',
+          checkedAt: '2026-03-22T00:00:05.000Z'
+        })
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      currentLifecycleState: 'lp_exit_pending'
+    });
+
+    expect(result.blocked).toBe(false);
+    expect(result.lifecycleState).toBe('closed');
+  });
+
   it('promotes open_pending to open after confirmed open recovery', async () => {
     const store = {
       clear: async () => {},

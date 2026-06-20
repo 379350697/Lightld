@@ -232,7 +232,7 @@ describe('syncClosedPositionSnapshots', () => {
       feeSol: 0.001827296,
       feeTokenAmount: 3387.359479,
       source: 'solana-chain',
-      confidence: 'exact'
+      confidence: 'partial'
     });
     expect(result[0]?.withdrawTokenValueSol).toBeCloseTo(0.03566656633019535);
     expect(result[0]?.feeTokenValueSol).toBeCloseTo(0.00364971047064855);

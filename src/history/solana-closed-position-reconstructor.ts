@@ -304,6 +304,7 @@ export function reconstructClosedPositionSnapshot(input: {
   const feeTokenAmount = sum(feeEvents.map((event) => event.tokenAmount));
   const feeTokenValueSol = sum(feeEvents.map((event) => event.tokenValueSol));
   const pnlSol = withdrawSol + withdrawTokenValueSol + feeSol + feeTokenValueSol - depositSol;
+  const hasEstimatedTokenComponent = depositTokenAmount > 0 || withdrawTokenAmount > 0 || feeTokenAmount > 0;
 
   return {
     walletAddress: input.walletAddress,
@@ -323,6 +324,6 @@ export function reconstructClosedPositionSnapshot(input: {
     feeTokenValueSol,
     pnlSol,
     source: 'solana-chain',
-    confidence: 'exact'
+    confidence: hasEstimatedTokenComponent ? 'partial' : 'exact'
   };
 }
