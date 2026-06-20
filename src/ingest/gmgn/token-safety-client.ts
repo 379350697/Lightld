@@ -24,10 +24,10 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SCRIPT_PATH = resolve(__dirname, '../../../scripts/gmgn-token-safety.py');
 const PROJECT_VENV_PYTHON = resolve(__dirname, '../../../.venv/bin/python');
 const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? (existsSync(PROJECT_VENV_PYTHON) ? PROJECT_VENV_PYTHON : 'python');
-const MAX_SCRIPT_TIMEOUT_MS = 4 * 60_000;
-const BASE_SCRIPT_TIMEOUT_MS = 20_000;
-const PER_MINT_SCRIPT_TIMEOUT_MS = 15_000;
-const BETWEEN_MINT_DELAY_BUFFER_MS = 4_500;
+const MAX_SCRIPT_TIMEOUT_MS = 6 * 60_000;
+const BASE_SCRIPT_TIMEOUT_MS = 30_000;
+const PER_MINT_SCRIPT_TIMEOUT_MS = 45_000;
+const BETWEEN_MINT_DELAY_BUFFER_MS = 5_000;
 
 export function resolveGmgnSafetyTimeoutMs(mintCount: number) {
   const numericMintCount = Number.isFinite(mintCount) ? mintCount : 0;

@@ -81,9 +81,9 @@ describe('GMGN token safety cache', () => {
   });
 
   it("computes bounded dynamic subprocess timeouts", () => {
-    expect(resolveGmgnSafetyTimeoutMs(0)).toBe(20_000);
-    expect(resolveGmgnSafetyTimeoutMs(5)).toBe(113_000);
-    expect(resolveGmgnSafetyTimeoutMs(50)).toBe(240_000);
+    expect(resolveGmgnSafetyTimeoutMs(0)).toBe(30_000);
+    expect(resolveGmgnSafetyTimeoutMs(5)).toBe(275_000);
+    expect(resolveGmgnSafetyTimeoutMs(50)).toBe(360_000);
   });
 
   it("returns failed safety results when the subprocess timeout expires", async () => {
