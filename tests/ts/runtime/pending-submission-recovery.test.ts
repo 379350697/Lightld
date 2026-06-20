@@ -529,6 +529,95 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('clears a stale partial-failure reason once every tracked submission is finalized', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-partial-finalized',
+        submissionId: 'sub-2',
+        submissionIds: ['sub-1', 'sub-2'],
+        confirmationSignature: 'tx-2',
+        confirmationSignatures: ['tx-1', 'tx-2'],
+        confirmationStatus: 'confirmed',
+        finality: 'finalized',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'withdraw-lp',
+        reason: 'pending-submission-partial-failure'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed',
+          finality: 'finalized',
+          checkedAt: '2026-03-22T00:01:00.000Z'
+        })
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-confirmed'
+    });
+  });
+
+  it('clears a partial-failure reduce-risk submission when wallet state shows no remaining position', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-partial-exit-terminal',
+        submissionId: 'sub-2',
+        submissionIds: ['sub-1', 'sub-2'],
+        confirmationSignature: 'tx-2',
+        confirmationSignatures: ['tx-1', 'tx-2'],
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        orderAction: 'withdraw-lp',
+        reason: 'pending-submission-partial-failure'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: submissionId === 'sub-1' ? 'confirmed' : 'failed',
+          finality: submissionId === 'sub-1' ? 'finalized' : 'failed',
+          checkedAt: '2026-03-22T00:01:00.000Z',
+          reason: submissionId === 'sub-2' ? 'InstructionError' : undefined
+        })
+      },
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-filled'
+    });
+  });
+
   it('keeps a partially failed Meteora batch blocked for repair instead of clearing it as a normal failure', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {

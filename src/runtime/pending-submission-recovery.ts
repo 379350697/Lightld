@@ -179,6 +179,46 @@ function hasLegacyFullyFundedLpEvidence(
   return hasFullyFundedWalletLpEvidence(pendingSubmission, accountState);
 }
 
+function resolveTerminalWalletRecoveryReason(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+): PendingSubmissionRecoveryResult['reason'] | undefined {
+  if (hasMatchingFill(pendingSubmission, accountState)) {
+    return 'pending-submission-filled';
+  }
+
+  if (hasFreshOpenWalletEvidence(pendingSubmission, accountState)) {
+    return 'pending-submission-filled';
+  }
+
+  if (hasFreshReduceRiskWalletEvidence(pendingSubmission, accountState)) {
+    return 'pending-submission-filled';
+  }
+
+  if (hasLegacyFullyFundedLpEvidence(pendingSubmission, accountState)) {
+    return 'pending-submission-filled';
+  }
+
+  if (isUnknownExitFill(pendingSubmission, accountState)) {
+    return 'pending-submission-filled';
+  }
+
+  if (isUnknownOpenFailure(pendingSubmission, accountState)) {
+    return 'pending-submission-failed';
+  }
+
+  return undefined;
+}
+
+function resolvedRecovery(reason: PendingSubmissionRecoveryResult['reason']): PendingSubmissionRecoveryResult {
+  return {
+    blocked: false,
+    resolved: true,
+    clearPending: true,
+    reason
+  };
+}
+
 export async function recoverPendingSubmission(
   input: PendingSubmissionRecoveryInput
 ): Promise<PendingSubmissionRecoveryResult> {
@@ -243,23 +283,20 @@ export async function recoverPendingSubmission(
       submissionId: confirmations[confirmations.length - 1]?.submissionId ?? nextPendingSubmission.submissionId
     };
 
-    if (nextPendingSubmission.reason === 'pending-submission-partial-failure') {
-      return {
-        blocked: true,
-        resolved: false,
-        clearPending: false,
-        reason: 'pending-submission-recovery-required',
-        nextPendingSubmission
-      };
+    if (allConfirmed) {
+      return resolvedRecovery('pending-submission-confirmed');
     }
 
-    if (allConfirmed) {
-      return {
-        blocked: false,
-        resolved: true,
-        clearPending: true,
-        reason: 'pending-submission-confirmed'
-      };
+    const terminalWalletReason = resolveTerminalWalletRecoveryReason(
+      nextPendingSubmission,
+      input.accountState
+    );
+    if (terminalWalletReason) {
+      return resolvedRecovery(terminalWalletReason);
+    }
+
+    if (allFailed || (anyFailed && !anySucceeded)) {
+      return resolvedRecovery('pending-submission-failed');
     }
 
     if (anyFailed && trackedSubmissions.length > 1 && !allFailed) {
@@ -277,68 +314,20 @@ export async function recoverPendingSubmission(
       };
     }
 
-    if (allFailed || (anyFailed && !anySucceeded)) {
+    if (nextPendingSubmission.reason === 'pending-submission-partial-failure') {
       return {
-        blocked: false,
-        resolved: true,
-        clearPending: true,
-        reason: 'pending-submission-failed'
+        blocked: true,
+        resolved: false,
+        clearPending: false,
+        reason: 'pending-submission-recovery-required',
+        nextPendingSubmission
       };
     }
   }
 
-  if (hasMatchingFill(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
-    };
-  }
-
-  if (hasFreshOpenWalletEvidence(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
-    };
-  }
-
-  if (hasFreshReduceRiskWalletEvidence(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
-    };
-  }
-
-  if (hasLegacyFullyFundedLpEvidence(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
-    };
-  }
-
-  if (isUnknownExitFill(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
-    };
-  }
-
-  if (isUnknownOpenFailure(nextPendingSubmission, input.accountState)) {
-    return {
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-failed'
-    };
+  const terminalWalletReason = resolveTerminalWalletRecoveryReason(nextPendingSubmission, input.accountState);
+  if (terminalWalletReason) {
+    return resolvedRecovery(terminalWalletReason);
   }
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {

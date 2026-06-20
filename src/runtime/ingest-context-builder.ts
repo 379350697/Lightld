@@ -227,6 +227,26 @@ function isWithinSessionWindows(
   });
 }
 
+function formatAuxiliarySignalSummary(candidates: IngestCandidate[]) {
+  if (candidates.length === 0) {
+    return "aux=none auxScored=0/0 auxMax=0";
+  }
+
+  const statusCounts = candidates.reduce<Record<string, number>>((counts, candidate) => {
+    const status = candidate.auxSignalStatus ?? "disabled";
+    counts[status] = (counts[status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const statusText = Object.entries(statusCounts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, count]) => status + ":" + count)
+    .join(",");
+  const scoredCount = candidates.filter((candidate) => (candidate.auxSignalScore ?? 0) > 0).length;
+  const maxScore = candidates.reduce((max, candidate) => Math.max(max, candidate.auxSignalScore ?? 0), 0);
+
+  return "aux=" + (statusText || "none") + " auxScored=" + scoredCount + "/" + candidates.length + " auxMax=" + Number(maxScore.toFixed(2));
+}
+
 function resolveNestedString(payload: Record<string, unknown>, parentKeys: string[], childKeys: string[]) {
   for (const parentKey of parentKeys) {
     const nested = payload[parentKey];
@@ -869,6 +889,7 @@ export async function buildLiveCycleInputFromIngest(
     + " reopenCooldown=" + postRecentlyClosedCooldownCount
     + " scanWindow=" + inScanWindow
     + " activePositions=" + activePositionsCount
+    + " " + formatAuxiliarySignalSummary(candidates)
   );
 
   const maxActivePositions = input.maxActivePositions ?? 5;

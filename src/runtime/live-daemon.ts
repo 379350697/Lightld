@@ -864,6 +864,58 @@ function hasOpenInventory(accountState?: LiveAccountState) {
   );
 }
 
+function reconcileTerminalFlatPositionState(input: {
+  positionState?: PositionStateSnapshot;
+  accountState?: LiveAccountState;
+  pendingSubmission: boolean;
+  allowNewOpens: boolean;
+  flattenOnly: boolean;
+  now: string;
+}) {
+  if (input.pendingSubmission || !input.accountState || hasOpenInventory(input.accountState)) {
+    return input.positionState;
+  }
+
+  if (!input.positionState) {
+    return undefined;
+  }
+
+  if (
+    input.positionState.lifecycleState === 'closed' &&
+    !input.positionState.activeMint &&
+    !input.positionState.activePoolAddress &&
+    !input.positionState.openIntentId &&
+    !input.positionState.positionId &&
+    !input.positionState.chainPositionAddress
+  ) {
+    return input.positionState;
+  }
+
+  return {
+    ...input.positionState,
+    allowNewOpens: input.allowNewOpens,
+    flattenOnly: input.flattenOnly,
+    lastReason: 'account-terminal-flat',
+    openIntentId: undefined,
+    positionId: undefined,
+    chainPositionAddress: undefined,
+    activeMint: undefined,
+    activePoolAddress: undefined,
+    lifecycleState: 'closed' as const,
+    entrySol: undefined,
+    openedAt: undefined,
+    valuationStatus: undefined,
+    valuationReason: undefined,
+    lastValuationAt: undefined,
+    lastClosedMint: input.positionState.activeMint ?? input.positionState.lastClosedMint,
+    lastClosedAt: input.positionState.activeMint || input.positionState.activePoolAddress
+      ? input.now
+      : input.positionState.lastClosedAt,
+    walletSol: input.accountState.walletSol,
+    updatedAt: input.now
+  };
+}
+
 function inferOpenPositionMetadata(input: {
   accountState?: LiveAccountState;
   activeMint?: string;
@@ -978,7 +1030,11 @@ function resolvePersistedLpIdentity(input: {
   };
 }
 
-function resolveLifecycleStateForPersist(input: {
+function isOpeningActionName(action?: string) {
+  return action === 'deploy' || action === 'add-lp';
+}
+
+export function resolveLifecycleStateForPersist(input: {
   nextLifecycleState?: PositionLifecycleState;
   previousLifecycleState?: PositionLifecycleState;
   pendingSubmission: boolean;
@@ -994,6 +1050,11 @@ function resolveLifecycleStateForPersist(input: {
     activeMint: input.activeMint,
     activePoolAddress: input.activePoolAddress
   });
+  const accountIsFlat = !input.pendingSubmission && !hasInventory && !hasMatchingPosition;
+
+  if (accountIsFlat && !isOpeningActionName(input.lastAction)) {
+    return 'closed';
+  }
 
   if (input.nextLifecycleState === 'closed' && hasInventory) {
     return 'open';
@@ -1186,6 +1247,21 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           });
           dependencyHealth = preIngestResidualSweepResult.dependencyHealth;
           nextResidualTokenSweepAt = preIngestResidualSweepResult.nextSweepAt;
+        }
+
+        const terminalFlatPositionState = reconcileTerminalFlatPositionState({
+          positionState,
+          accountState: effectiveAccountState,
+          pendingSubmission: pendingSubmission !== null,
+          allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
+          flattenOnly: runtimeState.mode === 'flatten_only',
+          now: nowIso()
+        });
+        if (terminalFlatPositionState !== positionState) {
+          positionState = terminalFlatPositionState;
+          if (positionState) {
+            await runtimeStateStore.writePositionState(positionState);
+          }
         }
 
         cycleInput = await buildCycleInput(tickCount, { tickCount, positionState });
@@ -1437,6 +1513,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const persistedPoolAddress = typeof result.context?.pool?.address === 'string' && result.context.pool.address.length > 0
           ? result.context.pool.address
           : (positionState?.activePoolAddress ?? '');
+        const persistedActiveMintForState = persistedLifecycleState === 'closed' ? undefined : persistedActiveMint;
+        const persistedActivePoolAddressForState = persistedLifecycleState === 'closed' ? undefined : persistedPoolAddress;
         const persistedEntrySol = result.action === 'add-lp' && result.liveOrderSubmitted
           ? cycleInput?.requestedPositionSol
           : isExposureReducingAction(result.action)
@@ -1501,8 +1579,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           openIntentId: persistedIdentity.openIntentId,
           positionId: persistedIdentity.positionId,
           chainPositionAddress: persistedIdentity.chainPositionAddress,
-          activeMint: persistedActiveMint,
-          activePoolAddress: persistedPoolAddress,
+          activeMint: persistedActiveMintForState,
+          activePoolAddress: persistedActivePoolAddressForState,
           lifecycleState: persistedLifecycleState,
           entrySol: orphanedIdentity?.entrySol ?? inferredPositionMetadata.entrySol,
           openedAt: orphanedIdentity?.openedAt ?? inferredPositionMetadata.openedAt,

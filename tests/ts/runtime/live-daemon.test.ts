@@ -10,12 +10,113 @@ import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
-import { runLiveDaemon } from '../../../src/runtime/live-daemon';
+import { resolveLifecycleStateForPersist, runLiveDaemon } from '../../../src/runtime/live-daemon';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 
 describe('runLiveDaemon', () => {
+  it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
+    expect(resolveLifecycleStateForPersist({
+      nextLifecycleState: 'open',
+      previousLifecycleState: 'inventory_exit_ready',
+      pendingSubmission: false,
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      lastAction: 'dca-out',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-safe'
+    })).toBe('closed');
+  });
+
+  it('clears active identity when persisted account state is terminally closed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-flat-terminal-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-safe',
+      lifecycleState: 'open',
+      updatedAt: '2026-03-22T00:00:00.000Z'
+    });
+
+    let positionStateSeenByBuild: Awaited<ReturnType<RuntimeStateStore['readPositionState']>> | undefined;
+    const flatAccountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      accountProvider: {
+        readState: async () => flatAccountState
+      },
+      signer: {
+        sign: async (intent) => ({
+          intent,
+          signerId: 'test-signer',
+          signedAt: '2026-03-22T00:00:01.000Z',
+          signature: 'sig'
+        })
+      },
+      broadcaster: {
+        broadcast: async (signedIntent) => ({
+          status: 'submitted' as const,
+          submissionId: 'sub-flat-terminal',
+          idempotencyKey: signedIntent.intent.idempotencyKey
+        })
+      },
+      buildCycleInput: async (_tick, context) => {
+        positionStateSeenByBuild = context?.positionState;
+        return {
+          requestedPositionSol: 0.1,
+          context: {
+            pool: { address: 'pool-safe', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            token: { mint: 'mint-safe', symbol: 'SAFE', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+            trader: { hasInventory: false, hasLpPosition: false },
+            route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+          }
+        };
+      }
+    });
+
+    expect(positionStateSeenByBuild).toMatchObject({
+      lifecycleState: 'closed'
+    });
+    expect(positionStateSeenByBuild?.activeMint).toBeUndefined();
+    expect(positionStateSeenByBuild?.activePoolAddress).toBeUndefined();
+
+    const positionState = await runtimeStateStore.readPositionState();
+    expect(positionState).toMatchObject({
+      allowNewOpens: true,
+      lifecycleState: 'closed'
+    });
+    expect(positionState?.activeMint).toBeUndefined();
+    expect(positionState?.activePoolAddress).toBeUndefined();
+  });
+
   it('writes a health snapshot after running a single tick', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-'));
     const stateRootDir = join(root, 'state');
