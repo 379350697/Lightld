@@ -219,7 +219,7 @@ describe('MeteoraDlmmClient', () => {
       tokenX: { publicKey: SOL_MINT },
       tokenY: { publicKey: makePoolAddress(90) },
       getPositionsByUserAndLbPair: async () => ({
-        activeBin: { binId: 167, price: '1' },
+        activeBin: { binId: 167, price: '2', pricePerToken: '2' },
         userPositions: [fundedPosition, residualPosition, emptyPosition]
       })
     }));
@@ -271,8 +271,8 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 0
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeCloseTo(1.25, 10);
-    expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.15, 10);
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(1.125, 10);
+    expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.1, 10);
     expect(snapshots[1]?.currentValueSol).toBeCloseTo(0.2, 10);
     expect(snapshots[1]?.unclaimedFeeSol).toBeCloseTo(0.01, 10);
   });
@@ -284,20 +284,28 @@ describe('MeteoraDlmmClient', () => {
       positionData: {
         lowerBinId: 52,
         upperBinId: 120,
-        feeX: { isZero: () => true },
-        feeY: { isZero: () => true },
+        feeX: { isZero: () => false },
+        feeY: { isZero: () => false },
+        totalXAmount: '4000000',
+        totalYAmount: '1000000000',
+        feeXExcludeTransferFee: '2000000',
+        feeYExcludeTransferFee: '100000000',
         positionBinData: [{ binId: 120, positionXAmount: '0', positionYAmount: '1' }]
       }
     };
 
     dlmmPkg.getAllLbPairPositionsByUser = vi.fn(async () => new Map([
-      [poolAddress, { lbPairPositionsData: [{ publicKey: position.publicKey }] }]
+      [poolAddress, {
+        tokenX: { mint: { decimals: 6 } },
+        tokenY: { mint: { decimals: 9 } },
+        lbPairPositionsData: [{ publicKey: position.publicKey }]
+      }]
     ]));
     dlmmPkg.create = vi.fn(async () => ({
       tokenX: { publicKey: makePoolAddress(93) },
       tokenY: { publicKey: SOL_MINT },
       getPositionsByUserAndLbPair: async () => ({
-        activeBin: { binId: 53, price: '1' },
+        activeBin: { binId: 53, price: '0.25', pricePerToken: '0.25' },
         userPositions: [position]
       })
     }));
@@ -314,6 +322,8 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 67
       })
     ]);
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(2, 10);
+    expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.6, 10);
   });
 
   it('falls back to later DLMM connections when the first rpc is rate limited', async () => {

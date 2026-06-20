@@ -160,11 +160,12 @@ function computeSolValueFromPairAmounts(input: {
     return input.solSide === 'tokenX' ? tokenXAmount : tokenYAmount;
   }
 
+  // Meteora pricePerToken is tokenY per tokenX in UI units.
   if (input.solSide === 'tokenX') {
-    return tokenXAmount + (tokenYAmount * pricePerToken);
+    return tokenXAmount + (tokenYAmount / pricePerToken);
   }
 
-  return tokenYAmount + (tokenXAmount / pricePerToken);
+  return tokenYAmount + (tokenXAmount * pricePerToken);
 }
 
 function resolveTokenDecimals(tokenReserve: unknown) {
@@ -180,7 +181,7 @@ function priceFromBinId(binId: number, binStep: number, tokenXDecimals: number, 
   }
 
   const base = 1 + (binStep / 10_000);
-  const decimalFactor = 10 ** (tokenYDecimals - tokenXDecimals);
+  const decimalFactor = 10 ** (tokenXDecimals - tokenYDecimals);
   const price = (base ** binId) * decimalFactor;
   return Number.isFinite(price) ? price : undefined;
 }
