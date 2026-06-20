@@ -655,6 +655,9 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     + snapshot.feeTokenValueSol;
   const pnlSol = snapshot.pnlSol;
   const pnlPct = investedSol > 0 ? (pnlSol / investedSol) * 100 : null;
+  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = snapshot.confidence === 'exact'
+    ? 'trusted'
+    : 'estimated';
 
   return {
     lifecycleKey: buildExecutionLifecycleKey({
@@ -677,7 +680,7 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     pnlSol,
     pnlPct,
     dprPct: pnlPct,
-    profitTrust: 'trusted'
+    profitTrust
   };
 }
 

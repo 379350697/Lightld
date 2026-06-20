@@ -140,7 +140,7 @@ describe('buildCashflowMetrics', () => {
           feeTokenValueSol: 0.0036496159,
           pnlSol: -0.0088574374,
           source: 'solana-chain',
-          confidence: 'exact'
+          confidence: 'partial'
         }
       ],
       limit: 5
@@ -156,7 +156,7 @@ describe('buildCashflowMetrics', () => {
       openedAt: '2026-04-22T13:07:07.421Z',
       closedAt: '2026-04-22T14:39:45.589Z',
       investedSol: 0.05,
-      profitTrust: 'trusted'
+      profitTrust: 'estimated'
     });
     expect(result[0]?.feeEarnedSol).toBeCloseTo(0.0054769119);
     expect(result[0]?.pnlSol).toBeCloseTo(-0.0088574374);
