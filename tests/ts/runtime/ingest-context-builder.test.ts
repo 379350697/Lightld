@@ -1,11 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CandidateScanRecord } from '../../../src/evolution';
 import { GMGN_SAFETY_DEFERRED_ERROR } from '../../../src/ingest/gmgn/token-safety-client';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
 
 describe('buildLiveCycleInputFromIngest', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json'
+      }
+    })));
+  });
+
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -842,6 +852,196 @@ describe('buildLiveCycleInputFromIngest', () => {
     expect(result.context.token).toMatchObject({
       symbol: 'GOOD'
     });
+  });
+
+  it('applies auxiliary signal enrichment after safety filtering before candidate selection', async () => {
+    const scans: CandidateScanRecord[] = [];
+    const enrichmentInputs: string[][] = [];
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      candidateScanSink: {
+        appendScan: async (scan) => {
+          scans.push(scan);
+        }
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-steady',
+          baseMint: 'mint-steady',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'STEADY',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        },
+        {
+          address: 'pool-hot',
+          baseMint: 'mint-hot',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'HOT',
+          liquidityUsd: 19_000,
+          created_at: new Date('2026-03-21T10:01:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          updatedAt: '2026-03-22T09:57:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-steady',
+          symbol: 'STEADY',
+          holders: 90,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        },
+        {
+          mint: 'mint-hot',
+          symbol: 'HOT',
+          holders: 100,
+          timestamp: '2026-03-22T09:55:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-steady',
+          safe: true,
+          safetyScore: 80,
+          maxScore: 120
+        },
+        {
+          mint: 'mint-hot',
+          safe: true,
+          safetyScore: 75,
+          maxScore: 120
+        }
+      ],
+      enrichAuxiliarySignalsImpl: async (candidates) => {
+        enrichmentInputs.push(candidates.map((candidate) => `${candidate.mint}:${candidate.safetyScore ?? 0}`));
+
+        return candidates.map((candidate) =>
+          candidate.mint === 'mint-hot'
+            ? {
+              ...candidate,
+              auxSignalScore: 12,
+              dexscreenerBoostAmount: 55,
+              dexscreenerHasProfile: true,
+              jupiterOrganicScore: 70,
+              jupiterTrendingRank: 3,
+              coingeckoTrendingRank: 9,
+              auxSignalStatus: 'partial' as const
+            }
+            : {
+              ...candidate,
+              auxSignalScore: 0,
+              auxSignalStatus: 'unavailable' as const
+            }
+        );
+      }
+    });
+
+    expect(enrichmentInputs).toEqual([['mint-steady:80', 'mint-hot:75']]);
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-hot',
+      auxSignalScore: 12,
+      auxSignalStatus: 'partial'
+    });
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-hot',
+      dexscreenerBoostAmount: 55,
+      dexscreenerHasProfile: true,
+      jupiterOrganicScore: 70,
+      jupiterTrendingRank: 3,
+      coingeckoTrendingRank: 9
+    });
+    expect(scans[0]?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tokenMint: 'mint-hot',
+        selected: true,
+        safetyScore: 75,
+        auxSignalScore: 12,
+        auxSignalStatus: 'partial'
+      })
+    ]));
+  });
+
+  it('fails open when auxiliary signal enrichment throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 20_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 90,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl: async () => [
+        {
+          mint: 'mint-safe',
+          safe: true,
+          safetyScore: 80,
+          maxScore: 120
+        }
+      ],
+      enrichAuxiliarySignalsImpl: async () => {
+        throw new Error('signals-down');
+      }
+    });
+
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'SAFE'
+    });
+    expect(result.context.pool).toMatchObject({
+      auxSignalScore: 0,
+      auxSignalStatus: 'disabled'
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Auxiliary signal enrichment failed open'));
   });
 
   it('emits structured candidate scan evidence with selected and rejected candidates', async () => {

@@ -14,6 +14,30 @@ lpConfig:
   minFeeTvlRatio24h: 0
   claimFeeThresholdUsd: 25
   rebalanceOnOutOfRange: false
+auxiliarySignals:
+  enabled: true
+  mode: rank-only
+  timeoutMs: 800
+  cacheTtlMs: 300000
+  maxCandidatesPerCycle: 30
+  failOpen: true
+  maxScoreBonus: 25
+  providers:
+    - dexscreener
+    - jupiter
+    - coingecko
+  providerOptions:
+    dexscreener:
+      enabled: true
+      weight: 1
+    jupiter:
+      enabled: true
+      weight: 1
+      apiKeyEnv: JUPITER_API_KEY
+    coingecko:
+      enabled: true
+      weight: 1
+      apiKeyEnv: COINGECKO_API_KEY
 hardGates:
   requireSolRoute: true
   minLiquidityUsd: 1000

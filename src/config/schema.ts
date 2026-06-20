@@ -43,11 +43,73 @@ export const LpConfigSchema = z.object({
   maxImpermanentLossPct: z.number().nonnegative().optional()
 });
 
+export const AuxiliarySignalProviderNameSchema = z.enum([
+  'dexscreener',
+  'jupiter',
+  'coingecko',
+  'birdeye'
+]);
+
+const AuxiliarySignalProviderOptionsSchema = z.object({
+  enabled: z.boolean().default(true),
+  weight: z.number().nonnegative().default(1),
+  apiKeyEnv: z.string().optional(),
+  baseUrl: z.string().optional()
+});
+
+const DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS = {
+  enabled: true,
+  weight: 1
+};
+
+const DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS_BY_NAME = {
+  dexscreener: DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS,
+  jupiter: DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS,
+  coingecko: DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS,
+  birdeye: DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS
+};
+
+export const AuxiliarySignalsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  mode: z.literal('rank-only').default('rank-only'),
+  timeoutMs: z.number().int().positive().default(800),
+  cacheTtlMs: z.number().int().nonnegative().default(300_000),
+  maxCandidatesPerCycle: z.number().int().positive().default(30),
+  failOpen: z.boolean().default(true),
+  maxScoreBonus: z.number().nonnegative().default(25),
+  providers: z.array(AuxiliarySignalProviderNameSchema).default([
+    'dexscreener',
+    'jupiter',
+    'coingecko'
+  ]),
+  providerOptions: z.object({
+    dexscreener: AuxiliarySignalProviderOptionsSchema.default(DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS),
+    jupiter: AuxiliarySignalProviderOptionsSchema.default(DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS),
+    coingecko: AuxiliarySignalProviderOptionsSchema.default(DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS),
+    birdeye: AuxiliarySignalProviderOptionsSchema.default(DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS)
+  }).default(DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS_BY_NAME)
+}).default({
+  enabled: false,
+  mode: 'rank-only',
+  timeoutMs: 800,
+  cacheTtlMs: 300_000,
+  maxCandidatesPerCycle: 30,
+  failOpen: true,
+  maxScoreBonus: 25,
+  providers: [
+    'dexscreener',
+    'jupiter',
+    'coingecko'
+  ],
+  providerOptions: DEFAULT_AUXILIARY_SIGNAL_PROVIDER_OPTIONS_BY_NAME
+});
+
 export const StrategyConfigSchema = z.object({
   strategyId: z.string(),
   poolClass: z.enum(['new-token', 'large-pool']),
   exitMint: z.literal('SOL'),
   lpConfig: LpConfigSchema.optional(),
+  auxiliarySignals: AuxiliarySignalsConfigSchema,
   hardGates: z.object({
     requireSolRoute: z.boolean(),
     minLiquidityUsd: z.number().nonnegative(),
@@ -72,3 +134,5 @@ export const StrategyConfigSchema = z.object({
 });
 
 export type StrategyConfig = z.infer<typeof StrategyConfigSchema>;
+export type AuxiliarySignalsConfig = z.infer<typeof AuxiliarySignalsConfigSchema>;
+export type AuxiliarySignalProviderName = z.infer<typeof AuxiliarySignalProviderNameSchema>;

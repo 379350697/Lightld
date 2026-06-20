@@ -49,6 +49,22 @@ function makeConfig(): StrategyConfig {
       minFeeTvlRatio24h: 0,
       rebalanceOnOutOfRange: false
     },
+    auxiliarySignals: {
+      enabled: false,
+      mode: 'rank-only',
+      timeoutMs: 800,
+      cacheTtlMs: 300_000,
+      maxCandidatesPerCycle: 30,
+      failOpen: true,
+      maxScoreBonus: 25,
+      providers: ['dexscreener', 'jupiter', 'coingecko'],
+      providerOptions: {
+        dexscreener: { enabled: true, weight: 1 },
+        jupiter: { enabled: true, weight: 1 },
+        coingecko: { enabled: true, weight: 1 },
+        birdeye: { enabled: true, weight: 1 }
+      }
+    },
     hardGates: {
       requireSolRoute: true,
       minLiquidityUsd: 1000
@@ -141,6 +157,24 @@ describe('ingest candidate helpers', () => {
     expect(result?.address).toBe('pool-a');
   });
 
+  it('does not let auxiliary signals overturn a large safety-score gap', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'pool-safe', safetyScore: 90, auxSignalScore: 0 }),
+      makeCandidate({ address: 'pool-hyped', safetyScore: 60, auxSignalScore: 25 })
+    ], 'new-token-v1', 0);
+
+    expect(result?.address).toBe('pool-safe');
+  });
+
+  it('lets auxiliary signals break close new-token ranking decisions', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'pool-steady', safetyScore: 80, auxSignalScore: 0, feeTvlRatio24h: 0.2 }),
+      makeCandidate({ address: 'pool-hot', safetyScore: 70, auxSignalScore: 15, feeTvlRatio24h: 0.01 })
+    ], 'new-token-v1', 0);
+
+    expect(result?.address).toBe('pool-hot');
+  });
+
   it('blocks fresh candidates when active position capacity is full', () => {
     const result = selectCandidate([
       makeCandidate({ address: 'fresh-pool', hasInventory: false, safetyScore: 80 }),
@@ -152,7 +186,7 @@ describe('ingest candidate helpers', () => {
 
   it('returns null when only fresh candidates remain and active position capacity is full', () => {
     const result = selectCandidate([
-      makeCandidate({ address: 'fresh-pool', hasInventory: false, safetyScore: 80 })
+      makeCandidate({ address: 'fresh-pool', hasInventory: false, safetyScore: 80, auxSignalScore: 25 })
     ], 'new-token-v1', 2, 2);
 
     expect(result).toBeNull();

@@ -18,6 +18,7 @@ export type SafetyFilterDiagnostics = {
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { StrategyId } from './live-cycle.ts';
 import type { StrategyConfig } from '../config/schema.ts';
+import type { AuxiliarySignalFields } from '../ingest/signals/types.ts';
 import { evaluateDlmmPool } from '../strategy/filtering/dlmm-pool-filter.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -35,6 +36,7 @@ export type IngestCandidate = {
   address: string;
   mint: string;
   symbol: string;
+  chain?: string;
   quoteMint: string;
   liquidityUsd: number;
   hasSolRoute: boolean;
@@ -47,7 +49,7 @@ export type IngestCandidate = {
   volume24h: number;
   feeTvlRatio24h: number;
   safetyScore?: number;
-};
+} & Partial<AuxiliarySignalFields>;
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
   const inventoryPositions = (accountState?.walletTokens ?? [])
@@ -119,6 +121,12 @@ export function selectCandidate(
 
       const leftSafety = left.safetyScore ?? 0;
       const rightSafety = right.safetyScore ?? 0;
+      const leftSelectionScore = resolveNewTokenSelectionScore(left);
+      const rightSelectionScore = resolveNewTokenSelectionScore(right);
+      if (rightSelectionScore !== leftSelectionScore) {
+        return rightSelectionScore - leftSelectionScore;
+      }
+
       if (rightSafety !== leftSafety) {
         return rightSafety - leftSafety;
       }
@@ -138,6 +146,10 @@ export function selectCandidate(
   });
 
   return filtered[0] ?? null;
+}
+
+function resolveNewTokenSelectionScore(candidate: IngestCandidate) {
+  return (candidate.safetyScore ?? 0) + (candidate.auxSignalScore ?? 0);
 }
 
 export function filterLpEligibleCandidates(

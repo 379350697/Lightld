@@ -12,6 +12,11 @@ import { fetchMeteoraPools } from '../ingest/meteora/client.ts';
 import { fetchPumpTrades } from '../ingest/pump/client.ts';
 import { normalizePumpTokenEvent } from '../ingest/pump/normalize.ts';
 import { SOURCE_ENDPOINTS } from '../ingest/shared/source-metadata.ts';
+import { enrichCandidatesWithAuxiliarySignals } from '../ingest/signals/signal-enricher.ts';
+import {
+  EMPTY_AUXILIARY_SIGNAL_FIELDS,
+  type AuxiliarySignalEnricherOptions
+} from '../ingest/signals/types.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import type { CandidateScanRecord, CandidateSampleRecord } from '../evolution/index.ts';
 import {
@@ -47,6 +52,10 @@ type FetchGmgnTraderImpl = (
   options?: Parameters<typeof fetchGmgnTrader>[1]
 ) => Promise<Record<string, unknown>>;
 type FetchTokenSafetyBatchImpl = (mints: string[]) => Promise<TokenSafetyResult[]>;
+type EnrichAuxiliarySignalsImpl = (
+  candidates: IngestCandidate[],
+  options: AuxiliarySignalEnricherOptions
+) => Promise<IngestCandidate[]>;
 
 export type IngestBackedCycleInput = Omit<LiveCycleInput, 'strategy'> & {
   context: DecisionContextInput;
@@ -69,6 +78,7 @@ type IngestContextBuilderInput = {
   fetchPumpTradesImpl?: FetchPumpTradesImpl;
   fetchGmgnTraderImpl?: FetchGmgnTraderImpl;
   fetchTokenSafetyBatchImpl?: FetchTokenSafetyBatchImpl;
+  enrichAuxiliarySignalsImpl?: EnrichAuxiliarySignalsImpl;
   candidateScanSink?: {
     appendScan(scan: CandidateScanRecord): Promise<void>;
   };
@@ -573,9 +583,11 @@ function buildCandidate(
   const feeTvlObj = isRecord(payload.fee_tvl_ratio) ? payload.fee_tvl_ratio : {};
 
   return {
+    ...EMPTY_AUXILIARY_SIGNAL_FIELDS,
     address: readString(payload, ['address', 'poolAddress', 'pool_address']),
     mint,
     symbol: tokenEvent?.symbol || symbol,
+    chain: 'solana',
     quoteMint: readString(payload, ['quoteMint', 'quote_mint', 'token_y_mint']) || resolveNestedString(payload, ['token_y', 'tokenY'], ['address', 'mint']),
     liquidityUsd,
     hasSolRoute: resolveHasSolRoute(payload),
@@ -612,10 +624,12 @@ function buildCandidateScanRecords(input: {
 
   return input.allCandidates.map((candidate, index) => {
     const key = `${candidate.address}:${candidate.mint}`;
+    const safeCandidate = input.safeCandidates.find((item) => item.address === candidate.address && item.mint === candidate.mint);
     const safetyRejected = rejectedBySafety.get(candidate.mint);
     const rejectedByLp = !lpEligibleKeys.has(key);
     const rejectedBySafetyStage = lpEligibleKeys.has(key) && !safeKeys.has(key);
     const selected = key === selectedKey;
+    const enrichedCandidate = safeCandidate ?? candidate;
 
     let rejectionStage: CandidateSampleRecord['rejectionStage'] = 'none';
     let blockedReason = '';
@@ -647,7 +661,14 @@ function buildCandidateScanRecords(input: {
       poolAddress: candidate.address,
       liquidityUsd: candidate.liquidityUsd,
       holders: candidate.holders,
-      safetyScore: candidate.safetyScore ?? safetyRejected?.safetyScore ?? 0,
+      safetyScore: enrichedCandidate.safetyScore ?? safetyRejected?.safetyScore ?? 0,
+      auxSignalScore: enrichedCandidate.auxSignalScore ?? 0,
+      dexscreenerBoostAmount: enrichedCandidate.dexscreenerBoostAmount ?? 0,
+      dexscreenerHasProfile: enrichedCandidate.dexscreenerHasProfile ?? false,
+      jupiterOrganicScore: enrichedCandidate.jupiterOrganicScore ?? 0,
+      jupiterTrendingRank: enrichedCandidate.jupiterTrendingRank ?? 0,
+      coingeckoTrendingRank: enrichedCandidate.coingeckoTrendingRank ?? 0,
+      auxSignalStatus: enrichedCandidate.auxSignalStatus ?? 'disabled',
       volume24h: candidate.volume24h,
       feeTvlRatio24h: candidate.feeTvlRatio24h,
       binStep: candidate.binStep,
@@ -793,14 +814,14 @@ export async function buildLiveCycleInputFromIngest(
     return hasSolRoute && !isBlacklisted && binStep >= 100 && isRecentPool(payload, now, maxPoolAgeMs);
   });
 
-  const prefilterCandidates = prefilteredRows.map((row) =>
+  const prefilterCandidates: IngestCandidate[] = prefilteredRows.map((row) =>
     buildCandidate(
       row,
       pumpIndexes,
       input.accountState
     )
   );
-  let candidates = prefilterCandidates;
+  let candidates: IngestCandidate[] = prefilterCandidates;
   const preLpCount = candidates.length;
   const lpEligibleCandidates = filterLpEligibleCandidates(candidates, config);
   candidates = lpEligibleCandidates;
@@ -820,6 +841,16 @@ export async function buildLiveCycleInputFromIngest(
       safetyDiagnostics = diagnostics;
     }
   });
+  try {
+    candidates = await (input.enrichAuxiliarySignalsImpl ?? enrichCandidatesWithAuxiliarySignals)(candidates, {
+      config: config.auxiliarySignals,
+      logger: console
+    });
+  } catch (error) {
+    console.warn(
+      `[Ingest] Auxiliary signal enrichment failed open; continuing without auxiliary signals: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   const safeCandidates = candidates;
   const postSafetyCount = safeCandidates.length;
   candidates = filterRecentlyClosedMintCandidates(candidates, {
@@ -919,7 +950,9 @@ export async function buildLiveCycleInputFromIngest(
       binStep: candidate.binStep,
       baseFeePct: candidate.baseFeePct,
       volume24h: candidate.volume24h,
-      feeTvlRatio24h: candidate.feeTvlRatio24h
+      feeTvlRatio24h: candidate.feeTvlRatio24h,
+      auxSignalScore: candidate.auxSignalScore ?? 0,
+      auxSignalStatus: candidate.auxSignalStatus ?? 'disabled'
     },
     token: {
       mint: candidate.mint,
@@ -929,7 +962,12 @@ export async function buildLiveCycleInputFromIngest(
       inSession: sessionActive,
       holders: candidate.holders,
       expectedOutSol: requestedPositionSol,
-      capturedAt: candidate.capturedAt
+      capturedAt: candidate.capturedAt,
+      dexscreenerBoostAmount: candidate.dexscreenerBoostAmount ?? 0,
+      dexscreenerHasProfile: candidate.dexscreenerHasProfile ?? false,
+      jupiterOrganicScore: candidate.jupiterOrganicScore ?? 0,
+      jupiterTrendingRank: candidate.jupiterTrendingRank ?? 0,
+      coingeckoTrendingRank: candidate.coingeckoTrendingRank ?? 0
     },
     trader: {
       wallet: input.traderWallet ?? '',
