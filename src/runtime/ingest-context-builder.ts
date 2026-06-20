@@ -16,15 +16,18 @@ import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import type { CandidateScanRecord, CandidateSampleRecord } from '../evolution/index.ts';
 import {
   applySafetyFilter,
+  filterRecentlyClosedMintCandidates,
   countActiveInventoryPositions,
   filterLpEligibleCandidates,
   type IngestCandidate,
   isInScanWindow,
   selectCandidate,
-  type SafetyFilterDiagnostics
+  type SafetyFilterDiagnostics,
+  RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS
 } from './ingest-candidate-selection.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
+import type { PositionStateSnapshot } from './state-types.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -69,6 +72,8 @@ type IngestContextBuilderInput = {
   candidateScanSink?: {
     appendScan(scan: CandidateScanRecord): Promise<void>;
   };
+  maxActivePositions?: number;
+  positionState?: PositionStateSnapshot;
 };
 
 type PumpIndexes = {
@@ -421,6 +426,7 @@ function resolveNoCandidateBlockReason(input: {
   prefilteredCount: number;
   postLpCount: number;
   postSafetyCount: number;
+  postRecentlyClosedCooldownCount: number;
   eligibleSelectionCount: number;
   inScanWindow: boolean;
   activePositionsCount: number;
@@ -472,6 +478,13 @@ function resolveNoCandidateBlockReason(input: {
     return {
       blockReason: 'no-safe-candidate',
       blockDetails: 'all LP-eligible candidates failed safety checks'
+    };
+  }
+
+  if (input.postRecentlyClosedCooldownCount === 0) {
+    return {
+      blockReason: 'recently-closed-mint-cooldown',
+      blockDetails: 'all safe candidates are still inside recently closed mint reopen cooldown'
     };
   }
 
@@ -658,6 +671,7 @@ async function appendCandidateScanBestEffort(input: {
   prefilteredCount: number;
   postLpCount: number;
   postSafetyCount: number;
+  postRecentlyClosedCooldownCount: number;
   eligibleSelectionCount: number;
   inScanWindow: boolean;
   activePositionsCount: number;
@@ -808,11 +822,27 @@ export async function buildLiveCycleInputFromIngest(
   });
   const safeCandidates = candidates;
   const postSafetyCount = safeCandidates.length;
+  candidates = filterRecentlyClosedMintCandidates(candidates, {
+    lastClosedMint: input.positionState?.lastClosedMint,
+    lastClosedAt: input.positionState?.lastClosedAt,
+    cooldownMs: RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS,
+    now
+  });
+  const postRecentlyClosedCooldownCount = candidates.length;
 
-  console.log(`[Ingest] pools=${poolRows.length} prefilter=${prefilteredRows.length} lp=${preLpCount}->${postLpCount} safety=${postSafetyCount} scanWindow=${inScanWindow} activePositions=${activePositionsCount}`);
+  console.log(
+    "[Ingest] pools=" + poolRows.length
+    + " prefilter=" + prefilteredRows.length
+    + " lp=" + preLpCount + "->" + postLpCount
+    + " safety=" + postSafetyCount
+    + " reopenCooldown=" + postRecentlyClosedCooldownCount
+    + " scanWindow=" + inScanWindow
+    + " activePositions=" + activePositionsCount
+  );
 
-  const candidate = selectCandidate(candidates, input.strategy, activePositionsCount);
-  const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || activePositionsCount < 5).length;
+  const maxActivePositions = input.maxActivePositions ?? 5;
+  const candidate = selectCandidate(candidates, input.strategy, activePositionsCount, maxActivePositions);
+  const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || activePositionsCount < maxActivePositions).length;
 
   if (!candidate) {
     console.log(`[Ingest] No candidate selected: candidates=${candidates.length} eligibleForSelection=${eligibleSelectionCount}`);
@@ -823,6 +853,7 @@ export async function buildLiveCycleInputFromIngest(
       prefilteredCount: prefilteredRows.length,
       postLpCount,
       postSafetyCount,
+      postRecentlyClosedCooldownCount,
       eligibleSelectionCount,
       inScanWindow,
       activePositionsCount,
@@ -839,6 +870,7 @@ export async function buildLiveCycleInputFromIngest(
       prefilteredCount: prefilteredRows.length,
       postLpCount,
       postSafetyCount,
+      postRecentlyClosedCooldownCount,
       eligibleSelectionCount,
       inScanWindow,
       activePositionsCount,
@@ -933,6 +965,7 @@ export async function buildLiveCycleInputFromIngest(
     prefilteredCount: prefilteredRows.length,
     postLpCount,
     postSafetyCount,
+    postRecentlyClosedCooldownCount,
     eligibleSelectionCount,
     inScanWindow,
     activePositionsCount,

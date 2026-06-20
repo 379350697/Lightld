@@ -50,6 +50,7 @@ import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
+import { RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS } from './ingest-candidate-selection.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
 import {
   classifyAction,
@@ -1856,7 +1857,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const recentCloseMint = input.positionState?.lastClosedMint ?? '';
   const recentCloseAt = input.positionState?.lastClosedAt ?? '';
-  const reopenCooldownMs = 50 * 60 * 1000;
+  const reopenCooldownMs = RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS;
   const isRecentlyClosedSameMint = Boolean(
     activeMint &&
     recentCloseMint === activeMint &&

@@ -18,7 +18,7 @@ import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
-import type { PositionLifecycleState, RuntimeMode } from './state-types.ts';
+import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode } from './state-types.ts';
 import { classifyAction, isExposureReducingAction } from './action-semantics.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
@@ -33,6 +33,11 @@ import { isResolvedConfirmation } from './live-cycle-state.ts';
 import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 
+type LiveDaemonBuildCycleContext = {
+  tickCount: number;
+  positionState?: PositionStateSnapshot;
+};
+
 type LiveDaemonOptions = {
   strategy: StrategyId;
   stateRootDir?: string;
@@ -44,7 +49,10 @@ type LiveDaemonOptions = {
   residualTokenSweepCooldownMs?: number;
   residualTokenSweepMinValueSol?: number;
   maxTicks?: number;
-  buildCycleInput?: (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'>;
+  buildCycleInput?: (
+    tickCount: number,
+    context?: LiveDaemonBuildCycleContext
+  ) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'>;
   alertSink?: AlertSink;
   mirrorRuntime?: MirrorRuntime;
   housekeepingRunner?: HousekeepingRunner;
@@ -1049,7 +1057,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const sleep = options.sleep ?? wait;
   const maxTicks = options.maxTicks ?? Number.POSITIVE_INFINITY;
   const buildCycleInput:
-    (tickCount: number) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'> =
+    (
+      tickCount: number,
+      context?: LiveDaemonBuildCycleContext
+    ) => Promise<Omit<LiveCycleInput, 'strategy'>> | Omit<LiveCycleInput, 'strategy'> =
       options.buildCycleInput ?? (() => ({} as Omit<LiveCycleInput, 'strategy'>));
   const alertSink = options.alertSink ?? new NoopAlertSink();
   const mirrorRuntime = options.mirrorRuntime;
@@ -1177,7 +1188,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           nextResidualTokenSweepAt = preIngestResidualSweepResult.nextSweepAt;
         }
 
-        cycleInput = await buildCycleInput(tickCount);
+        cycleInput = await buildCycleInput(tickCount, { tickCount, positionState });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         pendingSubmission = await pendingSubmissionStore.read();
         pendingSubmissionBeforeCycle = pendingSubmission;

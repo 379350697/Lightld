@@ -8,6 +8,7 @@
  *   node --experimental-strip-types src/cli/convert-phantom-key.ts "4wBqpZ..." ./burner.json
  */
 
+import { writeFileSync } from 'node:fs';
 import { decodeBase58, encodeBase58 } from '../shared/base58.ts';
 
 function main() {
@@ -39,8 +40,6 @@ function main() {
   const publicKeyBase58 = encodeBase58(publicKeyBytes);
 
   const jsonArray = JSON.stringify(Array.from(keyBytes));
-
-  const { writeFileSync } = require('node:fs');
   writeFileSync(outputPath, jsonArray + '\n', { mode: 0o600 });
 
   process.stdout.write(`✅ Keypair saved to: ${outputPath}\n`);

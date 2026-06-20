@@ -175,6 +175,75 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('returns a failed broadcast and releases idempotency when a sent transaction never becomes visible', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
+    let failVisibility = true;
+    const sendRawTransactionAndWaitForVisibility = vi.fn(async () => {
+      if (failVisibility) {
+        throw new Error('Solana transaction was not visible after broadcast attempts; acceptedSignatures=sig-dropped');
+      }
+
+      return { signature: 'sig-visible' };
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransactionAndWaitForVisibility,
+        sendRawTransaction: async () => 'legacy-sig'
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        }),
+        invalidatePositionSnapshots: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const request = () => fetch(server.origin + '/broadcast', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', { idempotencyKey: 'k-visible-required' }))
+    });
+
+    const failedResponse = await request();
+    const failedPayload = await failedResponse.json();
+
+    expect(failedResponse.status).toBe(200);
+    expect(failedPayload).toMatchObject({
+      status: 'failed',
+      idempotencyKey: 'k-visible-required',
+      retryable: true
+    });
+    expect(failedPayload.reason).toContain('not visible after broadcast attempts');
+
+    failVisibility = false;
+    const retriedResponse = await request();
+    const retriedPayload = await retriedResponse.json();
+
+    expect(retriedResponse.status).toBe(200);
+    expect(retriedPayload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-visible',
+      confirmationSignature: 'sig-visible'
+    });
+    expect(sendRawTransactionAndWaitForVisibility).toHaveBeenCalledTimes(2);
+
+    await server.stop();
+    await rm(stateRootDir, { recursive: true, force: true });
+  });
   it('rejects a broadcast when the signed intent signature is invalid before sending transactions', async () => {
     const keypair = Keypair.generate();
     const sendRawTransaction = vi.fn(async () => 'sig-1');
@@ -502,7 +571,7 @@ describe('createSolanaExecutionServer', () => {
     }
   });
 
-  it('keeps the idempotency key pending when rpc send fails after a broadcast attempt', async () => {
+  it('returns failed and releases idempotency when rpc send fails before visibility', async () => {
     const keypair = Keypair.generate();
     const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-'));
     const sendRawTransaction = vi.fn(async () => {
@@ -541,13 +610,23 @@ describe('createSolanaExecutionServer', () => {
       };
 
       const firstResponse = await fetch(`${server.origin}/broadcast`, request);
+      const firstBody = await firstResponse.json();
       const secondResponse = await fetch(`${server.origin}/broadcast`, request);
       const secondBody = await secondResponse.json();
 
-      expect(firstResponse.status).toBe(400);
-      expect(secondResponse.status).toBe(409);
-      expect(secondBody.error).toBe('idempotency key pending');
-      expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+      expect(firstResponse.status).toBe(200);
+      expect(firstBody).toMatchObject({
+        status: 'failed',
+        idempotencyKey: 'unknown-send-key',
+        reason: 'rpc write timeout'
+      });
+      expect(secondResponse.status).toBe(200);
+      expect(secondBody).toMatchObject({
+        status: 'failed',
+        idempotencyKey: 'unknown-send-key',
+        reason: 'rpc write timeout'
+      });
+      expect(sendRawTransaction).toHaveBeenCalledTimes(2);
     } finally {
       await server.stop();
       await rm(stateRootDir, { recursive: true, force: true });
@@ -699,6 +778,93 @@ describe('createSolanaExecutionServer', () => {
     expect(getTokenAccountsByOwner).toHaveBeenCalledTimes(2);
     expect(order).toEqual(['status:sig-1,sig-2', 'token-accounts', 'token-accounts']);
     expect(sent).toEqual(['close-1', 'close-2', 'residual-swap']);
+
+    await server.stop();
+  });
+
+  it('records withdraw-lp as partial when residual liquidation quote fails after close tx is visible', async () => {
+    const keypair = Keypair.generate();
+    const sendRawTransaction = vi.fn(async () => 'sig-close');
+    const getTokenAccountsByOwner = vi.fn(async () => [
+      {
+        pubkey: 'token-account-1',
+        account: {
+          data: {
+            parsed: {
+              info: {
+                mint: 'earthcoin-mint',
+                owner: keypair.publicKey.toBase58(),
+                tokenAmount: {
+                  amount: '12345',
+                  decimals: 6,
+                  uiAmount: 0.012345,
+                  uiAmountString: '0.012345'
+                }
+              },
+              type: 'account'
+            },
+            program: 'spl-token'
+          }
+        }
+      }
+    ]);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction,
+        getSignatureStatuses: async () => ({
+          value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+        }),
+        getTokenAccountsByOwner
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(() => ({ inputMint: 'earthcoin-mint' })),
+        getQuote: vi.fn(async () => {
+          throw new Error('residual quote unavailable');
+        })
+      } as any,
+      dlmmClient: {
+        removeLiquidity: async () => [new FakeTransaction('close-1')] as any,
+        invalidatePositionSnapshots: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const request = () => fetch(server.origin + '/broadcast', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'earthcoin-mint',
+        liquidateResidualTokenToSol: true
+      }))
+    });
+
+    const firstResponse = await request();
+    const firstPayload = await firstResponse.json();
+    const replayResponse = await request();
+    const replayPayload = await replayResponse.json();
+
+    expect(firstResponse.status).toBe(200);
+    expect(firstPayload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-close',
+      submissionIds: ['sig-close'],
+      batchStatus: 'partial',
+      reason: 'residual quote unavailable'
+    });
+    expect(replayResponse.status).toBe(200);
+    expect(replayPayload).toMatchObject(firstPayload);
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(getTokenAccountsByOwner).toHaveBeenCalled();
 
     await server.stop();
   });
@@ -879,9 +1045,10 @@ describe('createSolanaExecutionServer', () => {
 
     const payload = await response.json();
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(payload).toMatchObject({
-      error: 'rpc send failed immediately'
+      status: 'failed',
+      reason: 'rpc send failed immediately'
     });
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"event":"solana-execution-broadcast"');

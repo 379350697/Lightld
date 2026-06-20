@@ -25,6 +25,8 @@ const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
 
+export const RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS = 50 * 60 * 1000;
+
 function hasActiveLpLiquidity(position: { hasLiquidity?: boolean }) {
   return position.hasLiquidity ?? true;
 }
@@ -63,17 +65,42 @@ export function isInScanWindow(now: Date) {
   return (currentMinute >= 0 && currentMinute <= 10) || (currentMinute >= 30 && currentMinute <= 40);
 }
 
+export function filterRecentlyClosedMintCandidates(
+  candidates: IngestCandidate[],
+  options: {
+    lastClosedMint?: string;
+    lastClosedAt?: string;
+    cooldownMs?: number;
+    now?: Date;
+  }
+) {
+  const lastClosedMint = options.lastClosedMint ?? '';
+  const lastClosedAt = options.lastClosedAt ?? '';
+  const cooldownMs = options.cooldownMs ?? RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS;
+  const closedAtMs = Date.parse(lastClosedAt);
+  const nowMs = (options.now ?? new Date()).getTime();
+
+  if (!lastClosedMint || !Number.isFinite(closedAtMs) || nowMs - closedAtMs >= cooldownMs) {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) =>
+    candidate.mint !== lastClosedMint || candidate.hasInventory || candidate.hasLpPosition
+  );
+}
+
 export function selectCandidate(
   candidates: IngestCandidate[],
   strategy: StrategyId,
-  activePositionsCount: number
+  activePositionsCount: number,
+  maxActivePositions = 5
 ) {
   const filtered = candidates.filter((candidate) => {
     if (candidate.address.length === 0 || candidate.symbol.length === 0) {
       return false;
     }
 
-    if (!candidate.hasInventory && activePositionsCount >= 5) {
+    if (!candidate.hasInventory && activePositionsCount >= maxActivePositions) {
       return false;
     }
 

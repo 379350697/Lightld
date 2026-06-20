@@ -5,6 +5,7 @@ import {
   applySafetyFilter,
   countActiveInventoryPositions,
   filterLpEligibleCandidates,
+  filterRecentlyClosedMintCandidates,
   isInScanWindow,
   selectCandidate,
   type IngestCandidate
@@ -138,6 +139,37 @@ describe('ingest candidate helpers', () => {
     ], 'new-token-v1', 0);
 
     expect(result?.address).toBe('pool-a');
+  });
+
+  it('blocks fresh candidates when active position capacity is full', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'fresh-pool', hasInventory: false, safetyScore: 80 }),
+      makeCandidate({ address: 'inventory-pool', hasInventory: true, safetyScore: 10 })
+    ], 'new-token-v1', 2, 2);
+
+    expect(result?.address).toBe('inventory-pool');
+  });
+
+  it('returns null when only fresh candidates remain and active position capacity is full', () => {
+    const result = selectCandidate([
+      makeCandidate({ address: 'fresh-pool', hasInventory: false, safetyScore: 80 })
+    ], 'new-token-v1', 2, 2);
+
+    expect(result).toBeNull();
+  });
+
+  it('filters fresh candidates for a recently closed mint but keeps inventory management candidates', () => {
+    const result = filterRecentlyClosedMintCandidates([
+      makeCandidate({ address: 'closed-fresh', mint: 'mint-closed', hasInventory: false, hasLpPosition: false }),
+      makeCandidate({ address: 'closed-inventory', mint: 'mint-closed', hasInventory: true, hasLpPosition: false }),
+      makeCandidate({ address: 'other-fresh', mint: 'mint-other', hasInventory: false, hasLpPosition: false })
+    ], {
+      lastClosedMint: 'mint-closed',
+      lastClosedAt: '2026-03-22T10:00:00.000Z',
+      now: new Date('2026-03-22T10:10:00.000Z')
+    });
+
+    expect(result.map((candidate) => candidate.address)).toEqual(['closed-inventory', 'other-fresh']);
   });
 
   it('falls back to higher liquidity when safety scores are tied', () => {

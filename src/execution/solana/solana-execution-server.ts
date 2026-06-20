@@ -237,6 +237,7 @@ async function liquidateResidualTokensToSol(input: {
   walletPublicKey: string;
   defaultSlippageBps: number;
   jitoTipLamports?: number;
+  sendRawTransaction: (signedTransactionBase64: string) => Promise<string>;
   sendTxMs: number[];
 }) {
   const soldMints = new Set<string>();
@@ -279,7 +280,7 @@ async function liquidateResidualTokensToSol(input: {
           input.keypair
         );
         const residualSendStartedAt = Date.now();
-        await input.rpcClient.sendRawTransaction(residualSignedBase64);
+        await input.sendRawTransaction(residualSignedBase64);
         input.sendTxMs.push(durationMs(residualSendStartedAt));
         soldMints.add(token.mint);
         soldAny = true;
@@ -379,6 +380,29 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     batchStatus: input.batchStatus ?? 'complete',
     reason: input.reason
   });
+  const buildFailedBroadcastResult = (input: {
+    idempotencyKey: string;
+    reason: string;
+    retryable?: boolean;
+  }): LiveBroadcastResult => ({
+    status: 'failed',
+    idempotencyKey: input.idempotencyKey,
+    reason: input.reason,
+    retryable: input.retryable ?? true
+  });
+  const sendVisibleRawTransaction = async (signedTransactionBase64: string) => {
+    const visibilitySender = rpcClient as SolanaRpcClient & {
+      sendRawTransactionAndWaitForVisibility?: (
+        base64Transaction: string
+      ) => Promise<{ signature: string }>;
+    };
+
+    if (typeof visibilitySender.sendRawTransactionAndWaitForVisibility === 'function') {
+      return (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+    }
+
+    return rpcClient.sendRawTransaction(signedTransactionBase64);
+  };
   const withIdempotencyLock = async <T>(idempotencyKey: string, action: () => Promise<T>): Promise<T> => {
     const prior = idempotencyLocks.get(idempotencyKey) ?? Promise.resolve();
     let release!: () => void;
@@ -602,6 +626,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let blockhashMs: number | undefined;
             const sendTxMs: number[] = [];
             let broadcastAttempted = false;
+            let visibleBroadcastRecorded = false;
 
             try {
               let signedBase64: string;
@@ -700,7 +725,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   signedBase64 = txParams.serialize().toString('base64');
                   const sendStartedAt = Date.now();
                   broadcastAttempted = true;
-                  txSignatures.push(await rpcClient.sendRawTransaction(signedBase64));
+                  txSignatures.push(await sendVisibleRawTransaction(signedBase64));
+                  visibleBroadcastRecorded = true;
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
                   if (txSignatures.length === 0) {
@@ -748,31 +774,66 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   );
 
                   if (tokenLamports > 0) {
-                    const residualQuoteStartedAt = Date.now();
-                    const quoteResponse = await jupiterClient.getQuote(
-                      jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
-                    );
-                    quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
+                    try {
+                      const residualQuoteStartedAt = Date.now();
+                      const quoteResponse = await jupiterClient.getQuote(
+                        jupiterClient.buildSellQuoteParams(intent.tokenMint, tokenLamports, defaultSlippageBps)
+                      );
+                      quoteMs = (quoteMs ?? 0) + durationMs(residualQuoteStartedAt);
 
-                    const residualSwapBuildStartedAt = Date.now();
-                    const swapResponse = await jupiterClient.getSwapTransaction(
-                      quoteResponse,
-                      walletPublicKey,
-                      { jitoTipLamports: options.jitoTipLamports }
-                    );
-                    swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
+                      const residualSwapBuildStartedAt = Date.now();
+                      const swapResponse = await jupiterClient.getSwapTransaction(
+                        quoteResponse,
+                        walletPublicKey,
+                        { jitoTipLamports: options.jitoTipLamports }
+                      );
+                      swapBuildMs = (swapBuildMs ?? 0) + durationMs(residualSwapBuildStartedAt);
 
-                    const residualSignStartedAt = Date.now();
-                    const residualSignedBase64 = signSwapTransaction(
-                      swapResponse.swapTransaction,
-                      keypair
-                    );
-                    signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
+                      const residualSignStartedAt = Date.now();
+                      const residualSignedBase64 = signSwapTransaction(
+                        swapResponse.swapTransaction,
+                        keypair
+                      );
+                      signMs = (signMs ?? 0) + durationMs(residualSignStartedAt);
 
-                    const residualSendStartedAt = Date.now();
-                    broadcastAttempted = true;
-                    txSignatures.push(await rpcClient.sendRawTransaction(residualSignedBase64));
-                    sendTxMs.push(durationMs(residualSendStartedAt));
+                      const residualSendStartedAt = Date.now();
+                      broadcastAttempted = true;
+                      txSignatures.push(await sendVisibleRawTransaction(residualSignedBase64));
+                      visibleBroadcastRecorded = true;
+                      sendTxMs.push(durationMs(residualSendStartedAt));
+                    } catch (error) {
+                      const reason = error instanceof Error ? error.message : String(error);
+
+                      options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+                      logBroadcastOutcome({
+                        event: "solana-execution-broadcast",
+                        recordedAt: new Date().toISOString(),
+                        strategyId: intent.strategyId,
+                        idempotencyKey: intent.idempotencyKey,
+                        side,
+                        poolAddress: intent.poolAddress,
+                        tokenMint: intent.tokenMint,
+                        outputSol: intent.outputSol,
+                        result: 'partial',
+                        acceptedSignatureCount: txSignatures.length,
+                        buildMs,
+                        quoteMs,
+                        swapBuildMs,
+                        signMs,
+                        blockhashMs,
+                        sendTxMs,
+                        totalMs: durationMs(broadcastStartedAt),
+                        reason
+                      });
+
+                      await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                        idempotencyKey: intent.idempotencyKey,
+                        signatures: txSignatures,
+                        batchStatus: 'partial',
+                        reason
+                      }));
+                      return;
+                    }
                   }
 
                   await liquidateResidualTokensToSol({
@@ -782,6 +843,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     walletPublicKey,
                     defaultSlippageBps,
                     jitoTipLamports: options.jitoTipLamports,
+                    sendRawTransaction: sendVisibleRawTransaction,
                     sendTxMs
                   });
                 }
@@ -815,7 +877,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               // Send to Solana RPC
               const sendStartedAt = Date.now();
               broadcastAttempted = true;
-              const txSignature = await rpcClient.sendRawTransaction(signedBase64);
+              const txSignature = await sendVisibleRawTransaction(signedBase64);
+              visibleBroadcastRecorded = true;
               sendTxMs.push(durationMs(sendStartedAt));
               logBroadcastOutcome({
                 event: 'solana-execution-broadcast',
@@ -842,9 +905,6 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               return;
             } catch (error) {
               const reason = error instanceof Error ? error.message : String(error);
-              if (!broadcastAttempted) {
-                await releaseIdempotencyReservation(payload.intent);
-              }
 
               logBroadcastOutcome({
                 event: 'solana-execution-broadcast',
@@ -866,6 +926,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 totalMs: durationMs(broadcastStartedAt),
                 reason
               });
+
+              if (!visibleBroadcastRecorded) {
+                await releaseIdempotencyReservation(payload.intent);
+                writeJson(response, 200, buildFailedBroadcastResult({
+                  idempotencyKey: intent.idempotencyKey,
+                  reason,
+                  retryable: true
+                }));
+                return;
+              }
+
               throw error;
             }
             });
@@ -879,7 +950,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const signature = payload.confirmationSignature ?? payload.submissionId;
 
             try {
-              const statuses = await rpcClient.getSignatureStatuses([signature]);
+              const statuses = await rpcClient.getSignatureStatusesAcrossReadEndpoints([signature]);
               const status = statuses.value[0];
               const checkedAt = new Date().toISOString();
 

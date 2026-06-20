@@ -31,6 +31,7 @@ type ParsedArgs = {
   meteoraQuery?: string;
   meteoraSortBy?: string;
   meteoraFilterBy?: string;
+  maxActivePositions?: number;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -47,7 +48,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       : undefined,
     meteoraQuery: process.env.LIVE_METEORA_QUERY,
     meteoraSortBy: process.env.LIVE_METEORA_SORT_BY,
-    meteoraFilterBy: process.env.LIVE_METEORA_FILTER_BY
+    meteoraFilterBy: process.env.LIVE_METEORA_FILTER_BY,
+    maxActivePositions: process.env.LIVE_MAX_ACTIVE_POSITIONS
+      ? Number(process.env.LIVE_MAX_ACTIVE_POSITIONS)
+      : undefined
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -116,6 +120,12 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (current === '--meteora-filter-by' && next) {
       parsed.meteoraFilterBy = next;
+      index += 1;
+      continue;
+    }
+
+    if (current === '--max-active-positions' && next) {
+      parsed.maxActivePositions = Number(next);
       index += 1;
     }
   }
@@ -244,7 +254,7 @@ async function main() {
     confirmationProvider: executionAdapters.confirmationProvider,
     mirrorRuntime,
     housekeepingRunner,
-    buildCycleInput: async () => {
+    buildCycleInput: async (_tickCount, buildContext) => {
       const accountState = executionAdapters.accountProvider
         ? await executionAdapters.accountProvider.readState()
         : undefined;
@@ -258,7 +268,9 @@ async function main() {
         meteoraPageSize: args.meteoraPageSize,
         meteoraQuery: args.meteoraQuery,
         meteoraSortBy: args.meteoraSortBy,
-        meteoraFilterBy: args.meteoraFilterBy
+        meteoraFilterBy: args.meteoraFilterBy,
+        maxActivePositions: args.maxActivePositions,
+        positionState: buildContext?.positionState
       });
 
       return {

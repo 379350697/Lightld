@@ -20,7 +20,7 @@ type RpcResponse<T> = {
   error?: { code: number; message: string };
 };
 
-type SignatureStatus = {
+export type SignatureStatus = {
   slot: number;
   confirmations: number | null;
   err: unknown | null;
@@ -60,6 +60,13 @@ const SPL_TOKEN_PROGRAM_IDS = [
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 ] as const;
 
+const DEFAULT_SIGNATURE_VISIBILITY_ATTEMPTS = 8;
+const DEFAULT_SIGNATURE_VISIBILITY_DELAY_MS = 1_500;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class SolanaRpcClient {
   private readonly writeUrls: string[];
   private readonly readUrls: string[];
@@ -78,8 +85,12 @@ export class SolanaRpcClient {
     this.readUrls = options.readRpcUrls?.length ? options.readRpcUrls : this.writeUrls;
   }
 
-  private async call<T>(method: string, params: unknown[]): Promise<T> {
+  private nextRequestId() {
     this.requestId += 1;
+    return this.requestId;
+  }
+
+  private async call<T>(method: string, params: unknown[]): Promise<T> {
     const isWrite = method === 'sendTransaction';
     const urls = isWrite ? this.writeUrls : this.readUrls;
     const registry = this.endpointRegistry;
@@ -137,7 +148,7 @@ export class SolanaRpcClient {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0',
-          id: this.requestId,
+          id: this.nextRequestId(),
           method,
           params
         }),
@@ -179,16 +190,80 @@ export class SolanaRpcClient {
     }
   }
 
+  private sendRawTransactionToUrl(url: string, base64Transaction: string): Promise<string> {
+    return this.executeCall<string>(url, 'sendTransaction', [
+      base64Transaction,
+      {
+        encoding: 'base64',
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        maxRetries: 5
+      }
+    ]);
+  }
+
   async sendRawTransaction(base64Transaction: string): Promise<string> {
     return this.call<string>('sendTransaction', [
       base64Transaction,
       {
         encoding: 'base64',
-        skipPreflight: true,
+        skipPreflight: false,
         preflightCommitment: 'confirmed',
-        maxRetries: 3
+        maxRetries: 5
       }
     ]);
+  }
+
+  async sendRawTransactionAndWaitForVisibility(
+    base64Transaction: string,
+    options: {
+      visibilityAttempts?: number;
+      visibilityDelayMs?: number;
+    } = {}
+  ): Promise<{ signature: string; status: SignatureStatus }> {
+    const attempts = options.visibilityAttempts ?? DEFAULT_SIGNATURE_VISIBILITY_ATTEMPTS;
+    const delayMs = options.visibilityDelayMs ?? DEFAULT_SIGNATURE_VISIBILITY_DELAY_MS;
+    const acceptedSignatures: string[] = [];
+    let lastError: Error | undefined;
+
+    for (const url of this.writeUrls) {
+      try {
+        const signature = await this.sendRawTransactionToUrl(url, base64Transaction);
+        acceptedSignatures.push(signature);
+        const status = await this.waitForSignatureVisibility(signature, { attempts, delayMs });
+
+        if (status) {
+          if (status.err) {
+            throw new Error('Solana transaction failed pre-confirmation: ' + JSON.stringify(status.err));
+          }
+
+          return { signature, status };
+        }
+
+        lastError = new Error('Solana transaction ' + signature + ' was accepted by RPC but never became visible');
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (
+          lastError.message.includes('Solana transaction failed pre-confirmation:') ||
+          lastError.message.includes('Solana RPC sendTransaction error:')
+        ) {
+          throw lastError;
+        }
+
+        const disposition = this.classifyCallError(lastError);
+
+        if (!disposition?.retryable && acceptedSignatures.length === 0) {
+          throw lastError;
+        }
+      }
+    }
+
+    throw new Error(
+      'Solana transaction was not visible after broadcast attempts' +
+      (acceptedSignatures.length > 0 ? '; acceptedSignatures=' + acceptedSignatures.join(',') : '') +
+      (lastError ? '; lastError=' + lastError.message : '')
+    );
   }
 
   async getSignatureStatuses(
@@ -198,6 +273,69 @@ export class SolanaRpcClient {
       'getSignatureStatuses',
       [signatures, { searchTransactionHistory: true }]
     );
+  }
+
+  async getSignatureStatusesAcrossReadEndpoints(
+    signatures: string[]
+  ): Promise<{ value: (SignatureStatus | null)[] }> {
+    const merged: (SignatureStatus | null)[] = signatures.map(() => null);
+    let lastError: Error | undefined;
+    let successfulReads = 0;
+
+    for (const url of this.readUrls) {
+      try {
+        const result = await this.executeCall<{ value: (SignatureStatus | null)[] }>(
+          url,
+          'getSignatureStatuses',
+          [signatures, { searchTransactionHistory: true }]
+        );
+        successfulReads += 1;
+
+        result.value.forEach((status, index) => {
+          if (status && !merged[index]) {
+            merged[index] = status;
+          }
+        });
+
+        if (merged.every(Boolean)) {
+          break;
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+
+    if (successfulReads === 0 && lastError) {
+      throw lastError;
+    }
+
+    return { value: merged };
+  }
+
+  async waitForSignatureVisibility(
+    signature: string,
+    options: {
+      attempts?: number;
+      delayMs?: number;
+    } = {}
+  ): Promise<SignatureStatus | null> {
+    const attempts = options.attempts ?? DEFAULT_SIGNATURE_VISIBILITY_ATTEMPTS;
+    const delayMs = options.delayMs ?? DEFAULT_SIGNATURE_VISIBILITY_DELAY_MS;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const statuses = await this.getSignatureStatusesAcrossReadEndpoints([signature]);
+      const status = statuses.value[0];
+
+      if (status) {
+        return status;
+      }
+
+      if (attempt < attempts - 1) {
+        await sleep(delayMs);
+      }
+    }
+
+    return null;
   }
 
   async getSignaturesForAddress(

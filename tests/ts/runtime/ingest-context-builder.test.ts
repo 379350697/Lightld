@@ -87,6 +87,55 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
   });
 
+  it('skips recently closed fresh mint candidates and selects the next safe candidate', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:10:00.000Z'),
+      safetyFilterConfig: { disabled: true, minHolders: 0, minBluechipPct: 0, minSafetyScore: 0 },
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'dca-out',
+        lifecycleState: 'closed',
+        lastClosedMint: 'mint-closed',
+        lastClosedAt: '2026-03-22T10:00:00.000Z',
+        updatedAt: '2026-03-22T10:00:00.000Z'
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-closed',
+          baseMint: 'mint-closed',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'CLOSED',
+          liquidityUsd: 40_000,
+          created_at: new Date('2026-03-22T09:50:00.000Z').getTime(),
+          pool_config: { bin_step: 120, base_fee_pct: 1 },
+          volume: { '24h': 2_000_000 },
+          fee_tvl_ratio: { '24h': 0.20 }
+        },
+        {
+          address: 'pool-next',
+          baseMint: 'mint-next',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'NEXT',
+          liquidityUsd: 35_000,
+          created_at: new Date('2026-03-22T09:51:00.000Z').getTime(),
+          pool_config: { bin_step: 120, base_fee_pct: 1 },
+          volume: { '24h': 2_000_000 },
+          fee_tvl_ratio: { '24h': 0.10 }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        { mint: 'mint-closed', symbol: 'CLOSED', holders: 1200, timestamp: '2026-03-22T09:55:00.000Z' },
+        { mint: 'mint-next', symbol: 'NEXT', holders: 1200, timestamp: '2026-03-22T09:56:00.000Z' }
+      ]
+    });
+
+    expect(result.context.pool).toMatchObject({ address: 'pool-next' });
+    expect(result.context.token).toMatchObject({ mint: 'mint-next' });
+  });
+
   it('derives new-token inventory from real account holdings', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

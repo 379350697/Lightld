@@ -116,6 +116,109 @@ describe('solana rpc config policy', () => {
     ]);
   });
 
+  it('sends transactions with preflight enabled', async () => {
+    const calls: Array<{ method: string; params: unknown[] }> = [];
+    const client = new SolanaRpcClient({
+      rpcUrl: 'https://write-primary.example',
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { method: string; params: unknown[] };
+        calls.push(body);
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'sig-1' }), { status: 200 });
+      }
+    });
+
+    await expect(client.sendRawTransaction('tx-base64')).resolves.toBe('sig-1');
+
+    expect(calls[0]).toMatchObject({
+      method: 'sendTransaction',
+      params: [
+        'tx-base64',
+        expect.objectContaining({
+          encoding: 'base64',
+          skipPreflight: false,
+          preflightCommitment: 'confirmed'
+        })
+      ]
+    });
+  });
+
+  it('requires a sent transaction to become visible on a read endpoint', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const client = new SolanaRpcClient({
+      writeRpcUrls: ['https://write-1.example', 'https://write-2.example'],
+      readRpcUrls: ['https://read-1.example', 'https://read-2.example'],
+      fetchImpl: async (input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { method: string };
+        const url = String(input);
+        calls.push({ url, method: body.method });
+
+        if (body.method === 'sendTransaction') {
+          return new Response(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: url.includes('write-1') ? 'sig-dropped' : 'sig-visible'
+          }), { status: 200 });
+        }
+
+        const visible = url.includes('read-2') && calls.some((call) =>
+          call.url.includes('write-2') && call.method === 'sendTransaction'
+        );
+
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            value: [visible ? {
+              slot: 10,
+              confirmations: 1,
+              err: null,
+              confirmationStatus: 'processed'
+            } : null]
+          }
+        }), { status: 200 });
+      }
+    });
+
+    await expect(client.sendRawTransactionAndWaitForVisibility('tx-base64', {
+      visibilityAttempts: 1,
+      visibilityDelayMs: 1
+    })).resolves.toMatchObject({ signature: 'sig-visible' });
+
+    expect(calls).toEqual([
+      { url: 'https://write-1.example', method: 'sendTransaction' },
+      { url: 'https://read-1.example', method: 'getSignatureStatuses' },
+      { url: 'https://read-2.example', method: 'getSignatureStatuses' },
+      { url: 'https://write-2.example', method: 'sendTransaction' },
+      { url: 'https://read-1.example', method: 'getSignatureStatuses' },
+      { url: 'https://read-2.example', method: 'getSignatureStatuses' }
+    ]);
+  });
+
+  it('fails when accepted transaction signatures never become visible', async () => {
+    const client = new SolanaRpcClient({
+      writeRpcUrls: ['https://write-1.example'],
+      readRpcUrls: ['https://read-1.example'],
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { method: string };
+
+        if (body.method === 'sendTransaction') {
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'sig-dropped' }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { value: [null] }
+        }), { status: 200 });
+      }
+    });
+
+    await expect(client.sendRawTransactionAndWaitForVisibility('tx-base64', {
+      visibilityAttempts: 1,
+      visibilityDelayMs: 1
+    })).rejects.toThrow(/not visible after broadcast attempts/);
+  });
+
   it('requests signatures for an address with a limit', async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const client = new SolanaRpcClient({
