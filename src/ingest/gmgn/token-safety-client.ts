@@ -15,7 +15,7 @@
  *   - Holders > 1000
  *   - GMGN whole-token 24h volume >= 500000 USD
  */
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,18 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SCRIPT_PATH = resolve(__dirname, '../../../scripts/gmgn-token-safety.py');
 const PROJECT_VENV_PYTHON = resolve(__dirname, '../../../.venv/bin/python');
 const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? (existsSync(PROJECT_VENV_PYTHON) ? PROJECT_VENV_PYTHON : 'python');
-const DEFAULT_TIMEOUT_MS = 15 * 60_000; // 15 minutes to safely wait for large batch 4s delays
+const MAX_SCRIPT_TIMEOUT_MS = 4 * 60_000;
+const BASE_SCRIPT_TIMEOUT_MS = 20_000;
+const PER_MINT_SCRIPT_TIMEOUT_MS = 15_000;
+const BETWEEN_MINT_DELAY_BUFFER_MS = 4_500;
+
+export function resolveGmgnSafetyTimeoutMs(mintCount: number) {
+  const numericMintCount = Number.isFinite(mintCount) ? mintCount : 0;
+  const boundedMintCount = Math.max(0, Math.floor(numericMintCount));
+  const delayBufferMs = Math.max(0, boundedMintCount - 1) * BETWEEN_MINT_DELAY_BUFFER_MS;
+  const timeoutMs = BASE_SCRIPT_TIMEOUT_MS + (boundedMintCount * PER_MINT_SCRIPT_TIMEOUT_MS) + delayBufferMs;
+  return Math.min(MAX_SCRIPT_TIMEOUT_MS, Math.max(BASE_SCRIPT_TIMEOUT_MS, timeoutMs));
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -203,7 +214,7 @@ export async function fetchTokenSafetyBatch(
 ): Promise<TokenSafetyResult[]> {
   if (mints.length === 0) return [];
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const configuredTimeoutMs = options.timeoutMs;
   const pythonBin = options.pythonBin ?? PYTHON_BIN;
   const maxBatchSize = options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
 
@@ -229,6 +240,7 @@ export async function fetchTokenSafetyBatch(
 
   // Pre-condition risk control: limit fetches to maxBatchSize
   const mintsToFetch = uncachedMints.slice(0, maxBatchSize);
+  const timeoutMs = configuredTimeoutMs ?? resolveGmgnSafetyTimeoutMs(mintsToFetch.length);
 
   if (uncachedMints.length === 0) {
     console.log(`[GmgnSafety] All ${mints.length} mints loaded from cache.`);
@@ -253,69 +265,154 @@ export async function fetchTokenSafetyBatch(
 
   console.log(`[GmgnSafety] Requesting ${mintsToFetch.length} new mints from GMGN (${uncachedMints.length - mintsToFetch.length} omitted this cycle to avoid rate limits).`);
 
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      pythonBin,
-      [SCRIPT_PATH, '--stdin'],
-      {
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-        },
-      },
-      (error, stdout, stderr) => {
-        if (stderr && stderr.trim().length > 0) {
-          console.warn(`[GmgnSafety] Python stderr: ${stderr.slice(0, 500)}`);
-        }
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let completed = false;
+    let childPid: number | undefined;
+    let sigkillTimer: NodeJS.Timeout | undefined;
+    let timeoutTimer: NodeJS.Timeout;
 
-        if (error) {
-          console.error(`[GmgnSafety] Script error: ${error.message}`);
-          resolve([
-            ...finalResults,
-            ...mintsToFetch.map((mint) => ({
-              mint,
-              safe: false,
-              safetyScore: 0,
-              maxScore: 120,
-              error: `script_error: ${error.message}`,
-            }))
-          ]);
-          return;
-        }
+    const terminateProcessGroup = (signal: NodeJS.Signals) => {
+      if (typeof childPid !== "number") {
+        return;
+      }
 
+      try {
+        process.kill(-childPid, signal);
+      } catch {
         try {
-          const results = JSON.parse(stdout) as TokenSafetyResult[];
-          
-          for (const res of results) {
-            // Cache successful queries
-            if (!res.error || res.error === 'empty_page') {
-              safetyCache.set(res.mint, { result: res, cachedAt: Date.now() });
-            }
-            finalResults.push(res);
-          }
-          
-          resolve(finalResults);
-        } catch (parseError) {
-          console.error(`[GmgnSafety] JSON parse error: ${stdout.slice(0, 300)}`);
-          resolve([
-            ...finalResults,
-            ...mintsToFetch.map((mint) => ({
-              mint,
-              safe: false,
-              safetyScore: 0,
-              maxScore: 120,
-              error: 'json_parse_failed',
-            }))
-          ]);
+          process.kill(childPid, signal);
+        } catch {
+          // Process already exited.
         }
       }
-    );
+    };
 
-    child.stdin?.write(JSON.stringify(mintsToFetch));
-    child.stdin?.end();
+    const finish = (error?: Error) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timeoutTimer);
+      if (!timedOut && sigkillTimer) {
+        clearTimeout(sigkillTimer);
+      }
+
+      if (stderr && stderr.trim().length > 0) {
+        console.warn(`[GmgnSafety] Python stderr: ${stderr.slice(0, 500)}`);
+      }
+
+      if (error) {
+        const reason = timedOut ? `timeout after ${timeoutMs}ms` : error.message;
+        console.error(`[GmgnSafety] Script error: ${reason}`);
+        resolve([
+          ...finalResults,
+          ...mintsToFetch.map((mint) => ({
+            mint,
+            safe: false,
+            safetyScore: 0,
+            maxScore: 120,
+            error: `script_error: ${reason}`,
+          }))
+        ]);
+        return;
+      }
+
+      try {
+        const results = JSON.parse(stdout) as TokenSafetyResult[];
+
+        for (const res of results) {
+          // Cache successful queries
+          if (!res.error || res.error === "empty_page") {
+            safetyCache.set(res.mint, { result: res, cachedAt: Date.now() });
+          }
+          finalResults.push(res);
+        }
+
+        resolve(finalResults);
+      } catch (parseError) {
+        console.error(`[GmgnSafety] JSON parse error: ${stdout.slice(0, 300)}`);
+        resolve([
+          ...finalResults,
+          ...mintsToFetch.map((mint) => ({
+            mint,
+            safe: false,
+            safetyScore: 0,
+            maxScore: 120,
+            error: "json_parse_failed",
+          }))
+        ]);
+      }
+    };
+
+    const maxBufferBytes = 10 * 1024 * 1024;
+    const appendOutput = (streamName: "stdout" | "stderr", chunk: Buffer | string) => {
+      if (completed) {
+        return;
+      }
+
+      if (streamName === "stdout") {
+        stdout += String(chunk);
+        if (Buffer.byteLength(stdout) > maxBufferBytes) {
+          terminateProcessGroup("SIGTERM");
+          finish(new Error("stdout maxBuffer exceeded"));
+        }
+        return;
+      }
+
+      stderr += String(chunk);
+      if (Buffer.byteLength(stderr) > maxBufferBytes) {
+        terminateProcessGroup("SIGTERM");
+        finish(new Error("stderr maxBuffer exceeded"));
+      }
+    };
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminateProcessGroup("SIGTERM");
+      sigkillTimer = setTimeout(() => terminateProcessGroup("SIGKILL"), 2_000);
+      sigkillTimer.unref?.();
+    }, timeoutMs);
+    timeoutTimer.unref?.();
+
+    const child = spawn(
+      pythonBin,
+      [SCRIPT_PATH, "--stdin"],
+      {
+        detached: true,
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: "1",
+          PYTHONIOENCODING: "utf-8",
+        },
+      }
+    );
+    childPid = child.pid;
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => appendOutput("stdout", chunk));
+    child.stderr?.on("data", (chunk) => appendOutput("stderr", chunk));
+    child.on("error", (error) => finish(error));
+    child.on("close", (code, signal) => {
+      if (timedOut) {
+        finish(new Error(`timeout after ${timeoutMs}ms`));
+        return;
+      }
+
+      if (code === 0) {
+        finish();
+        return;
+      }
+
+      const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+      finish(new Error(reason));
+    });
+
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify(mintsToFetch));
   });
 }
 

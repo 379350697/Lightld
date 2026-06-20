@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { describe, expect, it } from "vitest";
 
 import {
   clearTokenSafetyCacheForTests,
+  fetchTokenSafetyBatch,
   getTokenSafetyCacheSize,
   primeTokenSafetyCacheForTests,
+  resolveGmgnSafetyTimeoutMs,
   sweepTokenSafetyCache
 } from '../../../src/ingest/gmgn/token-safety-client';
 
@@ -72,5 +78,39 @@ describe('GMGN token safety cache', () => {
     expect(result.evictedDeleted).toBe(1);
     expect(result.remainingEntries).toBe(2);
     expect(getTokenSafetyCacheSize()).toBe(2);
+  });
+
+  it("computes bounded dynamic subprocess timeouts", () => {
+    expect(resolveGmgnSafetyTimeoutMs(0)).toBe(20_000);
+    expect(resolveGmgnSafetyTimeoutMs(5)).toBe(113_000);
+    expect(resolveGmgnSafetyTimeoutMs(50)).toBe(240_000);
+  });
+
+  it("returns failed safety results when the subprocess timeout expires", async () => {
+    clearTokenSafetyCacheForTests();
+    const mint = "So11111111111111111111111111111111111111112";
+    const wrapperPath = join(tmpdir(), `gmgn-timeout-${process.pid}-${Date.now()}.js`);
+    writeFileSync(wrapperPath, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n");
+    chmodSync(wrapperPath, 0o755);
+
+    try {
+      const startedAt = Date.now();
+      const [result] = await fetchTokenSafetyBatch([mint], {
+        pythonBin: wrapperPath,
+        timeoutMs: 100,
+        maxBatchSize: 1
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(result).toMatchObject({
+        mint,
+        safe: false,
+        safetyScore: 0,
+        maxScore: 120,
+        error: "script_error: timeout after 100ms"
+      });
+    } finally {
+      rmSync(wrapperPath, { force: true });
+    }
   });
 });

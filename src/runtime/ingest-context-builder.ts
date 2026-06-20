@@ -1064,5 +1064,5 @@ export async function buildLiveCycleInputFromIngest(
 
 function defaultFetchSafetyBatch(maxBatchSize: number) {
   return async (mints: string[]) =>
-    fetchTokenSafetyBatch(mints, { maxBatchSize, timeoutMs: 15 * 60_000 });
+    fetchTokenSafetyBatch(mints, { maxBatchSize });
 }
