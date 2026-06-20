@@ -70,6 +70,29 @@ function toNumericValue(value: unknown) {
   return 0;
 }
 
+function toFiniteNumber(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  if (typeof value === 'bigint') {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : undefined;
+  }
+
+  if (value && typeof value === 'object' && 'toString' in value) {
+    const parsed = Number(String(value));
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
 function isZeroLike(value: unknown) {
   if (value && typeof value === 'object' && 'isZero' in value && typeof (value as { isZero: () => boolean }).isZero === 'function') {
     return (value as { isZero: () => boolean }).isZero();
@@ -175,15 +198,32 @@ function resolveTokenDecimals(tokenReserve: unknown) {
     : undefined;
 }
 
-function priceFromBinId(binId: number, binStep: number, tokenXDecimals: number, tokenYDecimals: number) {
+function toPositiveFiniteNumber(value: unknown) {
+  const numeric = toNumericValue(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function pricePerLamportToPricePerToken(pricePerLamport: number, tokenXDecimals: number, tokenYDecimals: number) {
+  const price = pricePerLamport * (10 ** (tokenXDecimals - tokenYDecimals));
+  return Number.isFinite(price) && price > 0 ? price : undefined;
+}
+
+function pricePerTokenFromBinId(binId: number, binStep: number, tokenXDecimals: number, tokenYDecimals: number) {
   if (!Number.isFinite(binId) || !Number.isFinite(binStep)) {
     return undefined;
   }
 
-  const base = 1 + (binStep / 10_000);
-  const decimalFactor = 10 ** (tokenXDecimals - tokenYDecimals);
-  const price = (base ** binId) * decimalFactor;
-  return Number.isFinite(price) ? price : undefined;
+  const getPriceOfBinByBinId = (dlmmPkg as { getPriceOfBinByBinId?: (binId: number, binStep: number) => unknown }).getPriceOfBinByBinId;
+  if (typeof getPriceOfBinByBinId !== 'function') {
+    return undefined;
+  }
+
+  const pricePerLamport = toPositiveFiniteNumber(getPriceOfBinByBinId(binId, binStep));
+  if (typeof pricePerLamport !== 'number') {
+    return undefined;
+  }
+
+  return pricePerLamportToPricePerToken(pricePerLamport, tokenXDecimals, tokenYDecimals);
 }
 
 function computePriceProgress(currentPrice: number | undefined, lowerPrice: number | undefined, upperPrice: number | undefined) {
@@ -418,52 +458,66 @@ export class MeteoraDlmmClient {
       const snapshots: MeteoraLpPositionSnapshot[] = [];
 
       for (const [poolAddress, poolPositionInfo] of positionsByPool.entries()) {
-        const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
-        const { activeBin, userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
-        if (!userPositions?.length) {
+        const positionInfo = poolPositionInfo as PositionInfo;
+        const userPositions = Array.isArray((positionInfo as any).lbPairPositionsData)
+          ? (positionInfo as any).lbPairPositionsData
+          : [];
+        if (!userPositions.length) {
           continue;
         }
-        const tokenXMint = dlmmPool.tokenX.publicKey.toBase58();
-        const tokenYMint = dlmmPool.tokenY.publicKey.toBase58();
-        const mint = tokenXMint === SOL_MINT.toBase58() ? tokenYMint : tokenXMint;
-        const solSide = tokenXMint === SOL_MINT.toBase58() ? 'tokenX' as const : 'tokenY' as const;
-        const activeBinId = Number(activeBin?.binId ?? 0);
-        const activePricePerToken = Number(activeBin?.pricePerToken ?? activeBin?.price ?? 0);
-        const tokenXDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenX);
-        const tokenYDecimals = resolveTokenDecimals((poolPositionInfo as PositionInfo | undefined)?.tokenY);
-        const binStep = Number((dlmmPool.lbPair as { binStep?: { toString?: () => string } } | undefined)?.binStep?.toString?.() ?? 0);
+
+        const tokenXPublicKey = (positionInfo as any).tokenX?.publicKey as PublicKey | undefined;
+        const tokenYPublicKey = (positionInfo as any).tokenY?.publicKey as PublicKey | undefined;
+        const tokenXMint = tokenXPublicKey?.toBase58?.() ?? '';
+        const tokenYMint = tokenYPublicKey?.toBase58?.() ?? '';
+        const tokenXIsSol = tokenXPublicKey?.equals?.(SOL_MINT) ?? tokenXMint === SOL_MINT.toBase58();
+        const tokenYIsSol = tokenYPublicKey?.equals?.(SOL_MINT) ?? tokenYMint === SOL_MINT.toBase58();
+        if (!tokenXIsSol && !tokenYIsSol) {
+          continue;
+        }
+
+        const mint = tokenXIsSol ? tokenYMint : tokenXMint;
+        const solSide = tokenXIsSol ? 'tokenX' as const : 'tokenY' as const;
+        const activeBinIdValue = toFiniteNumber((positionInfo as any).lbPair?.activeId);
+        const activeBinId = activeBinIdValue ?? 0;
+        const tokenXDecimals = resolveTokenDecimals(positionInfo.tokenX);
+        const tokenYDecimals = resolveTokenDecimals(positionInfo.tokenY);
+        const binStep = toPositiveFiniteNumber((positionInfo as any).lbPair?.binStep);
+        const currentPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof activeBinIdValue === 'number' && typeof binStep === 'number'
+          ? pricePerTokenFromBinId(activeBinIdValue, binStep, tokenXDecimals, tokenYDecimals)
+          : undefined;
 
         for (const position of userPositions) {
           const summary = summarizePosition(position);
-          const currentValueSol = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+          const hasPrice = typeof tokenXDecimals === 'number'
+            && typeof tokenYDecimals === 'number'
+            && typeof currentPrice === 'number';
+          const currentValueSol = hasPrice
             ? computeSolValueFromPairAmounts({
               solSide,
-              pricePerToken: activePricePerToken,
+              pricePerToken: currentPrice,
               tokenXAmountRaw: (position.positionData as any).totalXAmountExcludeTransferFee ?? (position.positionData as any).totalXAmount,
               tokenYAmountRaw: (position.positionData as any).totalYAmountExcludeTransferFee ?? (position.positionData as any).totalYAmount,
               tokenXDecimals,
               tokenYDecimals
             })
             : undefined;
-          const unclaimedFeeSol = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
+          const unclaimedFeeSol = hasPrice
             ? computeSolValueFromPairAmounts({
               solSide,
-              pricePerToken: activePricePerToken,
+              pricePerToken: currentPrice,
               tokenXAmountRaw: (position.positionData as any).feeXExcludeTransferFee ?? (position.positionData as any).feeX,
               tokenYAmountRaw: (position.positionData as any).feeYExcludeTransferFee ?? (position.positionData as any).feeY,
               tokenXDecimals,
               tokenYDecimals
             })
             : undefined;
-          const lowerPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
-            ? priceFromBinId(summary.lowerBinId, binStep, tokenXDecimals, tokenYDecimals)
+          const lowerPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof binStep === 'number'
+            ? pricePerTokenFromBinId(summary.lowerBinId, binStep, tokenXDecimals, tokenYDecimals)
             : undefined;
-          const upperPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
-            ? priceFromBinId(summary.upperBinId, binStep, tokenXDecimals, tokenYDecimals)
+          const upperPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof binStep === 'number'
+            ? pricePerTokenFromBinId(summary.upperBinId, binStep, tokenXDecimals, tokenYDecimals)
             : undefined;
-          const currentPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number'
-            ? priceFromBinId(activeBinId, binStep, tokenXDecimals, tokenYDecimals)
-            : (Number.isFinite(activePricePerToken) && activePricePerToken > 0 ? activePricePerToken : undefined);
 
           snapshots.push({
             poolAddress,
