@@ -76,6 +76,42 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0].cycleId).toBe(orderJournal[0].cycleId);
   });
 
+  it('marks claim-fee intents for residual SOL liquidation', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpUnclaimedFeeUsd: 30,
+          lpUnclaimedFeeSol: 0.18,
+          lpSolDepletedBins: 1
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('claim-fee');
+    expect(result.orderIntent).toMatchObject({
+      side: 'claim-fee',
+      fullPositionExit: false,
+      liquidateResidualTokenToSol: true
+    });
+    expect(orderJournal[0]).toMatchObject({
+      side: 'claim-fee',
+      fullPositionExit: false,
+      liquidateResidualTokenToSol: true
+    });
+  });
+
   it('writes confirmed LP fills with canonical and compatibility amount fields', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',

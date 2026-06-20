@@ -764,11 +764,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 }
               }
 
-              if (side === 'withdraw-lp' && intent.liquidateResidualTokenToSol && intent.tokenMint) {
-                const withdrawConfirmed = await waitForConfirmedSignatures(rpcClient, txSignatures);
+              if ((side === 'withdraw-lp' || side === 'claim-fee') && intent.liquidateResidualTokenToSol && intent.tokenMint) {
+                const meteoraConfirmed = await waitForConfirmedSignatures(rpcClient, [...txSignatures]);
 
-                if (!withdrawConfirmed) {
-                  const reason = 'withdraw confirmation not visible before residual token liquidation';
+                if (!meteoraConfirmed) {
+                  const reason = side + ' confirmation not visible before residual token liquidation';
                   options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
                   logBroadcastOutcome({
                     event: 'solana-execution-broadcast',

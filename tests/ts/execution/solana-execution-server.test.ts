@@ -782,6 +782,88 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('waits for claim-fee tx visibility before selling claimed non-SOL fees', async () => {
+    const keypair = Keypair.generate();
+    const getSignatureStatuses = vi.fn(async () => ({
+      value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+    }));
+    const getTokenAccountsByOwner = vi.fn(async () => [
+      {
+        pubkey: 'token-account-1',
+        account: {
+          data: {
+            parsed: {
+              info: {
+                mint: 'earthcoin-mint',
+                owner: keypair.publicKey.toBase58(),
+                tokenAmount: {
+                  amount: '12345',
+                  decimals: 6,
+                  uiAmount: 0.012345,
+                  uiAmountString: '0.012345'
+                }
+              },
+              type: 'account'
+            },
+            program: 'spl-token'
+          }
+        }
+      }
+    ]);
+    const sent: string[] = [];
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        },
+        getSignatureStatuses,
+        getTokenAccountsByOwner
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(() => ({ inputMint: 'earthcoin-mint' })),
+        getQuote: vi.fn(async () => ({ routePlan: [], outAmount: String(0.02 * 1_000_000_000) })),
+        getSwapTransaction: vi.fn(async () => ({ swapTransaction: 'signed-swap-ignored-by-mock' }))
+      } as any,
+      dlmmClient: {
+        claimFee: async () => [new FakeTransaction('claim-1')] as any
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('claim-fee', {
+        tokenMint: 'earthcoin-mint',
+        liquidateResidualTokenToSol: true
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionIds: ['sig-1', 'sig-2']
+    });
+    expect(getSignatureStatuses).toHaveBeenCalledWith(['sig-1']);
+    expect(getTokenAccountsByOwner).toHaveBeenCalledTimes(2);
+    expect(sent).toEqual(['claim-1', 'residual-swap']);
+
+    await server.stop();
+  });
+
   it('records withdraw-lp as partial when residual liquidation quote fails after close tx is visible', async () => {
     const keypair = Keypair.generate();
     const sendRawTransaction = vi.fn(async () => 'sig-close');

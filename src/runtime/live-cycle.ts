@@ -2082,7 +2082,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     side: resolveOrderIntentSide(actionableAction),
     tokenMint: logContext.tokenMint,
     fullPositionExit: isFullPositionExitAction(actionableAction),
-    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp'
+    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee'
   });
   const actionIdentity = resolveActionIdentity({
     action: actionableAction,
