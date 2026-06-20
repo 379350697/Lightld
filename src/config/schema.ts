@@ -76,7 +76,7 @@ export const AuxiliarySignalsConfigSchema = z.object({
   cacheTtlMs: z.number().int().nonnegative().default(300_000),
   maxCandidatesPerCycle: z.number().int().positive().default(30),
   failOpen: z.boolean().default(true),
-  maxScoreBonus: z.number().nonnegative().default(25),
+  maxScoreBonus: z.number().nonnegative().default(30),
   providers: z.array(AuxiliarySignalProviderNameSchema).default([
     'dexscreener',
     'jupiter',
@@ -95,7 +95,7 @@ export const AuxiliarySignalsConfigSchema = z.object({
   cacheTtlMs: 300_000,
   maxCandidatesPerCycle: 30,
   failOpen: true,
-  maxScoreBonus: 25,
+  maxScoreBonus: 30,
   providers: [
     'dexscreener',
     'jupiter',

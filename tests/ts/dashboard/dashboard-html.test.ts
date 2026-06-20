@@ -24,6 +24,15 @@ describe('buildDashboardHtml', () => {
     expect(html).not.toContain('暂未接入真实 historical 数据');
   });
 
+  it('does not coerce missing open position valuations into zero PnL', () => {
+    const html = buildDashboardHtml();
+
+    expect(html).toContain('function finiteNumberOrNull');
+    expect(html).toContain('var currentValue = finiteNumberOrNull(p.currentValueSol);');
+    expect(html).not.toContain('var currentValue = Number(p.currentValueSol);');
+    expect(html).not.toContain('Number(p.currentValueSol) || 0');
+  });
+
   it('includes the historical trust badge copy for estimated and untrusted rows', () => {
     const html = buildDashboardHtml();
 

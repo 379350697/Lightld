@@ -951,6 +951,124 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('records withdraw-lp as partial when residual sweep leaves a non-SOL token unsold', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const keypair = Keypair.generate();
+    const sent: string[] = [];
+    const invalidatePositionSnapshots = vi.fn();
+    const getTokenAccountsByOwner = vi.fn(async () => [
+      {
+        pubkey: 'token-account-target',
+        account: {
+          data: {
+            parsed: {
+              info: {
+                mint: 'earthcoin-mint',
+                owner: keypair.publicKey.toBase58(),
+                tokenAmount: {
+                  amount: '12345',
+                  decimals: 6,
+                  uiAmount: 0.012345,
+                  uiAmountString: '0.012345'
+                }
+              },
+              type: 'account'
+            },
+            program: 'spl-token'
+          }
+        }
+      },
+      {
+        pubkey: 'token-account-stale',
+        account: {
+          data: {
+            parsed: {
+              info: {
+                mint: 'stale-mint',
+                owner: keypair.publicKey.toBase58(),
+                tokenAmount: {
+                  amount: '98765',
+                  decimals: 6,
+                  uiAmount: 0.098765,
+                  uiAmountString: '0.098765'
+                }
+              },
+              type: 'account'
+            },
+            program: 'spl-token'
+          }
+        }
+      }
+    ]);
+    const buildSellQuoteParams = vi.fn((mint: string, amount: number) => ({ inputMint: mint, amount }));
+    const getQuote = vi.fn(async (params: { inputMint: string }) => {
+      if (params.inputMint === 'stale-mint') {
+        throw new Error('stale quote unavailable');
+      }
+
+      return { routePlan: [], outAmount: String(0.02 * 1_000_000_000) };
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        },
+        getSignatureStatuses: async () => ({
+          value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+        }),
+        getTokenAccountsByOwner
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams,
+        getQuote,
+        getSwapTransaction: vi.fn(async () => ({ swapTransaction: 'signed-swap-ignored-by-mock' }))
+      } as any,
+      dlmmClient: {
+        removeLiquidity: async () => [new FakeTransaction('close-1')] as any,
+        invalidatePositionSnapshots
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(server.origin + '/broadcast', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'earthcoin-mint',
+        liquidateResidualTokenToSol: true
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-2',
+      submissionIds: ['sig-1', 'sig-2'],
+      batchStatus: 'partial'
+    });
+    expect(payload.reason).toContain('residual token sweep incomplete: stale-mint');
+    expect(payload.reason).toContain('stale quote unavailable');
+    expect(sent).toEqual(['close-1', 'residual-swap']);
+    expect(buildSellQuoteParams).toHaveBeenCalledWith('earthcoin-mint', 12345, expect.any(Number));
+    expect(buildSellQuoteParams).toHaveBeenCalledWith('stale-mint', 98765, expect.any(Number));
+    expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
+
+    await server.stop();
+  });
+
   it('serves account-state with Token-2022 balances and currentValueSol on walletTokens', async () => {
     const keypair = Keypair.generate();
     const getQuote = vi.fn(async () => ({ outAmount: String(0.18 * 1_000_000_000), routePlan: [] }));

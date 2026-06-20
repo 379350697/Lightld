@@ -21,7 +21,7 @@ auxiliarySignals:
   cacheTtlMs: 300000
   maxCandidatesPerCycle: 30
   failOpen: true
-  maxScoreBonus: 25
+  maxScoreBonus: 30
   providers:
     - dexscreener
     - jupiter
