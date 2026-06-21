@@ -139,6 +139,36 @@ describe('buildNewTokenDecision — LP mode', () => {
     ).toMatchObject({ action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' });
   });
 
+  it('does not withdraw just because the active bin is out of range while SOL is still heavy', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          hasLpPosition: true,
+          lpActiveBinStatus: 'out-of-range',
+          lpSolDepletedBins: 0,
+          lpSolExposureStatus: 'sol-heavy'
+        },
+        { ...lpConfig, lpSolDepletionExitBins: 60 }
+      )
+    ).toMatchObject({ action: 'hold', reason: 'lp-position-maintain' });
+  });
+
+  it('withdraws when derived SOL exposure is depleted even without bin count', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: true,
+          hasInventory: false,
+          hasLpPosition: true,
+          lpSolExposureStatus: 'sol-depleted'
+        },
+        { ...lpConfig, lpSolDepletionExitBins: 60 }
+      )
+    ).toMatchObject({ action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' });
+  });
+
   it('returns hold when out of session even in LP mode', () => {
     expect(
       buildNewTokenDecision(

@@ -20,6 +20,7 @@ export type LiveAccountState = {
     fundedBinCount?: number;
     solSide?: 'tokenX' | 'tokenY';
     solDepletedBins?: number;
+    lpSolExposureStatus?: 'sol-heavy' | 'mixed' | 'token-heavy' | 'sol-depleted';
     currentValueSol?: number;
     withdrawSolAmount?: number;
     withdrawTokenAmountLamports?: number;
@@ -53,6 +54,7 @@ export type LiveAccountState = {
     fundedBinCount?: number;
     solSide?: 'tokenX' | 'tokenY';
     solDepletedBins?: number;
+    lpSolExposureStatus?: 'sol-heavy' | 'mixed' | 'token-heavy' | 'sol-depleted';
     currentValueSol?: number;
     withdrawSolAmount?: number;
     withdrawTokenAmountLamports?: number;

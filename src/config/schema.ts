@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { DEFAULT_SOL_DEPLETION_EXIT_BINS } from '../runtime/lp-sol-exposure.ts';
+
 const SessionWindowSchema = z.object({
   start: z.string(),
   end: z.string()
@@ -28,7 +30,7 @@ export const LpConfigSchema = z.object({
   /** Net PnL take-profit threshold (%) — fees + principal gain */
   takeProfitNetPnlPct: z.number().positive().default(30),
   /** Withdraw when the single-sided SOL leg has been consumed across this many bins */
-  solDepletionExitBins: z.number().int().nonnegative().default(67),
+  solDepletionExitBins: z.number().int().nonnegative().default(DEFAULT_SOL_DEPLETION_EXIT_BINS),
   /** Minimum bin step for pool selection (default 100) */
   minBinStep: z.number().int().positive().default(100),
   /** Minimum 24h volume in USD */

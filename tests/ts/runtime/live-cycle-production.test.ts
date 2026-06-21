@@ -10,6 +10,7 @@ import { HttpLiveQuoteProvider } from '../../../src/execution/http-live-quote-pr
 import { HttpLiveSigner } from '../../../src/execution/http-live-signer';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
+import { readJsonLines } from '../../../src/journals/jsonl-writer';
 
 describe('runLiveCycle production adapters', () => {
   beforeEach(async () => {
@@ -23,10 +24,22 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-target',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        openedAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       quoteProvider: new HttpLiveQuoteProvider({
@@ -111,7 +124,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       accountProvider: new HttpLiveAccountStateProvider({
@@ -135,6 +148,106 @@ describe('runLiveCycle production adapters', () => {
     expect(result.liveOrderSubmitted).toBe(false);
   });
 
+  it('allows reduce-risk LP exits during reconciliation mismatch when wallet exposure is present', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountProvider: new HttpLiveAccountStateProvider({
+        url: 'https://account.example/api',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              walletSol: 1.5,
+              journalSol: 1.25,
+              walletTokens: [],
+              journalTokens: [],
+              walletLpPositions: [{
+                poolAddress: 'pool-1',
+                positionAddress: 'pos-1',
+                mint: 'mint-safe',
+                lowerBinId: 100,
+                upperBinId: 168,
+                activeBinId: 165,
+                solSide: 'tokenX',
+                solDepletedBins: 65,
+                hasLiquidity: true
+              }],
+              journalLpPositions: [],
+              fills: []
+            }),
+            { status: 200 }
+          )
+      })
+    });
+
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+    expect(incidentJournal).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'reconciliation',
+        severity: 'warning',
+        reason: 'balance-mismatch:reduce-risk-allowed'
+      })
+    ]));
+  });
+
+  it('blocks reconciliation mismatch when wallet LP exposure belongs to a different pool', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: 'tmp/tests/runtime-live-cycle-production',
+      stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountProvider: new HttpLiveAccountStateProvider({
+        url: 'https://account.example/api',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              walletSol: 1.5,
+              journalSol: 1.25,
+              walletTokens: [],
+              journalTokens: [],
+              walletLpPositions: [{
+                poolAddress: 'pool-other',
+                positionAddress: 'pos-other',
+                mint: 'mint-safe',
+                lowerBinId: 100,
+                upperBinId: 168,
+                activeBinId: 105,
+                solSide: 'tokenX',
+                solDepletedBins: 0,
+                hasLiquidity: true
+              }],
+              journalLpPositions: [],
+              fills: []
+            }),
+            { status: 200 }
+          )
+      })
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.reason).toBe('balance-mismatch');
+    expect(result.liveOrderSubmitted).toBe(false);
+  });
+
   it('blocks a follow-up submission when a prior submission is still pending recovery', async () => {
     const first = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -144,7 +257,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       broadcaster: new HttpLiveBroadcaster({
@@ -169,7 +282,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -204,7 +317,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       confirmationProvider: new HttpLiveConfirmationProvider({
@@ -334,7 +447,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       confirmationProvider: new HttpLiveConfirmationProvider({
@@ -451,7 +564,7 @@ describe('runLiveCycle production adapters', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });

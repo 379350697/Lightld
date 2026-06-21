@@ -33,7 +33,7 @@ describe('generatePatchDraft', () => {
           createdAt: '2026-04-18T12:00:00.000Z',
           updatedAt: '2026-04-18T12:00:00.000Z',
           targetPath: 'lpConfig.minBinStep',
-          oldValue: 100,
+          oldValue: 80,
           proposedValue: 90,
           evidenceWindowHours: 24,
           sampleSize: 6,
@@ -87,7 +87,7 @@ describe('generatePatchDraft', () => {
     await writeFile(
       baselineConfigPath,
       (await (await import('node:fs/promises')).readFile(baselineConfigPath, 'utf8'))
-        .replace('minBinStep: 100', 'minBinStep: 120'),
+        .replace('minBinStep: 80', 'minBinStep: 120'),
       'utf8'
     );
 
@@ -103,7 +103,7 @@ describe('generatePatchDraft', () => {
           createdAt: '2026-04-18T12:00:00.000Z',
           updatedAt: '2026-04-18T12:00:00.000Z',
           targetPath: 'lpConfig.minBinStep',
-          oldValue: 100,
+          oldValue: 80,
           proposedValue: 90,
           evidenceWindowHours: 24,
           sampleSize: 6,
@@ -132,7 +132,7 @@ describe('generatePatchDraft', () => {
       proposalId: 'proposal-too-many-1',
       baselineConfigPath,
       proposals: [
-        buildPatchableProposal('lpConfig.minBinStep', 100, 90),
+        buildPatchableProposal('lpConfig.minBinStep', 80, 90),
         buildPatchableProposal('lpConfig.solDepletionExitBins', 60, 66),
         buildPatchableProposal('lpConfig.minVolume24hUsd', 100000, 90000),
         buildPatchableProposal('lpConfig.minFeeTvlRatio24h', 0, 0.01)

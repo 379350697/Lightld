@@ -32,6 +32,7 @@ import { createPositionId, markOrphanedLpPosition } from './lp-position-record.t
 import { isResolvedConfirmation } from './live-cycle-state.ts';
 import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
+import { DEFAULT_SOL_DEPLETION_EXIT_BINS } from './lp-sol-exposure.ts';
 
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
@@ -187,6 +188,79 @@ function collectWatchlistCandidates(input: {
   }
 
   return candidates;
+}
+
+async function suppressCooldownResidualWalletTokens(input: {
+  accountState?: LiveAccountState;
+  residualTokenSweepStore: ResidualTokenSweepStore;
+  residualTokenSweepMinValueSol: number;
+  suppressAllEligibleResidualTokens: boolean;
+  nowIso: string;
+}) {
+  if (!input.accountState?.walletTokens?.length) {
+    return {
+      accountState: input.accountState,
+      suppressedMints: [] as string[]
+    };
+  }
+
+  const filteredTokens = [];
+  const suppressedMints: string[] = [];
+  for (const token of input.accountState.walletTokens) {
+    const eligibleResidualToken = isNonStableMint(token.mint) &&
+      typeof token.currentValueSol === 'number' &&
+      token.currentValueSol >= input.residualTokenSweepMinValueSol;
+    const cooldown = eligibleResidualToken
+      ? await input.residualTokenSweepStore.readActive(token.mint, input.nowIso)
+      : null;
+    if (eligibleResidualToken && (input.suppressAllEligibleResidualTokens || cooldown)) {
+      suppressedMints.push(token.mint);
+      continue;
+    }
+
+    filteredTokens.push(token);
+  }
+
+  if (suppressedMints.length === 0) {
+    return {
+      accountState: input.accountState,
+      suppressedMints
+    };
+  }
+
+  return {
+    accountState: {
+      ...input.accountState,
+      walletTokens: filteredTokens
+    },
+    suppressedMints
+  };
+}
+
+async function recordResidualCooldownForSubmittedSell(input: {
+  result: Awaited<ReturnType<typeof runLiveCycle>>;
+  residualTokenSweepStore: ResidualTokenSweepStore;
+  residualTokenSweepCooldownMs: number;
+  now: Date;
+}) {
+  if (!input.result.liveOrderSubmitted || input.result.action !== 'dca-out') {
+    return;
+  }
+
+  const mint = typeof input.result.context.token.mint === 'string'
+    ? input.result.context.token.mint
+    : '';
+  if (!isNonStableMint(mint)) {
+    return;
+  }
+
+  const nowIsoValue = input.now.toISOString();
+  await input.residualTokenSweepStore.upsert({
+    mint,
+    lastAttemptAt: nowIsoValue,
+    cooldownUntil: new Date(input.now.getTime() + input.residualTokenSweepCooldownMs).toISOString(),
+    updatedAt: nowIsoValue
+  });
 }
 
 function mergeTrackedWatchTokens(input: {
@@ -652,9 +726,11 @@ function hasHotLpSignal(input: {
 
   const hotPnl = typeof lpNetPnlPct === 'number'
     && (lpNetPnlPct >= 25 || lpNetPnlPct <= -15);
-  const hotBinFromContext = typeof lpSolDepletedBins === 'number' && lpSolDepletedBins >= 63;
+  const hotBinFromContext = typeof lpSolDepletedBins === 'number' && lpSolDepletedBins >= DEFAULT_SOL_DEPLETION_EXIT_BINS;
   const hotBinFromAccount = accountLpPositions.some((position) =>
-    isManageableLpPosition(position) && typeof position.solDepletedBins === 'number' && position.solDepletedBins >= 63
+    isManageableLpPosition(position) &&
+    typeof position.solDepletedBins === 'number' &&
+    position.solDepletedBins >= DEFAULT_SOL_DEPLETION_EXIT_BINS
   );
 
   return hotPnl || hotBinFromContext || hotBinFromAccount;
@@ -1038,7 +1114,7 @@ function resolvePersistedLpIdentity(input: {
     || input.positionState?.chainPositionAddress
     || input.pendingSubmission?.chainPositionAddress;
 
-  if (input.lifecycleState !== 'open' && input.lifecycleState !== 'open_pending') {
+  if (input.lifecycleState === 'closed') {
     return {
       openIntentId: undefined,
       positionId: undefined,
@@ -1304,6 +1380,35 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         cycleInput = await buildCycleInput(tickCount, { tickCount, positionState });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
+        const residualSuppression = await suppressCooldownResidualWalletTokens({
+          accountState: effectiveAccountState,
+          residualTokenSweepStore,
+          residualTokenSweepMinValueSol,
+          suppressAllEligibleResidualTokens: Boolean(nextResidualTokenSweepAt && nextResidualTokenSweepAt > nowIso()),
+          nowIso: nowIso()
+        });
+        effectiveAccountState = residualSuppression.accountState;
+        if (residualSuppression.suppressedMints.length > 0) {
+          const residualBlockReason = `residual-sweep-cooldown:${residualSuppression.suppressedMints[0]}`;
+          cycleInput = {
+            ...cycleInput,
+            context: {
+              ...(cycleInput.context ?? {}),
+              pool: {
+                ...((cycleInput.context?.pool as Record<string, unknown> | undefined) ?? {}),
+                blockReason: residualBlockReason
+              },
+              token: {
+                ...((cycleInput.context?.token as Record<string, unknown> | undefined) ?? {}),
+                blockReason: residualBlockReason
+              },
+              route: {
+                ...((cycleInput.context?.route as Record<string, unknown> | undefined) ?? {}),
+                blockReason: residualBlockReason
+              }
+            }
+          };
+        }
         pendingSubmission = await pendingSubmissionStore.read();
         pendingSubmissionBeforeCycle = pendingSubmission;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
@@ -1422,6 +1527,15 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (result.liveOrderSubmitted) {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'signer', nowIso());
           dependencyHealth = markDependencySuccess(dependencyHealth, 'broadcaster', nowIso());
+          await recordResidualCooldownForSubmittedSell({
+            result,
+            residualTokenSweepStore,
+            residualTokenSweepCooldownMs,
+            now: new Date()
+          });
+          if (result.action === 'dca-out') {
+            nextResidualTokenSweepAt = new Date(Date.now() + residualTokenSweepIntervalMs).toISOString();
+          }
         }
 
         if (confirmationProvider && result.confirmationStatus && result.confirmationStatus !== 'unknown') {
@@ -1479,24 +1593,26 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           });
         }
 
-        const residualSweepResult = await runResidualTokenSweepIfDue({
-          strategy: options.strategy,
-          accountState: effectiveAccountState,
-          runtimeMode: runtimeState.mode,
-          runtimeReason: runtimeState.circuitReason,
-          pendingSubmission: postTickPendingSubmission !== null,
-          signer: cycleInput.signer ?? options.signer,
-          broadcaster: cycleInput.broadcaster ?? options.broadcaster,
-          confirmationProvider,
-          dependencyHealth,
-          residualTokenSweepStore,
-          residualTokenSweepIntervalMs,
-          residualTokenSweepCooldownMs,
-          residualTokenSweepMinValueSol,
-          nextSweepAt: nextResidualTokenSweepAt
-        });
-        dependencyHealth = residualSweepResult.dependencyHealth;
-        nextResidualTokenSweepAt = residualSweepResult.nextSweepAt;
+        if (!(result.liveOrderSubmitted && result.action === 'dca-out')) {
+          const residualSweepResult = await runResidualTokenSweepIfDue({
+            strategy: options.strategy,
+            accountState: effectiveAccountState,
+            runtimeMode: runtimeState.mode,
+            runtimeReason: runtimeState.circuitReason,
+            pendingSubmission: postTickPendingSubmission !== null,
+            signer: cycleInput.signer ?? options.signer,
+            broadcaster: cycleInput.broadcaster ?? options.broadcaster,
+            confirmationProvider,
+            dependencyHealth,
+            residualTokenSweepStore,
+            residualTokenSweepIntervalMs,
+            residualTokenSweepCooldownMs,
+            residualTokenSweepMinValueSol,
+            nextSweepAt: nextResidualTokenSweepAt
+          });
+          dependencyHealth = residualSweepResult.dependencyHealth;
+          nextResidualTokenSweepAt = residualSweepResult.nextSweepAt;
+        }
 
         runtimeState = applyTransientCircuitAutoHeal({
           tickStartState: tickStartRuntimeState,
@@ -1557,7 +1673,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const failedOpenCooldownMint = result.reason.startsWith('failed-open-cooldown:')
           ? result.reason.slice('failed-open-cooldown:'.length)
           : '';
-        const shouldRecordClosedMint = isExposureReducingAction(result.action) || failedOpenCooldownMint.length > 0;
+        const positionClosed = persistedLifecycleState === 'closed';
+        const shouldRecordClosedMint = (
+          positionClosed &&
+          (isExposureReducingAction(result.action) || Boolean(positionState?.activeMint))
+        ) || failedOpenCooldownMint.length > 0;
         const closedMint = shouldRecordClosedMint
           ? (failedOpenCooldownMint || persistedActiveMint)
           : (positionState?.lastClosedMint ?? '');
@@ -1566,12 +1686,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const persistedActivePoolAddressForState = persistedLifecycleState === 'closed' ? undefined : persistedPoolAddress;
         const persistedEntrySol = result.action === 'add-lp' && result.liveOrderSubmitted
           ? cycleInput?.requestedPositionSol
-          : isExposureReducingAction(result.action)
+          : positionClosed
             ? undefined
             : positionState?.entrySol;
         const persistedOpenedAt = result.action === 'add-lp' && result.liveOrderSubmitted
           ? nowIso()
-          : isExposureReducingAction(result.action)
+          : positionClosed
             ? undefined
             : positionState?.openedAt;
         if (failedOpenCooldownMint.length > 0 && persistedPoolAddress.length > 0) {

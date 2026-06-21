@@ -143,7 +143,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -187,7 +187,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -357,7 +357,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-selected', liquidityUsd: 10_000 },
           token: { mint: 'mint-selected', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -1304,7 +1304,7 @@ describe('runLiveDaemon', () => {
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000 },
           token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-          trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+          trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -1941,7 +1941,7 @@ describe('runLiveDaemon', () => {
             pool: { address: 'pool-1', liquidityUsd: 10_000 },
             token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
             trader: current === 0
-              ? { hasInventory: false, hasLpPosition: true, lpNetPnlPct: -25 }
+              ? { hasInventory: false, hasLpPosition: true, lpSolDepletedBins: 61 }
               : { hasInventory: true, hasLpPosition: false },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
           },
@@ -1987,6 +1987,107 @@ describe('runLiveDaemon', () => {
     expect(seenActions).toEqual(['withdraw-lp', 'sell']);
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
     expect(positionState?.lastAction).toBe('dca-out');
+  });
+
+  it('keeps close state pending when confirmed withdraw lacks fill evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-close-evidence-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = '2026-03-22T00:00:00.000Z';
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      openedAt,
+      chainPositionAddress: 'pos-1',
+      updatedAt: openedAt
+    });
+
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-1',
+        positionAddress: 'pos-1',
+        mint: 'mint-safe',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 165,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 65,
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState,
+        accountProvider: {
+          readState: async () => accountState
+        },
+        context: {
+          pool: { address: 'pool-1', liquidityUsd: 10_000 },
+          token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+          trader: { hasInventory: true, hasLpPosition: true },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'test-signer',
+            signedAt: '2026-03-22T00:00:01.000Z',
+            signature: 'sig'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => ({
+            status: 'submitted' as const,
+            submissionId: 'sub-close',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'tx-close'
+          })
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: '2026-03-22T00:00:02.000Z'
+          })
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    const pendingSubmission = await new PendingSubmissionStore(stateRootDir).read();
+
+    expect(pendingSubmission).toBeNull();
+    expect(positionState).toMatchObject({
+      lastAction: 'withdraw-lp',
+      lifecycleState: 'lp_exit_pending',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      chainPositionAddress: 'pos-1',
+      entrySol: 0.1,
+      openedAt
+    });
   });
 
   it('runs maintenance sell sweeps from runtime wallet inventory and records mint cooldown', async () => {

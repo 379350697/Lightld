@@ -80,6 +80,7 @@ import {
 } from './live-cycle-preflight.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
+import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState, PendingSubmissionSnapshot } from './state-types.ts';
 
@@ -193,6 +194,7 @@ type ActualFillAmount = {
   preWalletSol?: number;
   postWalletSol?: number;
   fillAmountSource: 'wallet-delta' | 'requested-position-fallback';
+  hasFillEvidence: boolean;
 };
 
 type LiveCycleLogContext = {
@@ -459,6 +461,87 @@ function absoluteWalletDeltaForFill(action: LiveAction, deltaSol: number) {
   return undefined;
 }
 
+function requiresStrictFillEvidence(action: LiveAction) {
+  return action === 'withdraw-lp' || action === 'dca-out';
+}
+
+function isConfirmedConfirmation(
+  status: ConfirmationStatus,
+  finality?: ConfirmationFinality
+) {
+  return status === 'confirmed' && (finality === 'confirmed' || finality === 'finalized');
+}
+
+function matchesLpExitTarget(input: {
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  tokenMint: string;
+  poolAddress: string;
+  chainPositionAddress?: string;
+}) {
+  if (input.chainPositionAddress) {
+    return input.position.positionAddress === input.chainPositionAddress
+      || input.position.chainPositionAddress === input.chainPositionAddress;
+  }
+
+  if (input.tokenMint && input.poolAddress) {
+    return input.position.mint === input.tokenMint && input.position.poolAddress === input.poolAddress;
+  }
+
+  if (input.poolAddress) {
+    return input.position.poolAddress === input.poolAddress;
+  }
+
+  if (input.tokenMint) {
+    return input.position.mint === input.tokenMint;
+  }
+
+  return false;
+}
+
+function hasTrustedContextLpPnlInputs(input: {
+  context: ReturnType<typeof buildDecisionContext>;
+}) {
+  const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
+    ? input.context.trader.lpCurrentValueSol
+    : undefined;
+  const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
+  const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
+
+  return hasTrustedLpExitValue({ currentValueSol, valuationStatus, valuationSource });
+}
+
+function hasReduceRiskWalletExposure(input: {
+  action: LiveAction;
+  accountState?: LiveAccountState;
+  tokenMint: string;
+  poolAddress: string;
+  chainPositionAddress?: string;
+}) {
+  if (!input.accountState) {
+    return false;
+  }
+
+  if (input.action === 'withdraw-lp') {
+    return (input.accountState.walletLpPositions ?? []).some((position) =>
+      isManageableLpPosition(position) &&
+      matchesLpExitTarget({
+        position,
+        tokenMint: input.tokenMint,
+        poolAddress: input.poolAddress,
+        chainPositionAddress: input.chainPositionAddress
+      })
+    );
+  }
+
+  if (input.action === 'dca-out') {
+    return (input.accountState.walletTokens ?? []).some((token) =>
+      token.mint === input.tokenMint && token.amount > 0
+    );
+  }
+
+  return false;
+}
+
 async function resolveActualFillAmount(input: {
   action: LiveAction;
   beforeAccountState?: LiveAccountState;
@@ -467,7 +550,8 @@ async function resolveActualFillAmount(input: {
 }): Promise<ActualFillAmount> {
   const fallback: ActualFillAmount = {
     filledSol: input.fallbackSol,
-    fillAmountSource: 'requested-position-fallback'
+    fillAmountSource: 'requested-position-fallback',
+    hasFillEvidence: false
   };
 
   if (!input.accountProvider || typeof input.beforeAccountState?.walletSol !== 'number') {
@@ -499,6 +583,7 @@ async function resolveActualFillAmount(input: {
       preWalletSol: roundSolLamports(input.beforeAccountState.walletSol),
       postWalletSol: roundSolLamports(afterAccountState.walletSol),
       fillAmountSource: 'wallet-delta' as const,
+      hasFillEvidence: true
     };
   } catch {
     return fallback;
@@ -509,7 +594,10 @@ function resolveActualExitMetricValue(
   action: LiveAction,
   exitMetrics: ReturnType<typeof buildEvolutionExitMetrics>
 ) {
-  if (actualExitReason.includes('sol-depletion') && typeof exitMetrics.lpSolDepletedBins === 'number') {
+  if (
+    (actualExitReason.includes('sol-depletion') || actualExitReason.includes('sol-nearly-depleted')) &&
+    typeof exitMetrics.lpSolDepletedBins === 'number'
+  ) {
     return exitMetrics.lpSolDepletedBins;
   }
 
@@ -671,8 +759,24 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
 function buildLpExitSnapshotFromPosition(input: {
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   holdTimeMs: number;
+  solDepletionExitBins?: number;
 }) {
   const observedAt = new Date().toISOString();
+  const lpSolDepletedBins = typeof input.position.solDepletedBins === 'number'
+    ? input.position.solDepletedBins
+    : computeSolDepletedBins({
+      lowerBinId: input.position.lowerBinId,
+      upperBinId: input.position.upperBinId,
+      activeBinId: input.position.activeBinId,
+      solSide: input.position.solSide
+    });
+  const lpSolExposureStatus = deriveLpSolExposureStatus({
+    solDepletedBins: lpSolDepletedBins,
+    binCount: input.position.binCount,
+    solDepletionExitBins: input.solDepletionExitBins,
+    withdrawSolAmount: input.position.withdrawSolAmount,
+    withdrawTokenValueSol: input.position.withdrawTokenValueSol
+  });
   const valuation = typeof input.position.valuationStatus === 'string'
     ? {
       valuationStatus: input.position.valuationStatus,
@@ -694,7 +798,8 @@ function buildLpExitSnapshotFromPosition(input: {
     hasLpPosition: true,
     lpCurrentValueSol: input.position.currentValueSol,
     lpUnclaimedFeeSol: input.position.unclaimedFeeSol,
-    lpSolDepletedBins: input.position.solDepletedBins,
+    lpSolDepletedBins,
+    lpSolExposureStatus,
     lpActiveBinStatus: typeof input.position.activeBinId === 'number'
       && typeof input.position.lowerBinId === 'number'
       && typeof input.position.upperBinId === 'number'
@@ -948,7 +1053,11 @@ function selectTriggeredLpExit(input: {
       : openFill?.recordedAt
         ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt))
         : 0;
-    const snapshot: any = buildLpExitSnapshotFromPosition({ position, holdTimeMs });
+    const snapshot: any = buildLpExitSnapshotFromPosition({
+      position,
+      holdTimeMs,
+      solDepletionExitBins: input.config.lpConfig?.solDepletionExitBins
+    });
     if (typeof lpNetPnlPct === 'number') {
       snapshot.lpNetPnlPct = lpNetPnlPct;
     }
@@ -1021,10 +1130,13 @@ function buildEngineSnapshot(
       hasInventory: firstBoolean(context.trader.hasInventory, context.pool.hasInventory),
       unrealizedPct: typeof context.trader.unrealizedPct === 'number' ? context.trader.unrealizedPct : undefined,
       hasLpPosition: firstBoolean(context.trader.hasLpPosition),
-      lpNetPnlPct: typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct : undefined,
+      lpNetPnlPct: hasTrustedContextLpPnlInputs({ context }) && typeof context.trader.lpNetPnlPct === 'number'
+        ? context.trader.lpNetPnlPct
+        : undefined,
       lpCurrentValueSol: typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol : undefined,
       lpUnclaimedFeeSol: typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol : undefined,
       lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
+      lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
       lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
       lpActiveBinStatus: context.trader.lpActiveBinStatus as any,
@@ -1047,10 +1159,6 @@ function maybePopulateLpNetPnlPct(input: {
   requestedPositionSol?: number;
   fills: LiveFillEntry[];
 }) {
-  if (typeof input.context.trader.lpNetPnlPct === 'number') {
-    return;
-  }
-
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
@@ -1058,6 +1166,7 @@ function maybePopulateLpNetPnlPct(input: {
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
 
   if (!hasTrustedLpExitValue({ currentValueSol, valuationStatus, valuationSource })) {
+    delete input.context.trader.lpNetPnlPct;
     return;
   }
 
@@ -1076,6 +1185,8 @@ function maybePopulateLpNetPnlPct(input: {
 
   if (typeof lpNetPnlPct === 'number') {
     input.context.trader.lpNetPnlPct = lpNetPnlPct;
+  } else {
+    delete input.context.trader.lpNetPnlPct;
   }
 }
 
@@ -1459,6 +1570,7 @@ async function appendIncident(
   mirrorSink: MirrorEventSink | undefined,
   entry: {
     stage:
+      | 'engine'
       | 'live-config'
       | 'reconciliation'
       | 'guards'
@@ -1733,7 +1845,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     context.trader.hasInventory = true;
     context.trader.lpCurrentValueSol = multiLpExit.position.currentValueSol;
     context.trader.lpUnclaimedFeeSol = multiLpExit.position.unclaimedFeeSol;
-    context.trader.lpSolDepletedBins = multiLpExit.position.solDepletedBins;
+    context.trader.lpSolDepletedBins = multiLpExit.snapshot.lpSolDepletedBins;
+    context.trader.lpSolExposureStatus = multiLpExit.snapshot.lpSolExposureStatus;
     context.trader.valuationStatus = multiLpExit.position.valuationStatus;
     context.trader.valuationReason = multiLpExit.position.valuationReason;
     context.trader.valuationSource = multiLpExit.position.valuationSource;
@@ -1980,6 +2093,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
     (updatedSnapshot as any).valuationSource = firstString(context.trader.valuationSource, context.trader.lpValuationSource);
+    if (typeof (updatedSnapshot as any).lpSolExposureStatus !== 'string') {
+      (updatedSnapshot as any).lpSolExposureStatus = deriveLpSolExposureStatus({
+        solDepletedBins: typeof (updatedSnapshot as any).lpSolDepletedBins === 'number'
+          ? (updatedSnapshot as any).lpSolDepletedBins
+          : undefined,
+        solDepletionExitBins: config.lpConfig?.solDepletionExitBins
+      });
+    }
     if (preEngineMintAggregate.mustCleanupDust) {
       (updatedSnapshot as any).hasInventory = true;
       (updatedSnapshot as any).hasLpPosition = false;
@@ -2013,6 +2134,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpCurrentValueSol=${typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol.toFixed(9) : 'n/a'}`,
     `lpUnclaimedFeeSol=${typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
+    `lpSolExposureStatus=${typeof (updatedSnapshot as any).lpSolExposureStatus === 'string' ? (updatedSnapshot as any).lpSolExposureStatus : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
     `valuationReason=${typeof (updatedSnapshot as any).valuationReason === 'string' ? (updatedSnapshot as any).valuationReason : 'n/a'}`,
     `valuationSource=${typeof (updatedSnapshot as any).valuationSource === 'string' ? (updatedSnapshot as any).valuationSource : 'n/a'}`,
@@ -2035,6 +2157,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     const blockedReason = liveLpValuation && liveLpValuation.valuationStatus !== 'ready'
       ? `valuation-unavailable:${liveLpValuation.valuationReason}`
       : 'hold';
+    if (liveLpValuation && liveLpValuation.valuationStatus !== 'ready') {
+      await appendIncident(journals, logContext, mirrorSink, {
+        stage: 'engine',
+        reason: blockedReason,
+        severity: liveLpValuation.valuationStatus === 'invalid' ? 'error' : 'warning'
+      });
+    }
     await appendDecision(journals, logContext, {
       stage: 'engine',
       mode: 'BLOCKED',
@@ -2201,17 +2330,33 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   if ((input.reconciliationStatus ?? 'matched') !== 'matched') {
     reconciliationOk = false;
-    return blockCycle({
-      stage: 'reconciliation',
+    if (hasReduceRiskWalletExposure({
       action: actionableAction,
-      reason: 'reconciliation-required',
-      audit: engineResult.audit,
-      requestedPositionSol,
-      quote,
-      executionPlan,
-      severity: 'warning',
-      quoteCollected: true
-    });
+      accountState,
+      tokenMint: logContext.tokenMint,
+      poolAddress,
+      chainPositionAddress: multiLpExit?.position.positionAddress ?? input.positionState?.chainPositionAddress
+    })) {
+      await appendIncident(journals, logContext, mirrorSink, {
+        stage: 'reconciliation',
+        reason: 'reconciliation-required:reduce-risk-allowed',
+        severity: 'warning',
+        requestedPositionSol,
+        quote
+      });
+    } else {
+      return blockCycle({
+        stage: 'reconciliation',
+        action: actionableAction,
+        reason: 'reconciliation-required',
+        audit: engineResult.audit,
+        requestedPositionSol,
+        quote,
+        executionPlan,
+        severity: 'warning',
+        quoteCollected: true
+      });
+    }
   }
 
   if (accountState || input.accountProvider) {
@@ -2235,18 +2380,35 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
 
     if (!reconciliation.ok) {
-      return blockCycle({
-        stage: 'reconciliation',
+      if (hasReduceRiskWalletExposure({
         action: actionableAction,
-        reason: reconciliation.reason,
-        audit: engineResult.audit,
-        requestedPositionSol,
-        quote,
-        executionPlan,
-        reconciliationDeltaSol: reconciliation.deltaSol,
-        severity: 'warning',
-        quoteCollected: true
-      });
+        accountState,
+        tokenMint: logContext.tokenMint,
+        poolAddress,
+        chainPositionAddress: multiLpExit?.position.positionAddress ?? input.positionState?.chainPositionAddress
+      })) {
+        await appendIncident(journals, logContext, mirrorSink, {
+          stage: 'reconciliation',
+          reason: `${reconciliation.reason}:reduce-risk-allowed`,
+          severity: 'warning',
+          requestedPositionSol,
+          quote,
+          reconciliationDeltaSol: reconciliation.deltaSol
+        });
+      } else {
+        return blockCycle({
+          stage: 'reconciliation',
+          action: actionableAction,
+          reason: reconciliation.reason,
+          audit: engineResult.audit,
+          requestedPositionSol,
+          quote,
+          executionPlan,
+          reconciliationDeltaSol: reconciliation.deltaSol,
+          severity: 'warning',
+          quoteCollected: true
+        });
+      }
     }
   }
 
@@ -2615,7 +2777,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
   const fillRecordedAt = new Date().toISOString();
-  const isConfirmedFill = isResolvedConfirmation(confirmation.status, confirmationFinality);
+  let strictCloseFillEvidenceMissing = false;
+  const isConfirmedFill = isConfirmedConfirmation(confirmation.status, confirmationFinality);
   if (isConfirmedFill) {
     const actualFill = await resolveActualFillAmount({
       action: actionableAction,
@@ -2623,55 +2786,67 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       accountProvider: input.accountProvider,
       fallbackSol: requestedPositionSol
     });
-    const mirroredFilledSol = actualFill.filledSol;
-    await journals.fills.append({
-      cycleId: logContext.cycleId,
-      submissionId: broadcastResult.submissionId,
-      strategyId: input.strategy,
-      openIntentId: actionIdentity.openIntentId,
-      positionId: actionIdentity.positionId,
-      chainPositionAddress: actionIdentity.chainPositionAddress,
-      mint: logContext.tokenMint,
-      symbol: tokenSymbol,
-      side: actionableAction,
-      amount: mirroredFilledSol,
-      filledSol: mirroredFilledSol,
-      actualFilledSol: actualFill.actualFilledSol,
-      actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
-      preWalletSol: actualFill.preWalletSol,
-      postWalletSol: actualFill.postWalletSol,
-      fillAmountSource: actualFill.fillAmountSource,
-      status: 'confirmed',
-      confirmationStatus: confirmation.status,
-      requestedPositionSol,
-      recordedAt: fillRecordedAt
-    });
-    emitMirrorEvent(mirrorSink, () => {
-      mirrorSink!.enqueue(toFillMirrorEvent({
-        lifecycleKey: buildMirrorLifecycleKey({
-          tokenMint: logContext.tokenMint,
-          openIntentId: actionIdentity.openIntentId,
-          positionId: actionIdentity.positionId,
-          chainPositionAddress: actionIdentity.chainPositionAddress
-        }),
-        fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
+    if (requiresStrictFillEvidence(actionableAction) && !actualFill.hasFillEvidence) {
+      strictCloseFillEvidenceMissing = true;
+      await appendIncident(journals, logContext, mirrorSink, {
+        stage: 'recovery',
+        reason: 'unknown_pending_reconciliation:missing-fill-evidence',
+        severity: 'warning',
+        requestedPositionSol,
+        quote,
+        submissionId: broadcastResult.submissionId
+      });
+    } else {
+      const mirroredFilledSol = actualFill.filledSol;
+      await journals.fills.append({
+        cycleId: logContext.cycleId,
         submissionId: broadcastResult.submissionId,
+        strategyId: input.strategy,
         openIntentId: actionIdentity.openIntentId,
         positionId: actionIdentity.positionId,
         chainPositionAddress: actionIdentity.chainPositionAddress,
-        confirmationSignature: broadcastResult.confirmationSignature ?? '',
-        cycleId: logContext.cycleId,
-        tokenMint: logContext.tokenMint,
-        tokenSymbol,
-        side: resolveFillMirrorSide(actionableAction),
+        mint: logContext.tokenMint,
+        symbol: tokenSymbol,
+        side: actionableAction,
         amount: mirroredFilledSol,
         filledSol: mirroredFilledSol,
         actualFilledSol: actualFill.actualFilledSol,
         actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+        preWalletSol: actualFill.preWalletSol,
+        postWalletSol: actualFill.postWalletSol,
         fillAmountSource: actualFill.fillAmountSource,
+        status: 'confirmed',
+        confirmationStatus: confirmation.status,
+        requestedPositionSol,
         recordedAt: fillRecordedAt
-      }));
-    });
+      });
+      emitMirrorEvent(mirrorSink, () => {
+        mirrorSink!.enqueue(toFillMirrorEvent({
+          lifecycleKey: buildMirrorLifecycleKey({
+            tokenMint: logContext.tokenMint,
+            openIntentId: actionIdentity.openIntentId,
+            positionId: actionIdentity.positionId,
+            chainPositionAddress: actionIdentity.chainPositionAddress
+          }),
+          fillId: `${broadcastResult.submissionId}:${fillRecordedAt}`,
+          submissionId: broadcastResult.submissionId,
+          openIntentId: actionIdentity.openIntentId,
+          positionId: actionIdentity.positionId,
+          chainPositionAddress: actionIdentity.chainPositionAddress,
+          confirmationSignature: broadcastResult.confirmationSignature ?? '',
+          cycleId: logContext.cycleId,
+          tokenMint: logContext.tokenMint,
+          tokenSymbol,
+          side: resolveFillMirrorSide(actionableAction),
+          amount: mirroredFilledSol,
+          filledSol: mirroredFilledSol,
+          actualFilledSol: actualFill.actualFilledSol,
+          actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+          fillAmountSource: actualFill.fillAmountSource,
+          recordedAt: fillRecordedAt
+        }));
+      });
+    }
   }
   await appendDecision(journals, logContext, {
     stage: 'broadcast',
@@ -2699,7 +2874,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     quote
   });
 
-  return finalize(buildLiveSubmittedResult({
+  const lifecycleSynchronouslyResolved = isConfirmedConfirmation(confirmation.status, confirmationFinality)
+    && !(requiresStrictFillEvidence(actionableAction) && strictCloseFillEvidenceMissing);
+
+	  return finalize(buildLiveSubmittedResult({
     action: actionableAction,
     reason: 'live-order-submitted',
     audit: engineResult.audit,
@@ -2711,5 +2889,5 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationStatus: confirmation.status,
     journalPaths: journals.paths,
     killSwitchState
-  }), isResolvedConfirmation(confirmation.status, confirmationFinality));
+	  }), lifecycleSynchronouslyResolved);
 }

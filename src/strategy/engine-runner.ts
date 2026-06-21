@@ -58,6 +58,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           hasLpPosition: Boolean(input.snapshot.hasLpPosition),
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
           lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
+          lpSolExposureStatus: typeof input.snapshot.lpSolExposureStatus === 'string' ? input.snapshot.lpSolExposureStatus as any : undefined,
           lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
           lpActiveBinStatus: typeof input.snapshot.lpActiveBinStatus === 'string' ? (input.snapshot.lpActiveBinStatus as any) : undefined,
           lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined,

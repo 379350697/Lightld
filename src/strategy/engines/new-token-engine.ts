@@ -12,6 +12,8 @@ type NewTokenSnapshot = {
   lpUnclaimedFeeSol?: number;
   /** LP mode: how many bins the SOL side has already been consumed across */
   lpSolDepletedBins?: number;
+  /** LP mode: derived SOL exposure status; informational unless sol-depleted */
+  lpSolExposureStatus?: 'sol-heavy' | 'mixed' | 'token-heavy' | 'sol-depleted';
   /** LP mode: unclimed fees in USD */
   lpUnclaimedFeeUsd?: number;
   /** LP mode: whether current price is within the position's bin range */
@@ -113,6 +115,10 @@ export function buildNewTokenDecision(
         typeof snapshot.lpSolDepletedBins === 'number' &&
         snapshot.lpSolDepletedBins >= config.lpSolDepletionExitBins
       ) {
+        return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
+      }
+
+      if (snapshot.lpSolExposureStatus === 'sol-depleted') {
         return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
       }
 

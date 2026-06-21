@@ -30,7 +30,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -85,7 +85,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       broadcaster: {
@@ -269,6 +269,90 @@ describe('runLiveCycle', () => {
       fillAmountSource: 'wallet-delta'
     });
   });
+
+  it('records confirmed close fills only from real post-confirmation wallet delta', async () => {
+    const accountProvider = {
+      readState: vi.fn(async () => ({
+        walletSol: 1.072,
+        journalSol: 1.072,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      }))
+    };
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 165,
+          solSide: 'tokenX',
+          solDepletedBins: 65,
+          currentValueSol: 0.072,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 165,
+          solSide: 'tokenX',
+          solDepletedBins: 65,
+          currentValueSol: 0.072,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true
+        }],
+        fills: []
+      },
+      accountProvider,
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: '2026-04-20T00:00:02.000Z'
+        })
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(fillJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      requestedPositionSol: 0.05,
+      amount: 0.072,
+      filledSol: 0.072,
+      actualFilledSol: 0.072,
+      actualWalletDeltaSol: 0.072,
+      fillAmountSource: 'wallet-delta',
+      status: 'confirmed'
+    });
+  });
   it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
     const outcomes: LiveCycleOutcomeRecord[] = [];
     const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -302,8 +386,10 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: -25,
           lpSolDepletedBins: 61,
-          lpCurrentValueSol: 0.13,
-          lpUnclaimedFeeSol: 0.01
+          lpCurrentValueSol: 0.075,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -323,7 +409,7 @@ describe('runLiveCycle', () => {
       closedAt: expect.any(String),
       entrySol: 0.1,
       maxObservedDrawdownPct: 0,
-      actualExitMetricValue: -25,
+      actualExitMetricValue: expect.any(Number),
       lpStopLossNetPnlPctAtEntry: 20,
       lpTakeProfitNetPnlPctAtEntry: 30,
       solDepletionExitBinsAtEntry: 60,
@@ -336,10 +422,12 @@ describe('runLiveCycle', () => {
         maxHoldHours: 10
       },
       exitMetrics: {
-        lpNetPnlPct: -25,
+        lpNetPnlPct: expect.any(Number),
         lpSolDepletedBins: 61
       }
     });
+    expect(outcomes[0].actualExitMetricValue).toBeCloseTo(-25, 10);
+    expect(outcomes[0].exitMetrics.lpNetPnlPct).toBeCloseTo(-25, 10);
     expect(outcomes[0].maxObservedUpsidePct).toBe(0);
   });
 
@@ -357,7 +445,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -430,7 +518,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -449,7 +537,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -482,7 +570,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -552,7 +640,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -579,7 +667,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       broadcaster: {
@@ -613,7 +701,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.5, slippageBps: 50 }
       }
     });
@@ -640,7 +728,7 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -671,20 +759,22 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: {
-          hasInventory: true,
-          hasLpPosition: true,
-          lpCurrentValueSol: 0.72,
-          lpUnclaimedFeeSol: 0.03
-        },
+	        trader: {
+	          hasInventory: true,
+	          hasLpPosition: true,
+	          lpNetPnlPct: 35,
+	          lpCurrentValueSol: 0.72,
+	          lpUnclaimedFeeSol: 0.03
+	        },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
 
-    expect(result.mode).toBe('BLOCKED');
-    expect(result.action).toBe('hold');
-    expect(result.reason).toBe('hold');
-  });
+	    expect(result.mode).toBe('BLOCKED');
+	    expect(result.action).toBe('hold');
+	    expect(result.reason).toBe('hold');
+	    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+	  });
 
   it('derives lpNetPnlPct from trusted withdraw-simulation valuations and triggers take profit', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
@@ -860,7 +950,11 @@ describe('runLiveCycle', () => {
         trader: {
           hasInventory: true,
           hasLpPosition: true,
-          lpNetPnlPct: 35
+          lpNetPnlPct: 35,
+          lpCurrentValueSol: 0.135,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -898,7 +992,9 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.14,
-          lpUnclaimedFeeSol: 0
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50, poolAddress: 'pool-selected-other' }
       }
@@ -953,18 +1049,21 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.16,
-          lpUnclaimedFeeSol: 0
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50, poolAddress: 'pool-selected-other' }
       }
     });
 
     const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
-    const quoteJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.quoteJournalPath);
-    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
-    const decisionJournal = await readJsonLines<Record<string, unknown>>(
-      result.journalPaths.decisionAuditPath
-    );
+	    const quoteJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.quoteJournalPath);
+	    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+	    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+	    const decisionJournal = await readJsonLines<Record<string, unknown>>(
+	      result.journalPaths.decisionAuditPath
+	    );
 
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
@@ -985,20 +1084,22 @@ describe('runLiveCycle', () => {
       outputSol: 0.08,
       requestedPositionSol: 0.08
     });
-    expect(fillJournal[0]).toMatchObject({
-      side: 'withdraw-lp',
-      amount: 0.08,
-      filledSol: 0.08,
-      requestedPositionSol: 0.08,
-      status: 'confirmed'
-    });
-    expect(decisionJournal[0]).toMatchObject({
-      action: 'withdraw-lp',
-      requestedPositionSol: 0.08,
-      quoteOutputSol: 0.08,
-      confirmationStatus: 'confirmed'
-    });
-  });
+	    expect(fillJournal).toEqual([]);
+	    expect(incidentJournal).toEqual(expect.arrayContaining([
+	      expect.objectContaining({
+	        stage: 'recovery',
+	        severity: 'warning',
+	        reason: 'unknown_pending_reconciliation:missing-fill-evidence'
+	      })
+	    ]));
+	    expect(decisionJournal[0]).toMatchObject({
+	      action: 'withdraw-lp',
+	      requestedPositionSol: 0.08,
+	      quoteOutputSol: 0.08,
+	      confirmationStatus: 'confirmed'
+	    });
+	    expect(result.nextLifecycleState).toBe('lp_exit_pending');
+	  });
 
   it('prefers an older journal-backed LP exit over a newer bin-depletion exit', async () => {
     const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
@@ -1170,6 +1271,90 @@ describe('runLiveCycle', () => {
     expect(result.orderIntent?.poolAddress).toBe('pool-residual');
   });
 
+  it('does not treat out-of-range alone as an LP exit when SOL is still heavy', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpActiveBinStatus: 'out-of-range',
+          lpSolDepletedBins: 0,
+          lpSolExposureStatus: 'sol-heavy',
+          lpCurrentValueSol: 0.1,
+          lpUnclaimedFeeSol: 0
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.action).toBe('hold');
+    expect(result.reason).toBe('hold');
+    expect(result.audit.reason).toBe('lp-position-maintain');
+  });
+
+  it('derives SOL depleted bins from tokenY-sided LP ranges when source omits the count', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-token-y',
+            positionAddress: 'pos-token-y',
+            mint: 'mint-token-y',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 103,
+            solSide: 'tokenY',
+            currentValueSol: 0.04,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-token-y',
+            positionAddress: 'pos-token-y',
+            mint: 'mint-token-y',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 103,
+            solSide: 'tokenY',
+            currentValueSol: 0.04,
+            unclaimedFeeSol: 0.01,
+            hasLiquidity: true
+          }
+        ],
+        fills: []
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toContain('lp-sol-nearly-depleted');
+    expect(result.context.trader.lpSolExposureStatus).toBe('sol-depleted');
+    expect(result.orderIntent?.poolAddress).toBe('pool-token-y');
+  });
+
   it('records valuation-unavailable when LP valuation inputs are missing', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
 
@@ -1226,9 +1411,18 @@ describe('runLiveCycle', () => {
       }
     });
 
-    expect(result.action).toBe('hold');
-    expect(result.reason).toContain('valuation-unavailable');
-  });
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+
+	    expect(result.action).toBe('hold');
+	    expect(result.reason).toContain('valuation-unavailable');
+	    expect(incidentJournal).toEqual(expect.arrayContaining([
+	      expect.objectContaining({
+	        stage: 'engine',
+	        severity: 'warning',
+	        reason: 'valuation-unavailable:missing-current-value'
+	      })
+	    ]));
+	  });
 
   it('records an incident when an open LP position is missing entry metadata', async () => {
     const result = await runLiveCycle({

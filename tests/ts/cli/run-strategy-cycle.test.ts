@@ -19,7 +19,7 @@ describe('runStrategyCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpNetPnlPct: -25 },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
