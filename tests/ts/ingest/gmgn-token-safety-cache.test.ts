@@ -8,6 +8,7 @@ import {
   clearTokenSafetyCacheForTests,
   fetchTokenSafetyBatch,
   getTokenSafetyCacheSize,
+  GMGN_SAFETY_DEFERRED_ERROR,
   primeTokenSafetyCacheForTests,
   resolveGmgnSafetyTimeoutMs,
   sweepTokenSafetyCache
@@ -84,6 +85,53 @@ describe('GMGN token safety cache', () => {
     expect(resolveGmgnSafetyTimeoutMs(0)).toBe(30_000);
     expect(resolveGmgnSafetyTimeoutMs(5)).toBe(275_000);
     expect(resolveGmgnSafetyTimeoutMs(50)).toBe(360_000);
+  });
+
+  it("returns deferred safety results for uncached mints beyond the batch budget", async () => {
+    clearTokenSafetyCacheForTests();
+    const firstMint = "11111111111111111111111111111111";
+    const secondMint = "22222222222222222222222222222222";
+    const wrapperPath = join(tmpdir(), `gmgn-budget-${process.pid}-${Date.now()}.js`);
+    writeFileSync(wrapperPath, `#!/usr/bin/env node
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { raw += chunk; });
+process.stdin.on('end', () => {
+  const mints = JSON.parse(raw || '[]');
+  process.stdout.write(JSON.stringify(mints.map((mint) => ({
+    mint,
+    safe: true,
+    safetyScore: 80,
+    maxScore: 120
+  }))));
+});
+`);
+    chmodSync(wrapperPath, 0o755);
+
+    try {
+      const results = await fetchTokenSafetyBatch([firstMint, secondMint], {
+        pythonBin: wrapperPath,
+        timeoutMs: 3_000,
+        maxBatchSize: 1
+      });
+
+      expect(results).toEqual([
+        expect.objectContaining({
+          mint: firstMint,
+          safe: true,
+          safetyScore: 80
+        }),
+        expect.objectContaining({
+          mint: secondMint,
+          safe: false,
+          safetyScore: 0,
+          error: GMGN_SAFETY_DEFERRED_ERROR
+        })
+      ]);
+      expect(getTokenSafetyCacheSize()).toBe(1);
+    } finally {
+      rmSync(wrapperPath, { force: true });
+    }
   });
 
   it("returns failed safety results when the subprocess timeout expires", async () => {

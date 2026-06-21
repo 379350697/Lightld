@@ -9,7 +9,7 @@ import { validateIntentAllowlist } from '../../risk/instruction-allowlist.ts';
 import { JupiterClient, LAMPORTS_PER_SOL, SOL_MINT } from './jupiter-client.ts';
 import { SolanaRpcClient } from './solana-rpc-client.ts';
 import { signSwapTransaction } from './solana-transaction-signer.ts';
-import { MeteoraDlmmClient } from './meteora-dlmm-client.ts';
+import { MeteoraDlmmClient, type MeteoraLpPositionSnapshot } from './meteora-dlmm-client.ts';
 import {
   signedIntentIdempotencyFingerprint,
   verifySignedIntent
@@ -180,24 +180,143 @@ async function waitForConfirmedSignatures(
   return false;
 }
 
+function normalizeLamportsAmount(amount: number | string | bigint | undefined) {
+  if (typeof amount === 'bigint') {
+    return amount > 0n ? amount.toString() : undefined;
+  }
+
+  if (typeof amount === 'string') {
+    return /^\d+$/.test(amount) && BigInt(amount) > 0n ? amount : undefined;
+  }
+
+  if (typeof amount === 'number') {
+    return Number.isFinite(amount) && amount > 0 ? String(Math.floor(amount)) : undefined;
+  }
+
+  return undefined;
+}
+
+function isZeroLamportsAmount(amount: string | number | undefined) {
+  if (typeof amount === 'string') {
+    return /^\d+$/.test(amount) && BigInt(amount) === 0n;
+  }
+
+  return typeof amount === 'number' && Number.isFinite(amount) && amount === 0;
+}
+
 async function resolveTokenCurrentValueSol(input: {
   jupiterClient: JupiterClient;
   mint: string;
-  amountLamports: number;
+  amountLamports: number | string | bigint;
   defaultSlippageBps: number;
 }) {
-  if (!Number.isFinite(input.amountLamports) || input.amountLamports <= 0) {
+  const quoteAmount = normalizeLamportsAmount(input.amountLamports);
+  if (!quoteAmount) {
     return undefined;
   }
 
   const quoteResponse = await input.jupiterClient.getQuote(
-    input.jupiterClient.buildSellQuoteParams(input.mint, input.amountLamports, input.defaultSlippageBps)
+    input.jupiterClient.buildSellQuoteParams(input.mint, quoteAmount, input.defaultSlippageBps)
   );
   const outAmountLamports = Number(quoteResponse.outAmount ?? 0);
   const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
   return Number.isFinite(outAmountSol) && outAmountSol >= 0 ? outAmountSol : undefined;
 }
 
+type AccountStateLpPosition = MeteoraLpPositionSnapshot & {
+  withdrawTokenValueSol?: number;
+};
+
+function readExecutionErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function enrichLpExitValues(input: {
+  positions: MeteoraLpPositionSnapshot[];
+  jupiterClient: JupiterClient;
+  defaultSlippageBps: number;
+}): Promise<AccountStateLpPosition[]> {
+  return Promise.all(input.positions.map(async (position) => {
+    const withdrawSolAmount = typeof position.withdrawSolAmount === 'number' && Number.isFinite(position.withdrawSolAmount) && position.withdrawSolAmount >= 0
+      ? position.withdrawSolAmount
+      : undefined;
+    const withdrawTokenAmountLamports = typeof position.withdrawTokenAmountLamports === 'number' && Number.isFinite(position.withdrawTokenAmountLamports) && position.withdrawTokenAmountLamports >= 0
+      ? position.withdrawTokenAmountLamports
+      : undefined;
+    const withdrawTokenAmountRaw = typeof position.withdrawTokenAmountRaw === 'string'
+      ? position.withdrawTokenAmountRaw
+      : typeof withdrawTokenAmountLamports === 'number'
+        ? String(Math.floor(withdrawTokenAmountLamports))
+        : undefined;
+    const valuationSource = position.valuationSource ?? 'meteora-withdraw-simulation';
+
+    if (typeof withdrawSolAmount !== 'number' || !withdrawTokenAmountRaw) {
+      return {
+        ...position,
+        currentValueSol: undefined,
+        valuationStatus: position.valuationStatus ?? 'unavailable',
+        valuationReason: position.valuationReason ?? 'missing-withdraw-simulation',
+        valuationSource
+      };
+    }
+
+    if (isZeroLamportsAmount(withdrawTokenAmountRaw)) {
+      return {
+        ...position,
+        currentValueSol: withdrawSolAmount,
+        valuationStatus: 'ready',
+        valuationReason: '',
+        valuationSource
+      };
+    }
+
+    if (!position.withdrawTokenMint) {
+      return {
+        ...position,
+        currentValueSol: undefined,
+        valuationStatus: 'unavailable',
+        valuationReason: 'missing-withdraw-token-mint',
+        valuationSource
+      };
+    }
+
+    try {
+      const withdrawTokenValueSol = await resolveTokenCurrentValueSol({
+        jupiterClient: input.jupiterClient,
+        mint: position.withdrawTokenMint,
+        amountLamports: withdrawTokenAmountRaw,
+        defaultSlippageBps: input.defaultSlippageBps
+      });
+
+      if (typeof withdrawTokenValueSol !== 'number') {
+        return {
+          ...position,
+          currentValueSol: undefined,
+          valuationStatus: 'unavailable',
+          valuationReason: 'withdraw-token-quote-unavailable',
+          valuationSource
+        };
+      }
+
+      return {
+        ...position,
+        currentValueSol: withdrawSolAmount + withdrawTokenValueSol,
+        withdrawTokenValueSol,
+        valuationStatus: 'ready',
+        valuationReason: '',
+        valuationSource: valuationSource + '+jupiter-sell-quote'
+      };
+    } catch (error) {
+      return {
+        ...position,
+        currentValueSol: undefined,
+        valuationStatus: 'unavailable',
+        valuationReason: 'withdraw-token-quote-failed:' + readExecutionErrorMessage(error),
+        valuationSource
+      };
+    }
+  }));
+}
 const ACCOUNT_STATE_TOKEN_VALUE_CACHE_TTL_MS = 5 * 60_000;
 const ACCOUNT_STATE_TOKEN_VALUE_MAX_QUOTES_PER_REQUEST = 3;
 
@@ -1106,23 +1225,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
             let walletTokens: { mint: string; symbol: string; amount: number; currentValueSol?: number }[] = [];
-            let walletLpPositions: Array<{
-              poolAddress: string;
-              positionAddress: string;
-              mint: string;
-              lowerBinId: number;
-              upperBinId: number;
-              activeBinId: number;
-              binCount: number;
-              fundedBinCount: number;
-              solSide: 'tokenX' | 'tokenY';
-              solDepletedBins: number;
-              currentValueSol?: number;
-              unclaimedFeeSol?: number;
-              positionStatus: 'active' | 'residual' | 'empty';
-              hasLiquidity: boolean;
-              hasClaimableFees: boolean;
-            }> = [];
+            let walletLpPositions: AccountStateLpPosition[] = [];
 
             try {
               const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
@@ -1170,8 +1273,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             try {
               if (options.dlmmClient) {
-                walletLpPositions = (await options.dlmmClient.getPositionSnapshots(keypair.publicKey))
+                const dlmmPositions = (await options.dlmmClient.getPositionSnapshots(keypair.publicKey))
                   .filter((position) => position.positionStatus !== 'empty');
+                walletLpPositions = await enrichLpExitValues({
+                  positions: dlmmPositions,
+                  jupiterClient,
+                  defaultSlippageBps
+                });
               }
             } catch {
               // Meteora positions query may fail on free RPC

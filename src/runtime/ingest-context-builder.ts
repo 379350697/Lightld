@@ -19,6 +19,8 @@ import {
 } from '../ingest/signals/types.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import type { CandidateScanRecord, CandidateSampleRecord } from '../evolution/index.ts';
+import { isAllowedMeteoraEntryBinStep } from '../candidate-pool/meteora-candidate-builder.ts';
+import type { CandidatePoolEntry, CandidatePoolReader } from '../candidate-pool/types.ts';
 import {
   applySafetyFilter,
   filterRecentlyClosedMintCandidates,
@@ -26,6 +28,7 @@ import {
   filterLpEligibleCandidates,
   type IngestCandidate,
   isInScanWindow,
+  rankCandidatesForSafety,
   selectCandidate,
   type SafetyFilterDiagnostics,
   RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS
@@ -82,8 +85,13 @@ type IngestContextBuilderInput = {
   candidateScanSink?: {
     appendScan(scan: CandidateScanRecord): Promise<void>;
   };
+  newCandidateSafetyMaxBatchSize?: number;
+  newCandidateSafetyTimeoutMs?: number;
   maxActivePositions?: number;
   positionState?: PositionStateSnapshot;
+  candidatePoolReader?: CandidatePoolReader;
+  candidatePoolReadEnabled?: boolean;
+  candidatePoolMaxAgeMs?: number;
 };
 
 type PumpIndexes = {
@@ -382,13 +390,22 @@ function resolveLpPositionSignal(
       ? Math.max(maxBins, position.solDepletedBins)
       : position.solDepletedBins;
   }, undefined);
-  const lpCurrentValueSol = relevantPositions.reduce<number | undefined>((sum, position) => {
-    if (typeof position.currentValueSol !== 'number') {
-      return sum;
-    }
-
-    return (sum ?? 0) + position.currentValueSol;
-  }, undefined);
+  const trustedValuePositions = relevantPositions.filter((position) =>
+    position.valuationStatus === 'ready'
+    && typeof position.valuationSource === 'string'
+    && position.valuationSource.includes('withdraw-simulation')
+    && typeof position.currentValueSol === 'number'
+  );
+  const lpCurrentValueSol = trustedValuePositions.length === relevantPositions.length
+    ? trustedValuePositions.reduce<number | undefined>((sum, position) => (sum ?? 0) + position.currentValueSol!, undefined)
+    : undefined;
+  const lpValuationStatus = trustedValuePositions.length === relevantPositions.length ? 'ready' : 'unavailable';
+  const lpValuationReason = lpValuationStatus === 'ready'
+    ? ''
+    : relevantPositions.map((position) => position.valuationReason).filter(Boolean).join(';') || 'missing-trusted-exit-value';
+  const lpValuationSource = lpValuationStatus === 'ready'
+    ? Array.from(new Set(trustedValuePositions.map((position) => position.valuationSource))).filter(Boolean).join('+')
+    : undefined;
   const lpUnclaimedFeeSol = relevantPositions.reduce<number | undefined>((sum, position) => {
     if (typeof position.unclaimedFeeSol !== 'number') {
       return sum;
@@ -400,7 +417,13 @@ function resolveLpPositionSignal(
   return {
     lpSolDepletedBins,
     lpCurrentValueSol,
-    lpUnclaimedFeeSol
+    lpUnclaimedFeeSol,
+    lpValuationStatus,
+    lpValuationReason,
+    lpValuationSource,
+    valuationStatus: lpValuationStatus,
+    valuationReason: lpValuationReason,
+    valuationSource: lpValuationSource
   };
 }
 
@@ -450,6 +473,16 @@ async function maybeFetchTraderSnapshot(input: IngestContextBuilderInput) {
 
 function defaultRequestedPositionSol(maxLivePositionSol: number) {
   return Math.min(0.05, maxLivePositionSol);
+}
+
+function buildDeferredSafetyResults(mints: string[]): TokenSafetyResult[] {
+  return mints.map((mint) => ({
+    mint,
+    safe: false,
+    safetyScore: 0,
+    maxScore: 120,
+    error: GMGN_SAFETY_DEFERRED_ERROR
+  }));
 }
 
 function resolveNoCandidateBlockReason(input: {
@@ -502,6 +535,15 @@ function resolveNoCandidateBlockReason(input: {
       return {
         blockReason: 'gmgn-safety-check-failed',
         blockDetails: otherErrors[0]?.error ?? 'gmgn safety request failed'
+      };
+    }
+
+    if (deferredChecks.length > 0) {
+      return {
+        blockReason: 'gmgn-safety-deferred',
+        blockDetails: input.inScanWindow
+          ? `${deferredChecks.length} uncached GMGN safety checks were deferred by batch throttling`
+          : `${deferredChecks.length} uncached GMGN safety checks were deferred because scan window is closed (maxBatchSize=0)`
       };
     }
 
@@ -574,6 +616,379 @@ function buildFallbackContext(
     context,
     requestedPositionSol,
     sessionPhase: sessionActive ? 'active' : 'closed'
+  };
+}
+
+function resolveActiveLpMaintenanceCandidate(input: {
+  candidates: IngestCandidate[];
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
+}) {
+  const activeCandidates = input.candidates.filter((candidate) => candidate.hasLpPosition);
+  if (activeCandidates.length === 0) {
+    return null;
+  }
+
+  const statePool = input.positionState?.activePoolAddress ?? '';
+  const stateMint = input.positionState?.activeMint ?? '';
+  if (statePool) {
+    const poolMatch = activeCandidates.find((candidate) => candidate.address === statePool);
+    if (poolMatch) {
+      return poolMatch;
+    }
+  }
+
+  if (stateMint) {
+    const mintMatch = activeCandidates.find((candidate) => candidate.mint === stateMint);
+    if (mintMatch) {
+      return mintMatch;
+    }
+  }
+
+  const lpPositions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => (position.hasLiquidity ?? true));
+
+  for (const position of lpPositions) {
+    const exactMatch = activeCandidates.find((candidate) =>
+      candidate.mint === position.mint && candidate.address === position.poolAddress
+    );
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
+
+  for (const position of lpPositions) {
+    const mintMatch = activeCandidates.find((candidate) => candidate.mint === position.mint);
+    if (mintMatch) {
+      return mintMatch;
+    }
+  }
+
+  return activeCandidates[0] ?? null;
+}
+
+function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLpPositionSignal>) {
+  return {
+    ...(typeof lpPositionSignal.lpSolDepletedBins === 'number'
+      ? { lpSolDepletedBins: lpPositionSignal.lpSolDepletedBins }
+      : {}),
+    ...(typeof lpPositionSignal.lpCurrentValueSol === 'number'
+      ? { lpCurrentValueSol: lpPositionSignal.lpCurrentValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.lpUnclaimedFeeSol === 'number'
+      ? { lpUnclaimedFeeSol: lpPositionSignal.lpUnclaimedFeeSol }
+      : {}),
+    ...(typeof lpPositionSignal.valuationStatus === 'string'
+      ? { valuationStatus: lpPositionSignal.valuationStatus, lpValuationStatus: lpPositionSignal.valuationStatus }
+      : {}),
+    ...(typeof lpPositionSignal.valuationReason === 'string'
+      ? { valuationReason: lpPositionSignal.valuationReason, lpValuationReason: lpPositionSignal.valuationReason }
+      : {}),
+    ...(typeof lpPositionSignal.valuationSource === 'string'
+      ? { valuationSource: lpPositionSignal.valuationSource, lpValuationSource: lpPositionSignal.valuationSource }
+      : {})
+  };
+}
+
+function buildActiveLpMaintenanceContext(
+  input: IngestContextBuilderInput,
+  requestedPositionSol: number,
+  sessionActive: boolean,
+  slippageBps: number,
+  traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null,
+  candidate: IngestCandidate
+): IngestBackedCycleInput {
+  const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
+    mint: candidate.mint,
+    poolAddress: candidate.address
+  });
+
+  const context: DecisionContextInput = {
+    pool: {
+      address: candidate.address,
+      liquidityUsd: candidate.liquidityUsd,
+      hasSolRoute: candidate.hasSolRoute,
+      capturedAt: candidate.capturedAt,
+      candidateCount: 0,
+      binStep: candidate.binStep,
+      baseFeePct: candidate.baseFeePct,
+      volume24h: candidate.volume24h,
+      feeTvlRatio24h: candidate.feeTvlRatio24h,
+      auxSignalScore: candidate.auxSignalScore ?? 0,
+      auxSignalStatus: candidate.auxSignalStatus ?? 'disabled'
+    },
+    token: {
+      mint: candidate.mint,
+      symbol: candidate.symbol,
+      liquidityUsd: candidate.liquidityUsd,
+      hasSolRoute: candidate.hasSolRoute,
+      inSession: sessionActive,
+      holders: candidate.holders,
+      expectedOutSol: requestedPositionSol,
+      capturedAt: candidate.capturedAt,
+      dexscreenerBoostAmount: candidate.dexscreenerBoostAmount ?? 0,
+      dexscreenerHasProfile: candidate.dexscreenerHasProfile ?? false,
+      jupiterOrganicScore: candidate.jupiterOrganicScore ?? 0,
+      jupiterTrendingRank: candidate.jupiterTrendingRank ?? 0,
+      coingeckoTrendingRank: candidate.coingeckoTrendingRank ?? 0
+    },
+    trader: {
+      wallet: input.traderWallet ?? '',
+      hasInventory: true,
+      hasLpPosition: true,
+      ...buildLpSignalTraderFields(lpPositionSignal),
+      labels: traderSnapshot?.labels ?? [],
+      pnlUsd: traderSnapshot?.pnlUsd ?? 0,
+      freshnessMs: traderSnapshot?.freshnessMs ?? 0
+    },
+    route: {
+      hasSolRoute: candidate.hasSolRoute,
+      expectedOutSol: requestedPositionSol,
+      slippageBps,
+      token: candidate.symbol,
+      poolAddress: candidate.address
+    }
+  };
+
+  return {
+    context,
+    requestedPositionSol,
+    sessionPhase: sessionActive ? 'active' : 'closed'
+  };
+}
+
+function resolveRecentlyClosedExcludedMints(input: {
+  positionState?: PositionStateSnapshot;
+  now: Date;
+}) {
+  const mint = input.positionState?.lastClosedMint ?? '';
+  const closedAt = input.positionState?.lastClosedAt ?? '';
+  const closedAtMs = Date.parse(closedAt);
+  if (!mint || !Number.isFinite(closedAtMs)) {
+    return [];
+  }
+
+  return input.now.getTime() - closedAtMs < RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS ? [mint] : [];
+}
+
+function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput, now: Date): IngestCandidate | null {
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => position.mint !== SOL_MINT && (position.hasLiquidity ?? true));
+
+  if (positions.length === 0) {
+    return null;
+  }
+
+  const state = input.positionState;
+  const hasManagedEvidence = (position: (typeof positions)[number]) =>
+    typeof position.currentValueSol === 'number'
+    || typeof position.withdrawSolAmount === 'number'
+    || typeof position.valuationStatus === 'string'
+    || typeof position.lastValuationAt === 'string'
+    || Boolean(position.positionId)
+    || Boolean(position.chainPositionAddress);
+  const byChain = state?.chainPositionAddress
+    ? positions.find((position) => position.positionAddress === state.chainPositionAddress)
+    : undefined;
+  const byPool = state?.activePoolAddress
+    ? positions.find((position) => position.poolAddress === state.activePoolAddress)
+    : undefined;
+  const byMint = state?.activeMint
+    ? positions.find((position) => position.mint === state.activeMint)
+    : undefined;
+  const position = byChain ?? byPool ?? byMint ?? positions.find(hasManagedEvidence);
+  if (!position) {
+    return null;
+  }
+
+  const token = [
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ].find((item) => item.mint === position.mint);
+  const fill = [...(input.accountState?.fills ?? [])]
+    .reverse()
+    .find((item) => item.mint === position.mint && item.symbol);
+  const symbol = token?.symbol ?? fill?.symbol ?? position.mint.slice(0, 6);
+  const valueSol = typeof position.currentValueSol === 'number'
+    ? position.currentValueSol
+    : typeof position.withdrawSolAmount === 'number'
+      ? position.withdrawSolAmount
+      : 0;
+
+  return {
+    ...EMPTY_AUXILIARY_SIGNAL_FIELDS,
+    address: position.poolAddress,
+    mint: position.mint,
+    symbol,
+    chain: 'solana',
+    quoteMint: SOL_MINT,
+    liquidityUsd: Math.max(1, valueSol * 200),
+    hasSolRoute: true,
+    capturedAt: position.lastValuationAt ?? now.toISOString(),
+    holders: 0,
+    hasInventory: true,
+    hasLpPosition: true,
+    binStep: 0,
+    baseFeePct: 0,
+    volume24h: 0,
+    feeTvlRatio24h: 0
+  };
+}
+
+async function buildCandidatePoolBackedCycleInput(
+  input: IngestContextBuilderInput,
+  contextInput: {
+    now: Date;
+    config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+    sessionActive: boolean;
+  }
+): Promise<IngestBackedCycleInput> {
+  const { now, config, sessionActive } = contextInput;
+  const requestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
+  const activePositionsCount = countActiveInventoryPositions(input.accountState);
+  const maxActivePositions = input.maxActivePositions ?? 5;
+
+  if (activePositionsCount >= maxActivePositions) {
+    return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
+      blockReason: 'candidate-pool-capacity-full',
+      blockDetails: 'active position capacity is full; new candidate opens are disabled'
+    });
+  }
+
+  if (!input.candidatePoolReader) {
+    return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
+      blockReason: 'candidate-pool-unavailable',
+      blockDetails: 'candidate pool reader is not configured'
+    });
+  }
+
+  let entry: CandidatePoolEntry | null;
+  try {
+    entry = await input.candidatePoolReader.selectOpenableCandidate(input.strategy, {
+      now,
+      maxAgeMs: input.candidatePoolMaxAgeMs,
+      excludedMints: resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now })
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[Ingest] Candidate pool read failed closed for new opens: ${message}`);
+    return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
+      blockReason: 'candidate-pool-unavailable',
+      blockDetails: message
+    });
+  }
+
+  if (!entry) {
+    return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
+      blockReason: 'candidate-pool-no-openable-candidate',
+      blockDetails: 'candidate pool has no fresh openable candidate'
+    });
+  }
+
+  const candidate = {
+    ...entry.candidate,
+    hasInventory: false,
+    hasLpPosition: false,
+    safetyScore: entry.score
+  };
+  const selectedRequestedPositionSol = input.strategy === 'new-token-v1'
+    ? computeDynamicPositionSol(
+      candidate.liquidityUsd,
+      requestedPositionSol,
+      undefined,
+      { safetyScore: candidate.safetyScore }
+    )
+    : requestedPositionSol;
+  const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
+    mint: candidate.mint,
+    poolAddress: candidate.address
+  });
+
+  const context: DecisionContextInput = {
+    pool: {
+      address: candidate.address,
+      liquidityUsd: candidate.liquidityUsd,
+      hasSolRoute: candidate.hasSolRoute,
+      capturedAt: candidate.capturedAt,
+      candidateCount: 1,
+      binStep: candidate.binStep,
+      baseFeePct: candidate.baseFeePct,
+      volume24h: candidate.volume24h,
+      feeTvlRatio24h: candidate.feeTvlRatio24h,
+      auxSignalScore: candidate.auxSignalScore ?? 0,
+      auxSignalStatus: candidate.auxSignalStatus ?? 'disabled',
+      candidatePoolStatus: entry.status,
+      candidatePoolScore: entry.score,
+      candidatePoolUpdatedAt: entry.updatedAt
+    },
+    token: {
+      mint: candidate.mint,
+      symbol: candidate.symbol,
+      liquidityUsd: candidate.liquidityUsd,
+      hasSolRoute: candidate.hasSolRoute,
+      inSession: sessionActive,
+      holders: candidate.holders,
+      expectedOutSol: selectedRequestedPositionSol,
+      capturedAt: candidate.capturedAt,
+      dexscreenerBoostAmount: candidate.dexscreenerBoostAmount ?? 0,
+      dexscreenerHasProfile: candidate.dexscreenerHasProfile ?? false,
+      jupiterOrganicScore: candidate.jupiterOrganicScore ?? 0,
+      jupiterTrendingRank: candidate.jupiterTrendingRank ?? 0,
+      coingeckoTrendingRank: candidate.coingeckoTrendingRank ?? 0
+    },
+    trader: {
+      wallet: input.traderWallet ?? '',
+      hasInventory: candidate.hasInventory,
+      hasLpPosition: candidate.hasLpPosition,
+      ...buildLpSignalTraderFields(lpPositionSignal),
+      labels: [],
+      pnlUsd: 0,
+      freshnessMs: 0
+    },
+    route: {
+      hasSolRoute: candidate.hasSolRoute,
+      expectedOutSol: selectedRequestedPositionSol,
+      slippageBps: config.solRouteLimits.maxSlippageBps,
+      token: candidate.symbol,
+      poolAddress: candidate.address
+    }
+  };
+
+  await appendCandidateScanBestEffort({
+    sink: input.candidateScanSink,
+    strategy: input.strategy,
+    now,
+    poolCount: 1,
+    prefilteredCount: 1,
+    postLpCount: 1,
+    postSafetyCount: 1,
+    postRecentlyClosedCooldownCount: 1,
+    eligibleSelectionCount: 1,
+    inScanWindow: isInScanWindow(now),
+    activePositionsCount,
+    allCandidates: [candidate],
+    lpEligibleCandidates: [candidate],
+    safeCandidates: [candidate],
+    safetyDiagnostics: null,
+    selectedCandidate: candidate,
+    sessionPhase: sessionActive ? 'active' : 'closed'
+  });
+
+  return {
+    context,
+    requestedPositionSol: selectedRequestedPositionSol,
+    sessionPhase: sessionActive ? 'active' : 'closed',
+    evolutionWatchlistCandidates: [{
+      tokenMint: candidate.mint,
+      tokenSymbol: candidate.symbol,
+      poolAddress: candidate.address,
+      sourceReason: 'selected',
+      trackedSince: now.toISOString()
+    }]
   };
 }
 
@@ -771,6 +1186,31 @@ export async function buildLiveCycleInputFromIngest(
   const now = input.now ?? new Date();
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
+  const accountBackedActiveLpCandidate = resolveAccountBackedActiveLpCandidate(input, now);
+
+  if (accountBackedActiveLpCandidate) {
+    console.log(
+      `[Ingest] Account-backed active LP maintenance context selected; skipping candidate pool and new-candidate ingest mint=${accountBackedActiveLpCandidate.mint} pool=${accountBackedActiveLpCandidate.address}`
+    );
+
+    return buildActiveLpMaintenanceContext(
+      input,
+      input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
+      sessionActive,
+      config.solRouteLimits.maxSlippageBps,
+      null,
+      accountBackedActiveLpCandidate
+    );
+  }
+
+  if (input.candidatePoolReadEnabled) {
+    return buildCandidatePoolBackedCycleInput(input, {
+      now,
+      config,
+      sessionActive
+    });
+  }
+
   let poolRows: Record<string, unknown>[];
   let pumpRows: Record<string, unknown>[];
   let traderSnapshot: ReturnType<typeof normalizeGmgnTrader> | null;
@@ -831,7 +1271,7 @@ export async function buildLiveCycleInputFromIngest(
     const isBlacklisted = readBoolean(payload, ['is_blacklisted', 'isBlacklisted']);
     const binStep = readNumber(poolConfig, ['bin_step', 'binStep']);
     const hasSolRoute = resolveHasSolRoute(payload);
-    return hasSolRoute && !isBlacklisted && binStep >= 100 && isRecentPool(payload, now, maxPoolAgeMs);
+    return hasSolRoute && !isBlacklisted && isAllowedMeteoraEntryBinStep(binStep) && isRecentPool(payload, now, maxPoolAgeMs);
   });
 
   const prefilterCandidates: IngestCandidate[] = prefilteredRows.map((row) =>
@@ -844,18 +1284,69 @@ export async function buildLiveCycleInputFromIngest(
   let candidates: IngestCandidate[] = prefilterCandidates;
   const preLpCount = candidates.length;
   const lpEligibleCandidates = filterLpEligibleCandidates(candidates, config);
-  candidates = lpEligibleCandidates;
+  candidates = rankCandidatesForSafety(lpEligibleCandidates);
   const postLpCount = lpEligibleCandidates.length;
   const activePositionsCount = countActiveInventoryPositions(input.accountState);
+  const maxActivePositions = input.maxActivePositions ?? 5;
+  const shouldDeferNewCandidateSafety = activePositionsCount >= maxActivePositions;
   const inScanWindow = isInScanWindow(now);
-  const maxBatchSize = 50;
+  const activeLpMaintenanceCandidate = resolveActiveLpMaintenanceCandidate({
+    candidates: lpEligibleCandidates,
+    accountState: input.accountState,
+    positionState: input.positionState
+  });
+
+  if (activeLpMaintenanceCandidate) {
+    console.log(
+      `[Ingest] Active LP maintenance context selected; skipping new-candidate GMGN safety mint=${activeLpMaintenanceCandidate.mint} pool=${activeLpMaintenanceCandidate.address}`
+    );
+    await appendCandidateScanBestEffort({
+      sink: input.candidateScanSink,
+      strategy: input.strategy,
+      now,
+      poolCount: poolRows.length,
+      prefilteredCount: prefilteredRows.length,
+      postLpCount,
+      postSafetyCount: 0,
+      postRecentlyClosedCooldownCount: 0,
+      eligibleSelectionCount: 0,
+      inScanWindow,
+      activePositionsCount,
+      blockedReason: 'active-lp-maintenance',
+      allCandidates: prefilterCandidates,
+      lpEligibleCandidates,
+      safeCandidates: [],
+      safetyDiagnostics: null,
+      selectedCandidate: activeLpMaintenanceCandidate,
+      sessionPhase: sessionActive ? 'active' : 'closed'
+    });
+
+    return buildActiveLpMaintenanceContext(
+      input,
+      input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
+      sessionActive,
+      config.solRouteLimits.maxSlippageBps,
+      traderSnapshot,
+      activeLpMaintenanceCandidate
+    );
+  }
+  const newCandidateSafetyMaxBatchSize = Math.max(1, Math.floor(input.newCandidateSafetyMaxBatchSize ?? 1));
+  const maxBatchSize = shouldDeferNewCandidateSafety ? 0 : newCandidateSafetyMaxBatchSize;
+  const safetyTimeoutMs = typeof input.newCandidateSafetyTimeoutMs === 'number'
+    ? Math.max(1_000, input.newCandidateSafetyTimeoutMs)
+    : undefined;
   const safetyConfig = input.safetyFilterConfig ?? DEFAULT_SAFETY_CONFIG;
   let safetyDiagnostics: SafetyFilterDiagnostics | null = null;
   candidates = await applySafetyFilter(candidates, {
     safetyConfig,
     maxBatchSize,
-    fetchSafety: async (mints) =>
-      (input.fetchTokenSafetyBatchImpl ?? defaultFetchSafetyBatch(maxBatchSize))(mints),
+    fetchSafety: async (mints) => {
+      if (shouldDeferNewCandidateSafety) {
+        return buildDeferredSafetyResults(mints);
+      }
+
+      return (input.fetchTokenSafetyBatchImpl ?? defaultFetchSafetyBatch(maxBatchSize, safetyTimeoutMs))(mints);
+    },
     logger: console,
     onDiagnostics: (diagnostics) => {
       safetyDiagnostics = diagnostics;
@@ -892,7 +1383,6 @@ export async function buildLiveCycleInputFromIngest(
     + " " + formatAuxiliarySignalSummary(candidates)
   );
 
-  const maxActivePositions = input.maxActivePositions ?? 5;
   const candidate = selectCandidate(candidates, input.strategy, activePositionsCount, maxActivePositions);
   const eligibleSelectionCount = candidates.filter((item) => item.hasInventory || activePositionsCount < maxActivePositions).length;
 
@@ -994,15 +1484,7 @@ export async function buildLiveCycleInputFromIngest(
       wallet: input.traderWallet ?? '',
       hasInventory: candidate.hasInventory,
       hasLpPosition: candidate.hasLpPosition,
-      ...(typeof lpPositionSignal.lpSolDepletedBins === 'number'
-        ? { lpSolDepletedBins: lpPositionSignal.lpSolDepletedBins }
-        : {}),
-      ...(typeof lpPositionSignal.lpCurrentValueSol === 'number'
-        ? { lpCurrentValueSol: lpPositionSignal.lpCurrentValueSol }
-        : {}),
-      ...(typeof lpPositionSignal.lpUnclaimedFeeSol === 'number'
-        ? { lpUnclaimedFeeSol: lpPositionSignal.lpUnclaimedFeeSol }
-        : {}),
+      ...buildLpSignalTraderFields(lpPositionSignal),
       labels: traderSnapshot?.labels ?? [],
       pnlUsd: traderSnapshot?.pnlUsd ?? 0,
       freshnessMs: traderSnapshot?.freshnessMs ?? 0
@@ -1062,7 +1544,7 @@ export async function buildLiveCycleInputFromIngest(
   };
 }
 
-function defaultFetchSafetyBatch(maxBatchSize: number) {
+function defaultFetchSafetyBatch(maxBatchSize: number, timeoutMs?: number) {
   return async (mints: string[]) =>
-    fetchTokenSafetyBatch(mints, { maxBatchSize });
+    fetchTokenSafetyBatch(mints, { maxBatchSize, timeoutMs });
 }

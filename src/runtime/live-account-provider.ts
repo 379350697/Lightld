@@ -21,6 +21,11 @@ export type LiveAccountState = {
     solSide?: 'tokenX' | 'tokenY';
     solDepletedBins?: number;
     currentValueSol?: number;
+    withdrawSolAmount?: number;
+    withdrawTokenAmountLamports?: number;
+    withdrawTokenAmountRaw?: string;
+    withdrawTokenMint?: string;
+    withdrawTokenValueSol?: number;
     unclaimedFeeSol?: number;
     currentPrice?: number;
     lowerPrice?: number;
@@ -31,6 +36,7 @@ export type LiveAccountState = {
     hasClaimableFees?: boolean;
     valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
     valuationReason?: string;
+    valuationSource?: string;
     lastValuationAt?: string;
   }>;
   journalLpPositions?: Array<{
@@ -48,6 +54,11 @@ export type LiveAccountState = {
     solSide?: 'tokenX' | 'tokenY';
     solDepletedBins?: number;
     currentValueSol?: number;
+    withdrawSolAmount?: number;
+    withdrawTokenAmountLamports?: number;
+    withdrawTokenAmountRaw?: string;
+    withdrawTokenMint?: string;
+    withdrawTokenValueSol?: number;
     unclaimedFeeSol?: number;
     currentPrice?: number;
     lowerPrice?: number;
@@ -58,6 +69,7 @@ export type LiveAccountState = {
     hasClaimableFees?: boolean;
     valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
     valuationReason?: string;
+    valuationSource?: string;
     lastValuationAt?: string;
   }>;
   walletTokens?: Array<{

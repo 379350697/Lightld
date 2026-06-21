@@ -63,6 +63,30 @@ export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 export { SOL_MINT };
 
+function normalizeQuoteAmount(amount: number | string | bigint) {
+  if (typeof amount === 'bigint') {
+    if (amount <= 0n) {
+      throw new Error('Jupiter quote amount must be positive');
+    }
+
+    return amount.toString();
+  }
+
+  if (typeof amount === 'string') {
+    if (!/^\d+$/.test(amount) || BigInt(amount) <= 0n) {
+      throw new Error('Jupiter quote amount must be a positive integer string');
+    }
+
+    return amount;
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Jupiter quote amount must be positive');
+  }
+
+  return String(Math.floor(amount));
+}
+
 export class JupiterClient {
   private readonly apiUrl: string;
   private readonly apiKey?: string;
@@ -153,11 +177,11 @@ export class JupiterClient {
     };
   }
 
-  buildSellQuoteParams(tokenMint: string, tokenLamports: number, slippageBps = 50): JupiterQuoteParams {
+  buildSellQuoteParams(tokenMint: string, tokenLamports: number | string | bigint, slippageBps = 50): JupiterQuoteParams {
     return {
       inputMint: tokenMint,
       outputMint: SOL_MINT,
-      amount: String(Math.floor(tokenLamports)),
+      amount: normalizeQuoteAmount(tokenLamports),
       slippageBps,
       swapMode: 'ExactIn'
     };

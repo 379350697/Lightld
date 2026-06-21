@@ -61,6 +61,9 @@ export type FillMirrorPayload = {
   side: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'unknown';
   amount: number;
   filledSol: number;
+  actualFilledSol?: number;
+  actualWalletDeltaSol?: number;
+  fillAmountSource?: 'wallet-delta' | 'requested-position-fallback';
   recordedAt: string;
 };
 

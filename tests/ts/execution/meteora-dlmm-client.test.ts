@@ -228,6 +228,18 @@ describe('MeteoraDlmmClient', () => {
         lbPairPositionsData: [fundedPosition, residualPosition, emptyPosition]
       }]
     ]));
+    const simulateRebalancePosition = vi.fn(async (positionAddress) => {
+      if (positionAddress.equals(fundedPosition.publicKey)) {
+        return { simulationResult: { actualAmountXWithdrawn: '800000000', actualAmountYWithdrawn: '123456' } };
+      }
+
+      if (positionAddress.equals(residualPosition.publicKey)) {
+        return { simulationResult: { actualAmountXWithdrawn: '200000000', actualAmountYWithdrawn: '0' } };
+      }
+
+      return { simulationResult: { actualAmountXWithdrawn: '0', actualAmountYWithdrawn: '0' } };
+    });
+    dlmmPkg.create = vi.fn(async () => ({ simulateRebalancePosition }));
 
     const client = new MeteoraDlmmClient({} as any);
     const snapshots = await client.getPositionSnapshots(makePoolAddress(1));
@@ -276,13 +288,24 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 0
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeCloseTo(1.125, 10);
+    expect(snapshots[0]?.currentValueSol).toBeUndefined();
+    expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(0.8, 10);
+    expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(123456);
+    expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('123456');
+    expect(snapshots[0]?.valuationStatus).toBe('unavailable');
+    expect(snapshots[0]?.valuationReason).toBe('withdraw-token-quote-required');
+    expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.1, 10);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(167, 100);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(100, 100);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(168, 100);
     expect(snapshots[1]?.currentValueSol).toBeCloseTo(0.2, 10);
+    expect(snapshots[1]?.withdrawSolAmount).toBeCloseTo(0.2, 10);
+    expect(snapshots[1]?.withdrawTokenAmountLamports).toBe(0);
+    expect(snapshots[1]?.withdrawTokenAmountRaw).toBe('0');
+    expect(snapshots[1]?.valuationStatus).toBe('ready');
     expect(snapshots[1]?.unclaimedFeeSol).toBeCloseTo(0.01, 10);
+    expect(simulateRebalancePosition).toHaveBeenCalledTimes(3);
   });
 
   it('computes SOL depletion from the upper edge when SOL is token Y', async () => {
@@ -316,6 +339,10 @@ describe('MeteoraDlmmClient', () => {
         lbPairPositionsData: [position]
       }]
     ]));
+    const simulateRebalancePosition = vi.fn(async () => ({
+      simulationResult: { actualAmountXWithdrawn: '4000000', actualAmountYWithdrawn: '1100000000' }
+    }));
+    dlmmPkg.create = vi.fn(async () => ({ simulateRebalancePosition }));
 
     const client = new MeteoraDlmmClient({} as any);
     const snapshots = await client.getPositionSnapshots(makePoolAddress(1));
@@ -329,8 +356,14 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 67
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeCloseTo(2, 10);
+    expect(snapshots[0]?.currentValueSol).toBeUndefined();
+    expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(1.1, 10);
+    expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(4000000);
+    expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('4000000');
+    expect(snapshots[0]?.valuationStatus).toBe('unavailable');
+    expect(snapshots[0]?.valuationReason).toBe('withdraw-token-quote-required');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.6, 10);
+    expect(simulateRebalancePosition).toHaveBeenCalledTimes(1);
   });
 
   it('does not fabricate SOL valuation when SDK price context is missing', async () => {
@@ -356,6 +389,9 @@ describe('MeteoraDlmmClient', () => {
         lbPairPositionsData: [position]
       }]
     ]));
+    dlmmPkg.create = vi.fn(async () => {
+      throw new Error('pool unavailable');
+    });
 
     const client = new MeteoraDlmmClient({} as any);
     const [snapshot] = await client.getPositionSnapshots(makePoolAddress(1));
@@ -368,8 +404,10 @@ describe('MeteoraDlmmClient', () => {
       unclaimedFeeSol: undefined,
       currentPrice: undefined,
       lowerPrice: undefined,
-      upperPrice: undefined
+      upperPrice: undefined,
+      valuationStatus: 'unavailable'
     }));
+    expect(snapshot?.valuationReason).toContain('withdraw-simulation-pool-load-failed:pool unavailable');
     expect(dlmmPkg.getPriceOfBinByBinId).not.toHaveBeenCalled();
   });
 
@@ -439,7 +477,7 @@ describe('MeteoraDlmmClient', () => {
 
     expect(second).toEqual(first);
     expect(getAll).toHaveBeenCalledTimes(1);
-    expect(dlmmPkg.create).not.toHaveBeenCalled();
+    expect(dlmmPkg.create).toHaveBeenCalledTimes(1);
   });
 
   it('deduplicates in-flight position snapshot reads for the same wallet', async () => {
@@ -488,7 +526,7 @@ describe('MeteoraDlmmClient', () => {
 
     expect(second).toEqual(first);
     expect(getAll).toHaveBeenCalledTimes(1);
-    expect(dlmmPkg.create).not.toHaveBeenCalled();
+    expect(dlmmPkg.create).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the most recent cached snapshots when a refresh fails after the ttl expires', async () => {

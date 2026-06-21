@@ -260,6 +260,130 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
   });
 
+  it('defers uncached GMGN safety checks when active LP exposure is already at capacity', async () => {
+    const fetchTokenSafetyBatchImpl = vi.fn(async () => {
+      throw new Error('safety fetch should be deferred while exposure is at capacity');
+    });
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      maxActivePositions: 1,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          { poolAddress: 'pool-open', positionAddress: 'pos-open', mint: 'mint-open', hasLiquidity: true }
+        ],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-risky',
+          baseMint: 'mint-risky',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'RSK',
+          liquidityUsd: 65_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-risky',
+          symbol: 'RSK',
+          holders: 90,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl
+    });
+
+    expect(fetchTokenSafetyBatchImpl).not.toHaveBeenCalled();
+    expect(result.context.route).toMatchObject({
+      blockReason: 'gmgn-safety-deferred'
+    });
+  });
+
+  it('continues GMGN safety checks and can select a new entry when active LP capacity remains', async () => {
+    const fetchTokenSafetyBatchImpl = vi.fn(async () => [
+      {
+        mint: 'mint-risky',
+        safe: true,
+        safetyScore: 90,
+        maxScore: 120
+      }
+    ]);
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.1,
+      maxActivePositions: 5,
+      now: new Date('2026-03-22T10:00:00.000Z'),
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          { poolAddress: 'pool-open', positionAddress: 'pos-open', mint: 'mint-open', hasLiquidity: true }
+        ],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-risky',
+          baseMint: 'mint-risky',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'RSK',
+          liquidityUsd: 65_000,
+          created_at: new Date('2026-03-21T10:00:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          }
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-risky',
+          symbol: 'RSK',
+          holders: 90,
+          timestamp: '2026-03-22T09:56:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl
+    });
+
+    expect(fetchTokenSafetyBatchImpl).toHaveBeenCalledWith(['mint-risky']);
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-risky'
+    });
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-risky'
+    });
+  });
+
   it('derives lp position state from Meteora positions even without token inventory', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',
@@ -396,6 +520,93 @@ describe('buildLiveCycleInputFromIngest', () => {
       hasInventory: true,
       hasLpPosition: true,
       lpSolDepletedBins: 67
+    });
+  });
+
+  it('keeps active LP context without blocking on GMGN safety', async () => {
+    const fetchTokenSafetyBatchImpl = vi.fn(async () => {
+      throw new Error('safety fetch should not run for active LP maintenance');
+    });
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      traderWallet: 'wallet-1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00'),
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-safe',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            currentValueSol: 0.123,
+            unclaimedFeeSol: 0.001,
+            valuationStatus: 'ready',
+            valuationReason: '',
+            valuationSource: 'meteora-withdraw-simulation',
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 12_500,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          volume_5m: 4_000,
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 48,
+          timestamp: '2026-03-22T09:57:00.000Z'
+        }
+      ],
+      fetchTokenSafetyBatchImpl
+    });
+
+    expect(fetchTokenSafetyBatchImpl).not.toHaveBeenCalled();
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-safe',
+      liquidityUsd: 24.6,
+      hasSolRoute: true
+    });
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-safe',
+      symbol: 'mint-s'
+    });
+    expect(result.context.trader).toMatchObject({
+      wallet: 'wallet-1',
+      hasInventory: true,
+      hasLpPosition: true,
+      lpCurrentValueSol: 0.123,
+      lpUnclaimedFeeSol: 0.001,
+      valuationStatus: 'ready',
+      valuationSource: 'meteora-withdraw-simulation',
+      lpValuationStatus: 'ready',
+      lpValuationSource: 'meteora-withdraw-simulation'
     });
   });
 

@@ -240,7 +240,15 @@ export async function fetchTokenSafetyBatch(
 
   // Pre-condition risk control: limit fetches to maxBatchSize
   const mintsToFetch = uncachedMints.slice(0, maxBatchSize);
+  const deferredMints = uncachedMints.slice(mintsToFetch.length);
   const timeoutMs = configuredTimeoutMs ?? resolveGmgnSafetyTimeoutMs(mintsToFetch.length);
+  const buildDeferredResults = () => deferredMints.map((mint) => ({
+    mint,
+    safe: false,
+    safetyScore: 0,
+    maxScore: 120,
+    error: GMGN_SAFETY_DEFERRED_ERROR
+  }));
 
   if (uncachedMints.length === 0) {
     console.log(`[GmgnSafety] All ${mints.length} mints loaded from cache.`);
@@ -315,7 +323,8 @@ export async function fetchTokenSafetyBatch(
             safetyScore: 0,
             maxScore: 120,
             error: `script_error: ${reason}`,
-          }))
+          })),
+          ...buildDeferredResults()
         ]);
         return;
       }
@@ -331,7 +340,10 @@ export async function fetchTokenSafetyBatch(
           finalResults.push(res);
         }
 
-        resolve(finalResults);
+        resolve([
+          ...finalResults,
+          ...buildDeferredResults()
+        ]);
       } catch (parseError) {
         console.error(`[GmgnSafety] JSON parse error: ${stdout.slice(0, 300)}`);
         resolve([
@@ -342,7 +354,8 @@ export async function fetchTokenSafetyBatch(
             safetyScore: 0,
             maxScore: 120,
             error: "json_parse_failed",
-          }))
+          })),
+          ...buildDeferredResults()
         ]);
       }
     };

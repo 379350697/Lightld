@@ -14,8 +14,13 @@ function toFiniteNumber(value: unknown) {
 }
 
 export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
-  const amount = toFiniteNumber(row.amount ?? row.filledSol);
-  const filledSol = toFiniteNumber(row.filledSol ?? row.amount);
+  const actualFilledSol = toFiniteNumber(row.actualFilledSol);
+  const filledSol = actualFilledSol > 0
+    ? actualFilledSol
+    : toFiniteNumber(row.filledSol ?? row.amount);
+  const amount = filledSol > 0
+    ? filledSol
+    : toFiniteNumber(row.amount ?? row.filledSol);
 
   return {
     fillId: String(row.fillId ?? row.submissionId ?? row.cycleId ?? ''),
@@ -28,6 +33,10 @@ export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
     side: String(row.side ?? 'unknown'),
     amount,
     filledSol,
+    actualFilledSol: actualFilledSol > 0 ? actualFilledSol : undefined,
+    actualWalletDeltaSol: toFiniteNumber(row.actualWalletDeltaSol),
+    fillAmountSource: String(row.fillAmountSource ?? ''),
+    requestedPositionSol: toFiniteNumber(row.requestedPositionSol),
     recordedAt: String(row.recordedAt ?? '')
   };
 }

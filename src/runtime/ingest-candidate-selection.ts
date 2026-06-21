@@ -189,6 +189,28 @@ export function filterLpEligibleCandidates(
   });
 }
 
+export function rankCandidatesForSafety(candidates: IngestCandidate[]) {
+  return [...candidates].sort((left, right) => {
+    if (left.hasInventory !== right.hasInventory) {
+      return Number(right.hasInventory) - Number(left.hasInventory);
+    }
+
+    if (left.hasLpPosition !== right.hasLpPosition) {
+      return Number(right.hasLpPosition) - Number(left.hasLpPosition);
+    }
+
+    if (right.feeTvlRatio24h !== left.feeTvlRatio24h) {
+      return right.feeTvlRatio24h - left.feeTvlRatio24h;
+    }
+
+    if (right.volume24h !== left.volume24h) {
+      return right.volume24h - left.volume24h;
+    }
+
+    return right.liquidityUsd - left.liquidityUsd;
+  });
+}
+
 export async function applySafetyFilter(
   candidates: IngestCandidate[],
   options: {
@@ -208,7 +230,9 @@ export async function applySafetyFilter(
     return candidates;
   }
 
-  const solMints = candidates.filter((candidate) => candidate.hasSolRoute).map((candidate) => candidate.mint).filter(Boolean);
+  const existingExposureCandidates = candidates.filter((candidate) => candidate.hasInventory || candidate.hasLpPosition);
+  const newEntryCandidates = candidates.filter((candidate) => !candidate.hasInventory && !candidate.hasLpPosition);
+  const solMints = newEntryCandidates.filter((candidate) => candidate.hasSolRoute).map((candidate) => candidate.mint).filter(Boolean);
   const uniqueMints = [...new Set(solMints)];
 
   if (uniqueMints.length === 0) {
@@ -230,14 +254,18 @@ export async function applySafetyFilter(
       }
     }
 
-    const filtered = candidates
+    const filteredNewEntries = newEntryCandidates
       .filter((candidate) => safeMap.has(candidate.mint))
       .map((candidate) => ({
         ...candidate,
         safetyScore: (safeMap.get(candidate.mint) ?? 0) + resolveFeeTvlBonus(candidate.feeTvlRatio24h)
       }));
+    const filtered = [
+      ...existingExposureCandidates,
+      ...filteredNewEntries
+    ];
 
-    const rejected = candidates
+    const rejected = newEntryCandidates
       .filter((candidate) => !safeMap.has(candidate.mint))
       .map((candidate) => {
         const result = safetyResults.find((item) => item.mint === candidate.mint);
@@ -251,7 +279,7 @@ export async function applySafetyFilter(
       });
 
     options.logger?.log(
-      `[Ingest] Safety filter: ${candidates.length} -> ${filtered.length} safe candidates (${uniqueMints.length} unique SOL pairs checked, maxBatchSize=${options.maxBatchSize})`
+      `[Ingest] Safety filter: ${candidates.length} -> ${filtered.length} candidates (newEntries=${newEntryCandidates.length}, existingExposureBypassed=${existingExposureCandidates.length}, unique SOL pairs checked=${uniqueMints.length}, maxBatchSize=${options.maxBatchSize})`
     );
 
     if (rejected.length > 0) {
@@ -274,7 +302,7 @@ export async function applySafetyFilter(
       maxScore: 120,
       error: message
     } satisfies TokenSafetyResult));
-    const rejected = candidates
+    const rejected = newEntryCandidates
       .filter((candidate) => uniqueMints.includes(candidate.mint))
       .map((candidate) => ({
         symbol: candidate.symbol,
@@ -285,14 +313,14 @@ export async function applySafetyFilter(
       }));
 
     options.logger?.warn(
-      `[Ingest] Safety filter failed closed, rejecting ${candidates.length} original candidates: ${message}`
+      `[Ingest] Safety filter failed closed for ${newEntryCandidates.length} new-entry candidates; keeping ${existingExposureCandidates.length} existing-exposure candidates: ${message}`
     );
     options.onDiagnostics?.({
       checkedMints: uniqueMints,
       results: failedResults,
       rejected
     });
-    return [];
+    return existingExposureCandidates;
   }
 }
 

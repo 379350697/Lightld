@@ -25,7 +25,8 @@ type EngineCycleResult =
     };
 
 export function runEngineCycle(input: RunnerInput): EngineCycleResult {
-  const gates = evaluateHardGates(
+  const shouldApplyEntryHardGates = !(input.engine === 'new-token' && Boolean(input.snapshot.hasLpPosition));
+  const gates = shouldApplyEntryHardGates ? evaluateHardGates(
     {
       hasSolRoute: Boolean(input.snapshot.hasSolRoute),
       liquidityUsd: typeof input.snapshot.liquidityUsd === 'number' ? input.snapshot.liquidityUsd : undefined,
@@ -37,7 +38,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
       minPoolAgeMinutes: typeof input.config.minPoolAgeMinutes === 'number' ? input.config.minPoolAgeMinutes : undefined,
       maxPoolAgeMinutes: typeof input.config.maxPoolAgeMinutes === 'number' ? input.config.maxPoolAgeMinutes : undefined
     }
-  );
+  ) : { accepted: true, reasons: [] };
 
   if (!gates.accepted) {
     return {

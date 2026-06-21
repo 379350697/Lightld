@@ -41,6 +41,29 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('spot-open-approved');
   });
 
+  it('lets existing new-token LP exits bypass entry hard gates', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        hasLpPosition: true,
+        hasSolRoute: false,
+        liquidityUsd: 0,
+        lpNetPnlPct: -25
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: -20
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+  });
+
   it('returns hold when hard gates reject the snapshot', () => {
     const result = runEngineCycle({
       engine: 'large-pool',

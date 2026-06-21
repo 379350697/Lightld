@@ -32,6 +32,10 @@ export type MeteoraLpPositionSnapshot = {
   solSide: 'tokenX' | 'tokenY';
   solDepletedBins: number;
   currentValueSol?: number;
+  withdrawSolAmount?: number;
+  withdrawTokenAmountLamports?: number;
+  withdrawTokenAmountRaw?: string;
+  withdrawTokenMint?: string;
   unclaimedFeeSol?: number;
   currentPrice?: number;
   lowerPrice?: number;
@@ -40,6 +44,9 @@ export type MeteoraLpPositionSnapshot = {
   positionStatus: 'active' | 'residual' | 'empty';
   hasLiquidity: boolean;
   hasClaimableFees: boolean;
+  valuationStatus?: 'ready' | 'unavailable' | 'stale' | 'invalid';
+  valuationReason?: string;
+  valuationSource?: string;
 };
 
 const TARGET_SINGLE_SIDED_BIN_COUNT = 69;
@@ -189,6 +196,102 @@ function computeSolValueFromPairAmounts(input: {
   }
 
   return tokenYAmount + (tokenXAmount * pricePerToken);
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function toRawAmountString(value: unknown) {
+  if (typeof value === 'bigint') {
+    return value >= 0n ? value.toString() : undefined;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? String(Math.floor(value)) : undefined;
+  }
+
+  if (typeof value === 'string') {
+    return /^\d+$/.test(value) ? value : undefined;
+  }
+
+  if (value && typeof value === 'object' && 'toString' in value) {
+    const raw = String(value);
+    return /^\d+$/.test(raw) ? raw : undefined;
+  }
+
+  return undefined;
+}
+
+function rawAmountToNumber(raw: string | undefined) {
+  if (!raw) {
+    return undefined;
+  }
+
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+async function simulateFullWithdrawAmounts(input: {
+  dlmmPool: any;
+  position: any;
+  lowerBinId: number;
+  upperBinId: number;
+  solSide: 'tokenX' | 'tokenY';
+  withdrawTokenMint: string;
+}): Promise<Pick<
+  MeteoraLpPositionSnapshot,
+  'withdrawSolAmount' | 'withdrawTokenAmountLamports' | 'withdrawTokenAmountRaw' | 'withdrawTokenMint' | 'valuationStatus' | 'valuationReason' | 'valuationSource'
+>> {
+  try {
+    const response = await input.dlmmPool.simulateRebalancePosition(
+      input.position.publicKey,
+      input.position.positionData,
+      true,
+      false,
+      [],
+      [{
+        minBinId: new BN(input.lowerBinId),
+        maxBinId: new BN(input.upperBinId),
+        bps: new BN(10_000)
+      }]
+    );
+
+    const result = response?.simulationResult ?? response;
+    const actualXRaw = toRawAmountString(result?.actualAmountXWithdrawn);
+    const actualYRaw = toRawAmountString(result?.actualAmountYWithdrawn);
+    const withdrawSolRaw = input.solSide === 'tokenX' ? actualXRaw : actualYRaw;
+    const withdrawTokenRaw = input.solSide === 'tokenX' ? actualYRaw : actualXRaw;
+    const withdrawSolLamports = rawAmountToNumber(withdrawSolRaw);
+    const withdrawSolAmount = typeof withdrawSolLamports === 'number'
+      ? withdrawSolLamports / LAMPORTS_PER_SOL
+      : undefined;
+    const withdrawTokenAmountLamports = rawAmountToNumber(withdrawTokenRaw);
+
+    if (typeof withdrawSolAmount !== 'number' || withdrawSolAmount < 0 || !withdrawTokenRaw) {
+      return {
+        valuationStatus: 'invalid',
+        valuationReason: 'invalid-withdraw-simulation',
+        valuationSource: 'meteora-withdraw-simulation'
+      };
+    }
+
+    return {
+      withdrawSolAmount,
+      withdrawTokenAmountLamports,
+      withdrawTokenAmountRaw: withdrawTokenRaw,
+      withdrawTokenMint: input.withdrawTokenMint,
+      valuationStatus: withdrawTokenRaw !== '0' ? 'unavailable' : 'ready',
+      valuationReason: withdrawTokenRaw !== '0' ? 'withdraw-token-quote-required' : '',
+      valuationSource: 'meteora-withdraw-simulation'
+    };
+  } catch (error) {
+    return {
+      valuationStatus: 'unavailable',
+      valuationReason: `withdraw-simulation-failed:${readErrorMessage(error)}`,
+      valuationSource: 'meteora-withdraw-simulation'
+    };
+  }
 }
 
 function resolveTokenDecimals(tokenReserve: unknown) {
@@ -486,21 +589,35 @@ export class MeteoraDlmmClient {
         const currentPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof activeBinIdValue === 'number' && typeof binStep === 'number'
           ? pricePerTokenFromBinId(activeBinIdValue, binStep, tokenXDecimals, tokenYDecimals)
           : undefined;
+        let dlmmPoolForValuation: any | undefined;
+        let dlmmPoolValuationReason: string | undefined;
+        try {
+          dlmmPoolForValuation = await DLMM.create(connection, new PublicKey(poolAddress));
+        } catch (error) {
+          dlmmPoolValuationReason = `withdraw-simulation-pool-load-failed:${readErrorMessage(error)}`;
+        }
 
         for (const position of userPositions) {
           const summary = summarizePosition(position);
           const hasPrice = typeof tokenXDecimals === 'number'
             && typeof tokenYDecimals === 'number'
             && typeof currentPrice === 'number';
-          const currentValueSol = hasPrice
-            ? computeSolValueFromPairAmounts({
+          const withdrawSimulation = dlmmPoolForValuation
+            ? await simulateFullWithdrawAmounts({
+              dlmmPool: dlmmPoolForValuation,
+              position,
+              lowerBinId: summary.lowerBinId,
+              upperBinId: summary.upperBinId,
               solSide,
-              pricePerToken: currentPrice,
-              tokenXAmountRaw: (position.positionData as any).totalXAmountExcludeTransferFee ?? (position.positionData as any).totalXAmount,
-              tokenYAmountRaw: (position.positionData as any).totalYAmountExcludeTransferFee ?? (position.positionData as any).totalYAmount,
-              tokenXDecimals,
-              tokenYDecimals
+              withdrawTokenMint: mint
             })
+            : {
+              valuationStatus: 'unavailable' as const,
+              valuationReason: dlmmPoolValuationReason ?? 'withdraw-simulation-unavailable',
+              valuationSource: 'meteora-withdraw-simulation'
+            };
+          const currentValueSol = withdrawSimulation.valuationStatus === 'ready'
+            ? withdrawSimulation.withdrawSolAmount
             : undefined;
           const unclaimedFeeSol = hasPrice
             ? computeSolValueFromPairAmounts({
@@ -536,6 +653,10 @@ export class MeteoraDlmmClient {
               solSide
             }),
             currentValueSol,
+            withdrawSolAmount: withdrawSimulation.withdrawSolAmount,
+            withdrawTokenAmountLamports: withdrawSimulation.withdrawTokenAmountLamports,
+            withdrawTokenAmountRaw: withdrawSimulation.withdrawTokenAmountRaw,
+            withdrawTokenMint: withdrawSimulation.withdrawTokenMint,
             unclaimedFeeSol,
             currentPrice,
             lowerPrice,
@@ -543,7 +664,10 @@ export class MeteoraDlmmClient {
             priceProgress: computePriceProgress(currentPrice, lowerPrice, upperPrice),
             positionStatus: summary.positionStatus,
             hasLiquidity: summary.hasLiquidity,
-            hasClaimableFees: summary.hasClaimableFees
+            hasClaimableFees: summary.hasClaimableFees,
+            valuationStatus: withdrawSimulation.valuationStatus,
+            valuationReason: withdrawSimulation.valuationReason,
+            valuationSource: withdrawSimulation.valuationSource
           });
         }
       }

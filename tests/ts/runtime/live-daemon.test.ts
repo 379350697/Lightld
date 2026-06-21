@@ -1439,6 +1439,146 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('preserves the active LP target when a hold tick sees a different candidate pool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-stable-lp-target-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-open',
+      activePoolAddress: 'pool-open',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      openedAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T00:00:00.000Z'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-open',
+              positionAddress: 'pos-open',
+              mint: 'mint-open',
+              currentValueSol: 0.1,
+              unclaimedFeeSol: 0,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-selected-other', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-other', inSession: true, hasSolRoute: true, symbol: 'OTHER', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50, poolAddress: 'pool-selected-other' }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lastAction: 'hold',
+      lastReason: 'runtime-paused',
+      activeMint: 'mint-open',
+      activePoolAddress: 'pool-open',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      openedAt: '2026-04-18T00:00:00.000Z'
+    });
+  });
+
+  it('recovers a missing active mint from the bound account LP position', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-recover-active-mint-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: '',
+      activePoolAddress: 'pool-open',
+      positionId: 'pos-open',
+      chainPositionAddress: 'pos-open',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      openedAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T00:00:00.000Z'
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-open',
+              positionAddress: 'pos-open',
+              mint: 'mint-open',
+              currentValueSol: 0.1,
+              unclaimedFeeSol: 0,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-selected-other', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-other', inSession: true, hasSolRoute: true, symbol: 'OTHER', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50, poolAddress: 'pool-selected-other' }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lastAction: 'hold',
+      lastReason: 'runtime-paused',
+      activeMint: 'mint-open',
+      activePoolAddress: 'pool-open',
+      positionId: 'pos-open',
+      chainPositionAddress: 'pos-open',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      openedAt: '2026-04-18T00:00:00.000Z'
+    });
+  });
+
   it('does not fabricate LP entry metadata during recovery when no trusted bound fill exists', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-orphaned-lp-'));
     const stateRootDir = join(root, 'state');

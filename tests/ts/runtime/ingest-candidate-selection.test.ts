@@ -7,6 +7,7 @@ import {
   filterLpEligibleCandidates,
   filterRecentlyClosedMintCandidates,
   isInScanWindow,
+  rankCandidatesForSafety,
   selectCandidate,
   type IngestCandidate
 } from '../../../src/runtime/ingest-candidate-selection';
@@ -139,6 +140,22 @@ describe('ingest candidate helpers', () => {
     expect(result.map((candidate) => candidate.address)).toEqual(['inventory-pool', 'good-pool']);
   });
 
+  it('ranks candidates for safety by existing exposure, fee/tvl, volume, then liquidity', () => {
+    const result = rankCandidatesForSafety([
+      makeCandidate({ address: 'low-fee', feeTvlRatio24h: 0.05, volume24h: 5_000_000, liquidityUsd: 90_000 }),
+      makeCandidate({ address: 'inventory', hasInventory: true, feeTvlRatio24h: 0.01 }),
+      makeCandidate({ address: 'high-fee', feeTvlRatio24h: 0.2, volume24h: 1_000_000, liquidityUsd: 20_000 }),
+      makeCandidate({ address: 'same-fee-higher-volume', feeTvlRatio24h: 0.2, volume24h: 2_000_000, liquidityUsd: 10_000 })
+    ]);
+
+    expect(result.map((candidate) => candidate.address)).toEqual([
+      'inventory',
+      'same-fee-higher-volume',
+      'high-fee',
+      'low-fee'
+    ]);
+  });
+
   it('prefers inventory and higher safety candidates when selecting', () => {
     const result = selectCandidate([
       makeCandidate({ address: 'pool-a', hasInventory: false, safetyScore: 80 }),
@@ -248,6 +265,47 @@ describe('ingest candidate helpers', () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.safetyScore).toBe(90);
     expect(logger.log).toHaveBeenCalled();
+  });
+
+  it('keeps existing exposure candidates when new-entry safety fetching throws', async () => {
+    const logger = {
+      log: vi.fn(),
+      warn: vi.fn()
+    };
+    const diagnostics = vi.fn();
+
+    const filtered = await applySafetyFilter([
+      makeCandidate({ address: 'inventory-pool', mint: 'mint-held', symbol: 'HELD', hasInventory: true }),
+      makeCandidate({ address: 'fresh-pool', mint: 'mint-fresh', symbol: 'NEW' })
+    ], {
+      safetyConfig: {
+        disabled: false,
+        minHolders: 0,
+        minBluechipPct: 0,
+        minSafetyScore: 50
+      },
+      maxBatchSize: 1,
+      fetchSafety: async () => {
+        throw new Error('gmgn safety outage');
+      },
+      logger,
+      onDiagnostics: diagnostics
+    });
+
+    expect(filtered.map((candidate) => candidate.address)).toEqual(['inventory-pool']);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('failed closed for 1 new-entry candidates')
+    );
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      checkedMints: ['mint-fresh'],
+      rejected: [
+        expect.objectContaining({
+          symbol: 'NEW',
+          mint: 'mint-fresh',
+          error: 'gmgn safety outage'
+        })
+      ]
+    }));
   });
 
   it('fails closed and records rejected diagnostics when safety fetching throws', async () => {

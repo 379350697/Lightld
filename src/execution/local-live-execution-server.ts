@@ -55,6 +55,11 @@ const AccountStateSchema = z.object({
     solSide: z.enum(['tokenX', 'tokenY']).optional(),
     solDepletedBins: z.number().int().nonnegative().optional(),
     currentValueSol: z.number().finite().nonnegative().optional(),
+    withdrawSolAmount: z.number().finite().nonnegative().optional(),
+    withdrawTokenAmountLamports: z.number().finite().nonnegative().optional(),
+    withdrawTokenAmountRaw: z.string().regex(/^\d+$/).optional(),
+    withdrawTokenMint: z.string().optional(),
+    withdrawTokenValueSol: z.number().finite().nonnegative().optional(),
     unclaimedFeeSol: z.number().finite().nonnegative().optional(),
     currentPrice: z.number().finite().positive().optional(),
     lowerPrice: z.number().finite().positive().optional(),
@@ -62,7 +67,10 @@ const AccountStateSchema = z.object({
     priceProgress: z.number().finite().min(0).max(1).optional(),
     positionStatus: z.enum(['active', 'residual', 'empty']).optional(),
     hasLiquidity: z.boolean().optional(),
-    hasClaimableFees: z.boolean().optional()
+    hasClaimableFees: z.boolean().optional(),
+    valuationStatus: z.enum(['ready', 'unavailable', 'stale', 'invalid']).optional(),
+    valuationReason: z.string().optional(),
+    valuationSource: z.string().optional()
   })).optional(),
   journalLpPositions: z.array(z.object({
     poolAddress: z.string(),
@@ -76,6 +84,11 @@ const AccountStateSchema = z.object({
     solSide: z.enum(['tokenX', 'tokenY']).optional(),
     solDepletedBins: z.number().int().nonnegative().optional(),
     currentValueSol: z.number().finite().nonnegative().optional(),
+    withdrawSolAmount: z.number().finite().nonnegative().optional(),
+    withdrawTokenAmountLamports: z.number().finite().nonnegative().optional(),
+    withdrawTokenAmountRaw: z.string().regex(/^\d+$/).optional(),
+    withdrawTokenMint: z.string().optional(),
+    withdrawTokenValueSol: z.number().finite().nonnegative().optional(),
     unclaimedFeeSol: z.number().finite().nonnegative().optional(),
     currentPrice: z.number().finite().positive().optional(),
     lowerPrice: z.number().finite().positive().optional(),
@@ -83,7 +96,10 @@ const AccountStateSchema = z.object({
     priceProgress: z.number().finite().min(0).max(1).optional(),
     positionStatus: z.enum(['active', 'residual', 'empty']).optional(),
     hasLiquidity: z.boolean().optional(),
-    hasClaimableFees: z.boolean().optional()
+    hasClaimableFees: z.boolean().optional(),
+    valuationStatus: z.enum(['ready', 'unavailable', 'stale', 'invalid']).optional(),
+    valuationReason: z.string().optional(),
+    valuationSource: z.string().optional()
   })).optional(),
   walletTokens: z.array(z.object({
     mint: z.string(),

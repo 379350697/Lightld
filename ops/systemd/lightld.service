@@ -1,7 +1,7 @@
 [Unit]
 Description=Lightld long-running live runtime
-After=network-online.target
-Wants=network-online.target
+After=network-online.target lightld-candidate-worker.service
+Wants=network-online.target lightld-candidate-worker.service
 
 [Service]
 WorkingDirectory=/opt/lightld

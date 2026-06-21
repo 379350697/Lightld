@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { SqliteCandidatePool } from '../candidate-pool/sqlite-candidate-pool.ts';
 import { HttpLiveBroadcaster } from '../execution/http-live-broadcaster.ts';
 import { HttpLiveConfirmationProvider } from '../execution/http-live-confirmation-provider.ts';
 import { HttpLiveQuoteProvider } from '../execution/http-live-quote-provider.ts';
@@ -138,6 +139,18 @@ function parsePositiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalPositiveInteger(value: string | undefined) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean) {
+  if (value === undefined || value.length === 0) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) return true;
+  if (['0', 'false', 'no', 'off'].includes(value.toLowerCase())) return false;
+  return fallback;
+}
+
 function parsePositiveNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -229,6 +242,13 @@ async function main() {
   });
   const evolutionPaths = resolveEvolutionPaths(strategy, join(args.stateRootDir, 'evolution'));
   const candidateScanStore = new CandidateScanStore(evolutionPaths.candidateScansPath);
+  const candidatePoolReadEnabled = parseBoolean(process.env.LIVE_CANDIDATE_POOL_READ_ENABLED, true);
+  const candidatePoolReader = candidatePoolReadEnabled
+    ? new SqliteCandidatePool({
+        path: process.env.LIVE_CANDIDATE_POOL_DB_PATH ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite'),
+        readOnly: true
+      })
+    : undefined;
 
   await runLiveDaemon({
     strategy,
@@ -270,6 +290,11 @@ async function main() {
         meteoraSortBy: args.meteoraSortBy,
         meteoraFilterBy: args.meteoraFilterBy,
         maxActivePositions: args.maxActivePositions,
+        candidatePoolReader,
+        candidatePoolReadEnabled,
+        candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
+        newCandidateSafetyMaxBatchSize: parsePositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE, 1),
+        newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
         positionState: buildContext?.positionState
       });
 

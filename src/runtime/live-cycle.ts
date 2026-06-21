@@ -186,6 +186,15 @@ type LiveCycleJournals = {
 
 type LiveFillEntry = NonNullable<LiveAccountState['fills']>[number];
 
+type ActualFillAmount = {
+  filledSol: number;
+  actualFilledSol?: number;
+  actualWalletDeltaSol?: number;
+  preWalletSol?: number;
+  postWalletSol?: number;
+  fillAmountSource: 'wallet-delta' | 'requested-position-fallback';
+};
+
 type LiveCycleLogContext = {
   cycleId: string;
   strategyId: StrategyId;
@@ -232,6 +241,10 @@ function firstString(...values: unknown[]) {
   }
 
   return '';
+}
+
+function roundSolLamports(value: number) {
+  return Math.round(value * 1_000_000_000) / 1_000_000_000;
 }
 
 function buildEvolutionParameterSnapshot(config: Awaited<ReturnType<typeof loadStrategyConfig>>) {
@@ -387,6 +400,29 @@ function resolveOutcomeEntrySol(input: {
   return input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined;
 }
 
+function resolveActiveLpExitPositionSol(input: {
+  action: LiveAction;
+  positionState?: PositionStateSnapshot;
+}) {
+  if (
+    input.action === 'withdraw-lp'
+    && typeof input.positionState?.entrySol === 'number'
+    && input.positionState.entrySol > 0
+  ) {
+    return input.positionState.entrySol;
+  }
+
+  return undefined;
+}
+
+function resolveRequestedPositionSol(input: {
+  activeLpExitPositionSol?: number;
+  requestedPositionSol?: number;
+  quoteOutputSol: number;
+}) {
+  return input.activeLpExitPositionSol ?? input.requestedPositionSol ?? input.quoteOutputSol;
+}
+
 function resolveObservedReturnPct(input: {
   action: LiveAction;
   entrySol?: number;
@@ -396,14 +432,6 @@ function resolveObservedReturnPct(input: {
     return undefined;
   }
 
-  if (
-    (input.action === 'withdraw-lp' || input.action === 'claim-fee' || input.action === 'rebalance-lp')
-    && typeof input.exitMetrics.lpCurrentValueSol === 'number'
-  ) {
-    const totalExitValue = input.exitMetrics.lpCurrentValueSol + (input.exitMetrics.lpUnclaimedFeeSol ?? 0);
-    return ((totalExitValue - input.entrySol) / input.entrySol) * 100;
-  }
-
   if (typeof input.exitMetrics.quoteOutputSol === 'number') {
     return ((input.exitMetrics.quoteOutputSol - input.entrySol) / input.entrySol) * 100;
   }
@@ -411,6 +439,71 @@ function resolveObservedReturnPct(input: {
   return undefined;
 }
 
+function absoluteWalletDeltaForFill(action: LiveAction, deltaSol: number) {
+  if (!Number.isFinite(deltaSol) || deltaSol === 0) {
+    return undefined;
+  }
+
+  if (action === 'deploy' || action === 'add-lp') {
+    return deltaSol < 0 ? Math.abs(deltaSol) : undefined;
+  }
+
+  if (action === 'dca-out' || action === 'withdraw-lp' || action === 'claim-fee') {
+    return deltaSol > 0 ? deltaSol : undefined;
+  }
+
+  if (action === 'rebalance-lp') {
+    return Math.abs(deltaSol);
+  }
+
+  return undefined;
+}
+
+async function resolveActualFillAmount(input: {
+  action: LiveAction;
+  beforeAccountState?: LiveAccountState;
+  accountProvider?: LiveAccountStateProvider;
+  fallbackSol: number;
+}): Promise<ActualFillAmount> {
+  const fallback: ActualFillAmount = {
+    filledSol: input.fallbackSol,
+    fillAmountSource: 'requested-position-fallback'
+  };
+
+  if (!input.accountProvider || typeof input.beforeAccountState?.walletSol !== 'number') {
+    return fallback;
+  }
+
+  try {
+    const afterAccountState = await input.accountProvider.readState();
+    if (typeof afterAccountState.walletSol !== 'number' || !Number.isFinite(afterAccountState.walletSol)) {
+      return fallback;
+    }
+
+    const actualWalletDeltaSol = roundSolLamports(afterAccountState.walletSol - input.beforeAccountState.walletSol);
+    const actualFilledSol = absoluteWalletDeltaForFill(input.action, actualWalletDeltaSol);
+
+    if (typeof actualFilledSol !== 'number' || actualFilledSol <= 0) {
+      return {
+        ...fallback,
+        actualWalletDeltaSol,
+        preWalletSol: roundSolLamports(input.beforeAccountState.walletSol),
+        postWalletSol: roundSolLamports(afterAccountState.walletSol)
+      };
+    }
+
+    return {
+      filledSol: roundSolLamports(actualFilledSol),
+      actualFilledSol: roundSolLamports(actualFilledSol),
+      actualWalletDeltaSol,
+      preWalletSol: roundSolLamports(input.beforeAccountState.walletSol),
+      postWalletSol: roundSolLamports(afterAccountState.walletSol),
+      fillAmountSource: 'wallet-delta' as const,
+    };
+  } catch {
+    return fallback;
+  }
+}
 function resolveActualExitMetricValue(
   actualExitReason: string,
   action: LiveAction,
@@ -579,12 +672,19 @@ function buildLpExitSnapshotFromPosition(input: {
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   holdTimeMs: number;
 }) {
-  const valuation = evaluateLpValuationState({
-    currentValueSol: input.position.currentValueSol,
-    unclaimedFeeSol: input.position.unclaimedFeeSol,
-    hasClaimableFees: input.position.hasClaimableFees,
-    observedAt: new Date().toISOString()
-  });
+  const observedAt = new Date().toISOString();
+  const valuation = typeof input.position.valuationStatus === 'string'
+    ? {
+      valuationStatus: input.position.valuationStatus,
+      valuationReason: input.position.valuationReason ?? '',
+      lastValuationAt: input.position.lastValuationAt ?? observedAt
+    }
+    : evaluateLpValuationState({
+      currentValueSol: input.position.currentValueSol,
+      unclaimedFeeSol: input.position.unclaimedFeeSol,
+      hasClaimableFees: input.position.hasClaimableFees,
+      observedAt
+    });
 
   return {
     hasSolRoute: true,
@@ -602,6 +702,7 @@ function buildLpExitSnapshotFromPosition(input: {
       : undefined,
     valuationStatus: valuation.valuationStatus,
     valuationReason: valuation.valuationReason,
+    valuationSource: input.position.valuationSource,
     holdTimeMs: input.holdTimeMs,
     pendingConfirmationStatus: 'confirmed' as const,
     lifecycleState: 'open'
@@ -752,6 +853,46 @@ function getLpExitPriority(action: 'withdraw-lp' | 'claim-fee' | 'rebalance-lp',
   return 100;
 }
 
+function hasTrustedLpExitValue(input: {
+  currentValueSol?: unknown;
+  valuationStatus?: unknown;
+  valuationSource?: unknown;
+}) {
+  return input.valuationStatus === 'ready'
+    && typeof input.currentValueSol === 'number'
+    && Number.isFinite(input.currentValueSol)
+    && input.currentValueSol >= 0
+    && typeof input.valuationSource === 'string'
+    && input.valuationSource.includes('withdraw-simulation');
+}
+
+function computeTrustedLpNetPnlPct(input: {
+  entrySol?: number;
+  currentValueSol?: number;
+  unclaimedFeeSol?: number;
+  valuationSource?: string;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+}) {
+  if (
+    typeof input.entrySol !== 'number'
+    || input.entrySol <= 0
+    || typeof input.currentValueSol !== 'number'
+    || !Number.isFinite(input.currentValueSol)
+  ) {
+    return undefined;
+  }
+
+  const currentValueIncludesFees = typeof input.valuationSource === 'string'
+    && input.valuationSource.includes('withdraw-simulation');
+  const accumulatedFeesSol = currentValueIncludesFees
+    ? 0
+    : (typeof input.unclaimedFeeSol === 'number' ? input.unclaimedFeeSol : 0);
+
+  return evaluateLpPnl(input.entrySol, input.currentValueSol, accumulatedFeesSol, {
+    stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
+    takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
+  }).unrealizedPct;
+}
 function selectTriggeredLpExit(input: {
   accountState?: LiveAccountState;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
@@ -789,18 +930,27 @@ function selectTriggeredLpExit(input: {
         : undefined;
     const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
     const unclaimedFeeSol = typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : 0;
+    const lpNetPnlPct = hasTrustedLpExitValue({
+      currentValueSol,
+      valuationStatus: position.valuationStatus,
+      valuationSource: position.valuationSource
+    })
+      ? computeTrustedLpNetPnlPct({
+        entrySol,
+        currentValueSol,
+        unclaimedFeeSol,
+        valuationSource: position.valuationSource,
+        config: input.config
+      })
+      : undefined;
     const holdTimeMs = lifecycleBound && input.positionState?.openedAt
       ? Math.max(0, input.nowMs - Date.parse(input.positionState.openedAt))
       : openFill?.recordedAt
         ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt))
         : 0;
     const snapshot: any = buildLpExitSnapshotFromPosition({ position, holdTimeMs });
-
-    if (typeof entrySol === 'number' && typeof currentValueSol === 'number') {
-      snapshot.lpNetPnlPct = evaluateLpPnl(entrySol, currentValueSol, unclaimedFeeSol, {
-        stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
-        takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
-      }).unrealizedPct;
+    if (typeof lpNetPnlPct === 'number') {
+      snapshot.lpNetPnlPct = lpNetPnlPct;
     }
 
     const decision = runEngineCycle({
@@ -878,6 +1028,9 @@ function buildEngineSnapshot(
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
       lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
       lpActiveBinStatus: context.trader.lpActiveBinStatus as any,
+      valuationStatus: firstString(context.trader.valuationStatus, context.trader.lpValuationStatus) as any,
+      valuationReason: firstString(context.trader.valuationReason, context.trader.lpValuationReason),
+      valuationSource: firstString(context.trader.valuationSource, context.trader.lpValuationSource),
       lifecycleState: typeof context.trader.lifecycleState === 'string' ? context.trader.lifecycleState : undefined
     };
   }
@@ -898,37 +1051,32 @@ function maybePopulateLpNetPnlPct(input: {
     return;
   }
 
-  const contextMint = typeof input.context.token.mint === 'string' ? input.context.token.mint : '';
-  const mintOpenFill = input.fills
-    ?.filter((fill) => fill.mint === contextMint && (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0)
-    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-  const liveFillEntrySol = typeof mintOpenFill?.amount === 'number' && mintOpenFill.amount > 0
-    ? mintOpenFill.amount
-    : undefined;
-  const positionEntrySol = typeof input.positionState?.entrySol === 'number' && input.positionState.entrySol > 0
-    ? input.positionState.entrySol
-    : undefined;
-  const requestedEntrySol = typeof input.requestedPositionSol === 'number' && input.requestedPositionSol > 0
-    ? input.requestedPositionSol
-    : undefined;
-  const entrySol = liveFillEntrySol ?? positionEntrySol ?? requestedEntrySol;
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
-  const unclaimedFeeSol = typeof input.context.trader.lpUnclaimedFeeSol === 'number'
-    ? input.context.trader.lpUnclaimedFeeSol
-    : 0;
+  const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
+  const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
 
-  if (typeof entrySol !== 'number' || typeof currentValueSol !== 'number') {
+  if (!hasTrustedLpExitValue({ currentValueSol, valuationStatus, valuationSource })) {
     return;
   }
 
-  const result = evaluateLpPnl(entrySol, currentValueSol, unclaimedFeeSol, {
-    stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
-    takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
+  const entrySol = typeof input.positionState?.entrySol === 'number' && input.positionState.entrySol > 0
+    ? input.positionState.entrySol
+    : input.requestedPositionSol;
+  const lpNetPnlPct = computeTrustedLpNetPnlPct({
+    entrySol,
+    currentValueSol,
+    unclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number'
+      ? input.context.trader.lpUnclaimedFeeSol
+      : undefined,
+    valuationSource,
+    config: input.config
   });
 
-  input.context.trader.lpNetPnlPct = result.unrealizedPct;
+  if (typeof lpNetPnlPct === 'number') {
+    input.context.trader.lpNetPnlPct = lpNetPnlPct;
+  }
 }
 
 function createJournalPaths(strategyId: StrategyId, journalRootDir = join('tmp', 'journals')): LiveCycleJournalPaths {
@@ -1024,6 +1172,31 @@ function resolveActionIdentity(input: {
     chainPositionAddress
   };
 }
+function resolveStateBoundOpenTarget(input: {
+  positionState?: PositionStateSnapshot;
+  tokenMint: string;
+}) {
+  const positionState = input.positionState;
+  if (positionState?.lifecycleState !== 'open') {
+    return null;
+  }
+
+  const activePoolAddress = firstString(positionState.activePoolAddress);
+  if (!activePoolAddress) {
+    return null;
+  }
+
+  const activeMint = firstString(positionState.activeMint);
+  if (activeMint && input.tokenMint && activeMint !== input.tokenMint) {
+    return null;
+  }
+
+  return {
+    activeMint,
+    activePoolAddress
+  };
+}
+
 function resolveStateRootDir(strategyId: StrategyId, stateRootDir?: string) {
   return stateRootDir ?? join('state', strategyId);
 }
@@ -1561,6 +1734,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     context.trader.lpCurrentValueSol = multiLpExit.position.currentValueSol;
     context.trader.lpUnclaimedFeeSol = multiLpExit.position.unclaimedFeeSol;
     context.trader.lpSolDepletedBins = multiLpExit.position.solDepletedBins;
+    context.trader.valuationStatus = multiLpExit.position.valuationStatus;
+    context.trader.valuationReason = multiLpExit.position.valuationReason;
+    context.trader.valuationSource = multiLpExit.position.valuationSource;
+    context.trader.lpValuationStatus = multiLpExit.position.valuationStatus;
+    context.trader.lpValuationReason = multiLpExit.position.valuationReason;
+    context.trader.lpValuationSource = multiLpExit.position.valuationSource;
     context.trader.lpNetPnlPct = typeof multiLpExit.snapshot.lpNetPnlPct === 'number'
       ? multiLpExit.snapshot.lpNetPnlPct
       : context.trader.lpNetPnlPct;
@@ -1570,13 +1749,32 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       | undefined;
   }
 
-  const activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
+  let activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
   if (multiLpExit?.position.poolAddress) {
     poolAddress = multiLpExit.position.poolAddress;
     tokenSymbol = firstString(context.token.symbol, logContext.tokenSymbol, multiLpExit.position.mint);
     logContext.poolAddress = poolAddress;
     logContext.tokenMint = multiLpExit.position.mint;
     logContext.tokenSymbol = tokenSymbol;
+  }
+
+  const stateBoundOpenTarget = !multiLpExit
+    ? resolveStateBoundOpenTarget({
+        positionState: input.positionState,
+        tokenMint: activeMint
+      })
+    : null;
+  if (stateBoundOpenTarget) {
+    poolAddress = stateBoundOpenTarget.activePoolAddress;
+    context.pool.address = poolAddress;
+    context.route.poolAddress = poolAddress;
+    logContext.poolAddress = poolAddress;
+
+    if (stateBoundOpenTarget.activeMint) {
+      activeMint = stateBoundOpenTarget.activeMint;
+      context.token.mint = stateBoundOpenTarget.activeMint;
+      logContext.tokenMint = stateBoundOpenTarget.activeMint;
+    }
   }
 
   const matchedActiveLpPosition = [
@@ -1760,11 +1958,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     ? context.trader.lpUnclaimedFeeSol
     : undefined;
   const liveLpValuation = config.poolClass === 'new-token' && context.trader.hasLpPosition
-    ? evaluateLpValuationState({
-      currentValueSol: liveLpCurrentValueSol,
-      unclaimedFeeSol: liveLpUnclaimedFeeSol,
-      observedAt: new Date().toISOString()
-    })
+    ? (typeof context.trader.valuationStatus === 'string'
+      ? {
+        valuationStatus: context.trader.valuationStatus as any,
+        valuationReason: firstString(context.trader.valuationReason),
+        lastValuationAt: new Date().toISOString()
+      }
+      : evaluateLpValuationState({
+        currentValueSol: liveLpCurrentValueSol,
+        unclaimedFeeSol: liveLpUnclaimedFeeSol,
+        observedAt: new Date().toISOString()
+      }))
     : null;
   if (config.poolClass === 'new-token') {
     (updatedSnapshot as any).holdTimeMs = typeof multiLpExit?.snapshot.holdTimeMs === 'number'
@@ -1775,6 +1979,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       : (snapshot as any).pendingConfirmationStatus;
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
+    (updatedSnapshot as any).valuationSource = firstString(context.trader.valuationSource, context.trader.lpValuationSource);
     if (preEngineMintAggregate.mustCleanupDust) {
       (updatedSnapshot as any).hasInventory = true;
       (updatedSnapshot as any).hasLpPosition = false;
@@ -1810,6 +2015,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
     `valuationReason=${typeof (updatedSnapshot as any).valuationReason === 'string' ? (updatedSnapshot as any).valuationReason : 'n/a'}`,
+    `valuationSource=${typeof (updatedSnapshot as any).valuationSource === 'string' ? (updatedSnapshot as any).valuationSource : 'n/a'}`,
     `holdTimeMs=${typeof (updatedSnapshot as any).holdTimeMs === 'number' ? String((updatedSnapshot as any).holdTimeMs) : 'n/a'}`,
     `pendingConfirmationStatus=${typeof (updatedSnapshot as any).pendingConfirmationStatus === 'string' ? (updatedSnapshot as any).pendingConfirmationStatus : 'n/a'}`
   ];
@@ -1936,7 +2142,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
+  const actionableAction = runtimeAction.action;
+
+  const activeLpExitPositionSol = resolveActiveLpExitPositionSol({
+    action: actionableAction,
+    positionState: input.positionState
+  });
   const quotedPositionSol = firstNumber(
+    activeLpExitPositionSol,
     context.route.expectedOutSol,
     context.token.expectedOutSol,
     context.pool.expectedOutSol,
@@ -1948,7 +2161,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     routeExists
   });
 
-  const requestedPositionSol = input.requestedPositionSol ?? quote.outputSol;
+  const requestedPositionSol = resolveRequestedPositionSol({
+    activeLpExitPositionSol,
+    requestedPositionSol: input.requestedPositionSol,
+    quoteOutputSol: quote.outputSol
+  });
   currentRequestedPositionSol = requestedPositionSol;
   await journals.quotes.append({
     cycleId: logContext.cycleId,
@@ -1967,8 +2184,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     maxImpactBps: 200,
     solExitQuote: quote
   } satisfies ExecutionPlan;
-
-  const actionableAction = runtimeAction.action;
 
   if (!config.live.enabled) {
     return blockCycle({
@@ -2354,10 +2569,61 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     })));
   });
 
+  if (broadcastResult.batchStatus === 'partial') {
+    const partialReason = broadcastResult.reason
+      ? 'pending-submission-partial-failure: ' + broadcastResult.reason
+      : 'pending-submission-partial-failure';
+
+    await appendDecision(journals, logContext, {
+      stage: 'broadcast',
+      mode: 'BLOCKED',
+      action: actionableAction,
+      reason: partialReason,
+      requestedPositionSol,
+      quote,
+      confirmationStatus: confirmation.status,
+      submissionId: broadcastResult.submissionId,
+      liveOrderSubmitted: true
+    });
+    await appendIncident(journals, logContext, mirrorSink, {
+      stage: 'broadcast',
+      reason: partialReason,
+      severity: 'error',
+      requestedPositionSol,
+      quote,
+      submissionId: broadcastResult.submissionId
+    });
+
+    return finalize({
+      ...buildBlockedCycleResult({
+        action: actionableAction,
+        reason: partialReason,
+        audit: engineResult.audit,
+        context,
+        quoteCollected: true,
+        quote,
+        executionPlan,
+        orderIntent,
+        broadcastResult,
+        confirmationStatus: confirmation.status,
+        failureKind: 'unknown',
+        failureSource: 'broadcast',
+        journalPaths: journals.paths,
+        killSwitchState
+      }),
+      liveOrderSubmitted: true
+    });
+  }
   const fillRecordedAt = new Date().toISOString();
   const isConfirmedFill = isResolvedConfirmation(confirmation.status, confirmationFinality);
   if (isConfirmedFill) {
-    const mirroredFilledSol = requestedPositionSol;
+    const actualFill = await resolveActualFillAmount({
+      action: actionableAction,
+      beforeAccountState: accountState,
+      accountProvider: input.accountProvider,
+      fallbackSol: requestedPositionSol
+    });
+    const mirroredFilledSol = actualFill.filledSol;
     await journals.fills.append({
       cycleId: logContext.cycleId,
       submissionId: broadcastResult.submissionId,
@@ -2370,6 +2636,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       side: actionableAction,
       amount: mirroredFilledSol,
       filledSol: mirroredFilledSol,
+      actualFilledSol: actualFill.actualFilledSol,
+      actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+      preWalletSol: actualFill.preWalletSol,
+      postWalletSol: actualFill.postWalletSol,
+      fillAmountSource: actualFill.fillAmountSource,
       status: 'confirmed',
       confirmationStatus: confirmation.status,
       requestedPositionSol,
@@ -2395,6 +2666,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         side: resolveFillMirrorSide(actionableAction),
         amount: mirroredFilledSol,
         filledSol: mirroredFilledSol,
+        actualFilledSol: actualFill.actualFilledSol,
+        actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+        fillAmountSource: actualFill.fillAmountSource,
         recordedAt: fillRecordedAt
       }));
     });

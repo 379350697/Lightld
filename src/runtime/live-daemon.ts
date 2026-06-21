@@ -982,6 +982,44 @@ function resolveBoundLpPosition(input: {
   });
 }
 
+function resolvePersistedActiveTarget(input: {
+  positionState?: Awaited<ReturnType<RuntimeStateStore['readPositionState']>>;
+  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  accountState?: LiveAccountState;
+  resultContextMint: string;
+  resultContextPoolAddress: string;
+  liveOrderSubmitted: boolean;
+  action: string;
+}) {
+  const shouldPreservePriorOpenTarget = Boolean(
+    input.positionState?.lifecycleState === 'open'
+    && input.positionState.activeMint
+    && input.positionState.activePoolAddress
+    && !input.liveOrderSubmitted
+    && !isOpeningActionName(input.action)
+  );
+  let activeMint = shouldPreservePriorOpenTarget
+    ? (input.positionState?.activeMint ?? input.resultContextMint)
+    : input.resultContextMint;
+  let activePoolAddress = shouldPreservePriorOpenTarget
+    ? (input.positionState?.activePoolAddress ?? input.resultContextPoolAddress)
+    : (input.resultContextPoolAddress || input.positionState?.activePoolAddress || '');
+
+  const boundPosition = resolveBoundLpPosition({
+    accountState: input.accountState,
+    chainPositionAddress: input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress,
+    activeMint,
+    activePoolAddress
+  });
+
+  if (boundPosition) {
+    activeMint = activeMint || boundPosition.mint;
+    activePoolAddress = activePoolAddress || boundPosition.poolAddress;
+  }
+
+  return { activeMint, activePoolAddress };
+}
+
 function resolvePersistedLpIdentity(input: {
   lifecycleState?: PositionLifecycleState;
   pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
@@ -1489,8 +1527,22 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         await runtimeStateStore.writeRuntimeState(runtimeState);
         await runtimeStateStore.writeDependencyHealth(dependencyHealth);
-        const persistedActiveMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        const resultContextMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        const resultContextPoolAddress = typeof result.context?.pool?.address === 'string' && result.context.pool.address.length > 0
+          ? result.context.pool.address
+          : '';
         const persistedPendingSubmission = await pendingSubmissionStore.read();
+        const persistedActiveTarget = resolvePersistedActiveTarget({
+          positionState,
+          pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
+          accountState: effectiveAccountState,
+          resultContextMint,
+          resultContextPoolAddress,
+          liveOrderSubmitted: result.liveOrderSubmitted,
+          action: result.action
+        });
+        const persistedActiveMint = persistedActiveTarget.activeMint;
+        const persistedPoolAddress = persistedActiveTarget.activePoolAddress;
         const persistedLifecycleState = resolveLifecycleStateForPersist({
           nextLifecycleState: result.nextLifecycleState,
           previousLifecycleState: positionState?.lifecycleState,
@@ -1499,7 +1551,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lastAction: result.action,
           lastReason: result.reason,
           activeMint: persistedActiveMint,
-          activePoolAddress: positionState?.activePoolAddress
+          activePoolAddress: persistedPoolAddress
         });
 
         const failedOpenCooldownMint = result.reason.startsWith('failed-open-cooldown:')
@@ -1510,9 +1562,6 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ? (failedOpenCooldownMint || persistedActiveMint)
           : (positionState?.lastClosedMint ?? '');
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
-        const persistedPoolAddress = typeof result.context?.pool?.address === 'string' && result.context.pool.address.length > 0
-          ? result.context.pool.address
-          : (positionState?.activePoolAddress ?? '');
         const persistedActiveMintForState = persistedLifecycleState === 'closed' ? undefined : persistedActiveMint;
         const persistedActivePoolAddressForState = persistedLifecycleState === 'closed' ? undefined : persistedPoolAddress;
         const persistedEntrySol = result.action === 'add-lp' && result.liveOrderSubmitted
