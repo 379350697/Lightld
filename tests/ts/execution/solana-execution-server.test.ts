@@ -686,6 +686,57 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('does not apply the opening output limit to withdraw-lp exits', async () => {
+    const keypair = Keypair.generate();
+    const transactions = [
+      new FakeTransaction('close-1'),
+      new FakeTransaction('close-2')
+    ];
+    const sent: string[] = [];
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        }
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        removeLiquidity: async () => transactions as any
+      } as any,
+      authToken: 'test-token',
+      maxOutputSol: 0.1
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', { outputSol: 0.2 }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(sent).toEqual(['close-1', 'close-2']);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-2',
+      confirmationSignature: 'sig-2'
+    });
+
+    await server.stop();
+  });
+
   it('waits for withdraw-lp signatures to confirm before checking residual token inventory', async () => {
     const keypair = Keypair.generate();
     const getTokenAccountsByOwner = vi.fn(async (_owner?: string) => [

@@ -2,6 +2,11 @@ export type InstructionAllowlistConfig = {
   maxOutputSol: number;
 };
 
+type AllowlistedIntent = {
+  outputSol: number;
+  side?: string;
+};
+
 export type InstructionAllowlistResult =
   | { allowed: true; reason: 'intent-allowed' }
   | {
@@ -11,9 +16,16 @@ export type InstructionAllowlistResult =
     };
 
 export function validateIntentAllowlist(
-  intent: { outputSol: number },
+  intent: AllowlistedIntent,
   config: InstructionAllowlistConfig
 ): InstructionAllowlistResult {
+  if (intent.side === 'withdraw-lp' || intent.side === 'sell' || intent.side === 'claim-fee') {
+    return {
+      allowed: true,
+      reason: 'intent-allowed'
+    };
+  }
+
   if (intent.outputSol > config.maxOutputSol) {
     return {
       allowed: false,
