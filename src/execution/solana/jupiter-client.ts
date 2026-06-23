@@ -55,6 +55,19 @@ export type JupiterOrderResponse = {
   [key: string]: unknown;
 };
 
+export type JupiterOrderParams = JupiterQuoteParams & {
+  taker: string;
+};
+
+export type JupiterExecuteResponse = {
+  status?: string;
+  signature?: string;
+  error?: unknown;
+  inputAmountResult?: string;
+  outputAmountResult?: string;
+  [key: string]: unknown;
+};
+
 type JupiterClientOptions = {
   apiUrl?: string;
   apiKey?: string;
@@ -330,6 +343,65 @@ export class JupiterClient {
     );
   }
 
+  async getOrderV2(params: JupiterOrderParams): Promise<JupiterOrderResponse> {
+    this.assertQuoteAmountAllowed(params.amount);
+    const negativeCacheKey = this.buildNegativeRouteCacheKey(params);
+    const cached = this.readNegativeRouteCache(negativeCacheKey);
+    if (cached) {
+      throw new JupiterNoRouteError(
+        `Jupiter order no route cached: ${cached.errorCode}`,
+        cached.errorCode
+      );
+    }
+
+    const searchParams = new URLSearchParams({
+      taker: params.taker,
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      amount: params.amount,
+      slippageBps: String(params.slippageBps ?? 50),
+      swapMode: params.swapMode ?? 'ExactIn'
+    });
+
+    try {
+      return await this.runAgainstEndpoint((apiUrl) =>
+        this.executeJsonRequest<JupiterOrderResponse>(
+          `${apiUrl}/swap/v2/order?${searchParams.toString()}`,
+          {
+            method: 'GET',
+            headers: this.buildHeaders()
+          }
+        )
+      );
+    } catch (error) {
+      if (isJupiterNoRouteError(error)) {
+        this.writeNegativeRouteCache(negativeCacheKey, error.errorCode);
+      }
+
+      throw error;
+    }
+  }
+
+  async executeOrderV2(input: {
+    requestId: string;
+    signedTransaction: string;
+  }): Promise<JupiterExecuteResponse> {
+    return this.runAgainstEndpoint((apiUrl) =>
+      this.executeJsonRequest<JupiterExecuteResponse>(
+        `${apiUrl}/swap/v2/execute`,
+        {
+          method: 'POST',
+          headers: this.buildHeaders(),
+          body: JSON.stringify({
+            requestId: input.requestId,
+            signedTransaction: input.signedTransaction
+          })
+        },
+        { rateLimit: false }
+      )
+    );
+  }
+
   buildBuyQuoteParams(tokenMint: string, solAmount: number, slippageBps = 50): JupiterQuoteParams {
     return {
       inputMint: SOL_MINT,
@@ -408,8 +480,14 @@ export class JupiterClient {
     });
   }
 
-  private async executeJsonRequest<T>(url: string, init: RequestInit): Promise<T> {
-    await this.waitForRateLimitSlot();
+  private async executeJsonRequest<T>(
+    url: string,
+    init: RequestInit,
+    options: { rateLimit?: boolean } = {}
+  ): Promise<T> {
+    if (options.rateLimit ?? true) {
+      await this.waitForRateLimitSlot();
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 

@@ -76,6 +76,17 @@ describe('solana rpc config policy', () => {
     expect(defaults.jupiterRateLimitWindowMs).toBe(60_000);
     expect(defaults.jupiterNegativeRouteCacheTtlMs).toBe(300_000);
     expect(defaults.jupiterMinQuoteAmountLamports).toBe(1_000);
+    expect(defaults.swapProviderOrder).toEqual([
+      'meteora-direct',
+      'jupiter-v2',
+      'raydium',
+      'okx',
+      'jupiter-v1'
+    ]);
+    expect(defaults.swapProviderCooldownMs).toBe(30_000);
+    expect(defaults.raydiumTradeApiUrl).toBe('https://transaction-v1.raydium.io');
+    expect(defaults.okxDexApiUrl).toBe('https://web3.okx.com');
+    expect(defaults.okxDexChainIndex).toBe('501');
 
     const config = loadSolanaExecutionConfig(envBase({
       RPC_429_COOLDOWN_MS: '45000',
@@ -83,7 +94,15 @@ describe('solana rpc config policy', () => {
       JUPITER_RATE_LIMIT_CAPACITY: '100',
       JUPITER_RATE_LIMIT_WINDOW_MS: '10000',
       JUPITER_NEGATIVE_ROUTE_CACHE_TTL_MS: '60000',
-      JUPITER_MIN_QUOTE_LAMPORTS: '5000'
+      JUPITER_MIN_QUOTE_LAMPORTS: '5000',
+      SWAP_PROVIDER_ORDER: 'raydium,jupiter-v1',
+      SWAP_PROVIDER_COOLDOWN_MS: '9000',
+      RAYDIUM_TRADE_API_URL: 'https://raydium.example',
+      OKX_DEX_API_URL: 'https://okx.example',
+      OKX_DEX_CHAIN_INDEX: 'solana-mainnet',
+      OKX_DEX_API_KEY: 'okx-key',
+      OKX_DEX_SECRET_KEY: 'okx-secret',
+      OKX_DEX_PASSPHRASE: 'okx-passphrase'
     }));
     expect(config.rpc429CooldownMs).toBe(45_000);
     expect(config.rpcEndpointMinIntervalMs).toBe(125);
@@ -91,6 +110,14 @@ describe('solana rpc config policy', () => {
     expect(config.jupiterRateLimitWindowMs).toBe(10_000);
     expect(config.jupiterNegativeRouteCacheTtlMs).toBe(60_000);
     expect(config.jupiterMinQuoteAmountLamports).toBe(5_000);
+    expect(config.swapProviderOrder).toEqual(['raydium', 'jupiter-v1']);
+    expect(config.swapProviderCooldownMs).toBe(9_000);
+    expect(config.raydiumTradeApiUrl).toBe('https://raydium.example');
+    expect(config.okxDexApiUrl).toBe('https://okx.example');
+    expect(config.okxDexChainIndex).toBe('solana-mainnet');
+    expect(config.okxDexApiKey).toBe('okx-key');
+    expect(config.okxDexSecretKey).toBe('okx-secret');
+    expect(config.okxDexPassphrase).toBe('okx-passphrase');
   });
 
   it('loads solana execution state and expected signer allowlist config', () => {

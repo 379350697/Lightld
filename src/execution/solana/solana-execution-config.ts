@@ -32,6 +32,21 @@ const SolanaExecutionConfigSchema = z.object({
   expectedSignerPublicKeys: z.array(z.string().min(1)).default([]),
   jupiterApiUrl: z.string().min(1).default('https://api.jup.ag'),
   jupiterApiKey: z.string().min(1).optional(),
+  swapProviderOrder: z.array(z.string().min(1)).default([
+    'meteora-direct',
+    'jupiter-v2',
+    'raydium',
+    'okx',
+    'jupiter-v1'
+  ]),
+  swapProviderCooldownMs: z.number().int().nonnegative().default(30_000),
+  raydiumTradeApiUrl: z.string().url().default('https://transaction-v1.raydium.io'),
+  okxDexApiUrl: z.string().url().default('https://web3.okx.com'),
+  okxDexChainIndex: z.string().min(1).default('501'),
+  okxDexApiKey: z.string().min(1).optional(),
+  okxDexSecretKey: z.string().min(1).optional(),
+  okxDexPassphrase: z.string().min(1).optional(),
+  okxDexProjectId: z.string().min(1).optional(),
   authToken: z.string().min(1).optional(),
   maxOutputSol: z.number().finite().positive().optional(),
   defaultSlippageBps: z.number().int().min(1).max(5000).default(100),
@@ -109,6 +124,19 @@ export function loadSolanaExecutionConfig(
     ),
     jupiterApiUrl: env.JUPITER_API_URL ?? 'https://api.jup.ag',
     jupiterApiKey: env.JUPITER_API_KEY,
+    swapProviderOrder: splitCsv(env.SWAP_PROVIDER_ORDER).length > 0
+      ? splitCsv(env.SWAP_PROVIDER_ORDER)
+      : undefined,
+    swapProviderCooldownMs: env.SWAP_PROVIDER_COOLDOWN_MS
+      ? Number(env.SWAP_PROVIDER_COOLDOWN_MS)
+      : 30_000,
+    raydiumTradeApiUrl: env.RAYDIUM_TRADE_API_URL ?? 'https://transaction-v1.raydium.io',
+    okxDexApiUrl: env.OKX_DEX_API_URL ?? 'https://web3.okx.com',
+    okxDexChainIndex: env.OKX_DEX_CHAIN_INDEX ?? '501',
+    okxDexApiKey: env.OKX_DEX_API_KEY,
+    okxDexSecretKey: env.OKX_DEX_SECRET_KEY,
+    okxDexPassphrase: env.OKX_DEX_PASSPHRASE,
+    okxDexProjectId: env.OKX_DEX_PROJECT_ID,
     authToken: env.SOLANA_EXECUTION_AUTH_TOKEN ?? env.LIVE_AUTH_TOKEN,
     maxOutputSol: env.SOLANA_MAX_OUTPUT_SOL
       ? Number(env.SOLANA_MAX_OUTPUT_SOL)

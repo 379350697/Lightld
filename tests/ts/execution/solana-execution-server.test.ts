@@ -33,13 +33,14 @@ class FakeTransaction {
   }
 }
 
-type BroadcastSide = 'add-lp' | 'withdraw-lp' | 'claim-fee';
+type BroadcastSide = 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee';
 
 type BroadcastIntentOverrides = Partial<{
   tokenMint: string;
   liquidateResidualTokenToSol: boolean;
   idempotencyKey: string;
   outputSol: number;
+  fullPositionExit: boolean;
 }>;
 
 function createIntentSigner() {
@@ -833,6 +834,196 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('uses same-pool Meteora direct swap for residual token liquidation before Jupiter', async () => {
+    const keypair = Keypair.generate();
+    const residualTokenAccount = {
+      pubkey: 'token-account-1',
+      account: {
+        data: {
+          parsed: {
+            info: {
+              mint: 'earthcoin-mint',
+              owner: keypair.publicKey.toBase58(),
+              tokenAmount: {
+                amount: '12345',
+                decimals: 6,
+                uiAmount: 0.012345,
+                uiAmountString: '0.012345'
+              }
+            },
+            type: 'account'
+          },
+          program: 'spl-token'
+        }
+      }
+    };
+    const getTokenAccountsByOwner = vi.fn(async () =>
+      getTokenAccountsByOwner.mock.calls.length === 1 ? [] : [residualTokenAccount]
+    );
+    const sent: string[] = [];
+    const getQuote = vi.fn();
+    const swapTokenToSol = vi.fn(async () => ({
+      transaction: new FakeTransaction('meteora-direct-residual'),
+      outAmountLamports: '9000',
+      minOutAmountLamports: '8500',
+      consumedInAmountLamports: '12345',
+      provider: 'meteora-dlmm-direct'
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        },
+        getSignatureStatuses: async () => ({
+          value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+        }),
+        getTokenAccountsByOwner
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote,
+        getSwapTransaction: vi.fn()
+      } as any,
+      dlmmClient: {
+        removeLiquidity: async () => [new FakeTransaction('close-1')] as any,
+        swapTokenToSol,
+        invalidatePositionSnapshots: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'earthcoin-mint',
+        liquidateResidualTokenToSol: true
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionIds: ['sig-1', 'sig-2']
+    });
+    expect(swapTokenToSol).toHaveBeenCalledWith(
+      keypair.publicKey,
+      'pool-1',
+      'earthcoin-mint',
+      '12345',
+      expect.any(Number)
+    );
+    expect(getQuote).not.toHaveBeenCalled();
+    expect(getTokenAccountsByOwner).toHaveBeenCalledTimes(3);
+    expect(sent).toEqual(['close-1', 'meteora-direct-residual']);
+
+    await server.stop();
+  });
+
+  it('uses same-pool Meteora direct swap for full sell exits before Jupiter', async () => {
+    const keypair = Keypair.generate();
+    const sent: string[] = [];
+    const getQuote = vi.fn();
+    const swapTokenToSol = vi.fn(async () => ({
+      transaction: new FakeTransaction('meteora-direct-sell'),
+      outAmountLamports: '9000',
+      minOutAmountLamports: '8500',
+      consumedInAmountLamports: '12345',
+      provider: 'meteora-dlmm-direct'
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async (base64: string) => {
+          sent.push(Buffer.from(base64, 'base64').toString('utf8'));
+          return `sig-${sent.length}`;
+        },
+        getTokenAccountsByOwner: async () => [
+          {
+            pubkey: 'token-account-1',
+            account: {
+              data: {
+                parsed: {
+                  info: {
+                    mint: 'earthcoin-mint',
+                    owner: keypair.publicKey.toBase58(),
+                    tokenAmount: {
+                      amount: '12345',
+                      decimals: 6,
+                      uiAmount: 0.012345,
+                      uiAmountString: '0.012345'
+                    }
+                  },
+                  type: 'account'
+                },
+                program: 'spl-token'
+              }
+            }
+          }
+        ]
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote,
+        getSwapTransaction: vi.fn()
+      } as any,
+      dlmmClient: {
+        swapTokenToSol
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('sell', {
+        tokenMint: 'earthcoin-mint',
+        fullPositionExit: true
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionIds: ['sig-1']
+    });
+    expect(swapTokenToSol).toHaveBeenCalledWith(
+      keypair.publicKey,
+      'pool-1',
+      'earthcoin-mint',
+      '12345',
+      expect.any(Number)
+    );
+    expect(getQuote).not.toHaveBeenCalled();
+    expect(sent).toEqual(['meteora-direct-sell']);
+
+    await server.stop();
+  });
+
   it('waits for claim-fee tx visibility before selling claimed non-SOL fees', async () => {
     const keypair = Keypair.generate();
     const getSignatureStatuses = vi.fn(async () => ({
@@ -991,9 +1182,9 @@ describe('createSolanaExecutionServer', () => {
       status: 'submitted',
       submissionId: 'sig-close',
       submissionIds: ['sig-close'],
-      batchStatus: 'partial',
-      reason: 'residual quote unavailable'
+      batchStatus: 'partial'
     });
+    expect(firstPayload.reason).toContain('residual quote unavailable');
     expect(replayResponse.status).toBe(200);
     expect(replayPayload).toMatchObject(firstPayload);
     expect(sendRawTransaction).toHaveBeenCalledTimes(1);
@@ -1113,8 +1304,17 @@ describe('createSolanaExecutionServer', () => {
     expect(payload.reason).toContain('residual token sweep incomplete: stale-mint');
     expect(payload.reason).toContain('stale quote unavailable');
     expect(sent).toEqual(['close-1', 'residual-swap']);
-    expect(buildSellQuoteParams).toHaveBeenCalledWith('earthcoin-mint', 12345, expect.any(Number));
-    expect(buildSellQuoteParams).toHaveBeenCalledWith('stale-mint', 98765, expect.any(Number));
+    expect(buildSellQuoteParams).not.toHaveBeenCalled();
+    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
+      inputMint: 'earthcoin-mint',
+      outputMint: 'So11111111111111111111111111111111111111112',
+      amount: '12345'
+    }));
+    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
+      inputMint: 'stale-mint',
+      outputMint: 'So11111111111111111111111111111111111111112',
+      amount: '98765'
+    }));
     expect(invalidatePositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
 
     await server.stop();
@@ -1262,11 +1462,16 @@ describe('createSolanaExecutionServer', () => {
         currentValueSol: 0.1,
         valuationStatus: 'ready',
         valuationReason: '',
-        valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+        valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
       })
     ]);
     expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);
-    expect(buildSellQuoteParams).toHaveBeenCalledWith('earthcoin-mint', '123456', expect.any(Number));
+    expect(buildSellQuoteParams).not.toHaveBeenCalled();
+    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
+      inputMint: 'earthcoin-mint',
+      outputMint: 'So11111111111111111111111111111111111111112',
+      amount: '123456'
+    }));
     expect(getPositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
 
     await server.stop();
@@ -1344,7 +1549,12 @@ describe('createSolanaExecutionServer', () => {
       })
     ]);
     expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);
-    expect(buildSellQuoteParams).toHaveBeenCalledWith('earthcoin-mint', '123456', expect.any(Number));
+    expect(buildSellQuoteParams).not.toHaveBeenCalled();
+    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
+      inputMint: 'earthcoin-mint',
+      outputMint: 'So11111111111111111111111111111111111111112',
+      amount: '123456'
+    }));
 
     await server.stop();
   });

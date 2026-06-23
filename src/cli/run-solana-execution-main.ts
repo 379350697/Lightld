@@ -7,6 +7,7 @@ import { createSolanaExecutionServer } from '../execution/solana/solana-executio
 import { MeteoraDlmmClient } from '../execution/solana/meteora-dlmm-client.ts';
 import { RpcEndpointRegistry } from '../execution/rpc-endpoint-registry.ts';
 import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
+import { createDefaultSwapProviderChain } from '../execution/solana/swap-providers.ts';
 
 async function main() {
   const config = loadSolanaExecutionConfig();
@@ -20,6 +21,7 @@ async function main() {
   process.stdout.write(`Read RPCs: ${config.readRpcUrls.join(', ')}\n`);
   process.stdout.write(`DLMM RPCs: ${config.dlmmRpcUrls.join(', ')}\n`);
   process.stdout.write(`Jupiter: ${config.jupiterApiUrl}\n`);
+  process.stdout.write(`Swap providers: ${config.swapProviderOrder.join(', ')}\n`);
 
   const endpointRegistry = new RpcEndpointRegistry({
     rateLimitedCooldownMs: config.rpc429CooldownMs,
@@ -76,6 +78,20 @@ async function main() {
     config.dlmmRpcUrls.map((url) => new Connection(url)),
     { endpointRegistry }
   );
+  const swapProviderChain = createDefaultSwapProviderChain({
+    providerOrder: config.swapProviderOrder,
+    jupiterClient,
+    dlmmClient,
+    raydiumTradeApiUrl: config.raydiumTradeApiUrl,
+    okxDexApiUrl: config.okxDexApiUrl,
+    okxDexChainIndex: config.okxDexChainIndex,
+    okxDexApiKey: config.okxDexApiKey,
+    okxDexSecretKey: config.okxDexSecretKey,
+    okxDexPassphrase: config.okxDexPassphrase,
+    okxDexProjectId: config.okxDexProjectId,
+    cooldownMs: config.swapProviderCooldownMs,
+    noRouteTtlMs: config.jupiterNegativeRouteCacheTtlMs
+  });
 
   const server = createSolanaExecutionServer({
     host: config.host,
@@ -85,6 +101,7 @@ async function main() {
     rpcClient,
     jupiterClient,
     dlmmClient,
+    swapProviderChain,
     authToken: config.authToken,
     expectedSignerPublicKeys: config.expectedSignerPublicKeys,
     maxOutputSol: config.maxOutputSol,

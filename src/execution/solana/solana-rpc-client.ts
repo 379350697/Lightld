@@ -1,4 +1,5 @@
 import type { FetchImpl } from '../../ingest/shared/http-client.ts';
+import { AddressLookupTableAccount, PublicKey } from '@solana/web3.js';
 import {
   classifyRetryableRpcError,
   type RpcEndpointRegistry
@@ -386,5 +387,22 @@ export class SolanaRpcClient {
     value: { blockhash: string; lastValidBlockHeight: number };
   }> {
     return this.call('getLatestBlockhash', [{ commitment: 'confirmed' }]);
+  }
+
+  async getAddressLookupTable(address: string): Promise<AddressLookupTableAccount | null> {
+    const result = await this.call<{ value: { data: [string, string] } | null }>(
+      'getAccountInfo',
+      [address, { encoding: 'base64', commitment: 'confirmed' }]
+    );
+
+    const encoded = result.value?.data?.[0];
+    if (!encoded) {
+      return null;
+    }
+
+    return new AddressLookupTableAccount({
+      key: new PublicKey(address),
+      state: AddressLookupTableAccount.deserialize(Buffer.from(encoded, 'base64'))
+    });
   }
 }

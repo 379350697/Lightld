@@ -50,6 +50,15 @@ export type MeteoraLpPositionSnapshot = {
   valuationSource?: string;
 };
 
+export type MeteoraDirectSwapResult = {
+  transaction: Transaction;
+  outAmountLamports: string;
+  minOutAmountLamports: string;
+  consumedInAmountLamports: string;
+  priceImpactPct?: number;
+  provider: 'meteora-dlmm-direct';
+};
+
 const TARGET_SINGLE_SIDED_BIN_COUNT = 69;
 
 function flattenTransactions<T>(transactions: Array<T | T[]>) {
@@ -249,6 +258,15 @@ function toRawAmountString(value: unknown) {
   }
 
   return undefined;
+}
+
+function toPositiveRawAmountString(value: unknown) {
+  const raw = toRawAmountString(value);
+  if (!raw || BigInt(raw) <= 0n) {
+    return undefined;
+  }
+
+  return raw;
 }
 
 function rawAmountToNumber(raw: string | undefined) {
@@ -563,6 +581,74 @@ export class MeteoraDlmmClient {
         owner: walletPublicKey,
         positions: userPositions
       }));
+    });
+  }
+
+  async swapTokenToSol(
+    walletPublicKey: PublicKey,
+    poolAddress: string,
+    tokenMint: string,
+    amountLamports: number | string | bigint,
+    slippageBps = 100
+  ): Promise<MeteoraDirectSwapResult> {
+    const amountRaw = toPositiveRawAmountString(amountLamports);
+    if (!amountRaw) {
+      throw new Error('Meteora direct swap amount must be positive');
+    }
+
+    return this.withConnection(async (connection) => {
+      const lbPair = new PublicKey(poolAddress);
+      const inToken = new PublicKey(tokenMint);
+      const dlmmPool = await DLMM.create(connection, lbPair);
+      const tokenX = ((dlmmPool as any).tokenX?.publicKey ?? (dlmmPool as any).lbPair?.tokenXMint) as PublicKey | undefined;
+      const tokenY = ((dlmmPool as any).tokenY?.publicKey ?? (dlmmPool as any).lbPair?.tokenYMint) as PublicKey | undefined;
+
+      if (!tokenX || !tokenY) {
+        throw new Error(`Meteora pool ${poolAddress} is missing token mints`);
+      }
+
+      const tokenXIsInput = tokenX.equals(inToken);
+      const tokenYIsInput = tokenY.equals(inToken);
+      const tokenXIsSol = tokenX.equals(SOL_MINT);
+      const tokenYIsSol = tokenY.equals(SOL_MINT);
+
+      if (!(tokenXIsInput || tokenYIsInput)) {
+        throw new Error(`Token ${tokenMint} is not part of Meteora pool ${poolAddress}`);
+      }
+
+      if (!((tokenXIsInput && tokenYIsSol) || (tokenYIsInput && tokenXIsSol))) {
+        throw new Error(`Meteora pool ${poolAddress} is not a ${tokenMint}/SOL pair`);
+      }
+
+      const swapForY = tokenXIsInput && tokenYIsSol;
+      const allowedSlippage = new BN(Math.max(1, Math.floor(slippageBps)));
+      const inAmount = new BN(amountRaw);
+      const binArrays = await dlmmPool.getBinArrayForSwap(swapForY);
+      const quote = dlmmPool.swapQuote(inAmount, swapForY, allowedSlippage, binArrays, false);
+
+      if (isZeroLike(quote?.outAmount) || isZeroLike(quote?.minOutAmount)) {
+        throw new Error(`Meteora direct swap returned zero SOL output for ${tokenMint}`);
+      }
+
+      const transaction = await dlmmPool.swap({
+        inToken,
+        outToken: SOL_MINT,
+        inAmount,
+        minOutAmount: quote.minOutAmount,
+        lbPair,
+        user: walletPublicKey,
+        binArraysPubkey: quote.binArraysPubkey
+      });
+      const priceImpactPct = toFiniteNumber(quote?.priceImpact);
+
+      return {
+        transaction,
+        outAmountLamports: String(quote.outAmount),
+        minOutAmountLamports: String(quote.minOutAmount),
+        consumedInAmountLamports: String(quote.consumedInAmount ?? amountRaw),
+        priceImpactPct,
+        provider: 'meteora-dlmm-direct'
+      };
     });
   }
 

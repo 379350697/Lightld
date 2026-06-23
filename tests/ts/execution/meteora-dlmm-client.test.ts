@@ -168,6 +168,57 @@ describe('MeteoraDlmmClient', () => {
     expect(transactions).toEqual([{ id: 'claim-1' }, { id: 'claim-2' }]);
   });
 
+  it('builds a same-pool token-to-SOL swap using DLMM quote semantics', async () => {
+    const poolAddress = makePoolAddress(71).toBase58();
+    const wallet = makePoolAddress(72);
+    const tokenMint = makePoolAddress(73);
+    const binArrays = [{ publicKey: makePoolAddress(74) }];
+    const swapQuote = vi.fn(() => ({
+      consumedInAmount: '12345',
+      outAmount: '9000',
+      minOutAmount: '8500',
+      priceImpact: { toString: () => '0.12' },
+      binArraysPubkey: [makePoolAddress(75)]
+    }));
+    const swap = vi.fn(async () => ({ id: 'direct-swap-tx' }));
+
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: SOL_MINT },
+      tokenY: { publicKey: tokenMint },
+      getBinArrayForSwap: vi.fn(async (swapForY: boolean) => {
+        expect(swapForY).toBe(false);
+        return binArrays;
+      }),
+      swapQuote,
+      swap
+    }));
+
+    const client = new MeteoraDlmmClient({} as any);
+    const result = await client.swapTokenToSol(wallet, poolAddress, tokenMint.toBase58(), '12345', 50);
+
+    expect(result).toMatchObject({
+      transaction: { id: 'direct-swap-tx' },
+      outAmountLamports: '9000',
+      minOutAmountLamports: '8500',
+      consumedInAmountLamports: '12345',
+      priceImpactPct: 0.12,
+      provider: 'meteora-dlmm-direct'
+    });
+    const swapQuoteCalls = swapQuote.mock.calls as any[];
+    const swapCalls = swap.mock.calls as any[];
+    expect(String(swapQuoteCalls[0]?.[0])).toBe('12345');
+    expect(String(swapQuoteCalls[0]?.[2])).toBe('50');
+    expect(swapQuoteCalls[0]?.[3]).toBe(binArrays);
+    expect(swap).toHaveBeenCalledWith(expect.objectContaining({
+      inToken: tokenMint,
+      outToken: SOL_MINT,
+      lbPair: expect.any(PublicKey),
+      user: wallet
+    }));
+    expect(String(swapCalls[0]?.[0]?.inAmount)).toBe('12345');
+    expect(String(swapCalls[0]?.[0]?.minOutAmount)).toBe('8500');
+  });
+
   it('returns rich LP snapshots and classifies active, residual, and empty positions separately', async () => {
     const poolAddress = makePoolAddress(80).toBase58();
     const fundedPosition = {
