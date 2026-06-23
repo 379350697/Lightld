@@ -658,7 +658,56 @@ export class SqliteMirrorWriter {
   }
 
   private writeFill(payload: FillMirrorPayload) {
-    this.requireDatabase().prepare(`
+    const db = this.requireDatabase();
+    const existing = db.prepare(`
+      SELECT fill_id AS fillId, side
+      FROM fills
+      WHERE submission_id = ?
+        AND token_mint = ?
+        AND recorded_at = ?
+        AND ABS(filled_sol - ?) < 0.000000001
+      LIMIT 1
+    `).get(
+      payload.submissionId,
+      payload.tokenMint,
+      payload.recordedAt,
+      payload.filledSol
+    ) as { fillId: string; side: string } | undefined;
+
+    if (existing) {
+      if (existing.side === 'unknown' && payload.side !== 'unknown') {
+        db.prepare(`
+          UPDATE fills
+          SET
+            lifecycle_key = ?,
+            open_intent_id = ?,
+            position_id = ?,
+            chain_position_address = ?,
+            confirmation_signature = ?,
+            cycle_id = ?,
+            token_symbol = ?,
+            side = ?,
+            amount = ?,
+            filled_sol = ?
+          WHERE fill_id = ?
+        `).run(
+          payload.lifecycleKey ?? '',
+          payload.openIntentId ?? '',
+          payload.positionId ?? '',
+          payload.chainPositionAddress ?? '',
+          payload.confirmationSignature,
+          payload.cycleId,
+          payload.tokenSymbol,
+          payload.side,
+          payload.amount,
+          payload.filledSol,
+          existing.fillId
+        );
+      }
+      return;
+    }
+
+    db.prepare(`
       INSERT INTO fills (
         fill_id,
         lifecycle_key,

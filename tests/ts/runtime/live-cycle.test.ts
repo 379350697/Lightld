@@ -372,6 +372,8 @@ describe('runLiveCycle', () => {
         activePoolAddress: 'pool-1',
         lifecycleState: 'open',
         entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
         openedAt,
         updatedAt: openedAt
       },
@@ -877,7 +879,9 @@ describe('runLiveCycle', () => {
         lastClosedMint: '',
         lastClosedAt: '',
         updatedAt: '2026-03-22T00:00:00.000Z',
-        entrySol: 1
+        entrySol: 1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open'
       } as any,
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
@@ -915,6 +919,148 @@ describe('runLiveCycle', () => {
     expect(result.audit.reason).toContain('lp-take-profit');
     expect(result.context.trader.lpNetPnlPct).toBeCloseTo(31, 10);
   });
+
+  it('uses wallet-delta add-lp fill instead of requested entry for LP take-profit gating', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.02,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-fugu',
+        activePoolAddress: 'pool-fugu',
+        chainPositionAddress: 'position-fugu',
+        lifecycleState: 'open',
+        openedAt,
+        updatedAt: openedAt,
+        entrySol: 0.02
+      } as any,
+      context: {
+        pool: { address: 'pool-fugu', liquidityUsd: 10_000 },
+        token: { mint: 'mint-fugu', inSession: true, hasSolRoute: true, symbol: 'FUGU' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-fugu',
+          positionAddress: 'position-fugu',
+          mint: 'mint-fugu',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 20,
+          currentValueSol: 0.04,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationReason: '',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'sub-fugu-open',
+          chainPositionAddress: 'position-fugu',
+          mint: 'mint-fugu',
+          side: 'add-lp',
+          amount: 0.077416045,
+          actualFilledSol: 0.077416045,
+          actualWalletDeltaSol: 0.077416045,
+          fillAmountSource: 'wallet-delta',
+          recordedAt: openedAt
+        }]
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+    expect(result.audit.reason).not.toBe('lp-take-profit');
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-48.33112, 5);
+  });
+
+  it('does not trigger false take profit when actual LP fill is below threshold profit', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.08,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-partial',
+        activePoolAddress: 'pool-partial',
+        chainPositionAddress: 'position-partial',
+        lifecycleState: 'open',
+        openedAt,
+        updatedAt: openedAt,
+        entrySol: 0.08
+      } as any,
+      context: {
+        pool: { address: 'pool-partial', liquidityUsd: 10_000 },
+        token: { mint: 'mint-partial', inSession: true, hasSolRoute: true, symbol: 'PART' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: 0.160108238,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-partial',
+          positionAddress: 'position-partial',
+          mint: 'mint-partial',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 20,
+          currentValueSol: 0.160108238,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationReason: '',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'sub-partial-open',
+          chainPositionAddress: 'position-partial',
+          mint: 'mint-partial',
+          side: 'add-lp',
+          amount: 0.137416044,
+          actualFilledSol: 0.137416044,
+          actualWalletDeltaSol: 0.137416044,
+          fillAmountSource: 'wallet-delta',
+          recordedAt: openedAt
+        }]
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-take-profit');
+    expect(result.orderIntent).toBeUndefined();
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(16.5135, 5);
+  });
+
   it('does not use journal-backed LP valuation snapshots to trigger same-mint take profit', async () => {
     const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
     const oldRecordedAt = new Date(Date.now() - (30 * 60 * 60 * 1000)).toISOString();
@@ -1009,7 +1155,7 @@ describe('runLiveCycle', () => {
     expect(result.orderIntent).toBeUndefined();
   });
 
-  it('treats persisted open LP positions as confirmed for take-profit gating even without live fills', async () => {
+  it('does not treat legacy persisted LP entry as trusted take-profit evidence without a source', async () => {
     const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -1024,6 +1170,47 @@ describe('runLiveCycle', () => {
         activePoolAddress: 'pool-1',
         lifecycleState: 'open',
         entrySol: 0.1,
+        openedAt,
+        updatedAt: openedAt
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpNetPnlPct: 35,
+          lpCurrentValueSol: 0.135,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-take-profit');
+    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+  });
+
+  it('uses trusted persisted LP entry source for take-profit gating', async () => {
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
         openedAt,
         updatedAt: openedAt
       },
@@ -1064,6 +1251,8 @@ describe('runLiveCycle', () => {
         activePoolAddress: 'pool-open',
         lifecycleState: 'open',
         entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
         openedAt,
         updatedAt: openedAt
       },
@@ -1112,6 +1301,8 @@ describe('runLiveCycle', () => {
         activePoolAddress: 'pool-open',
         lifecycleState: 'open',
         entrySol: 0.08,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
         openedAt,
         updatedAt: openedAt
       },

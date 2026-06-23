@@ -1454,6 +1454,8 @@ describe('runLiveDaemon', () => {
       activePoolAddress: 'pool-open',
       lifecycleState: 'open',
       entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-open',
       openedAt: '2026-04-18T00:00:00.000Z',
       updatedAt: '2026-04-18T00:00:00.000Z'
     });
@@ -1524,6 +1526,8 @@ describe('runLiveDaemon', () => {
       chainPositionAddress: 'pos-open',
       lifecycleState: 'open',
       entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-open',
       openedAt: '2026-04-18T00:00:00.000Z',
       updatedAt: '2026-04-18T00:00:00.000Z'
     });
@@ -1655,6 +1659,91 @@ describe('runLiveDaemon', () => {
 
     expect(positionState.entrySol).toBeUndefined();
     expect(positionState.openedAt).toBeUndefined();
+  });
+
+  it('repairs legacy LP entry from trusted wallet-delta add-lp fill evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-repair-lp-entry-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = '2026-04-18T00:00:00.000Z';
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'live-order-submitted',
+      activeMint: 'mint-fugu',
+      activePoolAddress: 'pool-fugu',
+      chainPositionAddress: 'pos-fugu',
+      lifecycleState: 'open',
+      entrySol: 0.02,
+      openedAt,
+      updatedAt: openedAt
+    });
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-fills.jsonl'), {
+      submissionId: 'sub-fugu-open',
+      mint: 'mint-fugu',
+      side: 'add-lp',
+      amount: 0.077416045,
+      filledSol: 0.077416045,
+      actualFilledSol: 0.077416045,
+      actualWalletDeltaSol: 0.077416045,
+      fillAmountSource: 'wallet-delta',
+      chainPositionAddress: 'pos-fugu',
+      recordedAt: openedAt
+    }, {
+      rotateDaily: true,
+      now: new Date(openedAt)
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.02,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-fugu',
+              positionAddress: 'pos-fugu',
+              mint: 'mint-fugu',
+              currentValueSol: 0.04,
+              unclaimedFeeSol: 0,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-fugu', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-fugu', inSession: true, hasSolRoute: true, symbol: 'FUGU', score: 90 },
+          trader: { hasInventory: true, hasLpPosition: true },
+          route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50, poolAddress: 'pool-fugu' }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    expect(positionState).toMatchObject({
+      activeMint: 'mint-fugu',
+      activePoolAddress: 'pool-fugu',
+      lifecycleState: 'open',
+      entrySol: 0.077416045,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-fugu-open',
+      openedAt
+    });
   });
 
   it('persists canonical LP identity fields from pending submissions and bound chain positions', async () => {
@@ -2004,6 +2093,8 @@ describe('runLiveDaemon', () => {
       activePoolAddress: 'pool-1',
       lifecycleState: 'open',
       entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-open',
       openedAt,
       chainPositionAddress: 'pos-1',
       updatedAt: openedAt

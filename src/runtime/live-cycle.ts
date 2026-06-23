@@ -84,7 +84,13 @@ import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
-import type { RuntimeMode, PositionStateSnapshot, PositionLifecycleState, PendingSubmissionSnapshot } from './state-types.ts';
+import type {
+  RuntimeMode,
+  PositionStateSnapshot,
+  PositionLifecycleState,
+  PendingSubmissionSnapshot,
+  PositionEntrySolSource
+} from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
   'new-token-v1': 'src/config/strategies/new-token-v1.yaml',
@@ -162,6 +168,7 @@ export type LiveCycleResult = {
   orderIntent?: LiveOrderIntent;
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
+  confirmedFill?: LiveCycleConfirmedFill;
   nextLifecycleState?: PositionLifecycleState;
   aggregateLifecycleState?: PositionLifecycleState;
   failureKind?: ExecutionFailureKind;
@@ -177,6 +184,18 @@ export type LiveCycleResult = {
 };
 
 type LiveCycleJournalPaths = LiveCycleResult['journalPaths'];
+
+export type LiveCycleConfirmedFill = {
+  submissionId: string;
+  mint: string;
+  side: LiveAction;
+  filledSol: number;
+  actualFilledSol?: number;
+  actualWalletDeltaSol?: number;
+  fillAmountSource: ActualFillAmount['fillAmountSource'];
+  recordedAt: string;
+  hasFillEvidence: boolean;
+};
 
 type LiveCycleJournals = {
   paths: LiveCycleJournalPaths;
@@ -293,6 +312,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
   context: ReturnType<typeof buildDecisionContext>;
   snapshot: Record<string, unknown>;
   positionState?: PositionStateSnapshot;
+  confirmedFill?: LiveCycleConfirmedFill;
   requestedPositionSol: number;
   quote?: SolExitQuote;
 }) {
@@ -311,7 +331,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
     });
     const entrySol = resolveOutcomeEntrySol({
       positionState: input.positionState,
-      requestedPositionSol: input.requestedPositionSol
+      confirmedFill: input.confirmedFill
     });
     const observedReturnPct = resolveObservedReturnPct({
       action: input.action,
@@ -393,15 +413,31 @@ function resolveOutcomeOpenedAt(input: {
   return input.recordedAt;
 }
 
+function isTrustedEntrySolSource(source: unknown): source is PositionEntrySolSource {
+  return source === 'actual_fill' || source === 'reconstructed_chain';
+}
+
 function resolveOutcomeEntrySol(input: {
   positionState?: PositionStateSnapshot;
-  requestedPositionSol: number;
+  confirmedFill?: LiveCycleConfirmedFill;
 }) {
-  if (typeof input.positionState?.entrySol === 'number' && input.positionState.entrySol > 0) {
+  if (
+    isTrustedEntrySolSource(input.positionState?.entrySolSource)
+    && typeof input.positionState?.entrySol === 'number'
+    && input.positionState.entrySol > 0
+  ) {
     return input.positionState.entrySol;
   }
 
-  return input.requestedPositionSol > 0 ? input.requestedPositionSol : undefined;
+  if (
+    input.confirmedFill?.side === 'add-lp'
+    && input.confirmedFill.fillAmountSource === 'wallet-delta'
+    && input.confirmedFill.filledSol > 0
+  ) {
+    return input.confirmedFill.filledSol;
+  }
+
+  return undefined;
 }
 
 function resolveActiveLpExitPositionSol(input: {
@@ -718,6 +754,11 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
       : typeof entry.filledSol === 'number'
         ? entry.filledSol
         : undefined;
+    const actualFilledSol = typeof entry.actualFilledSol === 'number' ? entry.actualFilledSol : undefined;
+    const actualWalletDeltaSol = typeof entry.actualWalletDeltaSol === 'number' ? entry.actualWalletDeltaSol : undefined;
+    const fillAmountSource = entry.fillAmountSource === 'wallet-delta' || entry.fillAmountSource === 'requested-position-fallback'
+      ? entry.fillAmountSource
+      : undefined;
     const confirmationStatus = typeof entry.confirmationStatus === 'string' ? entry.confirmationStatus : '';
     const status = typeof entry.status === 'string' ? entry.status : '';
     const recordedAt = typeof entry.recordedAt === 'string' ? entry.recordedAt : '';
@@ -761,6 +802,9 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
       symbol,
       side,
       amount,
+      actualFilledSol,
+      actualWalletDeltaSol,
+      fillAmountSource,
       recordedAt
     } satisfies LiveFillEntry];
   });
@@ -911,6 +955,110 @@ function resolveLifecycleOpenFill(input: {
     .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
 }
 
+function isTrustedActualLpOpenFill(
+  fill: LiveFillEntry | undefined
+): fill is LiveFillEntry & { side: 'add-lp'; fillAmountSource: 'wallet-delta' } {
+  return fill?.side === 'add-lp'
+    && fill.amount > 0
+    && fill.fillAmountSource === 'wallet-delta';
+}
+
+function resolveTrustedLpEntry(input: {
+  positionState?: PositionStateSnapshot;
+  openFill?: LiveFillEntry;
+  lifecycleBound?: boolean;
+}): {
+  entrySol: number;
+  source: PositionEntrySolSource;
+  entryFillSubmissionId?: string;
+} | undefined {
+  if (
+    input.lifecycleBound
+    && isTrustedEntrySolSource(input.positionState?.entrySolSource)
+    && typeof input.positionState?.entrySol === 'number'
+    && input.positionState.entrySol > 0
+  ) {
+    return {
+      entrySol: input.positionState.entrySol,
+      source: input.positionState.entrySolSource,
+      entryFillSubmissionId: input.positionState.entryFillSubmissionId
+    };
+  }
+
+  const openFill = input.openFill;
+  if (isTrustedActualLpOpenFill(openFill)) {
+    return {
+      entrySol: openFill.amount,
+      source: 'actual_fill',
+      entryFillSubmissionId: openFill.submissionId
+    };
+  }
+
+  return undefined;
+}
+
+function resolvePositionStateOpenFill(input: {
+  fills: LiveFillEntry[];
+  positionState?: PositionStateSnapshot;
+}) {
+  const positionState = input.positionState;
+  if (!positionState) {
+    return undefined;
+  }
+
+  const entryFills = input.fills
+    .filter((fill) => fill.side === 'add-lp' && fill.amount > 0);
+
+  if (positionState.chainPositionAddress) {
+    const byChainAddress = entryFills
+      .filter((fill) => fill.chainPositionAddress === positionState.chainPositionAddress)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byChainAddress) {
+      return byChainAddress;
+    }
+  }
+
+  if (positionState.positionId) {
+    const byPositionId = entryFills
+      .filter((fill) => fill.positionId === positionState.positionId)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byPositionId) {
+      return byPositionId;
+    }
+  }
+
+  if (positionState.openIntentId) {
+    const byOpenIntentId = entryFills
+      .filter((fill) => fill.openIntentId === positionState.openIntentId)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byOpenIntentId) {
+      return byOpenIntentId;
+    }
+  }
+
+  if (positionState.activeMint && positionState.openedAt) {
+    const openedAtMs = Date.parse(positionState.openedAt);
+    const byOpenedAt = entryFills
+      .filter((fill) => fill.mint === positionState.activeMint && Date.parse(fill.recordedAt) >= openedAtMs)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+
+    if (byOpenedAt) {
+      return byOpenedAt;
+    }
+  }
+
+  if (positionState.activeMint) {
+    return entryFills
+      .filter((fill) => fill.mint === positionState.activeMint)
+      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
+  }
+
+  return undefined;
+}
+
 function dedupeActiveLpPositions(accountState?: LiveAccountState) {
   const deduped = new Map<string, NonNullable<LiveAccountState['walletLpPositions']>[number]>();
 
@@ -1041,13 +1189,12 @@ function selectTriggeredLpExit(input: {
       position,
       positionState: input.positionState
     });
-    const entrySol = lifecycleBound
-      && typeof input.positionState?.entrySol === 'number'
-      && input.positionState.entrySol > 0
-      ? input.positionState.entrySol
-      : typeof openFill?.amount === 'number' && openFill.amount > 0
-        ? openFill.amount
-        : undefined;
+    const trustedEntry = resolveTrustedLpEntry({
+      positionState: input.positionState,
+      openFill,
+      lifecycleBound
+    });
+    const entrySol = trustedEntry?.entrySol;
     const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
     const unclaimedFeeSol = typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : 0;
     const lpNetPnlPct = hasTrustedLpExitValue({
@@ -1056,7 +1203,7 @@ function selectTriggeredLpExit(input: {
       valuationSource: position.valuationSource
     })
       ? computeTrustedLpNetPnlPct({
-        entrySol,
+        entrySol: trustedEntry?.entrySol,
         currentValueSol,
         unclaimedFeeSol,
         valuationSource: position.valuationSource,
@@ -1185,11 +1332,17 @@ function maybePopulateLpNetPnlPct(input: {
     return;
   }
 
-  const entrySol = typeof input.positionState?.entrySol === 'number' && input.positionState.entrySol > 0
-    ? input.positionState.entrySol
-    : input.requestedPositionSol;
+  const openFill = resolvePositionStateOpenFill({
+    fills: input.fills,
+    positionState: input.positionState
+  });
+  const trustedEntry = resolveTrustedLpEntry({
+    positionState: input.positionState,
+    openFill,
+    lifecycleBound: input.positionState?.lifecycleState === 'open'
+  });
   const lpNetPnlPct = computeTrustedLpNetPnlPct({
-    entrySol,
+    entrySol: trustedEntry?.entrySol,
     currentValueSol,
     unclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number'
       ? input.context.trader.lpUnclaimedFeeSol
@@ -1708,7 +1861,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     currentLifecycleState = 'inventory_exit_ready';
   }
 
-  const snapshot = buildEngineSnapshot(config.poolClass, context);
   maybePopulateLpNetPnlPct({
     context,
     positionState: input.positionState,
@@ -1716,6 +1868,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     requestedPositionSol: input.requestedPositionSol,
     fills: historicalFills
   });
+  const snapshot = buildEngineSnapshot(config.poolClass, context);
   
   if (config.poolClass === 'new-token') {
     (snapshot as any).holdTimeMs = getHoldTimeMs({
@@ -2841,6 +2994,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
   const fillRecordedAt = new Date().toISOString();
   let strictCloseFillEvidenceMissing = false;
+  let confirmedFill: LiveCycleConfirmedFill | undefined;
   const isConfirmedFill = isConfirmedConfirmation(confirmation.status, confirmationFinality);
   if (isConfirmedFill) {
     const actualFill = await resolveActualFillAmount({
@@ -2861,6 +3015,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       });
     } else {
       const mirroredFilledSol = actualFill.filledSol;
+      confirmedFill = {
+        submissionId: broadcastResult.submissionId,
+        mint: logContext.tokenMint,
+        side: actionableAction,
+        filledSol: mirroredFilledSol,
+        actualFilledSol: actualFill.actualFilledSol,
+        actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+        fillAmountSource: actualFill.fillAmountSource,
+        recordedAt: fillRecordedAt,
+        hasFillEvidence: actualFill.hasFillEvidence
+      };
       await journals.fills.append({
         cycleId: logContext.cycleId,
         submissionId: broadcastResult.submissionId,
@@ -2923,34 +3088,40 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  await appendEvolutionOutcomeBestEffort({
-    sink: input.evolutionSink,
-    logContext,
-    action: actionableAction,
-    actualExitReason: engineResult.audit.reason,
-    liveOrderSubmitted: true,
-    config,
-    context,
-    snapshot: updatedSnapshot,
-    positionState: input.positionState,
-    requestedPositionSol,
-    quote
-  });
+  if (!(requiresStrictFillEvidence(actionableAction) && strictCloseFillEvidenceMissing)) {
+    await appendEvolutionOutcomeBestEffort({
+      sink: input.evolutionSink,
+      logContext,
+      action: actionableAction,
+      actualExitReason: engineResult.audit.reason,
+      liveOrderSubmitted: true,
+      config,
+      context,
+      snapshot: updatedSnapshot,
+      positionState: input.positionState,
+      confirmedFill,
+      requestedPositionSol,
+      quote
+    });
+  }
 
   const lifecycleSynchronouslyResolved = isConfirmedConfirmation(confirmation.status, confirmationFinality)
     && !(requiresStrictFillEvidence(actionableAction) && strictCloseFillEvidenceMissing);
 
-	  return finalize(buildLiveSubmittedResult({
-    action: actionableAction,
-    reason: 'live-order-submitted',
-    audit: engineResult.audit,
-    context,
-    quote,
-    executionPlan,
-    orderIntent,
-    broadcastResult,
-    confirmationStatus: confirmation.status,
-    journalPaths: journals.paths,
-    killSwitchState
-	  }), lifecycleSynchronouslyResolved);
+  return finalize({
+    ...buildLiveSubmittedResult({
+      action: actionableAction,
+      reason: 'live-order-submitted',
+      audit: engineResult.audit,
+      context,
+      quote,
+      executionPlan,
+      orderIntent,
+      broadcastResult,
+      confirmationStatus: confirmation.status,
+      journalPaths: journals.paths,
+      killSwitchState
+    }),
+    confirmedFill
+  }, lifecycleSynchronouslyResolved);
 }

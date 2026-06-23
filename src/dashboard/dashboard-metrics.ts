@@ -52,6 +52,7 @@ type HistoricalDecisionFallback = {
   action: string;
   recordedAt: string;
   entrySol?: number;
+  entrySolSource?: string;
   lpCurrentValueSol?: number;
   lpUnclaimedFeeSol?: number;
   lpNetPnlPct?: number;
@@ -132,6 +133,7 @@ type ReconciledHistoricalAction = {
   provenance: 'chain' | 'local';
   hasRealizedChainAmount?: boolean;
   entrySol?: number;
+  entrySolSource?: string;
   exitValueSol?: number;
   feeEarnedSol?: number;
   pnlPct?: number;
@@ -933,6 +935,8 @@ export function buildHistoricalActivity(input: {
       recordedAt: order.updatedAt || order.createdAt,
       decisions
     });
+    const hasTrustedDecisionEntry = decision?.entrySolSource === 'actual_fill'
+      || decision?.entrySolSource === 'reconstructed_chain';
 
     reconciledActions.push({
       lifecycleKey: `token:${order.tokenMint}`,
@@ -950,14 +954,15 @@ export function buildHistoricalActivity(input: {
       })(),
       provenance: 'local',
       hasRealizedChainAmount: false,
-      entrySol: typeof decision?.entrySol === 'number' && decision.entrySol > 0
+      entrySol: hasTrustedDecisionEntry && typeof decision?.entrySol === 'number' && decision.entrySol > 0
         ? decision.entrySol
         : undefined,
-      exitValueSol: typeof decision?.lpCurrentValueSol === 'number'
+      entrySolSource: hasTrustedDecisionEntry ? decision?.entrySolSource : undefined,
+      exitValueSol: hasTrustedDecisionEntry && typeof decision?.lpCurrentValueSol === 'number'
         ? decision.lpCurrentValueSol + (decision.lpUnclaimedFeeSol ?? 0)
         : undefined,
-      feeEarnedSol: typeof decision?.lpUnclaimedFeeSol === 'number' ? decision.lpUnclaimedFeeSol : undefined,
-      pnlPct: typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined
+      feeEarnedSol: hasTrustedDecisionEntry && typeof decision?.lpUnclaimedFeeSol === 'number' ? decision.lpUnclaimedFeeSol : undefined,
+      pnlPct: hasTrustedDecisionEntry && typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined
     });
   }
 

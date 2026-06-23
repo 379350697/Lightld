@@ -99,6 +99,12 @@ export const PositionLifecycleStateSchema = z.enum([
 
 export type PositionLifecycleState = z.infer<typeof PositionLifecycleStateSchema>;
 
+export const PositionEntrySolSourceSchema = z.enum([
+  'actual_fill',
+  'reconstructed_chain'
+]);
+export type PositionEntrySolSource = z.infer<typeof PositionEntrySolSourceSchema>;
+
 export const PositionStateSnapshotSchema = z.object({
   allowNewOpens: z.boolean(),
   flattenOnly: z.boolean(),
@@ -112,6 +118,8 @@ export const PositionStateSnapshotSchema = z.object({
   activePoolAddress: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
   entrySol: z.number().positive().optional(),
+  entrySolSource: PositionEntrySolSourceSchema.optional(),
+  entryFillSubmissionId: z.string().optional(),
   openedAt: z.string().optional(),
   valuationStatus: LpValuationStatusSchema.optional(),
   valuationReason: z.string().optional(),

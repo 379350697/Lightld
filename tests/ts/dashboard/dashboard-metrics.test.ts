@@ -751,12 +751,12 @@ describe('buildCashflowMetrics', () => {
         openedAt: '2026-04-22T13:07:07.421Z',
         closedAt: '2026-04-22T14:39:45.589Z',
         investedSol: 0.05,
-        feeEarnedSol: 0.006224571,
-        profitTrust: 'estimated'
+        feeEarnedSol: null,
+        profitTrust: 'untrusted',
+        pnlSol: null,
+        pnlPct: null
       }
     ]);
-    expect(result[0]?.pnlSol).toBeCloseTo(-0.0008033389999999997);
-    expect(result[0]?.pnlPct).toBeCloseTo(-1.6066779999999994);
   });
 
   it('does not fabricate pnl from local-only close requestedPositionSol without trusted exit metrics', () => {
@@ -896,6 +896,7 @@ describe('buildCashflowMetrics', () => {
           action: 'withdraw-lp',
           recordedAt: '2026-04-22T14:40:00.758Z',
           entrySol: 0.05,
+          entrySolSource: 'actual_fill',
           lpCurrentValueSol: 0.042972091,
           lpUnclaimedFeeSol: 0.006224571,
           lpNetPnlPct: -60

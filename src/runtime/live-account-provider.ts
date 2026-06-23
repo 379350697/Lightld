@@ -96,6 +96,9 @@ export type LiveAccountState = {
     symbol?: string;
     side: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
     amount: number;
+    actualFilledSol?: number;
+    actualWalletDeltaSol?: number;
+    fillAmountSource?: 'wallet-delta' | 'requested-position-fallback';
     recordedAt: string;
   }>;
 };

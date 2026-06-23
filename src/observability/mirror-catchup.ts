@@ -317,15 +317,16 @@ function toFillCatchupEvent(
       cycleId: readString(value, ['cycleId']),
       tokenMint: readString(value, ['tokenMint', 'mint']),
       tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
-      side:
-        side === 'buy' ||
-        side === 'sell' ||
-        side === 'add-lp' ||
-        side === 'withdraw-lp' ||
-        side === 'claim-fee' ||
-        side === 'rebalance-lp'
-          ? side
-          : 'unknown',
+      side: side === 'dca-out'
+        ? 'sell'
+        : side === 'buy' ||
+          side === 'sell' ||
+          side === 'add-lp' ||
+          side === 'withdraw-lp' ||
+          side === 'claim-fee' ||
+          side === 'rebalance-lp'
+            ? side
+            : 'unknown',
       amount: readNumber(value, ['amount', 'filledSol']),
       filledSol: readNumber(value, ['filledSol', 'amount']),
       recordedAt: recordedAt || new Date(0).toISOString()
