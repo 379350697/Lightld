@@ -19,6 +19,8 @@ describe('incident taxonomy', () => {
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1774').rootCause).toContain('exceededBinSlippageTolerance');
     expect(classifyIncidentReason('unknown_pending_reconciliation:missing-fill-evidence').kind).toBe('missing_fill_evidence');
     expect(classifyIncidentReason('lp-position-missing-entry-metadata:abc').kind).toBe('missing_lp_entry_metadata');
+    expect(classifyIncidentReason('position-already-closed:Position not found for pool').kind).toBe('position_already_closed');
+    expect(classifyIncidentReason('Position not found for pool').kind).toBe('position_already_closed');
   });
 
   it('suppresses duplicate incidents inside the ttl and summarizes when they recur later', async () => {

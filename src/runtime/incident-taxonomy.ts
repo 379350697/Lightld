@@ -10,6 +10,7 @@ export type IncidentKind =
   | 'orphaned_position_without_bound_entry'
   | 'entry_reconstruction_ambiguous'
   | 'untrusted_requested_fallback_fill'
+  | 'position_already_closed'
   | 'dependency_unavailable'
   | 'valuation_unavailable'
   | 'reconciliation_required'
@@ -76,6 +77,11 @@ const POLICIES: Record<IncidentKind, Omit<IncidentClassification, 'kind'>> = {
   untrusted_requested_fallback_fill: {
     rootCause: 'a requested amount fallback reached a fill-like surface without trusted fill evidence',
     suggestedAction: 'exclude it from realized cashflow and repair from wallet delta or chain evidence',
+    severity: 'warning'
+  },
+  position_already_closed: {
+    rootCause: 'exit intent targeted an LP position that is already absent from the wallet',
+    suggestedAction: 'treat the exit as not submitted, sync account state, and avoid creating pending or realized PnL',
     severity: 'warning'
   },
   dependency_unavailable: {
@@ -161,6 +167,11 @@ export function classifyIncidentReason(reason: string): IncidentClassification {
     lower.includes('untrusted_requested_fallback_fill')
   ) {
     kind = 'untrusted_requested_fallback_fill';
+  } else if (
+    lower.includes('position-already-closed') ||
+    lower.includes('position not found for pool')
+  ) {
+    kind = 'position_already_closed';
   } else if (lower.includes('lp-position-missing-entry-metadata')) {
     kind = 'missing_lp_entry_metadata';
   } else if (lower.includes('valuation-unavailable')) {

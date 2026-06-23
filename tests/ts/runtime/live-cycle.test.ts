@@ -875,6 +875,51 @@ describe('runLiveCycle', () => {
     expect(pendingSubmission).toBeNull();
   });
 
+  it('classifies missing LP position exits as already closed without pending submission', async () => {
+    const stateDir = `${TEST_STATE_DIR}-position-already-closed`;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'failed',
+          reason: 'Position not found for pool',
+          retryable: true,
+          idempotencyKey: intent.intent.idempotencyKey
+        })
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+    const pendingSubmission = await new PendingSubmissionStore(stateDir).read();
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('position-already-closed:Position not found for pool');
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      broadcastStatus: 'not_submitted',
+      confirmationStatus: 'unknown'
+    });
+    expect(incidentJournal[0]).toMatchObject({
+      reason: 'position-already-closed:Position not found for pool',
+      severity: 'warning'
+    });
+    expect(pendingSubmission).toBeNull();
+  });
+
   it('allows exits even when the requested position exceeds the live cap', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',

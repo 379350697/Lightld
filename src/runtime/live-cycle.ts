@@ -465,6 +465,29 @@ function resolveRequestedPositionSol(input: {
   return input.activeLpExitPositionSol ?? input.requestedPositionSol ?? input.quoteOutputSol;
 }
 
+function isPositionAlreadyClosedReason(reason?: string) {
+  return typeof reason === 'string' && /position not found for pool/i.test(reason);
+}
+
+function isExitPositionAlreadyClosedFailure(input: {
+  action: LiveAction;
+  reason?: string;
+}) {
+  return (input.action === 'withdraw-lp' || input.action === 'claim-fee')
+    && isPositionAlreadyClosedReason(input.reason);
+}
+
+function normalizeNotSubmittedBroadcastReason(input: {
+  action: LiveAction;
+  reason?: string;
+}) {
+  if (isExitPositionAlreadyClosedFailure(input)) {
+    return `position-already-closed:${input.reason}`;
+  }
+
+  return input.reason;
+}
+
 function resolveObservedReturnPct(input: {
   action: LiveAction;
   entrySol?: number;
@@ -2723,12 +2746,20 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   if (broadcastResult.status !== 'submitted') {
+    const normalizedFailureReason = normalizeNotSubmittedBroadcastReason({
+      action: actionableAction,
+      reason: broadcastResult.reason
+    }) ?? 'broadcast-not-submitted';
+    const failureSeverity = isExitPositionAlreadyClosedFailure({
+      action: actionableAction,
+      reason: broadcastResult.reason
+    }) ? 'warning' : 'error';
     const confirmation: {
       status: ConfirmationStatus;
       reason?: string;
     } = {
       status: 'unknown',
-      reason: broadcastResult.reason
+      reason: normalizedFailureReason
     };
     await appendOrderLifecycleState({
       broadcastStatus: 'not_submitted',
@@ -2740,7 +2771,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     return blockCycle({
       stage: 'broadcast',
       action: actionableAction,
-      reason: broadcastResult.reason,
+      reason: normalizedFailureReason,
       audit: engineResult.audit,
       requestedPositionSol,
       quote,
@@ -2749,7 +2780,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       broadcastResult,
       confirmationStatus: confirmation.status,
       failureSource: 'broadcast',
-      severity: 'error',
+      severity: failureSeverity,
       quoteCollected: true
     });
   }
