@@ -256,7 +256,7 @@ describe('buildCashflowMetrics', () => {
     });
   });
 
-  it('keeps recent missing-chain history errors within one day', () => {
+  it('keeps recent submitted missing-chain history errors within one day', () => {
     const result = buildHistoricalActivity({
       fills: [],
       orderFallback: [
@@ -264,9 +264,10 @@ describe('buildCashflowMetrics', () => {
           tokenMint: 'mint-recent',
           tokenSymbol: 'REC',
           action: 'withdraw-lp',
-          submissionId: '',
+          submissionId: 'sub-recent',
           idempotencyKey: 'order-recent',
           requestedPositionSol: 0.05,
+          broadcastStatus: 'submitted',
           confirmationStatus: 'unknown',
           createdAt: '2026-04-22T18:09:46.743Z',
           updatedAt: '2026-04-22T18:10:30.908Z'
@@ -282,6 +283,31 @@ describe('buildCashflowMetrics', () => {
       source: 'error',
       confirmationStatus: 'unresolved'
     });
+  });
+
+  it('hides local unsubmitted withdraw-lp intents from historical lifecycle rows', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [
+        {
+          tokenMint: 'mint-local-exit',
+          tokenSymbol: 'LEX',
+          action: 'withdraw-lp',
+          submissionId: '',
+          confirmationSignature: '',
+          idempotencyKey: 'order-local-exit',
+          requestedPositionSol: 0.05,
+          broadcastStatus: 'pending',
+          confirmationStatus: 'unknown',
+          createdAt: '2026-04-22T18:09:46.743Z',
+          updatedAt: '2026-04-22T18:10:30.908Z'
+        }
+      ],
+      now: new Date('2026-04-23T02:00:00.000Z'),
+      limit: 5
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('collapses one matched add and withdraw lifecycle into a single historical order', () => {
@@ -724,12 +750,13 @@ describe('buildCashflowMetrics', () => {
           tokenMint: 'mint-earth',
           tokenSymbol: '',
           action: 'withdraw-lp',
-          submissionId: '',
+          submissionId: 'sub-earth-close',
           idempotencyKey: 'order-earth-close',
           openIntentId: 'polluted-intent',
           positionId: 'polluted-position',
           chainPositionAddress: 'polluted-chain-position',
           requestedPositionSol: 0.02,
+          broadcastStatus: 'submitted',
           confirmationStatus: 'unknown',
           createdAt: '2026-04-22T14:39:45.571Z',
           updatedAt: '2026-04-22T14:39:45.589Z'
@@ -769,7 +796,7 @@ describe('buildCashflowMetrics', () => {
     ]);
   });
 
-  it('does not fabricate pnl from local-only close requestedPositionSol without trusted exit metrics', () => {
+  it('does not fabricate lifecycle pnl from local-only close requestedPositionSol', () => {
     const result = buildHistoricalActivity({
       fills: [],
       orderFallback: [
@@ -799,18 +826,7 @@ describe('buildCashflowMetrics', () => {
       limit: 5
     });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      tokenMint: 'mint-local-pnl',
-      action: 'add-lp -> withdraw-lp',
-      source: 'error',
-      confirmationStatus: 'unresolved',
-      investedSol: 0.05,
-      profitTrust: 'untrusted',
-      pnlSol: null,
-      pnlPct: null,
-      dprPct: null
-    });
+    expect(result).toEqual([]);
   });
 
   it('does not mark requestedPositionSol fallback as trusted pnl for matched chain closes', () => {
@@ -952,9 +968,10 @@ describe('buildCashflowMetrics', () => {
           tokenMint: 'mint-earth',
           tokenSymbol: 'earthcoin',
           action: 'withdraw-lp',
-          submissionId: '',
+          submissionId: 'sub-earth-close',
           idempotencyKey: 'order-earth-close',
           requestedPositionSol: 0.02,
+          broadcastStatus: 'submitted',
           confirmationStatus: 'unknown',
           createdAt: '2026-04-22T14:39:45.571Z',
           updatedAt: '2026-04-22T14:39:45.589Z'

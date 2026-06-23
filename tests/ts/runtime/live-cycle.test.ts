@@ -771,14 +771,108 @@ describe('runLiveCycle', () => {
     });
 
     const pendingSubmission = await new PendingSubmissionStore(stateDir).read();
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
 
     expect(result.mode).toBe('BLOCKED');
     expect(result.reason).toBe('broadcast-outcome-unknown');
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      broadcastStatus: 'unknown',
+      confirmationStatus: 'unknown'
+    });
+    expect(String(orderJournal[0].submissionId ?? '')).toBe('');
     expect(pendingSubmission).toMatchObject({
       tokenMint: 'mint-safe',
       tokenSymbol: 'SAFE',
       orderAction: 'withdraw-lp'
     });
+  });
+
+  it('marks signer failures as not submitted instead of pending submission', async () => {
+    const stateDir = `${TEST_STATE_DIR}-signer-not-submitted`;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      signer: {
+        sign: async () => {
+          throw new ExecutionRequestError('signer', {
+            kind: 'hard',
+            reason: 'http-403',
+            retryable: false
+          });
+        }
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const pendingSubmission = await new PendingSubmissionStore(stateDir).read();
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.failureSource).toBe('signer');
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(orderJournal).toHaveLength(1);
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      broadcastStatus: 'not_submitted',
+      confirmationStatus: 'unknown'
+    });
+    expect(String(orderJournal[0].submissionId ?? '')).toBe('');
+    expect(String(orderJournal[0].confirmationSignature ?? '')).toBe('');
+    expect(pendingSubmission).toBeNull();
+  });
+
+  it('marks broadcast failures before submission as not submitted', async () => {
+    const stateDir = `${TEST_STATE_DIR}-broadcast-not-submitted`;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'failed',
+          reason: 'http-403',
+          retryable: false,
+          idempotencyKey: intent.intent.idempotencyKey
+        })
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const pendingSubmission = await new PendingSubmissionStore(stateDir).read();
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.failureSource).toBe('broadcast');
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(orderJournal).toHaveLength(1);
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      broadcastStatus: 'not_submitted',
+      confirmationStatus: 'unknown'
+    });
+    expect(String(orderJournal[0].submissionId ?? '')).toBe('');
+    expect(String(orderJournal[0].confirmationSignature ?? '')).toBe('');
+    expect(pendingSubmission).toBeNull();
   });
 
   it('allows exits even when the requested position exceeds the live cap', async () => {

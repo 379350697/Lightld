@@ -14,6 +14,7 @@ import type {
   IncidentMirrorPayload,
   OrderMirrorEvent,
   OrderMirrorPayload,
+  type OrderBroadcastStatus,
   ReconciliationMirrorEvent,
   ReconciliationMirrorPayload,
   RuntimeSnapshotMirrorEvent,
@@ -154,7 +155,7 @@ export function buildOrderMirrorPayload(input: {
   action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'unknown';
   requestedPositionSol: number;
   quotedOutputSol: number;
-  broadcastStatus: 'pending' | 'submitted' | 'failed' | 'unknown';
+  broadcastStatus: OrderBroadcastStatus;
   confirmationStatus: ConfirmationStatus;
   finality?: PendingFinality | 'unknown';
   createdAt: string;

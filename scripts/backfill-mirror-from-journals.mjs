@@ -106,6 +106,18 @@ function readJsonl(file) {
   }).filter(Boolean);
 }
 
+function normalizeBroadcastStatus(value) {
+  return ['submitted', 'failed', 'unknown', 'not_submitted'].includes(value) ? value : 'pending';
+}
+
+function isLocalExitIntentOnly(action, submissionId, confirmationSignature, broadcastStatus, confirmationStatus) {
+  return ['withdraw-lp', 'dca-out', 'claim-fee', 'rebalance-lp'].includes(action)
+    && !submissionId
+    && !confirmationSignature
+    && broadcastStatus === 'pending'
+    && confirmationStatus === 'unknown';
+}
+
 const orders = readJsonl(ordersPath);
 const fills = readJsonl(fillsPath);
 
@@ -115,20 +127,27 @@ let fillCount = 0;
 db.exec('BEGIN');
 for (const o of orders) {
   const action = ['hold','deploy','dca-out','add-lp','withdraw-lp','claim-fee','rebalance-lp'].includes(o.action || o.side) ? (o.action || o.side) : 'unknown';
+  const submissionId = o.submissionId || '';
+  const confirmationSignature = o.confirmationSignature || '';
+  const confirmationStatus = o.confirmationStatus || o.status || 'unknown';
+  const rawBroadcastStatus = normalizeBroadcastStatus(o.broadcastStatus || o.status);
+  const broadcastStatus = isLocalExitIntentOnly(action, submissionId, confirmationSignature, rawBroadcastStatus, confirmationStatus)
+    ? 'not_submitted'
+    : rawBroadcastStatus;
   insOrder.run(
     o.idempotencyKey || `${o.cycleId || 'cycle'}:${o.poolAddress || 'pool'}:${o.createdAt || Date.now()}`,
     o.cycleId || '',
     o.strategyId || 'new-token-v1',
-    o.submissionId || '',
-    o.confirmationSignature || '',
+    submissionId,
+    confirmationSignature,
     o.poolAddress || '',
     o.tokenMint || o.mint || '',
     o.tokenSymbol || o.symbol || '',
     action,
     Number(o.requestedPositionSol ?? o.outputSol ?? 0),
     Number(o.quotedOutputSol ?? o.outputSol ?? 0),
-    o.broadcastStatus || (o.status === 'submitted' ? 'submitted' : 'pending'),
-    o.confirmationStatus || o.status || 'unknown',
+    broadcastStatus,
+    confirmationStatus,
     o.finality || 'unknown',
     o.createdAt || o.recordedAt || new Date(0).toISOString(),
     o.updatedAt || o.recordedAt || o.createdAt || new Date(0).toISOString()

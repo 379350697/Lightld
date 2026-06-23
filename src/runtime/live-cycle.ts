@@ -11,7 +11,7 @@ import {
   toOrderMirrorEvent,
   toReconciliationMirrorEvent
 } from '../observability/mirror-adapters.ts';
-import type { MirrorEventSink } from '../observability/mirror-events.ts';
+import type { MirrorEventSink, OrderBroadcastStatus } from '../observability/mirror-events.ts';
 import {
   ExecutionRequestError,
   type ExecutionFailureKind
@@ -32,7 +32,7 @@ import {
   type LiveQuoteProvider
 } from '../execution/live-quote-service.ts';
 import { buildOrderIntent } from '../execution/order-intent-builder.ts';
-import { TestLiveSigner, type LiveOrderIntent, type LiveSigner } from '../execution/live-signer.ts';
+import { TestLiveSigner, type LiveOrderIntent, type LiveSigner, type SignedLiveOrderIntent } from '../execution/live-signer.ts';
 import type { ExecutionPlan, SolExitQuote } from '../execution/types.ts';
 import { DecisionAuditLog } from '../journals/decision-audit-log.ts';
 import { LiveFillJournal } from '../journals/live-fill-journal.ts';
@@ -987,12 +987,17 @@ function hasTrustedLpExitValue(input: {
   valuationStatus?: unknown;
   valuationSource?: unknown;
 }) {
+  const valuationSource = typeof input.valuationSource === 'string' ? input.valuationSource : '';
+  const trustedValuationSource = valuationSource === 'meteora-withdraw-simulation'
+    || valuationSource.includes('jupiter-sell-quote')
+    || valuationSource.includes('dlmm-active-bin-price-fallback');
+
   return input.valuationStatus === 'ready'
     && typeof input.currentValueSol === 'number'
     && Number.isFinite(input.currentValueSol)
     && input.currentValueSol >= 0
-    && typeof input.valuationSource === 'string'
-    && input.valuationSource.includes('withdraw-simulation');
+    && valuationSource.includes('withdraw-simulation')
+    && trustedValuationSource;
 }
 
 function computeTrustedLpNetPnlPct(input: {
@@ -1549,6 +1554,7 @@ async function appendDecision(
       | 'live-config'
       | 'reconciliation'
       | 'guards'
+      | 'signer'
       | 'broadcast'
       | 'recovery'
       | 'runtime-policy';
@@ -1822,7 +1828,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     return { ...result, nextLifecycleState };
   };
   const blockCycle = async (entry: {
-    stage: 'live-config' | 'reconciliation' | 'guards' | 'broadcast' | 'recovery' | 'runtime-policy';
+    stage: 'live-config' | 'reconciliation' | 'guards' | 'signer' | 'broadcast' | 'recovery' | 'runtime-policy';
     action: LiveAction;
     reason: string;
     audit: { reason: string };
@@ -2548,45 +2554,95 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     tokenMint: logContext.tokenMint,
     chainPositionAddress: multiLpExit?.position.positionAddress
   });
-  await journals.orders.append({
-    cycleId: logContext.cycleId,
-    ...orderIntent,
+  const orderLifecycleKey = buildMirrorLifecycleKey({
+    tokenMint: logContext.tokenMint,
     openIntentId: actionIdentity.openIntentId,
     positionId: actionIdentity.positionId,
-    chainPositionAddress: actionIdentity.chainPositionAddress,
-    requestedPositionSol,
-    quotedOutputSol: quote.outputSol,
-    routeExists: quote.routeExists
+    chainPositionAddress: actionIdentity.chainPositionAddress
   });
-  emitMirrorEvent(mirrorSink, () => {
-    mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
-      lifecycleKey: buildMirrorLifecycleKey({
-        tokenMint: logContext.tokenMint,
-        openIntentId: actionIdentity.openIntentId,
-        positionId: actionIdentity.positionId,
-        chainPositionAddress: actionIdentity.chainPositionAddress
-      }),
-      idempotencyKey: orderIntent.idempotencyKey,
+  const appendOrderLifecycleState = async (entry: {
+    submissionId?: string;
+    confirmationSignature?: string;
+    broadcastStatus: OrderBroadcastStatus;
+    confirmationStatus: ConfirmationStatus;
+    finality?: PendingFinality | 'unknown';
+    updatedAt: string;
+  }) => {
+    await journals.orders.append({
       cycleId: logContext.cycleId,
-      strategyId: input.strategy,
+      ...orderIntent,
+      submissionId: entry.submissionId ?? '',
       openIntentId: actionIdentity.openIntentId,
       positionId: actionIdentity.positionId,
       chainPositionAddress: actionIdentity.chainPositionAddress,
-      poolAddress: executionPlan.poolAddress,
-      tokenMint: logContext.tokenMint,
-      tokenSymbol,
-      action: actionableAction,
+      confirmationSignature: entry.confirmationSignature ?? '',
       requestedPositionSol,
       quotedOutputSol: quote.outputSol,
-      broadcastStatus: 'pending',
+      routeExists: quote.routeExists,
+      broadcastStatus: entry.broadcastStatus,
+      confirmationStatus: entry.confirmationStatus,
+      finality: entry.finality ?? 'unknown',
+      updatedAt: entry.updatedAt
+    });
+    emitMirrorEvent(mirrorSink, () => {
+      mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
+        lifecycleKey: orderLifecycleKey,
+        idempotencyKey: orderIntent.idempotencyKey,
+        cycleId: logContext.cycleId,
+        strategyId: input.strategy,
+        submissionId: entry.submissionId ?? '',
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress,
+        confirmationSignature: entry.confirmationSignature ?? '',
+        poolAddress: executionPlan.poolAddress,
+        tokenMint: logContext.tokenMint,
+        tokenSymbol,
+        action: actionableAction,
+        requestedPositionSol,
+        quotedOutputSol: quote.outputSol,
+        broadcastStatus: entry.broadcastStatus,
+        confirmationStatus: entry.confirmationStatus,
+        finality: entry.finality ?? 'unknown',
+        createdAt: logContext.startedAt,
+        updatedAt: entry.updatedAt
+      })));
+    });
+  };
+
+  let signedIntent: SignedLiveOrderIntent;
+  try {
+    signedIntent = await signer.sign(orderIntent);
+  } catch (error) {
+    const updatedAt = new Date().toISOString();
+    const reason = error instanceof ExecutionRequestError
+      ? error.reason
+      : error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'signer-request-failed';
+    await appendOrderLifecycleState({
+      broadcastStatus: 'not_submitted',
       confirmationStatus: 'unknown',
       finality: 'unknown',
-      createdAt: logContext.startedAt,
-      updatedAt: logContext.startedAt
-    })));
-  });
+      updatedAt
+    });
 
-  const signedIntent = await signer.sign(orderIntent);
+    return blockCycle({
+      stage: 'signer',
+      action: actionableAction,
+      reason,
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      orderIntent,
+      confirmationStatus: 'unknown',
+      failureKind: error instanceof ExecutionRequestError ? error.kind : 'hard',
+      failureSource: 'signer',
+      severity: 'error',
+      quoteCollected: true
+    });
+  }
   let broadcastResult: LiveBroadcastResult;
 
   try {
@@ -2610,32 +2666,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         reason: error.reason
       });
       await pendingSubmissionStore.write(pendingSubmission);
-      emitMirrorEvent(mirrorSink, () => {
-        mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
-          lifecycleKey: buildMirrorLifecycleKey({
-            tokenMint: logContext.tokenMint,
-            openIntentId: actionIdentity.openIntentId,
-            positionId: actionIdentity.positionId,
-            chainPositionAddress: actionIdentity.chainPositionAddress
-          }),
-          idempotencyKey: orderIntent.idempotencyKey,
-          cycleId: logContext.cycleId,
-          strategyId: input.strategy,
-          openIntentId: actionIdentity.openIntentId,
-          positionId: actionIdentity.positionId,
-          chainPositionAddress: actionIdentity.chainPositionAddress,
-          poolAddress: executionPlan.poolAddress,
-          tokenMint: logContext.tokenMint,
-          tokenSymbol,
-          action: actionableAction,
-          requestedPositionSol,
-          quotedOutputSol: quote.outputSol,
-          broadcastStatus: 'unknown',
-          confirmationStatus: 'unknown',
-          finality: 'unknown',
-          createdAt: logContext.startedAt,
-          updatedAt
-        })));
+      await appendOrderLifecycleState({
+        broadcastStatus: 'unknown',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        updatedAt
       });
 
       return blockCycle({
@@ -2655,42 +2690,49 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       });
     }
 
-    throw error;
+    const updatedAt = new Date().toISOString();
+    const reason = error instanceof ExecutionRequestError
+      ? error.reason
+      : error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'broadcast-request-failed';
+    await appendOrderLifecycleState({
+      broadcastStatus: 'not_submitted',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      updatedAt
+    });
+
+    return blockCycle({
+      stage: 'broadcast',
+      action: actionableAction,
+      reason,
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      orderIntent,
+      confirmationStatus: 'unknown',
+      failureKind: error instanceof ExecutionRequestError ? error.kind : 'hard',
+      failureSource: 'broadcast',
+      severity: 'error',
+      quoteCollected: true
+    });
   }
 
   if (broadcastResult.status !== 'submitted') {
-    const confirmation = trackConfirmation({
-      submissionId: undefined,
-      failureReason: broadcastResult.reason
-    });
-    emitMirrorEvent(mirrorSink, () => {
-      mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
-        lifecycleKey: buildMirrorLifecycleKey({
-          tokenMint: logContext.tokenMint,
-          openIntentId: actionIdentity.openIntentId,
-          positionId: actionIdentity.positionId,
-          chainPositionAddress: actionIdentity.chainPositionAddress
-        }),
-        idempotencyKey: orderIntent.idempotencyKey,
-        cycleId: logContext.cycleId,
-        strategyId: input.strategy,
-        submissionId: '',
-        openIntentId: actionIdentity.openIntentId,
-        positionId: actionIdentity.positionId,
-        chainPositionAddress: actionIdentity.chainPositionAddress,
-        confirmationSignature: '',
-        poolAddress: executionPlan.poolAddress,
-        tokenMint: logContext.tokenMint,
-        tokenSymbol,
-        action: actionableAction,
-        requestedPositionSol,
-        quotedOutputSol: quote.outputSol,
-        broadcastStatus: 'failed',
-        confirmationStatus: confirmation.status,
-        finality: 'unknown',
-        createdAt: logContext.startedAt,
-        updatedAt: new Date().toISOString()
-      })));
+    const confirmation: {
+      status: ConfirmationStatus;
+      reason?: string;
+    } = {
+      status: 'unknown',
+      reason: broadcastResult.reason
+    };
+    await appendOrderLifecycleState({
+      broadcastStatus: 'not_submitted',
+      confirmationStatus: confirmation.status,
+      finality: 'unknown',
+      updatedAt: new Date().toISOString()
     });
 
     return blockCycle({
@@ -2780,34 +2822,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   ) {
     await spendingLimitsStore.reserveSpend(orderIntent.idempotencyKey, requestedPositionSol);
   }
-  emitMirrorEvent(mirrorSink, () => {
-    mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
-      lifecycleKey: buildMirrorLifecycleKey({
-        tokenMint: logContext.tokenMint,
-        openIntentId: actionIdentity.openIntentId,
-        positionId: actionIdentity.positionId,
-        chainPositionAddress: actionIdentity.chainPositionAddress
-      }),
-      idempotencyKey: orderIntent.idempotencyKey,
-      cycleId: logContext.cycleId,
-      strategyId: input.strategy,
-      submissionId: broadcastResult.submissionId,
-      openIntentId: actionIdentity.openIntentId,
-      positionId: actionIdentity.positionId,
-      chainPositionAddress: actionIdentity.chainPositionAddress,
-      confirmationSignature: broadcastResult.confirmationSignature,
-      poolAddress: executionPlan.poolAddress,
-      tokenMint: logContext.tokenMint,
-      tokenSymbol,
-      action: actionableAction,
-      requestedPositionSol,
-      quotedOutputSol: quote.outputSol,
-      broadcastStatus: 'submitted',
-      confirmationStatus: confirmation.status,
-      finality: confirmationFinality,
-      createdAt: logContext.startedAt,
-      updatedAt: confirmationCheckedAt
-    })));
+  await appendOrderLifecycleState({
+    submissionId: broadcastResult.submissionId,
+    confirmationSignature: broadcastResult.confirmationSignature,
+    broadcastStatus: 'submitted',
+    confirmationStatus: confirmation.status,
+    finality: confirmationFinality,
+    updatedAt: confirmationCheckedAt
   });
 
   if (broadcastResult.batchStatus === 'partial') {

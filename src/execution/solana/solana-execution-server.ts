@@ -329,6 +329,15 @@ function readExecutionErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function hasPoolPriceFallbackValue(position: MeteoraLpPositionSnapshot) {
+  return position.valuationStatus === 'ready'
+    && typeof position.currentValueSol === 'number'
+    && Number.isFinite(position.currentValueSol)
+    && position.currentValueSol >= 0
+    && typeof position.valuationSource === 'string'
+    && position.valuationSource.includes('dlmm-active-bin-price-fallback');
+}
+
 async function enrichLpExitValues(input: {
   positions: MeteoraLpPositionSnapshot[];
   jupiterClient: JupiterClient;
@@ -369,6 +378,10 @@ async function enrichLpExitValues(input: {
     }
 
     if (!position.withdrawTokenMint) {
+      if (hasPoolPriceFallbackValue(position)) {
+        return position;
+      }
+
       return {
         ...position,
         currentValueSol: undefined,
@@ -387,6 +400,10 @@ async function enrichLpExitValues(input: {
       });
 
       if (typeof withdrawTokenValueSol !== 'number') {
+        if (hasPoolPriceFallbackValue(position)) {
+          return position;
+        }
+
         return {
           ...position,
           currentValueSol: undefined,
@@ -405,6 +422,10 @@ async function enrichLpExitValues(input: {
         valuationSource: valuationSource + '+jupiter-sell-quote'
       };
     } catch (error) {
+      if (hasPoolPriceFallbackValue(position)) {
+        return position;
+      }
+
       return {
         ...position,
         currentValueSol: undefined,

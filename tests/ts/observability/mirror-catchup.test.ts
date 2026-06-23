@@ -102,6 +102,74 @@ describe('applyCatchupWindow', () => {
     expect(Object.values(cursor.offsets).every((value) => value > 0)).toBe(true);
   });
 
+  it('classifies unsubmitted exit intent journals as not submitted during catch-up', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-local-exit-'));
+    directories.push(root);
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const events: MirrorEvent[] = [];
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), {
+      cycleId: 'cycle-local-exit',
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-local-exit',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      side: 'withdraw-lp',
+      outputSol: 0.1,
+      requestedPositionSol: 0.1,
+      quotedOutputSol: 0.1,
+      broadcastStatus: 'pending',
+      confirmationStatus: 'unknown',
+      createdAt: '2026-03-22T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date()
+    });
+
+    await enqueueMirrorCatchupFromJournals({
+      strategyId: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(stateRootDir, 'lightld-observability.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 16,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      }
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'order',
+      priority: 'low',
+      payload: {
+        action: 'withdraw-lp',
+        submissionId: '',
+        confirmationSignature: '',
+        broadcastStatus: 'not_submitted',
+        confirmationStatus: 'unknown'
+      }
+    });
+  });
+
   it('replays rotated journal history across days instead of only the latest active file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-rotated-'));
     directories.push(root);

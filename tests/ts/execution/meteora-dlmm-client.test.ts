@@ -288,13 +288,14 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 0
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeUndefined();
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(0.861728, 10);
     expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(0.8, 10);
     expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(123456);
     expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('123456');
-    expect(snapshots[0]?.valuationStatus).toBe('unavailable');
-    expect(snapshots[0]?.valuationReason).toBe('withdraw-token-quote-required');
-    expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation');
+    expect(snapshots[0]?.withdrawTokenValueSol).toBeCloseTo(0.061728, 10);
+    expect(snapshots[0]?.valuationStatus).toBe('ready');
+    expect(snapshots[0]?.valuationReason).toBe('');
+    expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation+dlmm-active-bin-price-fallback');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.1, 10);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(167, 100);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(100, 100);
@@ -356,12 +357,14 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 67
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeUndefined();
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(2.1, 10);
     expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(1.1, 10);
     expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(4000000);
     expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('4000000');
-    expect(snapshots[0]?.valuationStatus).toBe('unavailable');
-    expect(snapshots[0]?.valuationReason).toBe('withdraw-token-quote-required');
+    expect(snapshots[0]?.withdrawTokenValueSol).toBeCloseTo(1, 10);
+    expect(snapshots[0]?.valuationStatus).toBe('ready');
+    expect(snapshots[0]?.valuationReason).toBe('');
+    expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation+dlmm-active-bin-price-fallback');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.6, 10);
     expect(simulateRebalancePosition).toHaveBeenCalledTimes(1);
   });

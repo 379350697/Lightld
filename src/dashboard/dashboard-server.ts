@@ -556,6 +556,7 @@ type OrderRow = {
   open_intent_id: string;
   position_id: string;
   chain_position_address: string;
+  confirmation_signature: string;
   token_mint: string;
   token_symbol: string;
   action: string;
@@ -570,7 +571,7 @@ type OrderRow = {
 async function handleOrders() {
   const rows = await queryAll<OrderRow>(`
     SELECT
-      lifecycle_key, idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, token_mint,
+      lifecycle_key, idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, confirmation_signature, token_mint,
       token_symbol, action, requested_position_sol,
       broadcast_status, confirmation_status, finality, created_at, updated_at
     FROM orders
@@ -579,63 +580,92 @@ async function handleOrders() {
   `);
 
   if (rows.length > 0) {
-    return rows.map(r => ({
-      lifecycleKey: r.lifecycle_key,
-      idempotencyKey: r.idempotency_key,
-      submissionId: r.submission_id,
-      openIntentId: r.open_intent_id,
-      positionId: r.position_id,
-      chainPositionAddress: r.chain_position_address,
-      tokenMint: r.token_mint,
-      tokenSymbol: r.token_symbol,
-      action: r.action,
-      requestedPositionSol: r.requested_position_sol,
-      broadcastStatus: r.broadcast_status,
-      confirmationStatus: r.confirmation_status,
-      lifecycleStatus: toExecutionLifecycleStatus({
+    return rows.map(r => {
+      const lifecycleStatus = toExecutionLifecycleStatus({
+        action: r.action,
         broadcastStatus: r.broadcast_status,
         confirmationStatus: r.confirmation_status as ConfirmationStatus,
+        submissionId: r.submission_id,
+        confirmationSignature: r.confirmation_signature,
         finality: r.finality as PendingFinality | 'unknown'
-      }),
-      terminalStatus: toExecutionTerminalStatus({
-        broadcastStatus: r.broadcast_status,
-        confirmationStatus: r.confirmation_status,
-        finality: r.finality
-      }),
-      finality: r.finality,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
+      });
+      const broadcastStatus = lifecycleStatus === 'local-intent' ? 'not_submitted' : r.broadcast_status;
+
+      return {
+        lifecycleKey: r.lifecycle_key,
+        idempotencyKey: r.idempotency_key,
+        submissionId: r.submission_id,
+        openIntentId: r.open_intent_id,
+        positionId: r.position_id,
+        chainPositionAddress: r.chain_position_address,
+        confirmationSignature: r.confirmation_signature,
+        tokenMint: r.token_mint,
+        tokenSymbol: r.token_symbol,
+        action: r.action,
+        requestedPositionSol: r.requested_position_sol,
+        broadcastStatus,
+        confirmationStatus: lifecycleStatus === 'local-intent' ? 'local_exit_intent_unsubmitted' : r.confirmation_status,
+        lifecycleStatus,
+        terminalStatus: toExecutionTerminalStatus({
+          action: r.action,
+          broadcastStatus,
+          confirmationStatus: r.confirmation_status,
+          submissionId: r.submission_id,
+          confirmationSignature: r.confirmation_signature,
+          finality: r.finality
+        }),
+        finality: r.finality,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      };
+    });
   }
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
-  return journalRows.reverse().map(r => ({
-    lifecycleKey: String(r.lifecycleKey ?? ''),
-    idempotencyKey: String(r.idempotencyKey ?? ''),
-    submissionId: String(r.submissionId ?? ''),
-    openIntentId: String(r.openIntentId ?? ''),
-    positionId: String(r.positionId ?? ''),
-    chainPositionAddress: String(r.chainPositionAddress ?? r.positionAddress ?? ''),
-    tokenMint: String(r.tokenMint ?? ''),
-    tokenSymbol: String(r.tokenSymbol ?? ''),
-    action: String(r.side ?? r.action ?? 'unknown'),
-    requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
-    broadcastStatus: String(r.broadcastStatus ?? 'pending'),
-    confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
-    lifecycleStatus: toExecutionLifecycleStatus({
-      broadcastStatus: String(r.broadcastStatus ?? 'pending'),
-      confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
+  return journalRows.reverse().map(r => {
+    const action = String(r.side ?? r.action ?? 'unknown');
+    const submissionId = String(r.submissionId ?? '');
+    const confirmationSignature = String(r.confirmationSignature ?? '');
+    const rawBroadcastStatus = String(r.broadcastStatus ?? 'pending');
+    const rawConfirmationStatus = String(r.confirmationStatus ?? r.status ?? 'unknown');
+    const lifecycleStatus = toExecutionLifecycleStatus({
+      action,
+      broadcastStatus: rawBroadcastStatus,
+      confirmationStatus: rawConfirmationStatus,
+      submissionId,
+      confirmationSignature,
       finality: String(r.finality ?? 'unknown') as PendingFinality | 'unknown'
-    }),
-    terminalStatus: toExecutionTerminalStatus({
-      broadcastStatus: String(r.broadcastStatus ?? 'pending'),
-      confirmationStatus: String(r.confirmationStatus ?? r.status ?? 'unknown'),
-      finality: String(r.finality ?? 'unknown')
-    }),
-    finality: String(r.finality ?? 'unknown'),
-    createdAt: String(r.createdAt ?? ''),
-    updatedAt: String(r.updatedAt ?? r.createdAt ?? ''),
-  }));
+    });
+    const broadcastStatus = lifecycleStatus === 'local-intent' ? 'not_submitted' : rawBroadcastStatus;
+
+    return {
+      lifecycleKey: String(r.lifecycleKey ?? ''),
+      idempotencyKey: String(r.idempotencyKey ?? ''),
+      submissionId,
+      openIntentId: String(r.openIntentId ?? ''),
+      positionId: String(r.positionId ?? ''),
+      chainPositionAddress: String(r.chainPositionAddress ?? r.positionAddress ?? ''),
+      confirmationSignature,
+      tokenMint: String(r.tokenMint ?? ''),
+      tokenSymbol: String(r.tokenSymbol ?? ''),
+      action,
+      requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
+      broadcastStatus,
+      confirmationStatus: lifecycleStatus === 'local-intent' ? 'local_exit_intent_unsubmitted' : rawConfirmationStatus,
+      lifecycleStatus,
+      terminalStatus: toExecutionTerminalStatus({
+        action,
+        broadcastStatus,
+        confirmationStatus: rawConfirmationStatus,
+        submissionId,
+        confirmationSignature,
+        finality: String(r.finality ?? 'unknown')
+      }),
+      finality: String(r.finality ?? 'unknown'),
+      createdAt: String(r.createdAt ?? ''),
+      updatedAt: String(r.updatedAt ?? r.createdAt ?? ''),
+    };
+  });
 }
 
 type FillRow = {
@@ -948,6 +978,7 @@ async function handleHistory() {
       openIntentId: String(order.openIntentId ?? ''),
       positionId: String(order.positionId ?? ''),
       chainPositionAddress: String(order.chainPositionAddress ?? ''),
+      confirmationSignature: String(order.confirmationSignature ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
@@ -1010,6 +1041,7 @@ async function handleHistoryPage(input?: {
       openIntentId: String(order.openIntentId ?? ''),
       positionId: String(order.positionId ?? ''),
       chainPositionAddress: String(order.chainPositionAddress ?? ''),
+      confirmationSignature: String(order.confirmationSignature ?? ''),
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),

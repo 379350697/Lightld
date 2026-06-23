@@ -49,6 +49,30 @@ function buildStableRotatedOffset(path: string, lineNumber: number) {
   return dayKey * 1_000_000 + lineNumber;
 }
 
+function toOrderBroadcastStatus(value: string): OrderMirrorEvent['payload']['broadcastStatus'] {
+  if (value === 'submitted' || value === 'failed' || value === 'unknown' || value === 'not_submitted') {
+    return value;
+  }
+
+  return 'pending';
+}
+
+function isLocalExitIntentOnly(input: {
+  action: string;
+  submissionId: string;
+  confirmationSignature: string;
+  broadcastStatus: OrderMirrorEvent['payload']['broadcastStatus'];
+  confirmationStatus: OrderMirrorEvent['payload']['confirmationStatus'];
+}) {
+  return (
+    (input.action === 'withdraw-lp' || input.action === 'dca-out' || input.action === 'claim-fee' || input.action === 'rebalance-lp')
+    && input.submissionId.length === 0
+    && input.confirmationSignature.length === 0
+    && input.broadcastStatus === 'pending'
+    && input.confirmationStatus === 'unknown'
+  );
+}
+
 export async function readRotatedJsonLinesWithOffsets<T>(path: string) {
   const rotatedPaths = await listRotatedJsonlPaths(path);
   const sourcePaths = rotatedPaths.length > 0 ? rotatedPaths : [path];
@@ -266,6 +290,18 @@ function toOrderCatchupEvent(
   }
 
   const action = readString(value, ['action', 'side']);
+  const normalizedAction = action === 'hold' || action === 'deploy' || action === 'dca-out' || action === 'add-lp' || action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp' ? action : 'unknown';
+  const submissionId = readString(value, ['submissionId']);
+  const confirmationSignature = readString(value, ['confirmationSignature']);
+  const confirmationStatus = toConfirmationStatus(readString(value, ['confirmationStatus', 'status']));
+  const rawBroadcastStatus = toOrderBroadcastStatus(readString(value, ['broadcastStatus', 'status']));
+  const broadcastStatus = isLocalExitIntentOnly({
+    action: normalizedAction,
+    submissionId,
+    confirmationSignature,
+    broadcastStatus: rawBroadcastStatus,
+    confirmationStatus
+  }) ? 'not_submitted' : rawBroadcastStatus;
 
   return {
     type: 'order',
@@ -280,19 +316,19 @@ function toOrderCatchupEvent(
       idempotencyKey,
       cycleId: readString(value, ['cycleId']),
       strategyId: readString(value, ['strategyId']) || strategyId,
-      submissionId: readString(value, ['submissionId']),
+      submissionId,
       openIntentId: readString(value, ['openIntentId']) || undefined,
       positionId: readString(value, ['positionId']) || undefined,
       chainPositionAddress: readString(value, ['chainPositionAddress', 'positionAddress']) || undefined,
-      confirmationSignature: readString(value, ['confirmationSignature']),
+      confirmationSignature,
       poolAddress: readString(value, ['poolAddress']),
       tokenMint: readString(value, ['tokenMint', 'mint']),
       tokenSymbol: readString(value, ['tokenSymbol', 'symbol']),
-      action: action === 'hold' || action === 'deploy' || action === 'dca-out' || action === 'add-lp' || action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp' ? action : 'unknown',
+      action: normalizedAction,
       requestedPositionSol: readNumber(value, ['requestedPositionSol', 'outputSol']),
       quotedOutputSol: readNumber(value, ['quotedOutputSol', 'outputSol']),
-      broadcastStatus: readString(value, ['broadcastStatus', 'status']) === 'submitted' ? 'submitted' : readString(value, ['broadcastStatus', 'status']) === 'failed' ? 'failed' : 'pending',
-      confirmationStatus: toConfirmationStatus(readString(value, ['confirmationStatus', 'status'])),
+      broadcastStatus,
+      confirmationStatus,
       finality: toFinality(readString(value, ['finality'])),
       createdAt: readString(value, ['createdAt', 'recordedAt']),
       updatedAt: readString(value, ['updatedAt', 'recordedAt', 'createdAt'])

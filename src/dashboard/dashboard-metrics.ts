@@ -1,6 +1,6 @@
 import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
 import { buildExecutionLifecycleKey, listExecutionIdentityKeys } from '../runtime/execution-lifecycle-key.ts';
-import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
+import { isLocalIntentOnlyOrder, toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
 
 type CashflowFill = {
   side: string;
@@ -43,6 +43,7 @@ type HistoricalOrderFallback = {
   openIntentId?: string;
   positionId?: string;
   chainPositionAddress?: string;
+  confirmationSignature?: string;
   requestedPositionSol: number;
   broadcastStatus?: string;
   confirmationStatus?: string;
@@ -111,7 +112,7 @@ export type DashboardHistoricalActivityEntry = {
   amountSol: number;
   recordedAt: string;
   source: 'matched' | 'error';
-  lifecycleStatus: 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local';
+  lifecycleStatus: 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local' | 'local-intent';
   confirmationStatus: string;
   openedAt: string | null;
   closedAt: string | null;
@@ -133,7 +134,7 @@ type ReconciledHistoricalAction = {
   action: string;
   amountSol: number;
   recordedAt: string;
-  status: 'ok' | 'missing-local' | 'missing-chain' | 'unresolved';
+  status: 'ok' | 'missing-local' | 'missing-chain' | 'unresolved' | 'local-intent';
   provenance: 'chain' | 'local';
   hasRealizedChainAmount?: boolean;
   entrySol?: number;
@@ -850,6 +851,7 @@ export function buildHistoricalActivity(input: {
         || order.action === 'rebalance-lp')
       && Number.isFinite(order.requestedPositionSol)
       && order.requestedPositionSol > 0
+      && !isLocalIntentOnlyOrder(order)
     );
   const decisions = input.decisionFallback ?? [];
   const tokenSymbolMap = buildHistoricalTokenSymbolMap({
@@ -994,8 +996,11 @@ export function buildHistoricalActivity(input: {
       recordedAt: order.updatedAt || order.createdAt,
       status: (() => {
         const lifecycleStatus = toExecutionLifecycleStatus({
+          action: order.action,
           broadcastStatus: order.broadcastStatus,
-          confirmationStatus: order.confirmationStatus
+          confirmationStatus: order.confirmationStatus,
+          submissionId: order.submissionId,
+          confirmationSignature: order.confirmationSignature
         });
         return lifecycleStatus === 'confirmed' ? 'missing-chain' : lifecycleStatus;
       })(),

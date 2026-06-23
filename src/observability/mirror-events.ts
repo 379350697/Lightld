@@ -3,6 +3,8 @@ import type { CandidateScanRecord, WatchlistSnapshotRecord } from '../evolution/
 import type { RuntimeMode, PendingFinality } from '../runtime/state-types.ts';
 import type { MirrorEventPriority } from './mirror-types.ts';
 
+export type OrderBroadcastStatus = 'pending' | 'submitted' | 'failed' | 'unknown' | 'not_submitted';
+
 export type CycleRunMirrorPayload = {
   cycleId: string;
   strategyId: string;
@@ -40,7 +42,7 @@ export type OrderMirrorPayload = {
   action: 'hold' | 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'unknown';
   requestedPositionSol: number;
   quotedOutputSol: number;
-  broadcastStatus: 'pending' | 'submitted' | 'failed' | 'unknown';
+  broadcastStatus: OrderBroadcastStatus;
   confirmationStatus: ConfirmationStatus;
   finality: PendingFinality | 'unknown';
   createdAt: string;

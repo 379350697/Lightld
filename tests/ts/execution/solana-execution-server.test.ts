@@ -1220,6 +1220,84 @@ describe('createSolanaExecutionServer', () => {
 
     await server.stop();
   });
+
+  it('keeps DLMM pool-price LP valuation when Jupiter exit valuation is unavailable', async () => {
+    const keypair = Keypair.generate();
+    const buildSellQuoteParams = vi.fn((mint: string, amount: number) => ({ mint, amount }));
+    const getQuote = vi.fn(async () => {
+      throw new Error('No RPC endpoint available for jupiter');
+    });
+    const getPositionSnapshots = vi.fn(async () => [{
+      poolAddress: 'pool-lp-1',
+      positionAddress: 'position-lp-1',
+      mint: 'earthcoin-mint',
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 130,
+      binCount: 69,
+      fundedBinCount: 2,
+      solSide: 'tokenX' as const,
+      solDepletedBins: 30,
+      currentValueSol: 0.11,
+      withdrawSolAmount: 0.08,
+      withdrawTokenAmountLamports: 123456,
+      withdrawTokenAmountRaw: '123456',
+      withdrawTokenMint: 'earthcoin-mint',
+      withdrawTokenValueSol: 0.03,
+      unclaimedFeeSol: 0.001,
+      positionStatus: 'active' as const,
+      hasLiquidity: true,
+      hasClaimableFees: true,
+      valuationStatus: 'ready' as const,
+      valuationReason: '',
+      valuationSource: 'meteora-withdraw-simulation+dlmm-active-bin-price-fallback'
+    }]);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000,
+        getTokenAccountsByOwner: async () => []
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams,
+        getQuote,
+      } as any,
+      dlmmClient: { getPositionSnapshots } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(server.origin + '/account-state', {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.walletLpPositions).toEqual([
+      expect.objectContaining({
+        poolAddress: 'pool-lp-1',
+        positionAddress: 'position-lp-1',
+        mint: 'earthcoin-mint',
+        withdrawTokenValueSol: 0.03,
+        currentValueSol: 0.11,
+        valuationStatus: 'ready',
+        valuationReason: '',
+        valuationSource: 'meteora-withdraw-simulation+dlmm-active-bin-price-fallback'
+      })
+    ]);
+    expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);
+    expect(buildSellQuoteParams).toHaveBeenCalledWith('earthcoin-mint', '123456', expect.any(Number));
+
+    await server.stop();
+  });
+
   it('preserves already accepted Meteora batch signatures when a later tx send fails', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const keypair = Keypair.generate();

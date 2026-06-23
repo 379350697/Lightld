@@ -390,12 +390,17 @@ function resolveLpPositionSignal(
       ? Math.max(maxBins, position.solDepletedBins)
       : position.solDepletedBins;
   }, undefined);
-  const trustedValuePositions = relevantPositions.filter((position) =>
-    position.valuationStatus === 'ready'
-    && typeof position.valuationSource === 'string'
-    && position.valuationSource.includes('withdraw-simulation')
-    && typeof position.currentValueSol === 'number'
-  );
+  const trustedValuePositions = relevantPositions.filter((position) => {
+    const valuationSource = typeof position.valuationSource === 'string' ? position.valuationSource : '';
+    return position.valuationStatus === 'ready'
+      && valuationSource.includes('withdraw-simulation')
+      && (
+        valuationSource === 'meteora-withdraw-simulation'
+        || valuationSource.includes('jupiter-sell-quote')
+        || valuationSource.includes('dlmm-active-bin-price-fallback')
+      )
+      && typeof position.currentValueSol === 'number';
+  });
   const lpCurrentValueSol = trustedValuePositions.length === relevantPositions.length
     ? trustedValuePositions.reduce<number | undefined>((sum, position) => (sum ?? 0) + position.currentValueSol!, undefined)
     : undefined;

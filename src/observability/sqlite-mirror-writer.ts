@@ -128,6 +128,7 @@ export class SqliteMirrorWriter {
     this.ensureFillIdentityColumns(database);
     this.ensureLifecycleKeyColumns(database);
     this.backfillLifecycleKeys(database);
+    this.normalizeLocalIntentOnlyOrders(database);
 
     this.database = database;
   }
@@ -381,6 +382,19 @@ export class SqliteMirrorWriter {
         ELSE ''
       END
       WHERE lifecycle_key = ''
+    `);
+  }
+
+  private normalizeLocalIntentOnlyOrders(database: DatabaseSync) {
+    database.exec(`
+      UPDATE orders
+      SET broadcast_status = 'not_submitted',
+          updated_at = CASE WHEN updated_at = '' THEN created_at ELSE updated_at END
+      WHERE action IN ('withdraw-lp', 'dca-out', 'claim-fee', 'rebalance-lp')
+        AND submission_id = ''
+        AND confirmation_signature = ''
+        AND broadcast_status = 'pending'
+        AND confirmation_status = 'unknown'
     `);
   }
 
