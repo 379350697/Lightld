@@ -19,6 +19,7 @@ import { buildLiveCycleInputFromIngest } from '../runtime/ingest-context-builder
 import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
+import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -156,9 +157,34 @@ function parsePositiveNumber(value: string | undefined, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function buildSpendingLimitsConfig(input: {
+  maxSingleOrderSol?: number;
+  maxDailySpendSol?: number;
+  maxHourlySpendSol?: number;
+}): SpendingLimitsConfig | undefined {
+  if (!input.maxSingleOrderSol && !input.maxDailySpendSol && !input.maxHourlySpendSol) {
+    return undefined;
+  }
+
+  return {
+    maxSingleOrderSol: input.maxSingleOrderSol ?? Number.POSITIVE_INFINITY,
+    maxDailySpendSol: input.maxDailySpendSol ?? Number.POSITIVE_INFINITY,
+    maxHourlySpendSol: input.maxHourlySpendSol
+  };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const runtimeConfig = loadLiveRuntimeConfig();
+  const spendingLimitsConfig = buildSpendingLimitsConfig({
+    maxSingleOrderSol: runtimeConfig.maxSingleOrderSol,
+    maxDailySpendSol: runtimeConfig.maxDailySpendSol,
+    maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
+  });
+
+  if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
+    await new SpendingLimitsStore(args.stateRootDir).reset();
+  }
   const mirrorConfig = loadMirrorConfig({
     ...process.env,
     LIVE_STATE_DIR: args.stateRootDir,
@@ -301,13 +327,7 @@ async function main() {
       return {
         ...executionAdapters,
         accountState,
-        spendingLimitsConfig:
-          runtimeConfig.maxSingleOrderSol || runtimeConfig.maxDailySpendSol
-            ? {
-                maxSingleOrderSol: runtimeConfig.maxSingleOrderSol ?? Number.POSITIVE_INFINITY,
-                maxDailySpendSol: runtimeConfig.maxDailySpendSol ?? Number.POSITIVE_INFINITY
-              }
-            : undefined,
+        spendingLimitsConfig,
         ...ingestInput
       };
     },

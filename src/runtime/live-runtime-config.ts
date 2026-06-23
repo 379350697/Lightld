@@ -10,13 +10,17 @@ const HttpExecutionConfigSchema = z.object({
   accountStateUrl: z.string().url(),
   authToken: z.string().min(1).optional(),
   maxSingleOrderSol: z.number().finite().positive().optional(),
-  maxDailySpendSol: z.number().finite().positive().optional()
+  maxDailySpendSol: z.number().finite().positive().optional(),
+  maxHourlySpendSol: z.number().finite().positive().optional(),
+  resetSpendingLimitsOnStartup: z.boolean().optional()
 });
 
 const TestExecutionConfigSchema = z.object({
   executionMode: z.literal('test'),
   maxSingleOrderSol: z.number().finite().positive().optional(),
-  maxDailySpendSol: z.number().finite().positive().optional()
+  maxDailySpendSol: z.number().finite().positive().optional(),
+  maxHourlySpendSol: z.number().finite().positive().optional(),
+  resetSpendingLimitsOnStartup: z.boolean().optional()
 });
 
 export const LiveRuntimeConfigSchema = z.discriminatedUnion('executionMode', [
@@ -31,6 +35,22 @@ function parsePositiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalBoolean(value: string | undefined) {
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(value.toLowerCase())) {
+    return false;
+  }
+
+  return undefined;
+}
+
 export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = process.env): LiveRuntimeConfig {
   const maxSingleOrderSol = env.LIVE_MAX_SINGLE_ORDER_SOL
     ? Number(env.LIVE_MAX_SINGLE_ORDER_SOL)
@@ -38,6 +58,10 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
   const maxDailySpendSol = env.LIVE_MAX_DAILY_SPEND_SOL
     ? Number(env.LIVE_MAX_DAILY_SPEND_SOL)
     : undefined;
+  const maxHourlySpendSol = env.LIVE_MAX_HOURLY_SPEND_SOL
+    ? Number(env.LIVE_MAX_HOURLY_SPEND_SOL)
+    : undefined;
+  const resetSpendingLimitsOnStartup = parseOptionalBoolean(env.LIVE_RESET_SPENDING_LIMITS_ON_START);
 
   if ((env.LIVE_EXECUTION_MODE ?? 'test') === 'http') {
     return LiveRuntimeConfigSchema.parse({
@@ -50,14 +74,18 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
       accountStateUrl: env.LIVE_ACCOUNT_STATE_URL,
       authToken: env.LIVE_AUTH_TOKEN,
       maxSingleOrderSol,
-      maxDailySpendSol
+      maxDailySpendSol,
+      maxHourlySpendSol,
+      resetSpendingLimitsOnStartup
     });
   }
 
   return LiveRuntimeConfigSchema.parse({
     executionMode: 'test',
     maxSingleOrderSol,
-    maxDailySpendSol
+    maxDailySpendSol,
+    maxHourlySpendSol,
+    resetSpendingLimitsOnStartup
   });
 }
 

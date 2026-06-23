@@ -708,6 +708,35 @@ describe('runLiveCycle', () => {
     expect(spendingState.orderCount).toBe(1);
   });
 
+  it('blocks open-risk actions when the hourly spend limit is exhausted', async () => {
+    const stateDir = `${TEST_STATE_DIR}-hourly-spending`;
+
+    await rm(stateDir, { recursive: true, force: true });
+    await new SpendingLimitsStore(stateDir).recordSpend(0.45);
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxHourlySpendSol: 0.5,
+        maxDailySpendSol: 2
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('hourly-spend-limit-exceeded');
+    expect(result.liveOrderSubmitted).toBe(false);
+  });
+
   it('records the pending action for unknown exit submissions', async () => {
     const stateDir = `${TEST_STATE_DIR}-unknown-exit`;
 

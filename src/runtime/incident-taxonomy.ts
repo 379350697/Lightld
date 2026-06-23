@@ -87,7 +87,10 @@ export function classifyIncidentReason(reason: string): IncidentClassification {
   const lower = normalized.toLowerCase();
   let kind: IncidentKind = 'unknown';
 
-  if (lower.includes('daily-spend-limit-exceeded')) {
+  if (
+    lower.includes('daily-spend-limit-exceeded') ||
+    lower.includes('hourly-spend-limit-exceeded')
+  ) {
     kind = 'spend_limit_blocked';
   } else if (
     lower.includes('pending-submission-partial-failure') ||

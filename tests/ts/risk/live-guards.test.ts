@@ -86,6 +86,26 @@ describe('evaluateLiveGuards', () => {
     });
   });
 
+  it('blocks when the hourly spend limit is exceeded', () => {
+    const result = evaluateLiveGuards({
+      action: 'add-lp',
+      symbol: 'SAFE',
+      requestedPositionSol: 0.2,
+      maxLivePositionSol: 1.0,
+      killSwitchEngaged: false,
+      sessionPhase: 'active',
+      maxHourlySpendSol: 0.5,
+      hourlySpendSol: 0.4,
+      maxDailySpendSol: 2.0,
+      dailySpendSol: 0.4
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: 'hourly-spend-limit-exceeded'
+    });
+  });
+
   it('allows exits even when daily spend would otherwise be exhausted', () => {
     const result = evaluateLiveGuards({
       action: 'withdraw-lp',

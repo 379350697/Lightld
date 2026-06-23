@@ -48,4 +48,21 @@ describe('loadLiveRuntimeConfig', () => {
       broadcastTimeoutMs: 22_000
     });
   });
+
+  it('loads spending limit overrides from env', () => {
+    expect(
+      loadLiveRuntimeConfig({
+        LIVE_MAX_SINGLE_ORDER_SOL: '0.1',
+        LIVE_MAX_DAILY_SPEND_SOL: '2.5',
+        LIVE_MAX_HOURLY_SPEND_SOL: '0.5',
+        LIVE_RESET_SPENDING_LIMITS_ON_START: 'true'
+      })
+    ).toEqual({
+      executionMode: 'test',
+      maxSingleOrderSol: 0.1,
+      maxDailySpendSol: 2.5,
+      maxHourlySpendSol: 0.5,
+      resetSpendingLimitsOnStartup: true
+    });
+  });
 });

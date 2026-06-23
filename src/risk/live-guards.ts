@@ -8,7 +8,9 @@ export type LiveGuardInput = {
   killSwitchEngaged: boolean;
   sessionPhase?: 'active' | 'flatten-only' | 'closed';
   maxSingleOrderSol?: number;
+  maxHourlySpendSol?: number;
   maxDailySpendSol?: number;
+  hourlySpendSol?: number;
   dailySpendSol?: number;
   
   // Rug protection checks
@@ -32,6 +34,7 @@ export type LiveGuardResult =
         | 'flatten-only'
         | 'live-position-cap-exceeded'
         | 'single-order-limit-exceeded'
+        | 'hourly-spend-limit-exceeded'
         | 'daily-spend-limit-exceeded'
         | 'mint-authority-not-revoked'
         | 'lp-burn-insufficient'
@@ -90,6 +93,17 @@ export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
     return {
       allowed: false,
       reason: 'daily-spend-limit-exceeded'
+    };
+  }
+
+  if (
+    typeof input.maxHourlySpendSol === 'number' &&
+    typeof input.hourlySpendSol === 'number' &&
+    input.hourlySpendSol + input.requestedPositionSol > input.maxHourlySpendSol
+  ) {
+    return {
+      allowed: false,
+      reason: 'hourly-spend-limit-exceeded'
     };
   }
 
