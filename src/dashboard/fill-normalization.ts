@@ -15,6 +15,12 @@ function toFiniteNumber(value: unknown) {
 
 export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
   const actualFilledSol = toFiniteNumber(row.actualFilledSol);
+  const actualWalletDeltaSol = toFiniteNumber(row.actualWalletDeltaSol);
+  const fillAmountSource = String(row.fillAmountSource ?? '');
+  const hasTrustedSource = fillAmountSource === 'wallet-delta' || fillAmountSource === 'chain-reconstructed';
+  const hasFillEvidence = row.hasFillEvidence === false
+    ? false
+    : hasTrustedSource || actualFilledSol > 0 || Math.abs(actualWalletDeltaSol) > 0;
   const filledSol = actualFilledSol > 0
     ? actualFilledSol
     : toFiniteNumber(row.filledSol ?? row.amount);
@@ -34,8 +40,11 @@ export function normalizeDashboardJournalFill(row: Record<string, unknown>) {
     amount,
     filledSol,
     actualFilledSol: actualFilledSol > 0 ? actualFilledSol : undefined,
-    actualWalletDeltaSol: toFiniteNumber(row.actualWalletDeltaSol),
-    fillAmountSource: String(row.fillAmountSource ?? ''),
+    actualWalletDeltaSol,
+    fillAmountSource,
+    hasFillEvidence,
+    preWalletSol: toFiniteNumber(row.preWalletSol),
+    postWalletSol: toFiniteNumber(row.postWalletSol),
     requestedPositionSol: toFiniteNumber(row.requestedPositionSol),
     recordedAt: String(row.recordedAt ?? '')
   };

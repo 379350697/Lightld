@@ -7,6 +7,9 @@ export type IncidentKind =
   | 'dlmm_simulation_error'
   | 'missing_fill_evidence'
   | 'missing_lp_entry_metadata'
+  | 'orphaned_position_without_bound_entry'
+  | 'entry_reconstruction_ambiguous'
+  | 'untrusted_requested_fallback_fill'
   | 'dependency_unavailable'
   | 'valuation_unavailable'
   | 'reconciliation_required'
@@ -58,6 +61,21 @@ const POLICIES: Record<IncidentKind, Omit<IncidentClassification, 'kind'>> = {
   missing_lp_entry_metadata: {
     rootCause: 'wallet has an LP position but runtime lacks entry metadata',
     suggestedAction: 'rebuild entry metadata from wallet LP position or mark the position orphaned',
+    severity: 'warning'
+  },
+  orphaned_position_without_bound_entry: {
+    rootCause: 'wallet has an LP position that is not bound to trusted entry evidence',
+    suggestedAction: 'hold PnL exits and reconstruct entry from wallet delta or chain transaction evidence',
+    severity: 'warning'
+  },
+  entry_reconstruction_ambiguous: {
+    rootCause: 'multiple possible chain entries match the active LP position',
+    suggestedAction: 'keep the position orphaned until an exact chain position or submission signature resolves the entry',
+    severity: 'warning'
+  },
+  untrusted_requested_fallback_fill: {
+    rootCause: 'a requested amount fallback reached a fill-like surface without trusted fill evidence',
+    suggestedAction: 'exclude it from realized cashflow and repair from wallet delta or chain evidence',
     severity: 'warning'
   },
   dependency_unavailable: {
@@ -128,6 +146,21 @@ export function classifyIncidentReason(reason: string): IncidentClassification {
     kind = 'dlmm_simulation_error';
   } else if (lower.includes('missing-fill-evidence')) {
     kind = 'missing_fill_evidence';
+  } else if (
+    lower.includes('orphaned-position-without-bound-entry') ||
+    lower.includes('orphaned_position_without_bound_entry')
+  ) {
+    kind = 'orphaned_position_without_bound_entry';
+  } else if (
+    lower.includes('entry-reconstruction-ambiguous') ||
+    lower.includes('entry_reconstruction_ambiguous')
+  ) {
+    kind = 'entry_reconstruction_ambiguous';
+  } else if (
+    lower.includes('requested-position-fallback') ||
+    lower.includes('untrusted_requested_fallback_fill')
+  ) {
+    kind = 'untrusted_requested_fallback_fill';
   } else if (lower.includes('lp-position-missing-entry-metadata')) {
     kind = 'missing_lp_entry_metadata';
   } else if (lower.includes('valuation-unavailable')) {

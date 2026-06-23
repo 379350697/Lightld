@@ -63,6 +63,12 @@ export const SQLITE_MIRROR_SCHEMA = [
       side TEXT NOT NULL,
       amount REAL NOT NULL,
       filled_sol REAL NOT NULL,
+      actual_filled_sol REAL,
+      actual_wallet_delta_sol REAL,
+      fill_amount_source TEXT NOT NULL DEFAULT '',
+      has_fill_evidence INTEGER NOT NULL DEFAULT 0,
+      pre_wallet_sol REAL,
+      post_wallet_sol REAL,
       recorded_at TEXT NOT NULL
     )
   `,

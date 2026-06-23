@@ -27,6 +27,7 @@ const MIRROR_DB_PATH = process.env.LIVE_DB_MIRROR_PATH ?? join(STATE_ROOT_DIR, '
 const STRATEGY_ID = process.env.LIVE_STRATEGY_ID ?? 'new-token-v1';
 const ACCOUNT_STATE_URL = process.env.LIVE_ACCOUNT_STATE_URL ?? 'http://127.0.0.1:8791/account-state';
 const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
+const POSITION_STATE_PATH = join(STATE_ROOT_DIR, 'position-state.json');
 const HISTORY_PAGE_SIZE = 10;
 const HISTORY_DECISION_FALLBACK_LINES = 1000;
 
@@ -77,6 +78,25 @@ async function queryAll<T>(sql: string, ...params: Array<string | number | bigin
     console.error('[dashboard] sqlite query failed', { sql, error });
     return [];
   }
+}
+
+function hasTrustedDbFillEvidence(row: {
+  actual_filled_sol?: number | null;
+  actual_wallet_delta_sol?: number | null;
+  fill_amount_source?: string;
+  has_fill_evidence?: number;
+}) {
+  if (row.has_fill_evidence !== 1) {
+    return false;
+  }
+
+  const source = row.fill_amount_source ?? '';
+  if (source === 'wallet-delta' || source === 'chain-reconstructed') {
+    return true;
+  }
+
+  return (typeof row.actual_filled_sol === 'number' && row.actual_filled_sol > 0)
+    || (typeof row.actual_wallet_delta_sol === 'number' && Math.abs(row.actual_wallet_delta_sol) > 0);
 }
 
 // ── File readers ──
@@ -216,7 +236,11 @@ async function handleStatus(): Promise<StatusResponse> {
   const activeMint = typeof position?.activeMint === 'string' ? position.activeMint : '';
   const activePoolAddress = typeof position?.activePoolAddress === 'string' ? position.activePoolAddress : '';
 
-  let entrySol = typeof position?.entrySol === 'number' ? position.entrySol : null;
+  const entrySol = typeof position?.entrySol === 'number' ? position.entrySol : null;
+  const entrySolSource = typeof position?.entrySolSource === 'string' ? position.entrySolSource : '';
+  const entryTrust = entrySol !== null && (entrySolSource === 'actual_fill' || entrySolSource === 'reconstructed_chain')
+    ? 'trusted'
+    : 'missing';
   let openedAt = typeof position?.openedAt === 'string' ? position.openedAt : null;
   let activeSymbol = '';
 
@@ -238,15 +262,12 @@ async function handleStatus(): Promise<StatusResponse> {
 
     if (fallbackOrder) {
       activeSymbol = fallbackOrder.token_symbol ?? '';
-      if (entrySol === null && typeof fallbackOrder.requested_position_sol === 'number') {
-        entrySol = fallbackOrder.requested_position_sol;
-      }
       if (!openedAt) {
         openedAt = fallbackOrder.updated_at || fallbackOrder.created_at || null;
       }
     }
 
-    if (entrySol === null || !openedAt || !activeSymbol) {
+    if (!openedAt || !activeSymbol) {
       const orderJournalRows = await readJournalEntries(`${STRATEGY_ID}-live-orders`, 200);
       const matchedJournalOrder = [...orderJournalRows].reverse().find(row => {
         const tokenMint = String(row.tokenMint ?? '');
@@ -257,12 +278,6 @@ async function handleStatus(): Promise<StatusResponse> {
       if (matchedJournalOrder) {
         if (!activeSymbol) {
           activeSymbol = String(matchedJournalOrder.tokenSymbol ?? '');
-        }
-        if (entrySol === null) {
-          const journalEntrySol = Number(matchedJournalOrder.requestedPositionSol ?? matchedJournalOrder.outputSol ?? 0);
-          if (Number.isFinite(journalEntrySol) && journalEntrySol > 0) {
-            entrySol = journalEntrySol;
-          }
         }
         if (!openedAt) {
           openedAt = String(matchedJournalOrder.createdAt ?? '') || null;
@@ -289,7 +304,11 @@ async function handleStatus(): Promise<StatusResponse> {
     activePoolAddress,
     activeSymbol,
     entrySol,
+    entrySolSource,
+    entryTrust,
     openedAt,
+    valuationStatus: position?.valuationStatus ?? '',
+    valuationReason: position?.valuationReason ?? '',
     lastClosedMint: position?.lastClosedMint ?? '',
     lastClosedAt: position?.lastClosedAt ?? '',
 
@@ -344,12 +363,25 @@ type PositionResponse = Array<{
   solDepletedBins: number | null;
   hasLiquidity: boolean;
   hasClaimableFees: boolean;
+  entrySolSource: string;
+  entryTrust: 'trusted' | 'missing';
 }>;
+
+type PositionStateFile = {
+  lifecycleState?: string;
+  activeMint?: string;
+  activePoolAddress?: string;
+  chainPositionAddress?: string;
+  entrySol?: number;
+  entrySolSource?: string;
+  openedAt?: string;
+};
 
 async function handlePositions(): Promise<PositionResponse> {
   const accountState =
     await readJsonSafe<AccountStateSnapshot>(join(STATE_ROOT_DIR, 'account-state.json'))
     ?? await fetchJsonSafe<AccountStateSnapshot>(ACCOUNT_STATE_URL);
+  const positionState = await readJsonSafe<PositionStateFile>(POSITION_STATE_PATH);
   const walletLpPositions = accountState?.walletLpPositions ?? [];
   const positionOrders = await queryAll<{
     chain_position_address: string;
@@ -382,14 +414,29 @@ async function handlePositions(): Promise<PositionResponse> {
         || ((order.token_mint && order.token_mint === position.mint)
           && (order.pool_address && order.pool_address === position.poolAddress))
       );
+      const stateMatchesPosition = positionState?.lifecycleState === 'open'
+        && (
+          (positionState.chainPositionAddress && positionState.chainPositionAddress === position.positionAddress)
+          || (
+            positionState.activeMint === position.mint
+            && positionState.activePoolAddress === position.poolAddress
+          )
+        );
+      const trustedEntry = stateMatchesPosition
+        && typeof positionState?.entrySol === 'number'
+        && (positionState.entrySolSource === 'actual_fill' || positionState.entrySolSource === 'reconstructed_chain');
 
       return {
         mint: position.mint,
         poolAddress: position.poolAddress,
         positionAddress: position.positionAddress,
         tokenSymbol: matchedOrder?.token_symbol ?? '',
-        openedAt: matchedOrder?.updated_at || matchedOrder?.created_at || null,
-        entrySol: typeof matchedOrder?.requested_position_sol === 'number' ? matchedOrder.requested_position_sol : null,
+        openedAt: trustedEntry && positionState?.openedAt
+          ? positionState.openedAt
+          : (matchedOrder?.updated_at || matchedOrder?.created_at || null),
+        entrySol: trustedEntry ? positionState!.entrySol! : null,
+        entrySolSource: trustedEntry ? positionState!.entrySolSource! : '',
+        entryTrust: trustedEntry ? 'trusted' : 'missing',
         currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
         unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
         currentPrice: typeof position.currentPrice === 'number' ? position.currentPrice : null,
@@ -426,10 +473,22 @@ type EquityResponse = ReturnType<typeof buildEquityMetrics>;
 async function handlePnl(): Promise<PnlResponse> {
   const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
 
-  const fillRows = (await queryAll<{ side: string; filled_sol: number; recorded_at: string }>(`
+  const fillRows = (await queryAll<{
+    side: string;
+    filled_sol: number;
+    actual_filled_sol?: number | null;
+    actual_wallet_delta_sol?: number | null;
+    fill_amount_source?: string;
+    has_fill_evidence?: number;
+    recorded_at: string;
+  }>(`
     SELECT
       side,
       filled_sol,
+      actual_filled_sol,
+      actual_wallet_delta_sol,
+      fill_amount_source,
+      has_fill_evidence,
       recorded_at
     FROM fills
     WHERE recorded_at >= ?
@@ -437,28 +496,13 @@ async function handlePnl(): Promise<PnlResponse> {
   `, since30d)).map((row) => ({
     side: row.side,
     filledSol: row.filled_sol,
+    fillAmountSource: row.fill_amount_source,
+    hasFillEvidence: hasTrustedDbFillEvidence(row),
     recordedAt: row.recorded_at
   }));
 
-  const orderFallback = (await queryAll<{ action: string; requested_position_sol: number; created_at: string; updated_at: string }>(`
-      SELECT
-        action,
-        requested_position_sol,
-        created_at,
-        updated_at
-      FROM orders
-      WHERE COALESCE(updated_at, created_at) >= ?
-      ORDER BY COALESCE(updated_at, created_at) ASC
-    `, since30d)).map((row) => ({
-      action: row.action,
-      requestedPositionSol: row.requested_position_sol,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }));
-
   return buildCashflowMetrics({
-    fills: fillRows,
-    orderFallback
+    fills: fillRows
   });
 }
 
@@ -606,6 +650,12 @@ type FillRow = {
   side: string;
   amount: number;
   filled_sol: number;
+  actual_filled_sol?: number | null;
+  actual_wallet_delta_sol?: number | null;
+  fill_amount_source?: string;
+  has_fill_evidence?: number;
+  pre_wallet_sol?: number | null;
+  post_wallet_sol?: number | null;
   recorded_at: string;
   confirmation_status?: string;
 };
@@ -622,6 +672,12 @@ async function handleFills(): Promise<Array<{
   side: string;
   amount: number;
   filledSol: number;
+  actualFilledSol?: number;
+  actualWalletDeltaSol?: number;
+  fillAmountSource: string;
+  hasFillEvidence: boolean;
+  preWalletSol?: number;
+  postWalletSol?: number;
   recordedAt: string;
   lifecycleStatus: string;
   confirmationStatus: string;
@@ -629,7 +685,8 @@ async function handleFills(): Promise<Array<{
   const rows = await queryAll<FillRow>(`
     SELECT
       lifecycle_key, fill_id, submission_id, open_intent_id, position_id, chain_position_address, token_mint, token_symbol,
-      side, amount, filled_sol, recorded_at, 'confirmed' AS confirmation_status
+      side, amount, filled_sol, actual_filled_sol, actual_wallet_delta_sol, fill_amount_source,
+      has_fill_evidence, pre_wallet_sol, post_wallet_sol, recorded_at, 'confirmed' AS confirmation_status
     FROM fills
     WHERE side <> 'unknown'
       AND token_mint <> ''
@@ -639,22 +696,33 @@ async function handleFills(): Promise<Array<{
   `);
 
   if (rows.length > 0) {
-    return rows.map(r => ({
-      lifecycleKey: r.lifecycle_key,
-      fillId: r.fill_id,
-      submissionId: r.submission_id,
-      openIntentId: r.open_intent_id,
-      positionId: r.position_id,
-      chainPositionAddress: r.chain_position_address,
-      tokenMint: r.token_mint,
-      tokenSymbol: r.token_symbol,
-      side: r.side,
-      amount: r.amount,
-      filledSol: r.filled_sol,
-      recordedAt: r.recorded_at,
-      lifecycleStatus: toExecutionLifecycleStatus({ historyStatus: 'ok' }),
-      confirmationStatus: r.confirmation_status ?? 'confirmed',
-    }));
+    return rows.map(r => {
+      const hasFillEvidence = hasTrustedDbFillEvidence(r);
+      const fillAmountSource = r.fill_amount_source || (hasFillEvidence ? 'wallet-delta' : '');
+
+      return {
+        lifecycleKey: r.lifecycle_key,
+        fillId: r.fill_id,
+        submissionId: r.submission_id,
+        openIntentId: r.open_intent_id,
+        positionId: r.position_id,
+        chainPositionAddress: r.chain_position_address,
+        tokenMint: r.token_mint,
+        tokenSymbol: r.token_symbol,
+        side: r.side,
+        amount: r.amount,
+        filledSol: r.filled_sol,
+        actualFilledSol: r.actual_filled_sol ?? undefined,
+        actualWalletDeltaSol: r.actual_wallet_delta_sol ?? undefined,
+        fillAmountSource,
+        hasFillEvidence,
+        preWalletSol: r.pre_wallet_sol ?? undefined,
+        postWalletSol: r.post_wallet_sol ?? undefined,
+        recordedAt: r.recorded_at,
+        lifecycleStatus: toExecutionLifecycleStatus({ historyStatus: 'ok' }),
+        confirmationStatus: r.confirmation_status ?? 'confirmed',
+      };
+    });
   }
 
   const journalRows = await readJournalEntries(`${STRATEGY_ID}-live-fills`, 200);
@@ -865,6 +933,8 @@ async function handleHistory() {
       positionId: String(fill.positionId ?? ''),
       chainPositionAddress: String(fill.chainPositionAddress ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
+      fillAmountSource: String(fill.fillAmountSource ?? ''),
+      hasFillEvidence: fill.hasFillEvidence === true,
       recordedAt: String(fill.recordedAt ?? ''),
       confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),
@@ -925,6 +995,8 @@ async function handleHistoryPage(input?: {
       positionId: String(fill.positionId ?? ''),
       chainPositionAddress: String(fill.chainPositionAddress ?? ''),
       filledSol: Number(fill.filledSol ?? fill.amount ?? 0),
+      fillAmountSource: String(fill.fillAmountSource ?? ''),
+      hasFillEvidence: fill.hasFillEvidence === true,
       recordedAt: String(fill.recordedAt ?? ''),
       confirmationStatus: String(fill.confirmationStatus ?? 'confirmed')
     })),

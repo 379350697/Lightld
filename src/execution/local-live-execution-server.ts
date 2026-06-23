@@ -118,6 +118,9 @@ const AccountStateSchema = z.object({
   fills: z.array(z.object({
     submissionId: z.string().optional(),
     confirmationSignature: z.string().optional(),
+    openIntentId: z.string().optional(),
+    positionId: z.string().optional(),
+    chainPositionAddress: z.string().optional(),
     mint: z.string(),
     symbol: z.string().optional(),
     side: z.union([
@@ -129,6 +132,12 @@ const AccountStateSchema = z.object({
       z.literal('rebalance-lp')
     ]),
     amount: z.number().finite(),
+    actualFilledSol: z.number().finite().optional(),
+    actualWalletDeltaSol: z.number().finite().optional(),
+    fillAmountSource: z.enum(['wallet-delta', 'chain-reconstructed', 'requested-position-fallback']).optional(),
+    hasFillEvidence: z.boolean().optional(),
+    preWalletSol: z.number().finite().optional(),
+    postWalletSol: z.number().finite().optional(),
     recordedAt: z.string().min(1)
   })).optional()
 });

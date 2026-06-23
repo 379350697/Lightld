@@ -111,7 +111,26 @@ describe('createLocalLiveExecutionServer', () => {
       journalTokens: [
         { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }
       ],
-      fills: []
+      fills: [
+        {
+          submissionId: 'sub-1',
+          confirmationSignature: 'tx-1',
+          openIntentId: 'intent-1',
+          positionId: 'position-1',
+          chainPositionAddress: 'chain-position-1',
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          side: 'add-lp',
+          amount: 0.2,
+          actualFilledSol: 0.21,
+          actualWalletDeltaSol: -0.21,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          preWalletSol: 1.25,
+          postWalletSol: 1.04,
+          recordedAt: '2026-03-24T00:00:10.000Z'
+        }
+      ]
     }), 'utf8');
 
     const server = createLocalLiveExecutionServer({
@@ -177,7 +196,26 @@ describe('createLocalLiveExecutionServer', () => {
       journalTokens: [
         { mint: 'mint-safe', symbol: 'SAFE', amount: 2 }
       ],
-      fills: []
+      fills: [
+        {
+          submissionId: 'sub-1',
+          confirmationSignature: 'tx-1',
+          openIntentId: 'intent-1',
+          positionId: 'position-1',
+          chainPositionAddress: 'chain-position-1',
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          side: 'add-lp',
+          amount: 0.2,
+          actualFilledSol: 0.21,
+          actualWalletDeltaSol: -0.21,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          preWalletSol: 1.25,
+          postWalletSol: 1.04,
+          recordedAt: '2026-03-24T00:00:10.000Z'
+        }
+      ]
     });
 
     await server.stop();

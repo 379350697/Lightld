@@ -3,9 +3,17 @@ import { join } from 'node:path';
 import { createDependencyHealthSnapshot, markDependencyFailure, markDependencySuccess } from './dependency-health.ts';
 import { buildHealthReport } from './health-report.ts';
 import { enqueueMirrorCatchupFromJournals } from '../observability/mirror-catchup.ts';
-import { buildOrderMirrorPayload, toOrderMirrorEvent, toRuntimeSnapshotEvent } from '../observability/mirror-adapters.ts';
+import {
+  buildOrderMirrorPayload,
+  toFillMirrorEvent,
+  toIncidentMirrorEvent,
+  toOrderMirrorEvent,
+  toRuntimeSnapshotEvent
+} from '../observability/mirror-adapters.ts';
 import type { MirrorRuntime } from '../observability/mirror-runtime.ts';
 import { readRotatedJsonLines } from '../journals/jsonl-writer.ts';
+import { LiveFillJournal } from '../journals/live-fill-journal.ts';
+import { LiveIncidentJournal } from '../journals/live-incident-journal.ts';
 import {
   LiveCycleOutcomeStore,
   WatchlistStore,
@@ -34,6 +42,16 @@ import { isResolvedConfirmation } from './live-cycle-state.ts';
 import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 import { DEFAULT_SOL_DEPLETION_EXIT_BINS } from './lp-sol-exposure.ts';
+import {
+  isTrustedEntrySolSource,
+  isTrustedFillAmountSource,
+  resolveTrustedEntryFromFills,
+  type TrustedLpEntryResolution
+} from './lp-entry-resolver.ts';
+import type { LpEntryEvidenceProvider } from './lp-entry-evidence-provider.ts';
+import { SpendingLimitsStore } from '../risk/spending-limits.ts';
+import { classifyIncidentReason } from './incident-taxonomy.ts';
+import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
 
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
@@ -62,6 +80,7 @@ type LiveDaemonOptions = {
   signer?: Omit<LiveCycleInput, 'strategy'>['signer'];
   broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
   confirmationProvider?: LiveConfirmationProvider;
+  lpEntryEvidenceProvider?: LpEntryEvidenceProvider;
   evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
   evolutionOutcomeStore?: Pick<LiveCycleOutcomeStore, 'appendOutcome'>;
   sleep?: (delayMs: number) => Promise<void>;
@@ -81,6 +100,7 @@ const STABLE_MINTS = new Set([
 const DEFAULT_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS = 30 * 60_000;
 const DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL = 0.1;
+const LP_ENTRY_EVIDENCE_COOLDOWN_MS = 10 * 60_000;
 
 type TrustedLpEntryMetadata = {
   entrySol?: number;
@@ -103,6 +123,7 @@ type JournalFillEntry = {
   filledSol?: number;
   actualFilledSol?: number;
   fillAmountSource?: string;
+  hasFillEvidence?: boolean;
   recordedAt?: string;
 };
 
@@ -128,7 +149,6 @@ function enqueueResolvedOpenOrderMirror(input: {
   poolAddress?: string;
   tokenMint?: string;
   tokenSymbol?: string;
-  requestedPositionSol?: number;
   createdAt?: string;
   updatedAt: string;
 }) {
@@ -157,7 +177,7 @@ function enqueueResolvedOpenOrderMirror(input: {
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol ?? '',
     action: 'add-lp',
-    requestedPositionSol: input.requestedPositionSol ?? 0,
+    requestedPositionSol: 0,
     quotedOutputSol: 0,
     broadcastStatus: 'submitted',
     confirmationStatus: 'confirmed',
@@ -165,6 +185,133 @@ function enqueueResolvedOpenOrderMirror(input: {
     createdAt: input.createdAt,
     updatedAt: input.updatedAt
   })));
+}
+
+async function appendDaemonIncident(input: {
+  mirrorRuntime?: MirrorRuntime;
+  strategyId: StrategyId;
+  journalRootDir: string;
+  runtimeMode: RuntimeMode;
+  stage: string;
+  reason: string;
+  tokenMint?: string;
+  tokenSymbol?: string;
+  poolAddress?: string;
+  chainPositionAddress?: string;
+}) {
+  const recordedAt = nowIso();
+  const classification = classifyIncidentReason(input.reason);
+  const cycleId = `${input.strategyId}:${recordedAt}`;
+  const incidentId = `${cycleId}:${input.stage}`;
+  const journal = new LiveIncidentJournal(join(input.journalRootDir, `${input.strategyId}-live-incidents.jsonl`), {
+    rotateDaily: true,
+    retentionDays: 30,
+    now: () => new Date(recordedAt)
+  });
+
+  await journal.append({
+    cycleId,
+    strategyId: input.strategyId,
+    stage: input.stage,
+    severity: classification.severity ?? 'warning',
+    kind: classification.kind,
+    reason: input.reason,
+    rootCause: classification.rootCause,
+    suggestedAction: classification.suggestedAction,
+    poolAddress: input.poolAddress,
+    tokenMint: input.tokenMint,
+    tokenSymbol: input.tokenSymbol,
+    chainPositionAddress: input.chainPositionAddress,
+    runtimeMode: input.runtimeMode,
+    recordedAt
+  });
+
+  input.mirrorRuntime?.enqueue(toIncidentMirrorEvent({
+    lifecycleKey: input.chainPositionAddress
+      ? `chain-position:${input.chainPositionAddress}`
+      : undefined,
+    incidentId,
+    cycleId,
+    stage: input.stage,
+    severity: classification.severity ?? 'warning',
+    reason: input.reason,
+    runtimeMode: input.runtimeMode,
+    submissionId: '',
+    tokenMint: input.tokenMint ?? '',
+    tokenSymbol: input.tokenSymbol ?? '',
+    recordedAt
+  }));
+}
+
+async function appendReconstructedEntryFill(input: {
+  mirrorRuntime?: MirrorRuntime;
+  strategyId: StrategyId;
+  journalRootDir: string;
+  cycleId: string;
+  positionState: PositionStateSnapshot;
+  entrySol: number;
+  openedAt: string;
+  signature: string;
+}) {
+  const lifecycleKey = buildExecutionLifecycleKey({
+    tokenMint: input.positionState.activeMint ?? '',
+    openIntentId: input.positionState.openIntentId,
+    positionId: input.positionState.positionId,
+    chainPositionAddress: input.positionState.chainPositionAddress
+  });
+  const fillId = `${input.signature}:${input.openedAt}:chain-reconstructed`;
+  const fillEntry = {
+    lifecycleKey,
+    cycleId: input.cycleId,
+    submissionId: input.signature,
+    confirmationSignature: input.signature,
+    strategyId: input.strategyId,
+    openIntentId: input.positionState.openIntentId,
+    positionId: input.positionState.positionId,
+    chainPositionAddress: input.positionState.chainPositionAddress,
+    mint: input.positionState.activeMint,
+    tokenMint: input.positionState.activeMint,
+    symbol: '',
+    tokenSymbol: '',
+    side: 'add-lp',
+    amount: input.entrySol,
+    filledSol: input.entrySol,
+    actualFilledSol: input.entrySol,
+    actualWalletDeltaSol: -input.entrySol,
+    fillAmountSource: 'chain-reconstructed',
+    hasFillEvidence: true,
+    status: 'confirmed',
+    confirmationStatus: 'confirmed',
+    recordedAt: input.openedAt
+  };
+  const journal = new LiveFillJournal(join(input.journalRootDir, `${input.strategyId}-live-fills.jsonl`), {
+    rotateDaily: true,
+    retentionDays: 90,
+    now: () => new Date(input.openedAt)
+  });
+
+  await journal.append(fillEntry);
+
+  input.mirrorRuntime?.enqueue(toFillMirrorEvent({
+    lifecycleKey,
+    fillId,
+    submissionId: input.signature,
+    confirmationSignature: input.signature,
+    cycleId: input.cycleId,
+    openIntentId: input.positionState.openIntentId,
+    positionId: input.positionState.positionId,
+    chainPositionAddress: input.positionState.chainPositionAddress,
+    tokenMint: input.positionState.activeMint ?? '',
+    tokenSymbol: '',
+    side: 'add-lp',
+    amount: input.entrySol,
+    filledSol: input.entrySol,
+    actualFilledSol: input.entrySol,
+    actualWalletDeltaSol: -input.entrySol,
+    fillAmountSource: 'chain-reconstructed',
+    hasFillEvidence: true,
+    recordedAt: input.openedAt
+  }));
 }
 
 function buildWatchId(strategy: StrategyId, tokenMint: string, poolAddress: string) {
@@ -581,14 +728,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function isTrustedEntrySolSource(source: unknown): source is NonNullable<PositionStateSnapshot['entrySolSource']> {
-  return source === 'actual_fill' || source === 'reconstructed_chain';
-}
-
-function isTrustedActualFillSource(source: unknown) {
-  return source === 'wallet-delta';
-}
-
 function normalizeJournalFillEntry(entry: JournalFillEntry): RuntimeFillEntry | null {
   const mint = typeof entry.mint === 'string'
     ? entry.mint
@@ -611,7 +750,8 @@ function normalizeJournalFillEntry(entry: JournalFillEntry): RuntimeFillEntry | 
     || typeof amount !== 'number'
     || amount <= 0
     || !recordedAt
-    || !isTrustedActualFillSource(entry.fillAmountSource)
+    || entry.hasFillEvidence !== true
+    || !isTrustedFillAmountSource(entry.fillAmountSource)
   ) {
     return null;
   }
@@ -625,7 +765,8 @@ function normalizeJournalFillEntry(entry: JournalFillEntry): RuntimeFillEntry | 
     side,
     amount,
     actualFilledSol: typeof entry.actualFilledSol === 'number' ? entry.actualFilledSol : undefined,
-    fillAmountSource: 'wallet-delta',
+    fillAmountSource: entry.fillAmountSource,
+    hasFillEvidence: entry.hasFillEvidence,
     recordedAt
   };
 }
@@ -644,119 +785,11 @@ async function readTrustedAddLpFills(input: {
   });
 }
 
-function fillMatchesActivePool(fill: RuntimeFillEntry, positionState: PositionStateSnapshot) {
-  if (!positionState.activePoolAddress) {
-    return false;
-  }
-
-  return fill.positionId === `${positionState.activePoolAddress}:${positionState.activeMint ?? fill.mint}`
-    || fill.positionId?.startsWith(`${positionState.activePoolAddress}:`) === true;
-}
-
-function scoreEntryFillMatch(fill: RuntimeFillEntry, positionState: PositionStateSnapshot) {
-  if (fill.mint !== positionState.activeMint) {
-    return -1;
-  }
-
-  if (positionState.chainPositionAddress && fill.chainPositionAddress === positionState.chainPositionAddress) {
-    return 500;
-  }
-
-  if (positionState.positionId && fill.positionId === positionState.positionId) {
-    return 400;
-  }
-
-  if (positionState.openIntentId && fill.openIntentId === positionState.openIntentId) {
-    return 300;
-  }
-
-  if (fillMatchesActivePool(fill, positionState)) {
-    return 200;
-  }
-
-  if (!positionState.openedAt) {
-    return 1;
-  }
-
-  const openedAtMs = Date.parse(positionState.openedAt);
-  const recordedAtMs = Date.parse(fill.recordedAt);
-  if (!Number.isFinite(openedAtMs) || !Number.isFinite(recordedAtMs)) {
-    return 1;
-  }
-
-  return recordedAtMs >= openedAtMs - 60_000 ? 100 : 1;
-}
-
-function resolveTrustedEntryFromFills(input: {
-  positionState?: PositionStateSnapshot;
-  fills?: RuntimeFillEntry[];
-}): TrustedLpEntryMetadata | undefined {
-  const positionState = input.positionState;
-  if (
-    !positionState
-    || positionState.lifecycleState !== 'open'
-    || !positionState.activeMint
-  ) {
-    return undefined;
-  }
-
-  if (
-    isTrustedEntrySolSource(positionState.entrySolSource)
-    && typeof positionState.entrySol === 'number'
-    && positionState.entrySol > 0
-  ) {
-    return {
-      entrySol: positionState.entrySol,
-      entrySolSource: positionState.entrySolSource,
-      entryFillSubmissionId: positionState.entryFillSubmissionId,
-      openedAt: positionState.openedAt
-    };
-  }
-
-  const candidates = (input.fills ?? [])
-    .filter((fill) =>
-      fill.side === 'add-lp'
-      && fill.amount > 0
-      && fill.fillAmountSource === 'wallet-delta'
-      && fill.mint === positionState.activeMint
-    )
-    .map((fill) => {
-      const score = scoreEntryFillMatch(fill, positionState);
-      const openedAtMs = positionState.openedAt ? Date.parse(positionState.openedAt) : Number.NaN;
-      const recordedAtMs = Date.parse(fill.recordedAt);
-      const distanceMs = Number.isFinite(openedAtMs) && Number.isFinite(recordedAtMs)
-        ? Math.abs(recordedAtMs - openedAtMs)
-        : Number.MAX_SAFE_INTEGER;
-      return { fill, score, distanceMs };
-    })
-    .filter((candidate) => candidate.score >= 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      if (left.distanceMs !== right.distanceMs) {
-        return left.distanceMs - right.distanceMs;
-      }
-      return Date.parse(right.fill.recordedAt) - Date.parse(left.fill.recordedAt);
-    });
-
-  const best = candidates[0]?.fill;
-  if (!best) {
-    return undefined;
-  }
-
-  return {
-    entrySol: best.amount,
-    entrySolSource: 'actual_fill',
-    entryFillSubmissionId: best.submissionId,
-    openedAt: positionState.openedAt ?? best.recordedAt
-  };
-}
-
 function resolveConfirmedOpenFillEntry(resultFill?: LiveCycleConfirmedFill): TrustedLpEntryMetadata | undefined {
   if (
     resultFill?.side !== 'add-lp'
     || resultFill.fillAmountSource !== 'wallet-delta'
+    || resultFill.hasFillEvidence !== true
     || resultFill.filledSol <= 0
   ) {
     return undefined;
@@ -1498,6 +1531,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   };
   let tickCount = 0;
   let nextResidualTokenSweepAt = '';
+  const lpEntryEvidenceCooldowns = new Map<string, string>();
 
   await mirrorRuntime?.start();
   await warmAccountProvider(options.accountProvider);
@@ -1619,13 +1653,98 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             strategy: options.strategy,
             journalRootDir
           });
-          const repairedEntry = resolveTrustedEntryFromFills({
+          let repairedEntry = resolveTrustedEntryFromFills({
             positionState,
             fills: [
               ...(effectiveAccountState?.fills ?? []),
               ...journalFills
             ]
           });
+
+          if (!repairedEntry && options.lpEntryEvidenceProvider && positionState.activeMint) {
+            const evidenceKey = positionState.chainPositionAddress
+              || positionState.positionId
+              || `${positionState.activePoolAddress ?? ''}:${positionState.activeMint}`;
+            const cooldownUntil = lpEntryEvidenceCooldowns.get(evidenceKey) ?? '';
+
+            if (!cooldownUntil || cooldownUntil <= nowIso()) {
+              lpEntryEvidenceCooldowns.set(
+                evidenceKey,
+                new Date(Date.now() + LP_ENTRY_EVIDENCE_COOLDOWN_MS).toISOString()
+              );
+              try {
+                const evidence = await options.lpEntryEvidenceProvider.reconstructEntry({
+                  tokenMint: positionState.activeMint,
+                  poolAddress: positionState.activePoolAddress,
+                  chainPositionAddress: positionState.chainPositionAddress,
+                  openedAtHint: positionState.openedAt,
+                  orderSignature: positionState.lastOrderIdempotencyKey
+                });
+
+                  if (evidence.status === 'trusted') {
+                    const reconstructedEntry: TrustedLpEntryResolution = {
+                      entrySol: evidence.entrySol,
+                      entrySolSource: 'reconstructed_chain',
+                      entryFillSubmissionId: evidence.signature,
+                      openedAt: evidence.openedAt
+                    };
+                    if (positionState.lastOrderIdempotencyKey) {
+                      await new SpendingLimitsStore(stateRootDir).settleSpend(
+                        positionState.lastOrderIdempotencyKey,
+                        evidence.entrySol
+                      );
+                    }
+                    await appendReconstructedEntryFill({
+                      mirrorRuntime,
+                      strategyId: options.strategy,
+                      journalRootDir,
+                      cycleId: `${options.strategy}:${nowIso()}`,
+                      positionState,
+                      entrySol: evidence.entrySol,
+                      openedAt: evidence.openedAt,
+                      signature: evidence.signature
+                    });
+                    repairedEntry = reconstructedEntry;
+                  } else if (evidence.status === 'ambiguous') {
+                    await appendDaemonIncident({
+                      mirrorRuntime,
+                      strategyId: options.strategy,
+                      journalRootDir,
+                      runtimeMode: runtimeState.mode,
+                      stage: 'reconciliation',
+                      reason: 'entry-reconstruction-ambiguous: active LP entry has multiple matching chain evidence records',
+                      tokenMint: positionState.activeMint,
+                      poolAddress: positionState.activePoolAddress,
+                      chainPositionAddress: positionState.chainPositionAddress
+                    });
+                  } else {
+                    await appendDaemonIncident({
+                      mirrorRuntime,
+                      strategyId: options.strategy,
+                      journalRootDir,
+                      runtimeMode: runtimeState.mode,
+                      stage: 'reconciliation',
+                      reason: 'orphaned-position-without-bound-entry: active LP entry chain evidence not found',
+                      tokenMint: positionState.activeMint,
+                      poolAddress: positionState.activePoolAddress,
+                      chainPositionAddress: positionState.chainPositionAddress
+                    });
+                  }
+              } catch {
+                await appendDaemonIncident({
+                  mirrorRuntime,
+                  strategyId: options.strategy,
+                  journalRootDir,
+                  runtimeMode: runtimeState.mode,
+                  stage: 'reconciliation',
+                  reason: 'orphaned-position-without-bound-entry: active LP entry reconstruction failed',
+                  tokenMint: positionState.activeMint,
+                  poolAddress: positionState.activePoolAddress,
+                  chainPositionAddress: positionState.chainPositionAddress
+                });
+              }
+            }
+          }
 
           if (trustedEntryChanged(positionState, repairedEntry)) {
             positionState = {
@@ -2057,7 +2176,6 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           poolAddress: persistedPoolAddress,
           tokenMint: persistedActiveMint,
           tokenSymbol: typeof result.context?.token?.symbol === 'string' ? result.context.token.symbol : '',
-          requestedPositionSol: persistedEntrySol,
           createdAt: inferredPositionMetadata.openedAt ?? positionState?.openedAt,
           updatedAt: nowIso()
         });

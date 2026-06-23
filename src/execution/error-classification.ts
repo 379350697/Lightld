@@ -1,4 +1,10 @@
-export type ExecutionOperation = 'quote' | 'signer' | 'broadcast' | 'account' | 'confirmation';
+export type ExecutionOperation =
+  | 'quote'
+  | 'signer'
+  | 'broadcast'
+  | 'account'
+  | 'confirmation'
+  | 'lp-entry-evidence';
 export type ExecutionFailureKind = 'transient' | 'hard' | 'unknown';
 
 type ClassificationInput = {

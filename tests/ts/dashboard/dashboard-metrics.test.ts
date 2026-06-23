@@ -10,9 +10,9 @@ describe('buildCashflowMetrics', () => {
   it('aggregates realized cashflow from fills by total, month, and day', () => {
     const result = buildCashflowMetrics({
       fills: [
-        { side: 'add-lp', filledSol: 1, recordedAt: '2026-04-17T08:00:00.000Z' },
-        { side: 'claim-fee', filledSol: 0.2, recordedAt: '2026-04-17T10:00:00.000Z' },
-        { side: 'withdraw-lp', filledSol: 1.4, recordedAt: '2026-04-18T09:00:00.000Z' }
+        { side: 'add-lp', filledSol: 1, fillAmountSource: 'wallet-delta', hasFillEvidence: true, recordedAt: '2026-04-17T08:00:00.000Z' },
+        { side: 'claim-fee', filledSol: 0.2, fillAmountSource: 'wallet-delta', hasFillEvidence: true, recordedAt: '2026-04-17T10:00:00.000Z' },
+        { side: 'withdraw-lp', filledSol: 1.4, fillAmountSource: 'wallet-delta', hasFillEvidence: true, recordedAt: '2026-04-18T09:00:00.000Z' }
       ],
       now: new Date('2026-04-18T12:00:00.000Z')
     });
@@ -27,7 +27,20 @@ describe('buildCashflowMetrics', () => {
     ]);
   });
 
-  it('falls back to order open cashflow when fills are unavailable', () => {
+  it('does not count fills without explicit evidence as realized cashflow', () => {
+    const result = buildCashflowMetrics({
+      fills: [
+        { side: 'add-lp', filledSol: 1, recordedAt: '2026-04-17T08:00:00.000Z' },
+        { side: 'withdraw-lp', filledSol: 1.4, recordedAt: '2026-04-18T09:00:00.000Z' }
+      ],
+      now: new Date('2026-04-18T12:00:00.000Z')
+    });
+
+    expect(result.totalCashflowSol).toBe(0);
+    expect(result.dailyCashflow).toEqual([]);
+  });
+
+  it('does not fabricate realized cashflow from order requests when fills are unavailable', () => {
     const result = buildCashflowMetrics({
       fills: [],
       orderFallback: [
@@ -37,13 +50,10 @@ describe('buildCashflowMetrics', () => {
       now: new Date('2026-04-18T12:00:00.000Z')
     });
 
-    expect(result.totalCashflowSol).toBeCloseTo(-0.3);
-    expect(result.todayCashflowSol).toBeCloseTo(-0.1);
-    expect(result.monthCashflowSol).toBeCloseTo(-0.3);
-    expect(result.dailyCashflow).toEqual([
-      { date: '2026-04-17', cashflowSol: -0.2 },
-      { date: '2026-04-18', cashflowSol: -0.1 }
-    ]);
+    expect(result.totalCashflowSol).toBe(0);
+    expect(result.todayCashflowSol).toBe(0);
+    expect(result.monthCashflowSol).toBe(0);
+    expect(result.dailyCashflow).toEqual([]);
   });
 
   it('keeps the latest net worth snapshot for each day', () => {
@@ -859,15 +869,76 @@ describe('buildCashflowMetrics', () => {
       pnlSol: null,
       pnlPct: null,
       dprPct: null
+      });
     });
-  });
 
-  it('prefers exit value over pnl percent when reconstructing historical lp pnl', () => {
-    const result = buildHistoricalActivity({
-      fills: [],
-      orderFallback: [
-        {
-          tokenMint: 'mint-earth',
+    it('requires trusted open entry evidence before marking matched close pnl as trusted', () => {
+      const result = buildHistoricalActivity({
+        fills: [
+          {
+            tokenMint: 'mint-half-trusted-close',
+            tokenSymbol: 'HTC',
+            side: 'add-lp',
+            submissionId: 'sub-half-trusted-open',
+            filledSol: 0.05,
+            recordedAt: '2026-04-22T13:07:07.421Z'
+          },
+          {
+            tokenMint: 'mint-half-trusted-close',
+            tokenSymbol: 'HTC',
+            side: 'withdraw-lp',
+            submissionId: 'sub-half-trusted-close',
+            filledSol: 0.09,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: '2026-04-22T14:39:45.589Z'
+          }
+        ],
+        orderFallback: [
+          {
+            tokenMint: 'mint-half-trusted-close',
+            tokenSymbol: 'HTC',
+            action: 'add-lp',
+            submissionId: 'sub-half-trusted-open',
+            idempotencyKey: 'order-half-trusted-open',
+            requestedPositionSol: 0.05,
+            confirmationStatus: 'confirmed',
+            createdAt: '2026-04-22T13:07:01.715Z',
+            updatedAt: '2026-04-22T13:07:01.722Z'
+          },
+          {
+            tokenMint: 'mint-half-trusted-close',
+            tokenSymbol: 'HTC',
+            action: 'withdraw-lp',
+            submissionId: 'sub-half-trusted-close',
+            idempotencyKey: 'order-half-trusted-close',
+            requestedPositionSol: 0.09,
+            confirmationStatus: 'confirmed',
+            createdAt: '2026-04-22T14:39:45.571Z',
+            updatedAt: '2026-04-22T14:39:45.589Z'
+          }
+        ],
+        limit: 5
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        tokenMint: 'mint-half-trusted-close',
+        source: 'matched',
+        confirmationStatus: 'confirmed',
+        profitTrust: 'untrusted',
+        pnlSol: null,
+        pnlPct: null,
+        dprPct: null
+      });
+    });
+
+    it('prefers exit value over pnl percent when reconstructing historical lp pnl', () => {
+      const result = buildHistoricalActivity({
+        fills: [],
+        orderFallback: [
+          {
+            tokenMint: 'mint-earth',
           tokenSymbol: 'earthcoin',
           action: 'add-lp',
           submissionId: '',
@@ -901,9 +972,9 @@ describe('buildCashflowMetrics', () => {
           lpUnclaimedFeeSol: 0.006224571,
           lpNetPnlPct: -60
         }
-      ],
-      limit: 5
-    });
+        ],
+        limit: 5
+      });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.pnlSol).toBeCloseTo(-0.0008033389999999997);

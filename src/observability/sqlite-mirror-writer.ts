@@ -313,8 +313,27 @@ export class SqliteMirrorWriter {
     this.ensureTableColumns(database, 'fills', [
       ['open_intent_id', "TEXT NOT NULL DEFAULT ''"],
       ['position_id', "TEXT NOT NULL DEFAULT ''"],
-      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"]
+      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"],
+      ['actual_filled_sol', 'REAL'],
+      ['actual_wallet_delta_sol', 'REAL'],
+      ['fill_amount_source', "TEXT NOT NULL DEFAULT ''"],
+      ['has_fill_evidence', 'INTEGER NOT NULL DEFAULT 0'],
+      ['pre_wallet_sol', 'REAL'],
+      ['post_wallet_sol', 'REAL']
     ]);
+    database.exec(`
+      UPDATE fills
+      SET has_fill_evidence = 1
+      WHERE fill_amount_source IN ('wallet-delta', 'chain-reconstructed')
+        AND has_fill_evidence = 0
+    `);
+    database.exec(`
+      UPDATE fills
+      SET has_fill_evidence = 0
+      WHERE fill_amount_source NOT IN ('wallet-delta', 'chain-reconstructed')
+        AND actual_filled_sol IS NULL
+        AND actual_wallet_delta_sol IS NULL
+    `);
   }
 
   private ensureLifecycleKeyColumns(database: DatabaseSync) {
@@ -688,7 +707,13 @@ export class SqliteMirrorWriter {
             token_symbol = ?,
             side = ?,
             amount = ?,
-            filled_sol = ?
+            filled_sol = ?,
+            actual_filled_sol = ?,
+            actual_wallet_delta_sol = ?,
+            fill_amount_source = ?,
+            has_fill_evidence = ?,
+            pre_wallet_sol = ?,
+            post_wallet_sol = ?
           WHERE fill_id = ?
         `).run(
           payload.lifecycleKey ?? '',
@@ -701,6 +726,12 @@ export class SqliteMirrorWriter {
           payload.side,
           payload.amount,
           payload.filledSol,
+          payload.actualFilledSol ?? null,
+          payload.actualWalletDeltaSol ?? null,
+          payload.fillAmountSource ?? '',
+          booleanToInteger(resolveFillEvidenceFlag(payload)),
+          payload.preWalletSol ?? null,
+          payload.postWalletSol ?? null,
           existing.fillId
         );
       }
@@ -722,8 +753,14 @@ export class SqliteMirrorWriter {
         side,
         amount,
         filled_sol,
+        actual_filled_sol,
+        actual_wallet_delta_sol,
+        fill_amount_source,
+        has_fill_evidence,
+        pre_wallet_sol,
+        post_wallet_sol,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(fill_id) DO NOTHING
     `).run(
       payload.fillId,
@@ -739,6 +776,12 @@ export class SqliteMirrorWriter {
       payload.side,
       payload.amount,
       payload.filledSol,
+      payload.actualFilledSol ?? null,
+      payload.actualWalletDeltaSol ?? null,
+      payload.fillAmountSource ?? '',
+      booleanToInteger(resolveFillEvidenceFlag(payload)),
+      payload.preWalletSol ?? null,
+      payload.postWalletSol ?? null,
       payload.recordedAt
     );
   }
@@ -989,6 +1032,20 @@ export class SqliteMirrorWriter {
 
 function booleanToInteger(value: boolean) {
   return value ? 1 : 0;
+}
+
+function resolveFillEvidenceFlag(payload: FillMirrorPayload) {
+  if (payload.hasFillEvidence === false) {
+    return false;
+  }
+
+  const source = payload.fillAmountSource ?? '';
+  if (source === 'wallet-delta' || source === 'chain-reconstructed') {
+    return true;
+  }
+
+  return (typeof payload.actualFilledSol === 'number' && payload.actualFilledSol > 0)
+    || (typeof payload.actualWalletDeltaSol === 'number' && Math.abs(payload.actualWalletDeltaSol) > 0);
 }
 
 function shouldDeferLifecycleKeyIndex(statement: string, error: unknown) {

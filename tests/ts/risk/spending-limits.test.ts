@@ -120,4 +120,23 @@ describe('evaluateSpendingLimits', () => {
     expect(state.orderCount).toBe(0);
     expect(state.hourlyOrderCount).toBe(0);
   });
+
+  it('settles a requested reservation to the trusted actual spend amount', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-spending-settle-'));
+    const store = new SpendingLimitsStore(root);
+
+    await store.reserveSpend('order-1', 0.08);
+    await store.settleSpend('order-1', 0.137416044);
+    const state = await store.read();
+
+    expect(state.dailySpendSol).toBeCloseTo(0.137416044);
+    expect(state.hourlySpendSol).toBeCloseTo(0.137416044);
+    expect(state.orderCount).toBe(1);
+    expect(state.reservations[0]).toMatchObject({
+      idempotencyKey: 'order-1',
+      requestedSol: 0.08,
+      settledSol: 0.137416044,
+      status: 'settled'
+    });
+  });
 });

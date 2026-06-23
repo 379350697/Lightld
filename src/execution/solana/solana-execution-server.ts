@@ -23,6 +23,7 @@ import {
   writeJson,
   writeText
 } from '../../shared/http-server.ts';
+import { reconstructOpenPositionEntryEvidence } from '../../history/solana-closed-position-reconstructor.ts';
 
 const BroadcastRequestSchema = z.object({
   intent: z.object({
@@ -46,6 +47,15 @@ const BroadcastRequestSchema = z.object({
 const ConfirmationRequestSchema = z.object({
   submissionId: z.string().min(1),
   confirmationSignature: z.string().optional()
+});
+
+const LpEntryEvidenceRequestSchema = z.object({
+  walletAddress: z.string().optional(),
+  tokenMint: z.string().min(1),
+  poolAddress: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
+  openedAtHint: z.string().optional(),
+  orderSignature: z.string().optional()
 });
 
 const BroadcastResultSchema = z.object({
@@ -202,6 +212,94 @@ function isZeroLamportsAmount(amount: string | number | undefined) {
   }
 
   return typeof amount === 'number' && Number.isFinite(amount) && amount === 0;
+}
+
+function looksLikeBase58Address(value: string | undefined) {
+  return typeof value === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,88}$/.test(value);
+}
+
+async function resolveLpEntryEvidence(input: {
+  rpcClient: SolanaRpcClient;
+  walletAddress: string;
+  tokenMint: string;
+  poolAddress?: string;
+  chainPositionAddress?: string;
+  openedAtHint?: string;
+  orderSignature?: string;
+}) {
+  const signatures = new Set<string>();
+
+  if (looksLikeBase58Address(input.orderSignature)) {
+    signatures.add(input.orderSignature!);
+  }
+
+  for (const address of [input.chainPositionAddress, input.poolAddress]) {
+    if (!looksLikeBase58Address(address)) {
+      continue;
+    }
+
+    const candidates = await input.rpcClient.getSignaturesForAddress(address!, { limit: 20 });
+    const targetMs = input.openedAtHint ? Date.parse(input.openedAtHint) : Number.NaN;
+    const ordered = [...candidates].sort((left, right) => {
+      if (!Number.isFinite(targetMs)) {
+        return (right.blockTime ?? 0) - (left.blockTime ?? 0);
+      }
+
+      const leftMs = typeof left.blockTime === 'number' ? left.blockTime * 1000 : Number.POSITIVE_INFINITY;
+      const rightMs = typeof right.blockTime === 'number' ? right.blockTime * 1000 : Number.POSITIVE_INFINITY;
+      return Math.abs(leftMs - targetMs) - Math.abs(rightMs - targetMs);
+    });
+
+    for (const candidate of ordered) {
+      signatures.add(candidate.signature);
+    }
+  }
+
+  const matches = [];
+  for (const signature of signatures) {
+    const transaction = await input.rpcClient.getTransaction(signature);
+    if (!transaction) {
+      continue;
+    }
+
+    const evidence = reconstructOpenPositionEntryEvidence({
+      walletAddress: input.walletAddress,
+      tokenMint: input.tokenMint,
+      tokenSymbol: '',
+      poolAddress: input.poolAddress,
+      positionAddress: input.chainPositionAddress,
+      transaction: transaction as Parameters<typeof reconstructOpenPositionEntryEvidence>[0]['transaction']
+    });
+
+    if (evidence) {
+      matches.push(evidence);
+    }
+  }
+
+  if (matches.length === 0) {
+    return { status: 'not_found' as const, reason: 'lp-entry-evidence-not-found' };
+  }
+
+  const exactMatches = matches.filter((match) =>
+    (!input.chainPositionAddress || match.positionAddress === input.chainPositionAddress)
+    && (!input.poolAddress || match.poolAddress === input.poolAddress)
+  );
+  const selectedMatches = exactMatches.length > 0 ? exactMatches : matches;
+
+  if (selectedMatches.length > 1) {
+    return { status: 'ambiguous' as const, reason: 'entry-reconstruction-ambiguous' };
+  }
+
+  const evidence = selectedMatches[0];
+  return {
+    status: 'trusted' as const,
+    entrySol: evidence.entrySol,
+    openedAt: evidence.openedAt,
+    signature: evidence.signature,
+    source: 'reconstructed_chain' as const,
+    poolAddress: evidence.poolAddress,
+    chainPositionAddress: evidence.positionAddress
+  };
 }
 
 async function resolveTokenCurrentValueSol(input: {
@@ -1216,6 +1314,22 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               };
               writeJson(response, 200, result);
             }
+            return;
+          }
+
+          if (request.method === 'POST' && request.url === '/lp-entry-evidence') {
+            const body = await readBody(request);
+            const payload = LpEntryEvidenceRequestSchema.parse(JSON.parse(body));
+            const evidence = await resolveLpEntryEvidence({
+              rpcClient,
+              walletAddress: payload.walletAddress || walletPublicKey,
+              tokenMint: payload.tokenMint,
+              poolAddress: payload.poolAddress,
+              chainPositionAddress: payload.chainPositionAddress,
+              openedAtHint: payload.openedAtHint,
+              orderSignature: payload.orderSignature
+            });
+            writeJson(response, 200, evidence);
             return;
           }
 

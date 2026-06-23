@@ -38,9 +38,29 @@ CREATE TABLE IF NOT EXISTS fills (
   side TEXT NOT NULL,
   amount REAL NOT NULL,
   filled_sol REAL NOT NULL,
+  actual_filled_sol REAL,
+  actual_wallet_delta_sol REAL,
+  fill_amount_source TEXT NOT NULL DEFAULT '',
+  has_fill_evidence INTEGER NOT NULL DEFAULT 0,
+  pre_wallet_sol REAL,
+  post_wallet_sol REAL,
   recorded_at TEXT NOT NULL
 );
 `);
+
+for (const [column, type] of [
+  ['actual_filled_sol', 'REAL'],
+  ['actual_wallet_delta_sol', 'REAL'],
+  ['fill_amount_source', "TEXT NOT NULL DEFAULT ''"],
+  ['has_fill_evidence', 'INTEGER NOT NULL DEFAULT 0'],
+  ['pre_wallet_sol', 'REAL'],
+  ['post_wallet_sol', 'REAL']
+]) {
+  const existing = db.prepare('PRAGMA table_info(fills)').all().map((row) => row.name);
+  if (!existing.includes(column)) {
+    db.exec(`ALTER TABLE fills ADD COLUMN ${column} ${type}`);
+  }
+}
 
 const insOrder = db.prepare(`INSERT INTO orders (
   idempotency_key, cycle_id, strategy_id, submission_id, confirmation_signature,
@@ -62,14 +82,21 @@ ON CONFLICT(idempotency_key) DO UPDATE SET
 
 const insFill = db.prepare(`INSERT INTO fills (
   fill_id, submission_id, confirmation_signature, cycle_id, token_mint, token_symbol,
-  side, amount, filled_sol, recorded_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  side, amount, filled_sol, actual_filled_sol, actual_wallet_delta_sol, fill_amount_source,
+  has_fill_evidence, pre_wallet_sol, post_wallet_sol, recorded_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(fill_id) DO UPDATE SET
   token_mint=excluded.token_mint,
   token_symbol=excluded.token_symbol,
   side=excluded.side,
   amount=excluded.amount,
   filled_sol=excluded.filled_sol,
+  actual_filled_sol=excluded.actual_filled_sol,
+  actual_wallet_delta_sol=excluded.actual_wallet_delta_sol,
+  fill_amount_source=excluded.fill_amount_source,
+  has_fill_evidence=excluded.has_fill_evidence,
+  pre_wallet_sol=excluded.pre_wallet_sol,
+  post_wallet_sol=excluded.post_wallet_sol,
   recorded_at=excluded.recorded_at`);
 
 function readJsonl(file) {
@@ -111,6 +138,21 @@ for (const o of orders) {
 for (let i = 0; i < fills.length; i++) {
   const f = fills[i];
   const side = ['buy','sell','add-lp','withdraw-lp','claim-fee','rebalance-lp'].includes(f.side) ? f.side : 'unknown';
+  const filledSol = Number.isFinite(Number(f.filledSol)) ? Number(f.filledSol) : 0;
+  const actualFilledSol = Number.isFinite(Number(f.actualFilledSol)) ? Number(f.actualFilledSol) : null;
+  const actualWalletDeltaSol = Number.isFinite(Number(f.actualWalletDeltaSol)) ? Number(f.actualWalletDeltaSol) : null;
+  const explicitFillAmountSource = typeof f.fillAmountSource === 'string' ? f.fillAmountSource : '';
+  const usedRequestedFallback = filledSol <= 0 && Number.isFinite(Number(f.requestedPositionSol));
+  const fillAmountSource = explicitFillAmountSource
+    || (actualFilledSol !== null || actualWalletDeltaSol !== null ? 'wallet-delta' : '')
+    || (usedRequestedFallback ? 'requested-position-fallback' : '');
+  const hasFillEvidence = f.hasFillEvidence !== false
+    && (
+      fillAmountSource === 'wallet-delta'
+      || fillAmountSource === 'chain-reconstructed'
+      || actualFilledSol !== null
+      || actualWalletDeltaSol !== null
+    );
   insFill.run(
     `${f.submissionId || 'fill'}:${f.recordedAt || i}:${i}`,
     f.submissionId || '',
@@ -120,7 +162,13 @@ for (let i = 0; i < fills.length; i++) {
     f.tokenSymbol || f.symbol || '',
     side,
     Number(f.amount ?? 0),
-    Number(f.filledSol ?? f.requestedPositionSol ?? 0),
+    filledSol,
+    actualFilledSol,
+    actualWalletDeltaSol,
+    fillAmountSource,
+    hasFillEvidence ? 1 : 0,
+    Number.isFinite(Number(f.preWalletSol)) ? Number(f.preWalletSol) : null,
+    Number.isFinite(Number(f.postWalletSol)) ? Number(f.postWalletSol) : null,
     f.recordedAt || new Date(0).toISOString()
   );
   fillCount += 1;

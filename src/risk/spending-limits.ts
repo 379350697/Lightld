@@ -16,7 +16,14 @@ const SpendingLimitsStateSchema = z.object({
   orderCount: z.number().int().nonnegative(),
   hourlyOrderCount: z.number().int().nonnegative().default(0),
   lastHourlyResetAt: z.string().min(1).optional(),
-  lastResetDate: z.string().min(1)
+  lastResetDate: z.string().min(1),
+  reservations: z.array(z.object({
+    idempotencyKey: z.string().min(1),
+    requestedSol: z.number().finite().nonnegative(),
+    settledSol: z.number().finite().nonnegative().optional(),
+    status: z.enum(['reserved', 'settled']),
+    updatedAt: z.string().min(1)
+  })).default([])
 });
 
 export type SpendingLimitsState = z.infer<typeof SpendingLimitsStateSchema>;
@@ -44,7 +51,8 @@ function normalizeState(state: SpendingLimitsState): SpendingLimitsState {
     ...state,
     hourlySpendSol: state.hourlySpendSol ?? 0,
     hourlyOrderCount: state.hourlyOrderCount ?? 0,
-    lastHourlyResetAt: state.lastHourlyResetAt ?? currentHourString()
+    lastHourlyResetAt: state.lastHourlyResetAt ?? currentHourString(),
+    reservations: state.reservations ?? []
   };
 }
 
@@ -59,7 +67,8 @@ function ensureResetIfNewDay(state: SpendingLimitsState, resetHour: number): Spe
       orderCount: 0,
       hourlyOrderCount: 0,
       lastHourlyResetAt: currentHourString(),
-      lastResetDate: today
+      lastResetDate: today,
+      reservations: []
     };
   }
 
@@ -93,7 +102,8 @@ export function createEmptySpendingLimitsState(resetHour = 0): SpendingLimitsSta
     orderCount: 0,
     hourlyOrderCount: 0,
     lastHourlyResetAt: currentHourString(),
-    lastResetDate: todayDateString(resetHour)
+    lastResetDate: todayDateString(resetHour),
+    reservations: []
   };
 }
 
@@ -164,7 +174,76 @@ export class SpendingLimitsStore {
       orderCount: current.orderCount + 1,
       hourlyOrderCount: current.hourlyOrderCount + 1,
       lastHourlyResetAt: current.lastHourlyResetAt,
-      lastResetDate: current.lastResetDate
+      lastResetDate: current.lastResetDate,
+      reservations: current.reservations
+    };
+
+    await writeJsonAtomically(this.path, SpendingLimitsStateSchema.parse(updated));
+    return updated;
+  }
+
+  async reserveSpend(idempotencyKey: string, requestedSol: number): Promise<SpendingLimitsState> {
+    const current = await this.read();
+    const existing = current.reservations.find((reservation) => reservation.idempotencyKey === idempotencyKey);
+
+    if (existing) {
+      return current;
+    }
+
+    const updated: SpendingLimitsState = {
+      dailySpendSol: current.dailySpendSol + requestedSol,
+      hourlySpendSol: current.hourlySpendSol + requestedSol,
+      orderCount: current.orderCount + 1,
+      hourlyOrderCount: current.hourlyOrderCount + 1,
+      lastHourlyResetAt: current.lastHourlyResetAt,
+      lastResetDate: current.lastResetDate,
+      reservations: [
+        ...current.reservations,
+        {
+          idempotencyKey,
+          requestedSol,
+          status: 'reserved',
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    };
+
+    await writeJsonAtomically(this.path, SpendingLimitsStateSchema.parse(updated));
+    return updated;
+  }
+
+  async settleSpend(idempotencyKey: string, actualSol: number): Promise<SpendingLimitsState> {
+    const current = await this.read();
+    const existingIndex = current.reservations.findIndex((reservation) => reservation.idempotencyKey === idempotencyKey);
+
+    if (existingIndex < 0 || !Number.isFinite(actualSol) || actualSol <= 0) {
+      return current;
+    }
+
+    const existing = current.reservations[existingIndex];
+    if (existing.status === 'settled' && existing.settledSol === actualSol) {
+      return current;
+    }
+
+    const previousBookedSol = existing.status === 'settled' && typeof existing.settledSol === 'number'
+      ? existing.settledSol
+      : existing.requestedSol;
+    const deltaSol = actualSol - previousBookedSol;
+    const reservations = [...current.reservations];
+    reservations[existingIndex] = {
+      ...existing,
+      settledSol: actualSol,
+      status: 'settled',
+      updatedAt: new Date().toISOString()
+    };
+    const updated: SpendingLimitsState = {
+      dailySpendSol: Math.max(0, current.dailySpendSol + deltaSol),
+      hourlySpendSol: Math.max(0, current.hourlySpendSol + deltaSol),
+      orderCount: current.orderCount,
+      hourlyOrderCount: current.hourlyOrderCount,
+      lastHourlyResetAt: current.lastHourlyResetAt,
+      lastResetDate: current.lastResetDate,
+      reservations
     };
 
     await writeJsonAtomically(this.path, SpendingLimitsStateSchema.parse(updated));

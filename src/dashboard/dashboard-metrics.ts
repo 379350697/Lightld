@@ -5,6 +5,8 @@ import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-statu
 type CashflowFill = {
   side: string;
   filledSol: number;
+  fillAmountSource?: string;
+  hasFillEvidence?: boolean;
   recordedAt: string;
 };
 
@@ -25,6 +27,8 @@ type HistoricalFill = {
   positionId?: string;
   chainPositionAddress?: string;
   filledSol: number;
+  fillAmountSource?: string;
+  hasFillEvidence?: boolean;
   recordedAt: string;
   confirmationStatus?: string;
 };
@@ -146,6 +150,60 @@ type HistoricalLifecycle = {
   closeAction?: ReconciledHistoricalAction;
 };
 
+function isTrustedEntrySolSource(source: unknown) {
+  return source === 'actual_fill' || source === 'reconstructed_chain';
+}
+
+function isOpenEntryAction(action: string | undefined) {
+  return action === 'buy' || action === 'add-lp';
+}
+
+function isCloseExitAction(action: string | undefined) {
+  return action === 'sell' || action === 'withdraw-lp' || action === 'claim-fee';
+}
+
+function resolveTrustedHistoricalEntrySol(action: ReconciledHistoricalAction | undefined) {
+  if (!action) {
+    return null;
+  }
+
+  if (
+    isTrustedEntrySolSource(action.entrySolSource)
+    && typeof action.entrySol === 'number'
+    && action.entrySol > 0
+  ) {
+    return action.entrySol;
+  }
+
+  if (isOpenEntryAction(action.action) && action.hasRealizedChainAmount === true && action.amountSol > 0) {
+    return action.amountSol;
+  }
+
+  return null;
+}
+
+function resolveDisplayHistoricalEntrySol(
+  openAction: ReconciledHistoricalAction | undefined,
+  closeAction: ReconciledHistoricalAction | undefined
+) {
+  return resolveTrustedHistoricalEntrySol(openAction)
+    ?? openAction?.entrySol
+    ?? openAction?.amountSol
+    ?? closeAction?.entrySol
+    ?? null;
+}
+
+function hasTrustedHistoricalCloseMetrics(action: ReconciledHistoricalAction | undefined) {
+  return Boolean(action && isCloseExitAction(action.action) && action.hasRealizedChainAmount === true);
+}
+
+function hasEstimatedHistoricalCloseMetrics(action: ReconciledHistoricalAction | undefined) {
+  return Boolean(action && (
+    typeof action.exitValueSol === 'number'
+    || typeof action.pnlPct === 'number'
+  ));
+}
+
 function startOfUtcDayString(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -155,6 +213,10 @@ function startOfUtcMonthString(date: Date) {
 }
 
 function toSignedCashflow(fill: CashflowFill) {
+  if (fill.hasFillEvidence !== true || fill.fillAmountSource === 'requested-position-fallback') {
+    return 0;
+  }
+
   if (fill.side === 'buy' || fill.side === 'add-lp') {
     return -fill.filledSol;
   }
@@ -551,28 +613,26 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const amountSol = openAction?.amountSol ?? closeAction?.amountSol ?? 0;
   const tokenMint = lifecycle.tokenMint;
   const tokenSymbol = lifecycle.tokenSymbol;
-  const investedSol = openAction?.entrySol ?? openAction?.amountSol ?? closeAction?.entrySol ?? null;
+  const trustedInvestedSol = resolveTrustedHistoricalEntrySol(openAction)
+    ?? resolveTrustedHistoricalEntrySol(closeAction);
+  const investedSol = resolveDisplayHistoricalEntrySol(openAction, closeAction);
   const rawFeeEarnedSol = closeAction?.feeEarnedSol ?? openAction?.feeEarnedSol ?? null;
-  const hasTrustedCloseMetrics = Boolean(
-    closeAction && (
-      typeof closeAction.exitValueSol === 'number'
-      || typeof closeAction.pnlPct === 'number'
-      || closeAction.hasRealizedChainAmount === true
-    )
-  );
+  const hasTrustedEntryMetrics = typeof trustedInvestedSol === 'number' && trustedInvestedSol > 0;
+  const hasTrustedCloseMetrics = hasTrustedHistoricalCloseMetrics(closeAction);
+  const hasEstimatedCloseMetrics = hasEstimatedHistoricalCloseMetrics(closeAction);
   const totalExitValueSol = typeof closeAction?.exitValueSol === 'number'
     ? closeAction.exitValueSol
-    : closeAction?.hasRealizedChainAmount === true
+    : hasTrustedCloseMetrics && closeAction
       ? closeAction.amountSol
       : null;
-  const rawPnlSol = typeof investedSol === 'number' && typeof totalExitValueSol === 'number'
-    ? totalExitValueSol - investedSol
-    : hasTrustedCloseMetrics && typeof investedSol === 'number' && investedSol > 0 && typeof closeAction?.pnlPct === 'number'
-      ? investedSol * (closeAction.pnlPct / 100)
+  const rawPnlSol = hasTrustedEntryMetrics && typeof totalExitValueSol === 'number'
+    ? totalExitValueSol - trustedInvestedSol
+    : hasTrustedEntryMetrics && hasEstimatedCloseMetrics && typeof closeAction?.pnlPct === 'number'
+      ? trustedInvestedSol * (closeAction.pnlPct / 100)
       : null;
-  const rawPnlPct = typeof investedSol === 'number' && investedSol > 0 && typeof rawPnlSol === 'number'
-    ? (rawPnlSol / investedSol) * 100
-    : hasTrustedCloseMetrics && typeof closeAction?.pnlPct === 'number'
+  const rawPnlPct = hasTrustedEntryMetrics && typeof rawPnlSol === 'number'
+    ? (rawPnlSol / trustedInvestedSol) * 100
+    : hasTrustedEntryMetrics && hasEstimatedCloseMetrics && typeof closeAction?.pnlPct === 'number'
       ? closeAction.pnlPct
       : null;
 
@@ -583,12 +643,16 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     && closeAction.status === 'ok'
   );
   const hasAnyProfitMetrics = [rawFeeEarnedSol, rawPnlSol, rawPnlPct].some((value) => typeof value === 'number');
-  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = isMatchedLifecycle
-    ? (hasTrustedCloseMetrics ? 'trusted' : (hasAnyProfitMetrics ? 'estimated' : 'untrusted'))
-    : (hasAnyProfitMetrics ? 'estimated' : 'untrusted');
+  const hasTrustedProfitMetrics = isMatchedLifecycle && hasTrustedEntryMetrics && hasTrustedCloseMetrics;
+  const hasEstimatedProfitMetrics = hasTrustedEntryMetrics && hasEstimatedCloseMetrics && hasAnyProfitMetrics;
+  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = hasTrustedProfitMetrics
+    ? 'trusted'
+    : hasEstimatedProfitMetrics
+      ? 'estimated'
+      : 'untrusted';
   const feeEarnedSol = profitTrust === 'untrusted' ? null : rawFeeEarnedSol;
-  const feeEarnedPct = profitTrust !== 'untrusted' && typeof investedSol === 'number' && investedSol > 0 && typeof feeEarnedSol === 'number'
-    ? (feeEarnedSol / investedSol) * 100
+  const feeEarnedPct = profitTrust !== 'untrusted' && hasTrustedEntryMetrics && typeof feeEarnedSol === 'number'
+    ? (feeEarnedSol / trustedInvestedSol) * 100
     : null;
   const pnlSol = profitTrust === 'untrusted' ? null : rawPnlSol;
   const pnlPct = profitTrust === 'untrusted' ? null : rawPnlPct;
@@ -729,29 +793,11 @@ export function buildCashflowMetrics(input: {
       const recordedDate = fill.recordedAt.slice(0, 10);
       const cashflow = toSignedCashflow(fill);
 
-      byDate.set(recordedDate, (byDate.get(recordedDate) ?? 0) + cashflow);
-    }
-
-    dailyCashflow = Array.from(byDate.entries())
-      .sort((left, right) => left[0].localeCompare(right[0]))
-      .map(([date, cashflowSol]) => ({ date, cashflowSol }));
-
-    totalCashflowSol = sum(dailyCashflow.map((entry) => entry.cashflowSol));
-    todayCashflowSol = sum(dailyCashflow.filter((entry) => entry.date >= today).map((entry) => entry.cashflowSol));
-    monthCashflowSol = sum(dailyCashflow.filter((entry) => entry.date >= `${month}-01`).map((entry) => entry.cashflowSol));
-  } else if ((input.orderFallback?.length ?? 0) > 0) {
-    const byDate = new Map<string, number>();
-
-    for (const order of input.orderFallback ?? []) {
-      if (order.action !== 'add-lp' && order.action !== 'deploy') {
+      if (cashflow === 0) {
         continue;
       }
 
-      const timestamp = order.updatedAt || order.createdAt;
-      const date = timestamp.slice(0, 10);
-      const cashflow = -order.requestedPositionSol;
-
-      byDate.set(date, (byDate.get(date) ?? 0) + cashflow);
+      byDate.set(recordedDate, (byDate.get(recordedDate) ?? 0) + cashflow);
     }
 
     dailyCashflow = Array.from(byDate.entries())
@@ -903,6 +949,7 @@ export function buildHistoricalActivity(input: {
       }
 
       const hasReliableIdentity = hasSufficientHistoricalFillIdentity(fill);
+      const hasFillEvidence = fill.hasFillEvidence === true && fill.fillAmountSource !== 'requested-position-fallback';
       reconciledActions.push({
         lifecycleKey: toHistoricalLifecycleKey({
           lifecycleKey: fill.lifecycleKey ?? matchedOrder?.lifecycleKey,
@@ -919,7 +966,7 @@ export function buildHistoricalActivity(input: {
           .sort((left, right) => right.localeCompare(left))[0] ?? '',
         status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved'),
         provenance: 'chain',
-        hasRealizedChainAmount: fill.filledSol > 0
+        hasRealizedChainAmount: hasFillEvidence && fill.filledSol > 0
       });
     }
   }

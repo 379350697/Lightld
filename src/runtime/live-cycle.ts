@@ -84,12 +84,17 @@ import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
+import {
+  classifyLpEntryFillBinding,
+  isTrustedEntrySolSource,
+  matchesPositionStateLifecycle,
+  resolveTrustedLpEntry
+} from './lp-entry-resolver.ts';
 import type {
   RuntimeMode,
   PositionStateSnapshot,
   PositionLifecycleState,
-  PendingSubmissionSnapshot,
-  PositionEntrySolSource
+  PendingSubmissionSnapshot
 } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
@@ -413,10 +418,6 @@ function resolveOutcomeOpenedAt(input: {
   return input.recordedAt;
 }
 
-function isTrustedEntrySolSource(source: unknown): source is PositionEntrySolSource {
-  return source === 'actual_fill' || source === 'reconstructed_chain';
-}
-
 function resolveOutcomeEntrySol(input: {
   positionState?: PositionStateSnapshot;
   confirmedFill?: LiveCycleConfirmedFill;
@@ -497,10 +498,6 @@ function absoluteWalletDeltaForFill(action: LiveAction, deltaSol: number) {
   }
 
   return undefined;
-}
-
-function requiresStrictFillEvidence(action: LiveAction) {
-  return action === 'withdraw-lp' || action === 'dca-out';
 }
 
 function isConfirmedConfirmation(
@@ -756,7 +753,12 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
         : undefined;
     const actualFilledSol = typeof entry.actualFilledSol === 'number' ? entry.actualFilledSol : undefined;
     const actualWalletDeltaSol = typeof entry.actualWalletDeltaSol === 'number' ? entry.actualWalletDeltaSol : undefined;
-    const fillAmountSource = entry.fillAmountSource === 'wallet-delta' || entry.fillAmountSource === 'requested-position-fallback'
+    const hasFillEvidence = typeof entry.hasFillEvidence === 'boolean' ? entry.hasFillEvidence : undefined;
+    const preWalletSol = typeof entry.preWalletSol === 'number' ? entry.preWalletSol : undefined;
+    const postWalletSol = typeof entry.postWalletSol === 'number' ? entry.postWalletSol : undefined;
+    const fillAmountSource = entry.fillAmountSource === 'wallet-delta'
+      || entry.fillAmountSource === 'chain-reconstructed'
+      || entry.fillAmountSource === 'requested-position-fallback'
       ? entry.fillAmountSource
       : undefined;
     const confirmationStatus = typeof entry.confirmationStatus === 'string' ? entry.confirmationStatus : '';
@@ -805,6 +807,9 @@ function mergeHistoricalFills(accountState: LiveAccountState | undefined, journa
       actualFilledSol,
       actualWalletDeltaSol,
       fillAmountSource,
+      hasFillEvidence,
+      preWalletSol,
+      postWalletSol,
       recordedAt
     } satisfies LiveFillEntry];
   });
@@ -873,36 +878,6 @@ function buildLpExitSnapshotFromPosition(input: {
   };
 }
 
-function matchesPositionStateLifecycle(
-  position: NonNullable<LiveAccountState['walletLpPositions']>[number],
-  positionState?: PositionStateSnapshot
-) {
-  if (!positionState) {
-    return false;
-  }
-
-  if (
-    typeof positionState.chainPositionAddress === 'string'
-    && positionState.chainPositionAddress.length > 0
-    && positionState.chainPositionAddress === position.positionAddress
-  ) {
-    return true;
-  }
-
-  if (
-    typeof positionState.positionId === 'string'
-    && positionState.positionId.length > 0
-    && typeof position.positionId === 'string'
-    && position.positionId.length > 0
-    && positionState.positionId === position.positionId
-  ) {
-    return true;
-  }
-
-  return positionState.activePoolAddress === position.poolAddress
-    && positionState.activeMint === position.mint;
-}
-
 function resolveLifecycleOpenFill(input: {
   fills: LiveFillEntry[];
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
@@ -919,82 +894,16 @@ function resolveLifecycleOpenFill(input: {
     return byChainAddress;
   }
 
-  if (input.positionState?.positionId) {
-    const byPositionId = entryFills
-      .filter((fill) => fill.positionId === input.positionState?.positionId)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byPositionId) {
-      return byPositionId;
-    }
-  }
-
-  if (input.positionState?.openIntentId) {
-    const byOpenIntentId = entryFills
-      .filter((fill) => fill.openIntentId === input.positionState?.openIntentId)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byOpenIntentId) {
-      return byOpenIntentId;
-    }
-  }
-
-  if (matchesPositionStateLifecycle(input.position, input.positionState) && input.positionState?.openedAt) {
-    const openedAtMs = Date.parse(input.positionState.openedAt);
-    const byOpenedAt = entryFills
-      .filter((fill) => fill.mint === input.position.mint && Date.parse(fill.recordedAt) >= openedAtMs)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byOpenedAt) {
-      return byOpenedAt;
-    }
+  if (!input.positionState) {
+    return undefined;
   }
 
   return entryFills
-    .filter((fill) => fill.mint === input.position.mint)
-    .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-}
-
-function isTrustedActualLpOpenFill(
-  fill: LiveFillEntry | undefined
-): fill is LiveFillEntry & { side: 'add-lp'; fillAmountSource: 'wallet-delta' } {
-  return fill?.side === 'add-lp'
-    && fill.amount > 0
-    && fill.fillAmountSource === 'wallet-delta';
-}
-
-function resolveTrustedLpEntry(input: {
-  positionState?: PositionStateSnapshot;
-  openFill?: LiveFillEntry;
-  lifecycleBound?: boolean;
-}): {
-  entrySol: number;
-  source: PositionEntrySolSource;
-  entryFillSubmissionId?: string;
-} | undefined {
-  if (
-    input.lifecycleBound
-    && isTrustedEntrySolSource(input.positionState?.entrySolSource)
-    && typeof input.positionState?.entrySol === 'number'
-    && input.positionState.entrySol > 0
-  ) {
-    return {
-      entrySol: input.positionState.entrySol,
-      source: input.positionState.entrySolSource,
-      entryFillSubmissionId: input.positionState.entryFillSubmissionId
-    };
-  }
-
-  const openFill = input.openFill;
-  if (isTrustedActualLpOpenFill(openFill)) {
-    return {
-      entrySol: openFill.amount,
-      source: 'actual_fill',
-      entryFillSubmissionId: openFill.submissionId
-    };
-  }
-
-  return undefined;
+    .filter((fill) => classifyLpEntryFillBinding({
+      fill,
+      positionState: input.positionState!
+    }) !== 'none')
+    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt))[0];
 }
 
 function resolvePositionStateOpenFill(input: {
@@ -1006,57 +915,9 @@ function resolvePositionStateOpenFill(input: {
     return undefined;
   }
 
-  const entryFills = input.fills
-    .filter((fill) => fill.side === 'add-lp' && fill.amount > 0);
-
-  if (positionState.chainPositionAddress) {
-    const byChainAddress = entryFills
-      .filter((fill) => fill.chainPositionAddress === positionState.chainPositionAddress)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byChainAddress) {
-      return byChainAddress;
-    }
-  }
-
-  if (positionState.positionId) {
-    const byPositionId = entryFills
-      .filter((fill) => fill.positionId === positionState.positionId)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byPositionId) {
-      return byPositionId;
-    }
-  }
-
-  if (positionState.openIntentId) {
-    const byOpenIntentId = entryFills
-      .filter((fill) => fill.openIntentId === positionState.openIntentId)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byOpenIntentId) {
-      return byOpenIntentId;
-    }
-  }
-
-  if (positionState.activeMint && positionState.openedAt) {
-    const openedAtMs = Date.parse(positionState.openedAt);
-    const byOpenedAt = entryFills
-      .filter((fill) => fill.mint === positionState.activeMint && Date.parse(fill.recordedAt) >= openedAtMs)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-
-    if (byOpenedAt) {
-      return byOpenedAt;
-    }
-  }
-
-  if (positionState.activeMint) {
-    return entryFills
-      .filter((fill) => fill.mint === positionState.activeMint)
-      .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
-  }
-
-  return undefined;
+  return input.fills
+    .filter((fill) => classifyLpEntryFillBinding({ fill, positionState }) !== 'none')
+    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt))[0];
 }
 
 function dedupeActiveLpPositions(accountState?: LiveAccountState) {
@@ -2048,9 +1909,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     context.trader.lpValuationStatus = multiLpExit.position.valuationStatus;
     context.trader.lpValuationReason = multiLpExit.position.valuationReason;
     context.trader.lpValuationSource = multiLpExit.position.valuationSource;
-    context.trader.lpNetPnlPct = typeof multiLpExit.snapshot.lpNetPnlPct === 'number'
-      ? multiLpExit.snapshot.lpNetPnlPct
-      : context.trader.lpNetPnlPct;
+    if (typeof multiLpExit.snapshot.lpNetPnlPct === 'number') {
+      context.trader.lpNetPnlPct = multiLpExit.snapshot.lpNetPnlPct;
+    } else {
+      delete context.trader.lpNetPnlPct;
+    }
     context.trader.lpActiveBinStatus = multiLpExit.snapshot.lpActiveBinStatus as
       | 'in-range'
       | 'out-of-range'
@@ -2915,7 +2778,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     actionableActionClass === 'open_risk' &&
     (confirmation.status === 'submitted' || isResolvedConfirmation(confirmation.status, confirmationFinality))
   ) {
-    await spendingLimitsStore.recordSpend(requestedPositionSol);
+    await spendingLimitsStore.reserveSpend(orderIntent.idempotencyKey, requestedPositionSol);
   }
   emitMirrorEvent(mirrorSink, () => {
     mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
@@ -2993,7 +2856,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
   const fillRecordedAt = new Date().toISOString();
-  let strictCloseFillEvidenceMissing = false;
+  let fillEvidenceMissing = false;
   let confirmedFill: LiveCycleConfirmedFill | undefined;
   const isConfirmedFill = isConfirmedConfirmation(confirmation.status, confirmationFinality);
   if (isConfirmedFill) {
@@ -3003,8 +2866,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       accountProvider: input.accountProvider,
       fallbackSol: requestedPositionSol
     });
-    if (requiresStrictFillEvidence(actionableAction) && !actualFill.hasFillEvidence) {
-      strictCloseFillEvidenceMissing = true;
+    if (!actualFill.hasFillEvidence) {
+      fillEvidenceMissing = true;
       await appendIncident(journals, logContext, mirrorSink, {
         stage: 'recovery',
         reason: 'unknown_pending_reconciliation:missing-fill-evidence',
@@ -3026,6 +2889,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         recordedAt: fillRecordedAt,
         hasFillEvidence: actualFill.hasFillEvidence
       };
+      if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+        await spendingLimitsStore.settleSpend(orderIntent.idempotencyKey, mirroredFilledSol);
+      }
       await journals.fills.append({
         cycleId: logContext.cycleId,
         submissionId: broadcastResult.submissionId,
@@ -3043,6 +2909,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         preWalletSol: actualFill.preWalletSol,
         postWalletSol: actualFill.postWalletSol,
         fillAmountSource: actualFill.fillAmountSource,
+        hasFillEvidence: actualFill.hasFillEvidence,
         status: 'confirmed',
         confirmationStatus: confirmation.status,
         requestedPositionSol,
@@ -3071,6 +2938,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
           actualFilledSol: actualFill.actualFilledSol,
           actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
           fillAmountSource: actualFill.fillAmountSource,
+          hasFillEvidence: actualFill.hasFillEvidence,
+          preWalletSol: actualFill.preWalletSol,
+          postWalletSol: actualFill.postWalletSol,
           recordedAt: fillRecordedAt
         }));
       });
@@ -3088,7 +2958,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  if (!(requiresStrictFillEvidence(actionableAction) && strictCloseFillEvidenceMissing)) {
+  if (!fillEvidenceMissing) {
     await appendEvolutionOutcomeBestEffort({
       sink: input.evolutionSink,
       logContext,
@@ -3106,7 +2976,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const lifecycleSynchronouslyResolved = isConfirmedConfirmation(confirmation.status, confirmationFinality)
-    && !(requiresStrictFillEvidence(actionableAction) && strictCloseFillEvidenceMissing);
+    && !fillEvidenceMissing;
 
   return finalize({
     ...buildLiveSubmittedResult({

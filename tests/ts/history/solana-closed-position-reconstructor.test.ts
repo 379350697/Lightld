@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractLifecycleEventsFromTransaction,
   reconstructClosedPositionSnapshot,
+  reconstructOpenPositionEntryEvidence,
   type SolanaClosedPositionLifecycleEvent
 } from '../../../src/history/solana-closed-position-reconstructor';
 
@@ -26,6 +27,111 @@ function buildEvent(
 }
 
 describe('reconstructClosedPositionSnapshot', () => {
+  it('reconstructs open LP entry from wallet native SOL delta', () => {
+    const evidence = reconstructOpenPositionEntryEvidence({
+      walletAddress: 'wallet-1',
+      tokenMint: 'mint-earth',
+      tokenSymbol: 'earthcoin',
+      poolAddress: 'pool-1',
+      positionAddress: 'position-1',
+      transaction: {
+        blockTime: 1_777_777_777,
+        transaction: {
+          signatures: ['sig-open'],
+          message: {
+            accountKeys: ['wallet-1', 'position-1'],
+            instructions: [
+              {
+                program: 'system',
+                parsed: {
+                  type: 'transfer',
+                  info: {
+                    source: 'wallet-1',
+                    lamports: 50_000_000
+                  }
+                }
+              },
+              {
+                program: 'meteora',
+                parsed: {
+                  info: {
+                    pool: 'pool-1',
+                    position: 'position-1'
+                  }
+                }
+              }
+            ]
+          }
+        },
+        meta: {
+          preBalances: [1_000_000_000, 0],
+          postBalances: [922_583_956, 0],
+          logMessages: [
+            'Program log: Instruction: AddLiquidityByStrategy2'
+          ]
+        }
+      }
+    });
+
+    expect(evidence).toMatchObject({
+      signature: 'sig-open',
+      entrySol: 0.077416044,
+      openedAt: '2026-05-03T03:09:37.000Z',
+      poolAddress: 'pool-1',
+      positionAddress: 'position-1',
+      confidence: 'exact'
+    });
+  });
+
+  it('does not reconstruct open LP entry when the transaction does not prove the requested position', () => {
+    const evidence = reconstructOpenPositionEntryEvidence({
+      walletAddress: 'wallet-1',
+      tokenMint: 'mint-earth',
+      tokenSymbol: 'earthcoin',
+      poolAddress: 'pool-1',
+      positionAddress: 'position-requested',
+      transaction: {
+        blockTime: 1_777_777_777,
+        transaction: {
+          signatures: ['sig-other-open'],
+          message: {
+            accountKeys: ['wallet-1', 'position-other'],
+            instructions: [
+              {
+                program: 'system',
+                parsed: {
+                  type: 'transfer',
+                  info: {
+                    source: 'wallet-1',
+                    lamports: 50_000_000
+                  }
+                }
+              },
+              {
+                program: 'meteora',
+                parsed: {
+                  info: {
+                    pool: 'pool-1',
+                    position: 'position-other'
+                  }
+                }
+              }
+            ]
+          }
+        },
+        meta: {
+          preBalances: [1_000_000_000, 0],
+          postBalances: [950_000_000, 0],
+          logMessages: [
+            'Program log: Instruction: AddLiquidityByStrategy2'
+          ]
+        }
+      }
+    });
+
+    expect(evidence).toBeNull();
+  });
+
   it('extracts open, withdraw, and claim-fee events from parsed Solana transactions', () => {
     const walletAddress = 'wallet-1';
     const tokenMint = 'mint-earth';

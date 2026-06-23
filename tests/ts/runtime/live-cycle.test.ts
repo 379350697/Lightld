@@ -176,7 +176,7 @@ describe('runLiveCycle', () => {
     });
   });
 
-  it('writes confirmed LP fills with canonical and compatibility amount fields', async () => {
+  it('does not write confirmed LP fills without trusted fill evidence', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
@@ -200,15 +200,17 @@ describe('runLiveCycle', () => {
     });
 
     const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
 
     expect(result.action).toBe('add-lp');
-    expect(fillJournal[0]).toMatchObject({
-      side: 'add-lp',
-      status: 'confirmed',
-      confirmationStatus: 'confirmed',
-      amount: 0.05,
-      filledSol: 0.05
-    });
+    expect(fillJournal).toEqual([]);
+    expect(incidentJournal).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'recovery',
+        severity: 'warning',
+        reason: 'unknown_pending_reconciliation:missing-fill-evidence'
+      })
+    ]));
   });
 
   it('records confirmed fills from post-confirmation wallet delta when account state is available', async () => {
@@ -259,16 +261,17 @@ describe('runLiveCycle', () => {
     const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
 
     expect(result.action).toBe('add-lp');
-    expect(fillJournal[0]).toMatchObject({
-      side: 'add-lp',
-      requestedPositionSol: 0.05,
-      amount: 0.057,
-      filledSol: 0.057,
-      actualFilledSol: 0.057,
-      actualWalletDeltaSol: -0.057,
-      preWalletSol: 1,
-      postWalletSol: 0.943,
-      fillAmountSource: 'wallet-delta'
+      expect(fillJournal[0]).toMatchObject({
+        side: 'add-lp',
+        requestedPositionSol: 0.05,
+        amount: 0.057,
+        filledSol: 0.057,
+        actualFilledSol: 0.057,
+        actualWalletDeltaSol: -0.057,
+        preWalletSol: 1,
+        postWalletSol: 0.943,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true
     });
   });
 
@@ -344,15 +347,16 @@ describe('runLiveCycle', () => {
     const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
 
     expect(result.action).toBe('withdraw-lp');
-    expect(fillJournal[0]).toMatchObject({
-      side: 'withdraw-lp',
-      requestedPositionSol: 0.05,
-      amount: 0.072,
-      filledSol: 0.072,
-      actualFilledSol: 0.072,
-      actualWalletDeltaSol: 0.072,
-      fillAmountSource: 'wallet-delta',
-      status: 'confirmed'
+      expect(fillJournal[0]).toMatchObject({
+        side: 'withdraw-lp',
+        requestedPositionSol: 0.05,
+        amount: 0.072,
+        filledSol: 0.072,
+        actualFilledSol: 0.072,
+        actualWalletDeltaSol: 0.072,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true,
+        status: 'confirmed'
     });
   });
   it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
@@ -844,22 +848,22 @@ describe('runLiveCycle', () => {
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-	        trader: {
-	          hasInventory: true,
-	          hasLpPosition: true,
-	          lpNetPnlPct: 35,
-	          lpCurrentValueSol: 0.72,
-	          lpUnclaimedFeeSol: 0.03
-	        },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpNetPnlPct: 35,
+            lpCurrentValueSol: 0.72,
+            lpUnclaimedFeeSol: 0.03
+          },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
 
-	    expect(result.mode).toBe('BLOCKED');
-	    expect(result.action).toBe('hold');
-	    expect(result.reason).toBe('hold');
-	    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
-	  });
+      expect(result.mode).toBe('BLOCKED');
+      expect(result.action).toBe('hold');
+      expect(result.reason).toBe('hold');
+      expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+    });
 
   it('derives lpNetPnlPct from trusted withdraw-simulation valuations and triggers take profit', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
@@ -970,13 +974,14 @@ describe('runLiveCycle', () => {
         fills: [{
           submissionId: 'sub-fugu-open',
           chainPositionAddress: 'position-fugu',
-          mint: 'mint-fugu',
-          side: 'add-lp',
-          amount: 0.077416045,
-          actualFilledSol: 0.077416045,
-          actualWalletDeltaSol: 0.077416045,
-          fillAmountSource: 'wallet-delta',
-          recordedAt: openedAt
+            mint: 'mint-fugu',
+            side: 'add-lp',
+            amount: 0.077416045,
+            actualFilledSol: 0.077416045,
+            actualWalletDeltaSol: 0.077416045,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: openedAt
         }]
       }
     });
@@ -1044,27 +1049,101 @@ describe('runLiveCycle', () => {
         fills: [{
           submissionId: 'sub-partial-open',
           chainPositionAddress: 'position-partial',
-          mint: 'mint-partial',
-          side: 'add-lp',
-          amount: 0.137416044,
-          actualFilledSol: 0.137416044,
-          actualWalletDeltaSol: 0.137416044,
-          fillAmountSource: 'wallet-delta',
-          recordedAt: openedAt
+            mint: 'mint-partial',
+            side: 'add-lp',
+            amount: 0.137416044,
+            actualFilledSol: 0.137416044,
+            actualWalletDeltaSol: 0.137416044,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: openedAt
         }]
       }
     });
 
-    expect(result.action).toBe('hold');
-    expect(result.audit.reason).not.toBe('lp-take-profit');
-    expect(result.orderIntent).toBeUndefined();
-    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(16.5135, 5);
-  });
+      expect(result.action).toBe('hold');
+      expect(result.audit.reason).not.toBe('lp-take-profit');
+      expect(result.orderIntent).toBeUndefined();
+      expect(result.context.trader.lpNetPnlPct).toBeCloseTo(16.5135, 5);
+    });
 
-  it('does not use journal-backed LP valuation snapshots to trigger same-mint take profit', async () => {
-    const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
-    const oldRecordedAt = new Date(Date.now() - (30 * 60 * 60 * 1000)).toISOString();
-    const currentRecordedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    it('does not trust wallet-delta sourced LP open fills without explicit fill evidence', async () => {
+      const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const result = await runLiveCycle({
+        strategy: 'new-token-v1',
+        journalRootDir: TEST_JOURNAL_DIR,
+        stateRootDir: TEST_STATE_DIR,
+        requestedPositionSol: 0.02,
+        positionState: {
+          allowNewOpens: true,
+          flattenOnly: false,
+          lastAction: 'add-lp',
+          activeMint: 'mint-no-evidence',
+          activePoolAddress: 'pool-no-evidence',
+          chainPositionAddress: 'position-no-evidence',
+          lifecycleState: 'open',
+          entrySol: 0.02,
+          openedAt,
+          updatedAt: openedAt
+        },
+        context: {
+          pool: { address: 'pool-no-evidence', liquidityUsd: 10_000 },
+          token: { mint: 'mint-no-evidence', inSession: true, hasSolRoute: true, symbol: 'NEV' },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpCurrentValueSol: 0.160108238,
+            lpUnclaimedFeeSol: 0,
+            valuationStatus: 'ready',
+            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [{
+            poolAddress: 'pool-no-evidence',
+            positionAddress: 'position-no-evidence',
+            mint: 'mint-no-evidence',
+            lowerBinId: 100,
+            upperBinId: 168,
+            activeBinId: 120,
+            solSide: 'tokenX',
+            solDepletedBins: 20,
+            currentValueSol: 0.160108238,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true,
+            valuationStatus: 'ready',
+            valuationReason: '',
+            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          }],
+          journalLpPositions: [],
+          fills: [{
+            submissionId: 'sub-no-evidence-open',
+            chainPositionAddress: 'position-no-evidence',
+            mint: 'mint-no-evidence',
+            side: 'add-lp',
+            amount: 0.137416044,
+            actualFilledSol: 0.137416044,
+            actualWalletDeltaSol: 0.137416044,
+            fillAmountSource: 'wallet-delta',
+            recordedAt: openedAt
+          }]
+        }
+      });
+
+      expect(result.action).toBe('hold');
+      expect(result.audit.reason).not.toBe('lp-take-profit');
+      expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+    });
+
+    it('does not use journal-backed LP valuation snapshots to trigger same-mint take profit', async () => {
+      const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
+      const oldRecordedAt = new Date(Date.now() - (30 * 60 * 60 * 1000)).toISOString();
+      const currentRecordedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
 
     await appendJsonLine(baseFillPath, {
       submissionId: 'old-open',
@@ -1329,158 +1408,183 @@ describe('runLiveCycle', () => {
         },
         route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50, poolAddress: 'pool-selected-other' }
       }
+      });
+
+      const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+      const quoteJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.quoteJournalPath);
+      const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+      const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+      const decisionJournal = await readJsonLines<Record<string, unknown>>(
+        result.journalPaths.decisionAuditPath
+      );
+
+      expect(result.mode).toBe('LIVE');
+      expect(result.action).toBe('withdraw-lp');
+      expect(result.orderIntent).toMatchObject({
+        poolAddress: 'pool-open',
+        outputSol: 0.08,
+        fullPositionExit: true
+      });
+      expect(orderJournal[0]).toMatchObject({
+        side: 'withdraw-lp',
+        poolAddress: 'pool-open',
+        outputSol: 0.08,
+        requestedPositionSol: 0.08,
+        quotedOutputSol: 0.08
+      });
+      expect(quoteJournal[0]).toMatchObject({
+        poolAddress: 'pool-open',
+        outputSol: 0.08,
+        requestedPositionSol: 0.08
+      });
+      expect(fillJournal).toEqual([]);
+      expect(incidentJournal).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'recovery',
+          severity: 'warning',
+          reason: 'unknown_pending_reconciliation:missing-fill-evidence'
+        })
+      ]));
+      expect(decisionJournal[0]).toMatchObject({
+        action: 'withdraw-lp',
+        requestedPositionSol: 0.08,
+        quoteOutputSol: 0.08,
+        confirmationStatus: 'confirmed'
+      });
+      expect(result.nextLifecycleState).toBe('lp_exit_pending');
     });
 
-    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
-	    const quoteJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.quoteJournalPath);
-	    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
-	    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
-	    const decisionJournal = await readJsonLines<Record<string, unknown>>(
-	      result.journalPaths.decisionAuditPath
-	    );
+    it('does not use unbound journal LP fills to override bin-depletion exits', async () => {
+      const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
+      const oldRecordedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const newRecordedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
-    expect(result.mode).toBe('LIVE');
-    expect(result.action).toBe('withdraw-lp');
-    expect(result.orderIntent).toMatchObject({
-      poolAddress: 'pool-open',
-      outputSol: 0.08,
-      fullPositionExit: true
-    });
-    expect(orderJournal[0]).toMatchObject({
-      side: 'withdraw-lp',
-      poolAddress: 'pool-open',
-      outputSol: 0.08,
-      requestedPositionSol: 0.08,
-      quotedOutputSol: 0.08
-    });
-    expect(quoteJournal[0]).toMatchObject({
-      poolAddress: 'pool-open',
-      outputSol: 0.08,
-      requestedPositionSol: 0.08
-    });
-	    expect(fillJournal).toEqual([]);
-	    expect(incidentJournal).toEqual(expect.arrayContaining([
-	      expect.objectContaining({
-	        stage: 'recovery',
-	        severity: 'warning',
-	        reason: 'unknown_pending_reconciliation:missing-fill-evidence'
-	      })
-	    ]));
-	    expect(decisionJournal[0]).toMatchObject({
-	      action: 'withdraw-lp',
-	      requestedPositionSol: 0.08,
-	      quoteOutputSol: 0.08,
-	      confirmationStatus: 'confirmed'
-	    });
-	    expect(result.nextLifecycleState).toBe('lp_exit_pending');
-	  });
+      await appendJsonLine(baseFillPath, {
+        submissionId: 'old-open',
+        mint: 'mint-old',
+        side: 'add-lp',
+        amount: 1,
+        recordedAt: oldRecordedAt
+      }, {
+        rotateDaily: true,
+        now: new Date(oldRecordedAt)
+      });
 
-  it('prefers an older journal-backed LP exit over a newer bin-depletion exit', async () => {
-    const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
+      await appendJsonLine(baseFillPath, {
+        submissionId: 'new-open',
+        mint: 'mint-new',
+        side: 'add-lp',
+        amount: 1,
+        recordedAt: newRecordedAt
+      }, {
+        rotateDaily: true,
+        now: new Date(newRecordedAt)
+      });
 
-    await appendJsonLine(baseFillPath, {
-      submissionId: 'old-open',
-      mint: 'mint-old',
-      side: 'add-lp',
-      amount: 1,
-      recordedAt: '2026-04-17T01:00:00.000Z'
-    }, {
-      rotateDaily: true,
-      now: new Date('2026-04-17T01:00:00.000Z')
-    });
-
-    await appendJsonLine(baseFillPath, {
-      submissionId: 'new-open',
-      mint: 'mint-new',
-      side: 'add-lp',
-      amount: 1,
-      recordedAt: '2026-04-18T09:30:00.000Z'
-    }, {
-      rotateDaily: true,
-      now: new Date('2026-04-18T09:30:00.000Z')
-    });
-
-    const result = await runLiveCycle({
-      strategy: 'new-token-v1',
-      journalRootDir: TEST_JOURNAL_DIR,
-      stateRootDir: TEST_STATE_DIR,
-      requestedPositionSol: 0.1,
-      context: {
-        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
-        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
-        trader: { hasInventory: false, hasLpPosition: false },
-        route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
-      },
-      accountState: {
-        walletSol: 1.25,
-        journalSol: 1.25,
-        walletTokens: [],
-        journalTokens: [],
-        walletLpPositions: [
-          {
-            poolAddress: 'pool-new',
-            positionAddress: 'pos-new',
-            mint: 'mint-new',
-            lowerBinId: 100,
-            upperBinId: 168,
-            activeBinId: 165,
-            solSide: 'tokenX',
-            solDepletedBins: 65,
-            currentValueSol: 0.97,
-            unclaimedFeeSol: 0.01,
-            hasLiquidity: true
+      const result = await runLiveCycle({
+        strategy: 'new-token-v1',
+        journalRootDir: TEST_JOURNAL_DIR,
+        stateRootDir: TEST_STATE_DIR,
+        requestedPositionSol: 0.1,
+        positionState: {
+          allowNewOpens: true,
+          flattenOnly: false,
+          lastAction: 'add-lp',
+          activeMint: 'mint-old',
+          activePoolAddress: 'pool-old',
+          chainPositionAddress: 'pos-old',
+          lifecycleState: 'open',
+          entrySol: 0.6,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'old-open',
+          openedAt: oldRecordedAt,
+          updatedAt: oldRecordedAt
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpNetPnlPct: 40,
+            lpCurrentValueSol: 0.84,
+            lpUnclaimedFeeSol: 0,
+            valuationStatus: 'ready',
+            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
           },
-          {
-            poolAddress: 'pool-old',
-            positionAddress: 'pos-old',
-            mint: 'mint-old',
-            lowerBinId: 200,
-            upperBinId: 268,
-            activeBinId: 210,
-            solSide: 'tokenX',
-            solDepletedBins: 10,
-            currentValueSol: 0.72,
-            unclaimedFeeSol: 0.03,
-            hasLiquidity: true
-          }
-        ],
-        journalLpPositions: [
-          {
-            poolAddress: 'pool-new',
-            positionAddress: 'pos-new',
-            mint: 'mint-new',
-            lowerBinId: 100,
-            upperBinId: 168,
-            activeBinId: 165,
-            solSide: 'tokenX',
-            solDepletedBins: 65,
-            currentValueSol: 0.97,
-            unclaimedFeeSol: 0.01,
-            hasLiquidity: true
-          },
-          {
-            poolAddress: 'pool-old',
-            positionAddress: 'pos-old',
-            mint: 'mint-old',
-            lowerBinId: 200,
-            upperBinId: 268,
-            activeBinId: 210,
-            solSide: 'tokenX',
-            solDepletedBins: 10,
-            currentValueSol: 0.72,
-            unclaimedFeeSol: 0.03,
-            hasLiquidity: true
-          }
-        ],
-        fills: []
-      }
-    });
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+        },
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [
+            {
+              poolAddress: 'pool-new',
+              positionAddress: 'pos-new',
+              mint: 'mint-new',
+              lowerBinId: 100,
+              upperBinId: 168,
+              activeBinId: 165,
+              solSide: 'tokenX',
+              solDepletedBins: 65,
+              currentValueSol: 0.97,
+              unclaimedFeeSol: 0.01,
+              hasLiquidity: true
+            },
+            {
+              poolAddress: 'pool-old',
+              positionAddress: 'pos-old',
+              mint: 'mint-old',
+              lowerBinId: 200,
+              upperBinId: 268,
+              activeBinId: 210,
+              solSide: 'tokenX',
+              solDepletedBins: 10,
+              currentValueSol: 0.72,
+              unclaimedFeeSol: 0.03,
+              hasLiquidity: true
+            }
+          ],
+          journalLpPositions: [
+            {
+              poolAddress: 'pool-new',
+              positionAddress: 'pos-new',
+              mint: 'mint-new',
+              lowerBinId: 100,
+              upperBinId: 168,
+              activeBinId: 165,
+              solSide: 'tokenX',
+              solDepletedBins: 65,
+              currentValueSol: 0.97,
+              unclaimedFeeSol: 0.01,
+              hasLiquidity: true
+            },
+            {
+              poolAddress: 'pool-old',
+              positionAddress: 'pos-old',
+              mint: 'mint-old',
+              lowerBinId: 200,
+              upperBinId: 268,
+              activeBinId: 210,
+              solSide: 'tokenX',
+              solDepletedBins: 10,
+              currentValueSol: 0.72,
+              unclaimedFeeSol: 0.03,
+              hasLiquidity: true
+            }
+          ],
+          fills: []
+        }
+      });
 
-    expect(result.mode).toBe('LIVE');
-    expect(result.action).toBe('withdraw-lp');
-    expect(result.audit.reason).toMatch(/lp-stop-loss|max-hold-with-lp-position/);
-    expect(result.orderIntent?.poolAddress).toBe('pool-old');
-  });
+      expect(result.mode).toBe('LIVE');
+      expect(result.action).toBe('withdraw-lp');
+      expect(result.audit.reason).toBe('lp-sol-nearly-depleted');
+      expect(result.orderIntent?.poolAddress).toBe('pool-new');
+      expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+    });
 
   it('keeps residual LP positions eligible for bin-based exits even when funded bins are zero', async () => {
     const result = await runLiveCycle({
@@ -1687,16 +1791,16 @@ describe('runLiveCycle', () => {
 
     const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
 
-	    expect(result.action).toBe('hold');
-	    expect(result.reason).toContain('valuation-unavailable');
-	    expect(incidentJournal).toEqual(expect.arrayContaining([
-	      expect.objectContaining({
-	        stage: 'engine',
-	        severity: 'warning',
-	        reason: 'valuation-unavailable:missing-current-value'
-	      })
-	    ]));
-	  });
+      expect(result.action).toBe('hold');
+      expect(result.reason).toContain('valuation-unavailable');
+      expect(incidentJournal).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'engine',
+          severity: 'warning',
+          reason: 'valuation-unavailable:missing-current-value'
+        })
+      ]));
+    });
 
   it('records an incident when an open LP position is missing entry metadata', async () => {
     const result = await runLiveCycle({

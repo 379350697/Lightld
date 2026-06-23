@@ -31,4 +31,32 @@ describe('normalizeDashboardJournalFill', () => {
       filledSol: 0.052
     });
   });
+
+  it('does not trust legacy fills without source or wallet-delta evidence', () => {
+    expect(normalizeDashboardJournalFill({
+      submissionId: 'sub-legacy',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      side: 'add-lp',
+      filledSol: 0.05,
+      recordedAt: '2026-04-20T00:00:00.000Z'
+    })).toMatchObject({
+      filledSol: 0.05,
+      hasFillEvidence: false
+    });
+
+    expect(normalizeDashboardJournalFill({
+      submissionId: 'sub-wallet',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      side: 'add-lp',
+      filledSol: 0.05,
+      actualWalletDeltaSol: -0.05,
+      fillAmountSource: 'wallet-delta',
+      recordedAt: '2026-04-20T00:01:00.000Z'
+    })).toMatchObject({
+      filledSol: 0.05,
+      hasFillEvidence: true
+    });
+  });
 });

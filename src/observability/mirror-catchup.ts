@@ -211,6 +211,26 @@ function readNumber(payload: Record<string, unknown>, keys: string[]) {
   return 0;
 }
 
+function readBoolean(payload: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key];
+
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value !== 0;
+    }
+
+    if (typeof value === 'string' && value.length > 0) {
+      return value === 'true' || value === '1';
+    }
+  }
+
+  return undefined;
+}
+
 function toConfirmationStatus(value: string) {
   return value === 'submitted' || value === 'confirmed' || value === 'failed' || value === 'unknown'
     ? value
@@ -329,6 +349,17 @@ function toFillCatchupEvent(
             : 'unknown',
       amount: readNumber(value, ['amount', 'filledSol']),
       filledSol: readNumber(value, ['filledSol', 'amount']),
+      actualFilledSol: readNumber(value, ['actualFilledSol']),
+      actualWalletDeltaSol: readNumber(value, ['actualWalletDeltaSol']),
+      fillAmountSource: (() => {
+        const source = readString(value, ['fillAmountSource']);
+        return source === 'wallet-delta' || source === 'chain-reconstructed' || source === 'requested-position-fallback'
+          ? source
+          : undefined;
+      })(),
+      hasFillEvidence: readBoolean(value, ['hasFillEvidence']),
+      preWalletSol: readNumber(value, ['preWalletSol']),
+      postWalletSol: readNumber(value, ['postWalletSol']),
       recordedAt: recordedAt || new Date(0).toISOString()
     }
   };

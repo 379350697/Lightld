@@ -63,7 +63,10 @@ export type FillMirrorPayload = {
   filledSol: number;
   actualFilledSol?: number;
   actualWalletDeltaSol?: number;
-  fillAmountSource?: 'wallet-delta' | 'requested-position-fallback';
+  fillAmountSource?: 'wallet-delta' | 'chain-reconstructed' | 'requested-position-fallback';
+  hasFillEvidence?: boolean;
+  preWalletSol?: number;
+  postWalletSol?: number;
   recordedAt: string;
 };
 

@@ -32,10 +32,13 @@ type ParsedTransaction = {
   transaction?: {
     signatures?: string[];
     message?: {
+      accountKeys?: Array<string | { pubkey?: string }>;
       instructions?: ParsedInstruction[];
     };
   };
   meta?: {
+    preBalances?: number[];
+    postBalances?: number[];
     logMessages?: string[];
     innerInstructions?: ParsedInnerInstructionGroup[];
   };
@@ -67,6 +70,19 @@ export type ClosedPositionSnapshot = {
   feeTokenAmount: number;
   feeTokenValueSol: number;
   pnlSol: number;
+  source: 'solana-chain';
+  confidence: 'exact' | 'partial';
+};
+
+export type OpenPositionEntryEvidence = {
+  walletAddress: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  poolAddress: string;
+  positionAddress: string;
+  openedAt: string;
+  entrySol: number;
+  signature: string;
   source: 'solana-chain';
   confidence: 'exact' | 'partial';
 };
@@ -160,6 +176,53 @@ function resolveIdentity(instructions: ParsedInstruction[]) {
   return { poolAddress: '', positionAddress: '' };
 }
 
+function instructionMentionsAddress(instruction: ParsedInstruction, address: string) {
+  if (instruction.accounts?.includes(address)) {
+    return true;
+  }
+
+  const info = instruction.parsed?.info;
+  return Object.values(info ?? {}).some((value) => value === address);
+}
+
+function transactionMentionsAddress(transaction: ParsedTransaction, address: string) {
+  if (!address) {
+    return false;
+  }
+
+  const accountKeys = transaction.transaction?.message?.accountKeys ?? [];
+  if (accountKeys.some((key) => accountKeyToString(key) === address)) {
+    return true;
+  }
+
+  const topLevelInstructions = transaction.transaction?.message?.instructions ?? [];
+  if (topLevelInstructions.some((instruction) => instructionMentionsAddress(instruction, address))) {
+    return true;
+  }
+
+  return (transaction.meta?.innerInstructions ?? []).some((group) =>
+    group.instructions.some((instruction) => instructionMentionsAddress(instruction, address))
+  );
+}
+
+function hasStrictPositionEvidence(input: {
+  transaction: ParsedTransaction;
+  requestedPositionAddress?: string;
+  parsedPositionAddress?: string;
+}) {
+  const requestedPositionAddress = input.requestedPositionAddress ?? '';
+
+  if (!requestedPositionAddress) {
+    return false;
+  }
+
+  if (input.parsedPositionAddress) {
+    return input.parsedPositionAddress === requestedPositionAddress;
+  }
+
+  return transactionMentionsAddress(input.transaction, requestedPositionAddress);
+}
+
 function readTransferAmounts(instructions: ParsedInstruction[], tokenMint: string, tokenPriceInSol: number) {
   let solAmount = 0;
   let tokenAmount = 0;
@@ -197,6 +260,45 @@ function readTransferAmounts(instructions: ParsedInstruction[], tokenMint: strin
   };
 }
 
+function accountKeyToString(value: string | { pubkey?: string } | undefined) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value && typeof value.pubkey === 'string') {
+    return value.pubkey;
+  }
+
+  return '';
+}
+
+function readWalletNativeSolDelta(input: {
+  walletAddress: string;
+  transaction: ParsedTransaction;
+}) {
+  const accountKeys = input.transaction.transaction?.message?.accountKeys ?? [];
+  const walletIndex = accountKeys.findIndex((key) => accountKeyToString(key) === input.walletAddress);
+
+  if (walletIndex < 0) {
+    return undefined;
+  }
+
+  const preLamports = input.transaction.meta?.preBalances?.[walletIndex];
+  const postLamports = input.transaction.meta?.postBalances?.[walletIndex];
+
+  if (
+    typeof preLamports !== 'number'
+    || typeof postLamports !== 'number'
+    || !Number.isFinite(preLamports)
+    || !Number.isFinite(postLamports)
+  ) {
+    return undefined;
+  }
+
+  const deltaSol = (postLamports - preLamports) / 1_000_000_000;
+  return Number.isFinite(deltaSol) && deltaSol !== 0 ? deltaSol : undefined;
+}
+
 export function extractLifecycleEventsFromTransaction(input: {
   walletAddress: string;
   tokenMint: string;
@@ -210,8 +312,8 @@ export function extractLifecycleEventsFromTransaction(input: {
   const signature = input.transaction.transaction?.signatures?.[0] ?? '';
   const recordedAt = toIsoString(input.transaction.blockTime);
   const identity = resolveIdentity(topLevelInstructions);
-  const poolAddress = input.poolAddress && input.poolAddress.length > 0 ? input.poolAddress : identity.poolAddress;
-  const positionAddress = input.positionAddress && input.positionAddress.length > 0 ? input.positionAddress : identity.positionAddress;
+  const poolAddress = identity.poolAddress || input.poolAddress || '';
+  const positionAddress = identity.positionAddress || input.positionAddress || '';
   const instructionNames = resolveInstructionIndexes({
     instructions: topLevelInstructions,
     logMessages: input.transaction.meta?.logMessages
@@ -274,6 +376,79 @@ export function extractLifecycleEventsFromTransaction(input: {
   }
 
   return events.filter((event) => event.recordedAt.length > 0 && event.signature.length > 0);
+}
+
+export function reconstructOpenPositionEntryEvidence(input: {
+  walletAddress: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenPriceInSol?: number;
+  poolAddress?: string;
+  positionAddress?: string;
+  transaction: ParsedTransaction;
+}): OpenPositionEntryEvidence | null {
+  const parsedIdentity = resolveIdentity(input.transaction.transaction?.message?.instructions ?? []);
+  if (input.positionAddress && !hasStrictPositionEvidence({
+    transaction: input.transaction,
+    requestedPositionAddress: input.positionAddress,
+    parsedPositionAddress: parsedIdentity.positionAddress
+  })) {
+    return null;
+  }
+
+  if (!input.positionAddress) {
+    return null;
+  }
+
+  const events = extractLifecycleEventsFromTransaction(input);
+  const openEvents = events.filter((event) => event.kind === 'open');
+
+  if (openEvents.length === 0) {
+    return null;
+  }
+
+  const matchingOpenEvents = openEvents.filter((event) => {
+    if (input.poolAddress && event.poolAddress && input.poolAddress !== event.poolAddress) {
+      return false;
+    }
+
+    if (input.positionAddress && event.positionAddress && input.positionAddress !== event.positionAddress) {
+      return false;
+    }
+
+    return true;
+  });
+
+  if (matchingOpenEvents.length === 0) {
+    return null;
+  }
+
+  const firstOpen = matchingOpenEvents[0];
+  const walletDeltaSol = readWalletNativeSolDelta({
+    walletAddress: input.walletAddress,
+    transaction: input.transaction
+  });
+  const walletSpendSol = typeof walletDeltaSol === 'number' && walletDeltaSol < 0
+    ? Math.abs(walletDeltaSol)
+    : undefined;
+  const entrySol = walletSpendSol ?? firstOpen.solAmount;
+
+  if (entrySol <= 0) {
+    return null;
+  }
+
+  return {
+    walletAddress: input.walletAddress,
+    tokenMint: input.tokenMint,
+    tokenSymbol: firstOpen.tokenSymbol,
+    poolAddress: firstOpen.poolAddress || input.poolAddress || '',
+    positionAddress: firstOpen.positionAddress || input.positionAddress || '',
+    openedAt: firstOpen.recordedAt,
+    entrySol,
+    signature: firstOpen.signature,
+    source: 'solana-chain',
+    confidence: walletSpendSol ? 'exact' : 'partial'
+  };
 }
 
 export function reconstructClosedPositionSnapshot(input: {

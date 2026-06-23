@@ -17,6 +17,7 @@ import {
 } from '../runtime/housekeeping.ts';
 import { buildLiveCycleInputFromIngest } from '../runtime/ingest-context-builder.ts';
 import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.ts';
+import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtime/lp-entry-evidence-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
 import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
@@ -219,6 +220,10 @@ async function main() {
         accountProvider: new HttpLiveAccountStateProvider({
           url: runtimeConfig.accountStateUrl,
           authToken: runtimeConfig.authToken
+        }),
+        lpEntryEvidenceProvider: new HttpLpEntryEvidenceProvider({
+          url: deriveLpEntryEvidenceUrl(runtimeConfig.accountStateUrl),
+          authToken: runtimeConfig.authToken
         })
       }
     : {};
@@ -295,6 +300,7 @@ async function main() {
     ),
     maxTicks: args.maxTicks,
     accountProvider: executionAdapters.accountProvider,
+    lpEntryEvidenceProvider: executionAdapters.lpEntryEvidenceProvider,
     signer: executionAdapters.signer,
     broadcaster: executionAdapters.broadcaster,
     confirmationProvider: executionAdapters.confirmationProvider,

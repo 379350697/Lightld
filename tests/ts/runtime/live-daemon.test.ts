@@ -14,6 +14,7 @@ import { resolveLifecycleStateForPersist, runLiveDaemon } from '../../../src/run
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
+import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 
 describe('runLiveDaemon', () => {
   it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
@@ -1685,14 +1686,15 @@ describe('runLiveDaemon', () => {
     await appendJsonLine(join(journalRootDir, 'new-token-v1-live-fills.jsonl'), {
       submissionId: 'sub-fugu-open',
       mint: 'mint-fugu',
-      side: 'add-lp',
-      amount: 0.077416045,
-      filledSol: 0.077416045,
-      actualFilledSol: 0.077416045,
-      actualWalletDeltaSol: 0.077416045,
-      fillAmountSource: 'wallet-delta',
-      chainPositionAddress: 'pos-fugu',
-      recordedAt: openedAt
+        side: 'add-lp',
+        amount: 0.077416045,
+        filledSol: 0.077416045,
+        actualFilledSol: 0.077416045,
+        actualWalletDeltaSol: 0.077416045,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true,
+        chainPositionAddress: 'pos-fugu',
+        recordedAt: openedAt
     }, {
       rotateDaily: true,
       now: new Date(openedAt)
@@ -1744,6 +1746,299 @@ describe('runLiveDaemon', () => {
       entryFillSubmissionId: 'sub-fugu-open',
       openedAt
     });
+  });
+
+  it('repairs orphaned LP entry from chain evidence and settles spending reservation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-chain-entry-repair-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const spendingStore = new SpendingLimitsStore(stateRootDir);
+    const openedAt = '2026-04-18T00:00:00.000Z';
+    const events: MirrorEvent[] = [];
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'orphaned-position-without-bound-entry',
+      lastOrderIdempotencyKey: 'order-fugu-open',
+      activeMint: 'mint-fugu',
+      activePoolAddress: 'pool-fugu',
+      chainPositionAddress: 'pos-fugu',
+      lifecycleState: 'open',
+      updatedAt: openedAt
+    });
+    await spendingStore.reserveSpend('order-fugu-open', 0.08);
+
+    const evidenceProvider = {
+      reconstructEntry: vi.fn(async () => ({
+        status: 'trusted' as const,
+        entrySol: 0.137416044,
+        openedAt,
+        signature: 'sig-fugu-open',
+        source: 'reconstructed_chain' as const,
+        poolAddress: 'pool-fugu',
+        chainPositionAddress: 'pos-fugu'
+      }))
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      lpEntryEvidenceProvider: evidenceProvider,
+      mirrorRuntime: {
+        enqueue(event) {
+          events.push(event);
+        },
+        start: async () => {},
+        stop: async () => {},
+        flushOnce: async () => true,
+        snapshot: () => ({
+          enabled: true,
+          state: 'healthy',
+          path: join(root, 'mirror.sqlite'),
+          queueDepth: 0,
+          queueCapacity: 64,
+          droppedEvents: 0,
+          droppedLowPriority: 0,
+          consecutiveFailures: 0,
+          lastFlushAt: '',
+          lastFlushLatencyMs: 0,
+          cooldownUntil: '',
+          lastError: ''
+        })
+      },
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.08,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [{
+            poolAddress: 'pool-fugu',
+            positionAddress: 'pos-fugu',
+            mint: 'mint-fugu',
+            currentValueSol: 0.16,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }],
+          journalLpPositions: [],
+          fills: []
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    const spendingState = await spendingStore.read();
+    const fillPath = resolveActiveJsonlPath(
+      join(journalRootDir, 'new-token-v1-live-fills.jsonl'),
+      new Date(openedAt)
+    );
+    const fillLines = (await readFile(fillPath, 'utf8')).trim().split(/\r?\n/);
+    const fills = fillLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(evidenceProvider.reconstructEntry).toHaveBeenCalledTimes(1);
+    expect(positionState?.entrySol).toBeCloseTo(0.137416044);
+    expect(positionState?.entrySolSource).toBe('reconstructed_chain');
+    expect(positionState?.entryFillSubmissionId).toBe('sig-fugu-open');
+    expect(spendingState.dailySpendSol).toBeCloseTo(0.137416044);
+    expect(spendingState.hourlySpendSol).toBeCloseTo(0.137416044);
+    expect(fills).toContainEqual(expect.objectContaining({
+      submissionId: 'sig-fugu-open',
+      side: 'add-lp',
+      filledSol: 0.137416044,
+      fillAmountSource: 'chain-reconstructed',
+      hasFillEvidence: true
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'fill',
+      payload: expect.objectContaining({
+        submissionId: 'sig-fugu-open',
+        filledSol: 0.137416044,
+        fillAmountSource: 'chain-reconstructed',
+        hasFillEvidence: true
+      })
+    }));
+    });
+
+    it('does not mark reconstructed LP entry trusted when reconstructed fill mirroring fails', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-chain-entry-mirror-failure-'));
+      const stateRootDir = join(root, 'state');
+      const journalRootDir = join(root, 'journals');
+      const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+      const openedAt = '2026-04-18T00:00:00.000Z';
+      const events: MirrorEvent[] = [];
+
+      await runtimeStateStore.writePositionState({
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        lastReason: 'orphaned-position-without-bound-entry',
+        lastOrderIdempotencyKey: 'order-fugu-open',
+        activeMint: 'mint-fugu',
+        activePoolAddress: 'pool-fugu',
+        chainPositionAddress: 'pos-fugu',
+        lifecycleState: 'open',
+        updatedAt: openedAt
+      });
+
+      await runLiveDaemon({
+        strategy: 'new-token-v1',
+        stateRootDir,
+        journalRootDir,
+        tickIntervalMs: 1,
+        maxTicks: 1,
+        lpEntryEvidenceProvider: {
+          reconstructEntry: vi.fn(async () => ({
+            status: 'trusted' as const,
+            entrySol: 0.137416044,
+            openedAt,
+            signature: 'sig-fugu-open',
+            source: 'reconstructed_chain' as const,
+            poolAddress: 'pool-fugu',
+            chainPositionAddress: 'pos-fugu'
+          }))
+        },
+        mirrorRuntime: {
+          enqueue(event) {
+            if (event.type === 'fill') {
+              throw new Error('mirror-fill-failed');
+            }
+            events.push(event);
+          },
+          start: async () => {},
+          stop: async () => {},
+          flushOnce: async () => true,
+          snapshot: () => ({
+            enabled: true,
+            state: 'healthy',
+            path: join(root, 'mirror.sqlite'),
+            queueDepth: 0,
+            queueCapacity: 64,
+            droppedEvents: 0,
+            droppedLowPriority: 0,
+            consecutiveFailures: 0,
+            lastFlushAt: '',
+            lastFlushLatencyMs: 0,
+            cooldownUntil: '',
+            lastError: ''
+          })
+        },
+        buildCycleInput: async () => ({
+          runtimeMode: 'paused',
+          requestedPositionSol: 0.08,
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [],
+            walletLpPositions: [{
+              poolAddress: 'pool-fugu',
+              positionAddress: 'pos-fugu',
+              mint: 'mint-fugu',
+              currentValueSol: 0.16,
+              unclaimedFeeSol: 0,
+              hasLiquidity: true
+            }],
+            journalLpPositions: [],
+            fills: []
+          }
+        })
+      });
+
+      const positionState = await runtimeStateStore.readPositionState();
+
+      expect(positionState?.entrySol).toBeUndefined();
+      expect(positionState?.entrySolSource).toBeUndefined();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'incident',
+        payload: expect.objectContaining({
+          reason: 'orphaned-position-without-bound-entry: active LP entry reconstruction failed'
+        })
+      }));
+    });
+
+    it('keeps orphaned LP entry unresolved when chain evidence is ambiguous and records an incident', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-chain-entry-ambiguous-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'orphaned-position-without-bound-entry',
+      activeMint: 'mint-fugu',
+      activePoolAddress: 'pool-fugu',
+      chainPositionAddress: 'pos-fugu',
+      lifecycleState: 'open',
+      updatedAt: '2026-04-18T00:00:00.000Z'
+    });
+
+    const evidenceProvider = {
+      reconstructEntry: vi.fn(async () => ({
+        status: 'ambiguous' as const,
+        reason: 'multiple matching LP entry transactions',
+        candidates: [
+          { entrySol: 0.08, signature: 'sig-1' },
+          { entrySol: 0.137416044, signature: 'sig-2' }
+        ]
+      }))
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      lpEntryEvidenceProvider: evidenceProvider,
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.08,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [{
+            poolAddress: 'pool-fugu',
+            positionAddress: 'pos-fugu',
+            mint: 'mint-fugu',
+            currentValueSol: 0.16,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }],
+          journalLpPositions: [],
+          fills: []
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    const incidentPath = resolveActiveJsonlPath(
+      join(journalRootDir, 'new-token-v1-live-incidents.jsonl'),
+      new Date()
+    );
+    const incidentLines = (await readFile(incidentPath, 'utf8')).trim().split(/\r?\n/);
+    const incidents = incidentLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(evidenceProvider.reconstructEntry).toHaveBeenCalledTimes(1);
+    expect(positionState?.entrySol).toBeUndefined();
+    expect(positionState?.entrySolSource).toBeUndefined();
+    expect(incidents).toContainEqual(expect.objectContaining({
+      kind: 'entry_reconstruction_ambiguous',
+      reason: expect.stringContaining('entry-reconstruction-ambiguous'),
+      tokenMint: 'mint-fugu',
+      poolAddress: 'pool-fugu'
+    }));
   });
 
   it('persists canonical LP identity fields from pending submissions and bound chain positions', async () => {
