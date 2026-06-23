@@ -418,19 +418,21 @@ async function submitSignedTransaction(
 }
 
 export class SwapProviderChain {
+  private readonly providers: SwapExecutionProvider[];
   private readonly cooldownUntilMs = new Map<SwapProviderName, number>();
   private readonly noRouteUntilMs = new Map<string, number>();
   private readonly nowMs: () => number;
   private readonly cooldownMs: number;
 
   constructor(
-    private readonly providers: SwapExecutionProvider[],
+    providers: SwapExecutionProvider[],
     options: {
       cooldownMs?: number;
       noRouteTtlMs?: number;
       nowMs?: () => number;
     } = {}
   ) {
+    this.providers = providers;
     this.cooldownMs = Math.max(0, Math.floor(options.cooldownMs ?? 30_000));
     this.noRouteTtlMs = Math.max(0, Math.floor(options.noRouteTtlMs ?? this.cooldownMs));
     this.nowMs = options.nowMs ?? Date.now;
@@ -563,8 +565,11 @@ export class SwapProviderChain {
 
 export class MeteoraDirectSwapProvider implements SwapExecutionProvider {
   readonly name = 'meteora-dlmm-direct' as const;
+  private readonly dlmmClient?: MeteoraDlmmClient;
 
-  constructor(private readonly dlmmClient?: MeteoraDlmmClient) {}
+  constructor(dlmmClient?: MeteoraDlmmClient) {
+    this.dlmmClient = dlmmClient;
+  }
 
   enabled() {
     return typeof (this.dlmmClient as { swapTokenToSol?: unknown } | undefined)?.swapTokenToSol === 'function';
@@ -634,8 +639,11 @@ export class MeteoraDirectSwapProvider implements SwapExecutionProvider {
 
 export class JupiterV2SwapProvider implements SwapExecutionProvider {
   readonly name = 'jupiter-v2' as const;
+  private readonly jupiterClient: JupiterClient;
 
-  constructor(private readonly jupiterClient: JupiterClient) {}
+  constructor(jupiterClient: JupiterClient) {
+    this.jupiterClient = jupiterClient;
+  }
 
   enabled() {
     return true;
@@ -711,8 +719,11 @@ export class JupiterV2SwapProvider implements SwapExecutionProvider {
 
 export class JupiterV1SwapProvider implements SwapExecutionProvider {
   readonly name = 'jupiter-v1' as const;
+  private readonly jupiterClient: JupiterClient;
 
-  constructor(private readonly jupiterClient: JupiterClient) {}
+  constructor(jupiterClient: JupiterClient) {
+    this.jupiterClient = jupiterClient;
+  }
 
   enabled() {
     return true;
@@ -768,15 +779,23 @@ export class JupiterV1SwapProvider implements SwapExecutionProvider {
 
 export class RaydiumSwapProvider implements SwapExecutionProvider {
   readonly name = 'raydium' as const;
+  private readonly options: {
+    apiUrl?: string;
+    fetchImpl?: FetchImpl;
+    txVersion?: 'V0' | 'LEGACY';
+    computeUnitPriceMicroLamports?: string;
+  };
 
   constructor(
-    private readonly options: {
+    options: {
       apiUrl?: string;
       fetchImpl?: FetchImpl;
       txVersion?: 'V0' | 'LEGACY';
       computeUnitPriceMicroLamports?: string;
     } = {}
-  ) {}
+  ) {
+    this.options = options;
+  }
 
   enabled() {
     return true;
@@ -886,9 +905,18 @@ export class RaydiumSwapProvider implements SwapExecutionProvider {
 
 export class OkxSwapProvider implements SwapExecutionProvider {
   readonly name = 'okx' as const;
+  private readonly options: {
+    apiUrl?: string;
+    chainIndex?: string;
+    apiKey?: string;
+    secretKey?: string;
+    passphrase?: string;
+    projectId?: string;
+    fetchImpl?: FetchImpl;
+  };
 
   constructor(
-    private readonly options: {
+    options: {
       apiUrl?: string;
       chainIndex?: string;
       apiKey?: string;
@@ -897,7 +925,9 @@ export class OkxSwapProvider implements SwapExecutionProvider {
       projectId?: string;
       fetchImpl?: FetchImpl;
     } = {}
-  ) {}
+  ) {
+    this.options = options;
+  }
 
   enabled() {
     return Boolean(this.options.apiKey && this.options.secretKey && this.options.passphrase);
