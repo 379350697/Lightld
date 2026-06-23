@@ -59,8 +59,8 @@ export function getDefaultTradeRpcUrls() {
 
 export function getDefaultReadRpcUrls() {
   return [
-    DEFAULT_ALCHEMY_RPC,
-    ...getDefaultTradeRpcUrls()
+    ...getDefaultTradeRpcUrls(),
+    DEFAULT_ALCHEMY_RPC
   ];
 }
 

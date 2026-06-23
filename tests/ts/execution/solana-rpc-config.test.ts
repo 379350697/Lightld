@@ -18,9 +18,10 @@ describe('solana rpc config policy', () => {
     expect(config.writeRpcUrls.length).toBeGreaterThanOrEqual(4);
     expect(config.readRpcUrls.length).toBeGreaterThan(config.writeRpcUrls.length - 1);
     expect(config.writeRpcUrls[0]).toContain('mainnet.helius-rpc.com');
-    expect(config.readRpcUrls[0]).toContain('alchemy.com');
-    expect(config.dlmmRpcUrl).toContain('alchemy.com');
-    expect(config.dlmmRpcUrls[0]).toContain('alchemy.com');
+    expect(config.readRpcUrls[0]).toContain('mainnet.helius-rpc.com');
+    expect(config.readRpcUrls.at(-1)).toContain('alchemy.com');
+    expect(config.dlmmRpcUrl).toContain('mainnet.helius-rpc.com');
+    expect(config.dlmmRpcUrls.at(-1)).toContain('alchemy.com');
     expect(config.dlmmRpcUrls).toContain(config.readRpcUrls[0]);
   });
 
@@ -64,6 +65,32 @@ describe('solana rpc config policy', () => {
       'https://read-a.example',
       'https://read-b.example'
     ]);
+  });
+
+
+  it('loads conservative endpoint rate-limit controls', () => {
+    const defaults = loadSolanaExecutionConfig(envBase());
+    expect(defaults.rpc429CooldownMs).toBe(120_000);
+    expect(defaults.rpcEndpointMinIntervalMs).toBe(500);
+    expect(defaults.jupiterRateLimitCapacity).toBe(60);
+    expect(defaults.jupiterRateLimitWindowMs).toBe(60_000);
+    expect(defaults.jupiterNegativeRouteCacheTtlMs).toBe(300_000);
+    expect(defaults.jupiterMinQuoteAmountLamports).toBe(1_000);
+
+    const config = loadSolanaExecutionConfig(envBase({
+      RPC_429_COOLDOWN_MS: '45000',
+      RPC_ENDPOINT_MIN_INTERVAL_MS: '125',
+      JUPITER_RATE_LIMIT_CAPACITY: '100',
+      JUPITER_RATE_LIMIT_WINDOW_MS: '10000',
+      JUPITER_NEGATIVE_ROUTE_CACHE_TTL_MS: '60000',
+      JUPITER_MIN_QUOTE_LAMPORTS: '5000'
+    }));
+    expect(config.rpc429CooldownMs).toBe(45_000);
+    expect(config.rpcEndpointMinIntervalMs).toBe(125);
+    expect(config.jupiterRateLimitCapacity).toBe(100);
+    expect(config.jupiterRateLimitWindowMs).toBe(10_000);
+    expect(config.jupiterNegativeRouteCacheTtlMs).toBe(60_000);
+    expect(config.jupiterMinQuoteAmountLamports).toBe(5_000);
   });
 
   it('loads solana execution state and expected signer allowlist config', () => {

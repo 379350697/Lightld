@@ -85,6 +85,109 @@ describe('RpcEndpointRegistry', () => {
     expect(peakConcurrent).toBe(1);
   });
 
+
+
+  it('uses registry cooldown options for classified rate limits', async () => {
+    const registry = new RpcEndpointRegistry({ maxWaitMs: 0, rateLimitedCooldownMs: 120_000 });
+    registry.register({
+      url: 'https://rpc-a.example',
+      kind: 'dlmm',
+      maxConcurrency: 1
+    });
+
+    await expect(
+      registry.runWithEndpoint({
+        kind: 'dlmm',
+        candidates: ['https://rpc-a.example'],
+        execute: async () => {
+          throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+        },
+        classifyError: () => ({ retryable: true, reason: 'rate-limited', cooldownMs: 30_000 })
+      })
+    ).rejects.toBeInstanceOf(NoRpcEndpointAvailableError);
+
+    const snapshot = registry.snapshots(['https://rpc-a.example'])[0];
+    expect(Date.parse(snapshot.cooldownUntil) - Date.parse(snapshot.lastRateLimitedAt)).toBe(120_000);
+  });
+
+  it('paces repeated starts against the same endpoint', async () => {
+    const registry = new RpcEndpointRegistry({ maxWaitMs: 100, minRequestIntervalMs: 20 });
+    registry.register({
+      url: 'https://rpc-paced.example',
+      kind: 'solana-read',
+      maxConcurrency: 1
+    });
+
+    const startedAt: number[] = [];
+    const run = () =>
+      registry.runWithEndpoint({
+        kind: 'solana-read',
+        candidates: ['https://rpc-paced.example'],
+        execute: async () => {
+          startedAt.push(Date.now());
+          return 'ok';
+        },
+        classifyError: () => null
+      });
+
+    await run();
+    await run();
+
+    expect(startedAt).toHaveLength(2);
+    expect(startedAt[1] - startedAt[0]).toBeGreaterThanOrEqual(15);
+  });
+
+  it('keeps recent rate-limit strikes across a quick successful probe', async () => {
+    const registry = new RpcEndpointRegistry({
+      maxWaitMs: 0,
+      rateLimitedCooldownMs: 10,
+      rateLimitFailureDecayMs: 60_000
+    });
+    registry.register({
+      url: 'https://rpc-a.example',
+      kind: 'solana-read',
+      maxConcurrency: 1
+    });
+
+    await expect(
+      registry.runWithEndpoint({
+        kind: 'solana-read',
+        candidates: ['https://rpc-a.example'],
+        execute: async () => {
+          throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+        },
+        classifyError: () => ({ retryable: true, reason: 'rate-limited', cooldownMs: 10 })
+      })
+    ).rejects.toBeInstanceOf(NoRpcEndpointAvailableError);
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    await expect(
+      registry.runWithEndpoint({
+        kind: 'solana-read',
+        candidates: ['https://rpc-a.example'],
+        execute: async () => 'recovered',
+        classifyError: () => null
+      })
+    ).resolves.toBe('recovered');
+
+    await expect(
+      registry.runWithEndpoint({
+        kind: 'solana-read',
+        candidates: ['https://rpc-a.example'],
+        execute: async () => {
+          throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+        },
+        classifyError: () => ({ retryable: true, reason: 'rate-limited', cooldownMs: 10 })
+      })
+    ).rejects.toBeInstanceOf(NoRpcEndpointAvailableError);
+
+    expect(registry.snapshots(['https://rpc-a.example'])[0]).toMatchObject({
+      rateLimitStrikes: 2,
+      lastFailureReason: 'rate-limited'
+    });
+  });
+
   it('throws a clear error when every candidate is cooling down', async () => {
     const registry = new RpcEndpointRegistry({ maxWaitMs: 0 });
     registry.register({

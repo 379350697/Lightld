@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { z } from 'zod';
 
 import { resolveRpcEndpointPolicy } from './rpc-endpoint-policy.ts';
@@ -14,10 +16,16 @@ const SolanaExecutionConfigSchema = z.object({
   solanaWriteConcurrency: z.number().int().positive().default(1),
   dlmmConcurrency: z.number().int().positive().default(1),
   jupiterConcurrency: z.number().int().positive().default(2),
-  rpc429CooldownMs: z.number().int().nonnegative().default(30_000),
+  jupiterRateLimitCapacity: z.number().int().positive().default(60),
+  jupiterRateLimitWindowMs: z.number().int().positive().default(60_000),
+  jupiterNegativeRouteCacheTtlMs: z.number().int().nonnegative().default(300_000),
+  jupiterMinQuoteAmountLamports: z.number().int().nonnegative().default(1_000),
+  jupiterRateLimitStatePath: z.string().min(1).default(join('state', 'jupiter-rate-limit.json')),
+  rpc429CooldownMs: z.number().int().nonnegative().default(120_000),
   rpcTimeoutCooldownMs: z.number().int().nonnegative().default(10_000),
   rpc5xxCooldownMs: z.number().int().nonnegative().default(5_000),
   rpcEndpointMaxWaitMs: z.number().int().nonnegative().default(1_000),
+  rpcEndpointMinIntervalMs: z.number().int().nonnegative().default(500),
   keypairPath: z.string().min(1),
   expectedPublicKey: z.string().min(1).optional(),
   stateRootDir: z.string().min(1).default('state/solana-execution'),
@@ -64,9 +72,23 @@ export function loadSolanaExecutionConfig(
     jupiterConcurrency: env.JUPITER_CONCURRENCY
       ? Number(env.JUPITER_CONCURRENCY)
       : 2,
+    jupiterRateLimitCapacity: env.JUPITER_RATE_LIMIT_CAPACITY
+      ? Number(env.JUPITER_RATE_LIMIT_CAPACITY)
+      : 60,
+    jupiterRateLimitWindowMs: env.JUPITER_RATE_LIMIT_WINDOW_MS
+      ? Number(env.JUPITER_RATE_LIMIT_WINDOW_MS)
+      : 60_000,
+    jupiterNegativeRouteCacheTtlMs: env.JUPITER_NEGATIVE_ROUTE_CACHE_TTL_MS
+      ? Number(env.JUPITER_NEGATIVE_ROUTE_CACHE_TTL_MS)
+      : 300_000,
+    jupiterMinQuoteAmountLamports: env.JUPITER_MIN_QUOTE_LAMPORTS
+      ? Number(env.JUPITER_MIN_QUOTE_LAMPORTS)
+      : 1_000,
+    jupiterRateLimitStatePath: env.JUPITER_RATE_LIMIT_STATE_PATH
+      ?? join(env.LIVE_STATE_DIR ?? 'state', 'jupiter-rate-limit.json'),
     rpc429CooldownMs: env.RPC_429_COOLDOWN_MS
       ? Number(env.RPC_429_COOLDOWN_MS)
-      : 30_000,
+      : 120_000,
     rpcTimeoutCooldownMs: env.RPC_TIMEOUT_COOLDOWN_MS
       ? Number(env.RPC_TIMEOUT_COOLDOWN_MS)
       : 10_000,
@@ -76,6 +98,9 @@ export function loadSolanaExecutionConfig(
     rpcEndpointMaxWaitMs: env.RPC_ENDPOINT_MAX_WAIT_MS
       ? Number(env.RPC_ENDPOINT_MAX_WAIT_MS)
       : 1_000,
+    rpcEndpointMinIntervalMs: env.RPC_ENDPOINT_MIN_INTERVAL_MS
+      ? Number(env.RPC_ENDPOINT_MIN_INTERVAL_MS)
+      : 500,
     keypairPath: env.SOLANA_KEYPAIR_PATH,
     expectedPublicKey: env.SOLANA_EXPECTED_PUBLIC_KEY,
     stateRootDir: env.SOLANA_EXECUTION_STATE_DIR ?? 'state/solana-execution',

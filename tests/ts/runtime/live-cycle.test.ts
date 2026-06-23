@@ -9,6 +9,7 @@ import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { KillSwitch } from '../../../src/runtime/kill-switch';
+import { liveIncidentDedupeStore } from '../../../src/runtime/incident-dedupe';
 import { runLiveCycle } from '../../../src/runtime/live-cycle';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 
@@ -17,6 +18,7 @@ const TEST_STATE_DIR = 'tmp/tests/runtime-live-cycle-state';
 
 describe('runLiveCycle', () => {
   beforeEach(async () => {
+    liveIncidentDedupeStore.reset();
     await rm(TEST_JOURNAL_DIR, { recursive: true, force: true });
     await rm(TEST_STATE_DIR, { recursive: true, force: true });
   });
@@ -505,6 +507,58 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0]).toMatchObject({
       stage: 'engine',
       reason: 'gmgn-safety-script-error'
+    });
+  });
+
+  it('resolves zero token balance exits before broadcast', async () => {
+    const broadcaster = {
+      broadcast: vi.fn(async () => {
+        throw new Error('should not broadcast zero balance exit');
+      })
+    };
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      broadcaster,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'inventory_exit_ready',
+        updatedAt: '2026-06-23T00:00:00.000Z'
+      } as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('zero_token_balance_resolved:mint-safe');
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(result.quoteCollected).toBe(false);
+    expect(broadcaster.broadcast).not.toHaveBeenCalled();
+    expect(incidentJournal[0]).toMatchObject({
+      kind: 'zero_token_balance',
+      reason: 'zero_token_balance_resolved:mint-safe'
     });
   });
 

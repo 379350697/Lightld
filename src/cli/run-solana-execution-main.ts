@@ -6,6 +6,7 @@ import { loadSolanaKeypair } from '../execution/solana/solana-transaction-signer
 import { createSolanaExecutionServer } from '../execution/solana/solana-execution-server.ts';
 import { MeteoraDlmmClient } from '../execution/solana/meteora-dlmm-client.ts';
 import { RpcEndpointRegistry } from '../execution/rpc-endpoint-registry.ts';
+import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
 
 async function main() {
   const config = loadSolanaExecutionConfig();
@@ -24,7 +25,8 @@ async function main() {
     rateLimitedCooldownMs: config.rpc429CooldownMs,
     timeoutCooldownMs: config.rpcTimeoutCooldownMs,
     serverErrorCooldownMs: config.rpc5xxCooldownMs,
-    maxWaitMs: config.rpcEndpointMaxWaitMs
+    maxWaitMs: config.rpcEndpointMaxWaitMs,
+    minRequestIntervalMs: config.rpcEndpointMinIntervalMs
   });
   endpointRegistry.registerMany([
     ...config.writeRpcUrls.map((url) => ({
@@ -58,7 +60,16 @@ async function main() {
   const jupiterClient = new JupiterClient({
     apiUrl: config.jupiterApiUrl,
     apiKey: config.jupiterApiKey,
-    endpointRegistry
+    endpointRegistry,
+    rateLimitCapacity: config.jupiterRateLimitCapacity,
+    rateLimitWindowMs: config.jupiterRateLimitWindowMs,
+    negativeRouteCacheTtlMs: config.jupiterNegativeRouteCacheTtlMs,
+    minQuoteAmountLamports: config.jupiterMinQuoteAmountLamports,
+    rateLimiter: new FileBackedSlidingWindowRateLimiter({
+      statePath: config.jupiterRateLimitStatePath,
+      capacity: config.jupiterRateLimitCapacity,
+      windowMs: config.jupiterRateLimitWindowMs
+    })
   });
 
   const dlmmClient = new MeteoraDlmmClient(

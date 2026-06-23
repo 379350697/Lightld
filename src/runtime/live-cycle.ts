@@ -78,6 +78,8 @@ import {
   runAccountReconciliationGate,
   runPendingRecoveryGate
 } from './live-cycle-preflight.ts';
+import { liveIncidentDedupeStore } from './incident-dedupe.ts';
+import { buildIncidentDedupeKey, classifyIncidentReason } from './incident-taxonomy.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
@@ -540,6 +542,19 @@ function hasReduceRiskWalletExposure(input: {
   }
 
   return false;
+}
+
+function hasPositiveWalletTokenBalance(input: {
+  accountState?: LiveAccountState;
+  tokenMint: string;
+}) {
+  if (!input.accountState?.walletTokens || !input.tokenMint) {
+    return undefined;
+  }
+
+  return input.accountState.walletTokens.some((token) =>
+    token.mint === input.tokenMint && token.amount > 0
+  );
 }
 
 async function resolveActualFillAmount(input: {
@@ -1586,12 +1601,37 @@ async function appendIncident(
   }
 ) {
   const recordedAt = new Date().toISOString();
+  const classification = classifyIncidentReason(entry.reason);
+  const severity = entry.severity ?? classification.severity ?? 'warning';
+  const dedupeKey = buildIncidentDedupeKey({
+    kind: classification.kind,
+    strategyId: logContext.strategyId,
+    stage: entry.stage,
+    reason: entry.reason,
+    tokenMint: logContext.tokenMint,
+    poolAddress: logContext.poolAddress
+  });
+  const dedupeDecision = await liveIncidentDedupeStore.shouldAppend(dedupeKey, {
+    ttlMs: classification.kind === 'spend_limit_blocked' ? 24 * 60 * 60_000 : undefined
+  });
+
+  if (!dedupeDecision.append) {
+    return;
+  }
+
   await journals.incidents.append({
     cycleId: logContext.cycleId,
     strategyId: logContext.strategyId,
     stage: entry.stage,
-    severity: entry.severity,
+    severity,
+    kind: classification.kind,
     reason: entry.reason,
+    rootCause: classification.rootCause,
+    suggestedAction: classification.suggestedAction,
+    dedupeKey,
+    suppressedCount: dedupeDecision.duplicateCount,
+    firstSeenAt: dedupeDecision.firstSeenAt,
+    lastSeenAt: dedupeDecision.lastSeenAt,
     poolAddress: logContext.poolAddress,
     tokenSymbol: logContext.tokenSymbol,
     tokenMint: logContext.tokenMint,
@@ -1612,7 +1652,7 @@ async function appendIncident(
       incidentId: `${logContext.cycleId}:${entry.stage}:${recordedAt}`,
       cycleId: logContext.cycleId,
       stage: entry.stage,
-      severity: entry.severity,
+      severity,
       reason: entry.reason,
       runtimeMode: logContext.runtimeMode,
       submissionId: entry.submissionId ?? '',
@@ -1628,6 +1668,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   let accountState = input.accountState;
   const journals = createJournals(input.strategy, input.journalRootDir);
+  const stateRootDir = resolveStateRootDir(input.strategy, input.stateRootDir);
+  liveIncidentDedupeStore.configurePersistence(join(stateRootDir, 'incident-dedupe-state.json'));
 
   if (!accountState && input.accountProvider) {
     accountState = await input.accountProvider.readState();
@@ -1688,11 +1730,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
   let tokenSymbol = firstString(context.token.symbol, context.route.token, context.token.mint);
   let poolAddress = firstString(context.pool.address, context.route.poolAddress, 'live-pool');
-  const targetOpenCooldownStore = new TargetOpenCooldownStore(resolveStateRootDir(input.strategy, input.stateRootDir));
+  const targetOpenCooldownStore = new TargetOpenCooldownStore(stateRootDir);
   await targetOpenCooldownStore.pruneExpired();
   const ingestBlockReason = firstString(context.route.blockReason, context.pool.blockReason, context.token.blockReason);
   const pendingSubmissionStore = new PendingSubmissionStore(
-    resolveStateRootDir(input.strategy, input.stateRootDir)
+    stateRootDir
   );
   const runtimeMode = input.runtimeMode ?? 'healthy';
   const startedAt = new Date().toISOString();
@@ -2272,6 +2314,25 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const actionableAction = runtimeAction.action;
+  const actionableTokenMint = activeMint || logContext.tokenMint;
+
+  if (
+    actionableAction === 'dca-out' &&
+    hasPositiveWalletTokenBalance({
+      accountState,
+      tokenMint: actionableTokenMint
+    }) === false
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `zero_token_balance_resolved:${actionableTokenMint}`,
+      audit: { reason: `zero_token_balance_resolved:${actionableTokenMint}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
 
   const activeLpExitPositionSol = resolveActiveLpExitPositionSol({
     action: actionableAction,
@@ -2413,7 +2474,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const spendingLimitsStore = input.spendingLimitsConfig
-    ? new SpendingLimitsStore(resolveStateRootDir(input.strategy, input.stateRootDir))
+    ? new SpendingLimitsStore(stateRootDir)
     : undefined;
   const spendingState = spendingLimitsStore
     ? await spendingLimitsStore.read()

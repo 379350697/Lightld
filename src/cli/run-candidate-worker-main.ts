@@ -4,6 +4,7 @@ import { createJupiterRouteSource } from '../candidate-pool/jupiter-route-source
 import { SqliteCandidatePool } from '../candidate-pool/sqlite-candidate-pool.ts';
 import { runCandidateWorker } from '../candidate-pool/worker.ts';
 import { JupiterClient } from '../execution/solana/jupiter-client.ts';
+import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
 
 type ParsedArgs = {
@@ -127,11 +128,24 @@ async function main() {
     process.env.LIVE_CANDIDATE_ROUTE_QUOTE_SOL,
     parsePositiveNumber(process.env.LIVE_REQUESTED_POSITION_SOL, 0.01)
   );
+  const jupiterRateLimitCapacity = parsePositiveInteger(process.env.JUPITER_RATE_LIMIT_CAPACITY, 60);
+  const jupiterRateLimitWindowMs = parsePositiveInteger(process.env.JUPITER_RATE_LIMIT_WINDOW_MS, 60_000);
+  const jupiterRateLimitStatePath = process.env.JUPITER_RATE_LIMIT_STATE_PATH
+    ?? join(args.stateRootDir, 'jupiter-rate-limit.json');
   const routeSource = createJupiterRouteSource({
     client: new JupiterClient({
       apiUrl: process.env.JUPITER_API_URL ?? 'https://api.jup.ag',
       apiKey: process.env.JUPITER_API_KEY,
-      timeoutMs: parsePositiveInteger(process.env.LIVE_JUPITER_SOURCE_TIMEOUT_MS, 5_000)
+      timeoutMs: parsePositiveInteger(process.env.LIVE_JUPITER_SOURCE_TIMEOUT_MS, 5_000),
+      rateLimitCapacity: jupiterRateLimitCapacity,
+      rateLimitWindowMs: jupiterRateLimitWindowMs,
+      negativeRouteCacheTtlMs: parsePositiveInteger(process.env.JUPITER_NEGATIVE_ROUTE_CACHE_TTL_MS, 300_000),
+      minQuoteAmountLamports: parsePositiveInteger(process.env.JUPITER_MIN_QUOTE_LAMPORTS, 1_000),
+      rateLimiter: new FileBackedSlidingWindowRateLimiter({
+        statePath: jupiterRateLimitStatePath,
+        capacity: jupiterRateLimitCapacity,
+        windowMs: jupiterRateLimitWindowMs
+      })
     }),
     quoteSol: routeQuoteSol,
     slippageBps: parsePositiveInteger(process.env.SOLANA_DEFAULT_SLIPPAGE_BPS, 100),

@@ -2,9 +2,11 @@ export type RpcEndpointKind = 'solana-read' | 'solana-write' | 'dlmm' | 'jupiter
 
 export type RpcEndpointRegistryOptions = {
   rateLimitedCooldownMs?: number;
+  rateLimitFailureDecayMs?: number;
   timeoutCooldownMs?: number;
   serverErrorCooldownMs?: number;
   maxWaitMs?: number;
+  minRequestIntervalMs?: number;
 };
 
 export type RpcEndpointRegistration = {
@@ -17,6 +19,7 @@ export type RpcEndpointErrorDisposition = {
   retryable: boolean;
   reason: string;
   cooldownMs?: number;
+  retryAfterMs?: number;
 };
 
 export type RpcEndpointStateSnapshot = {
@@ -25,8 +28,11 @@ export type RpcEndpointStateSnapshot = {
   maxConcurrency: number;
   inFlight: number;
   cooldownUntil: string;
+  nextRequestAt: string;
   consecutiveFailures: number;
+  rateLimitStrikes: number;
   lastFailureReason: string;
+  lastRateLimitedAt: string;
   lastSuccessAt: string;
 };
 
@@ -36,8 +42,11 @@ type RpcEndpointState = {
   maxConcurrency: number;
   inFlight: number;
   cooldownUntil: number;
+  nextRequestAt: number;
   consecutiveFailures: number;
+  rateLimitStrikes: number;
   lastFailureReason: string;
+  lastRateLimitedAt: number;
   lastSuccessAt: number;
 };
 
@@ -51,12 +60,14 @@ type RunWithEndpointOptions<T> = {
 
 const DEFAULT_OPTIONS = {
   rateLimitedCooldownMs: 30_000,
+  rateLimitFailureDecayMs: 10 * 60_000,
   timeoutCooldownMs: 10_000,
   serverErrorCooldownMs: 5_000,
-  maxWaitMs: 1_000
+  maxWaitMs: 1_000,
+  minRequestIntervalMs: 0
 } satisfies Required<RpcEndpointRegistryOptions>;
 
-const MAX_RATE_LIMIT_COOLDOWN_MULTIPLIER = 4;
+const MAX_RATE_LIMIT_COOLDOWN_MULTIPLIER = 8;
 
 function sleep(delayMs: number) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -87,6 +98,10 @@ function scaleRateLimitCooldown(baseCooldownMs: number, consecutiveFailures: num
   return baseCooldownMs * multiplier;
 }
 
+function isServerErrorReason(reason: string) {
+  return /^http-5\d\d$/.test(reason);
+}
+
 function extractStatus(error: Error) {
   const directStatus = (error as Error & { status?: unknown }).status;
   if (typeof directStatus === 'number') {
@@ -95,6 +110,13 @@ function extractStatus(error: Error) {
 
   const match = error.message.match(/\b([45]\d{2})\b/);
   return match ? Number(match[1]) : undefined;
+}
+
+function extractRetryAfterMs(error: Error) {
+  const retryAfterMs = (error as Error & { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+    ? retryAfterMs
+    : undefined;
 }
 
 export class NoRpcEndpointAvailableError extends Error {
@@ -119,6 +141,7 @@ export function classifyRetryableRpcError(
 ): RpcEndpointErrorDisposition | null {
   const normalized = toError(error);
   const status = extractStatus(normalized);
+  const retryAfterMs = extractRetryAfterMs(normalized);
   const merged = { ...DEFAULT_OPTIONS, ...options };
 
   if (
@@ -128,7 +151,8 @@ export function classifyRetryableRpcError(
     return {
       retryable: true,
       reason: 'rate-limited',
-      cooldownMs: merged.rateLimitedCooldownMs
+      cooldownMs: Math.max(merged.rateLimitedCooldownMs, retryAfterMs ?? 0),
+      retryAfterMs
     };
   }
 
@@ -156,7 +180,11 @@ export class RpcEndpointRegistry {
   private readonly options: Required<RpcEndpointRegistryOptions>;
 
   constructor(options: RpcEndpointRegistryOptions = {}) {
-    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.options = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+      minRequestIntervalMs: Math.max(0, options.minRequestIntervalMs ?? DEFAULT_OPTIONS.minRequestIntervalMs)
+    };
   }
 
   register(registration: RpcEndpointRegistration) {
@@ -173,8 +201,11 @@ export class RpcEndpointRegistry {
       maxConcurrency: registration.maxConcurrency,
       inFlight: 0,
       cooldownUntil: 0,
+      nextRequestAt: 0,
       consecutiveFailures: 0,
+      rateLimitStrikes: 0,
       lastFailureReason: '',
+      lastRateLimitedAt: 0,
       lastSuccessAt: 0
     });
   }
@@ -196,10 +227,33 @@ export class RpcEndpointRegistry {
         maxConcurrency: state.maxConcurrency,
         inFlight: state.inFlight,
         cooldownUntil: toIso(state.cooldownUntil),
+        nextRequestAt: toIso(state.nextRequestAt),
         consecutiveFailures: state.consecutiveFailures,
+        rateLimitStrikes: state.rateLimitStrikes,
         lastFailureReason: state.lastFailureReason,
+        lastRateLimitedAt: toIso(state.lastRateLimitedAt),
         lastSuccessAt: toIso(state.lastSuccessAt)
       }));
+  }
+
+  private resolveCooldownMs(disposition: RpcEndpointErrorDisposition, state: RpcEndpointState) {
+    if (disposition.reason === 'rate-limited') {
+      return Math.max(
+        scaleRateLimitCooldown(this.options.rateLimitedCooldownMs, state.rateLimitStrikes),
+        disposition.cooldownMs ?? 0,
+        disposition.retryAfterMs ?? 0
+      );
+    }
+
+    if (disposition.reason === 'timeout') {
+      return Math.max(this.options.timeoutCooldownMs, disposition.cooldownMs ?? 0);
+    }
+
+    if (isServerErrorReason(disposition.reason)) {
+      return Math.max(this.options.serverErrorCooldownMs, disposition.cooldownMs ?? 0);
+    }
+
+    return disposition.cooldownMs ?? 0;
   }
 
   async runWithEndpoint<T>(options: RunWithEndpointOptions<T>): Promise<T> {
@@ -226,11 +280,21 @@ export class RpcEndpointRegistry {
           continue;
         }
 
+        if (state.nextRequestAt > now) {
+          earliestReadyAt = Math.min(earliestReadyAt, state.nextRequestAt);
+          continue;
+        }
+
         if (state.inFlight >= state.maxConcurrency) {
           earliestReadyAt = Math.min(earliestReadyAt, now + 25);
           continue;
         }
 
+        const startedAt = Date.now();
+        state.nextRequestAt = Math.max(
+          state.nextRequestAt,
+          startedAt + this.options.minRequestIntervalMs
+        );
         state.inFlight += 1;
         try {
           const result = await options.execute(url);
@@ -239,6 +303,13 @@ export class RpcEndpointRegistry {
           state.lastFailureReason = '';
           state.cooldownUntil = 0;
           state.lastSuccessAt = Date.now();
+          if (
+            state.lastRateLimitedAt > 0 &&
+            state.lastSuccessAt - state.lastRateLimitedAt > this.options.rateLimitFailureDecayMs
+          ) {
+            state.rateLimitStrikes = 0;
+            state.lastRateLimitedAt = 0;
+          }
 
           if (recovered) {
             console.info(
@@ -254,11 +325,20 @@ export class RpcEndpointRegistry {
           }
 
           state.consecutiveFailures += 1;
-          const cooldownMs = disposition.reason === 'rate-limited'
-            ? scaleRateLimitCooldown(disposition.cooldownMs ?? 0, state.consecutiveFailures)
-            : (disposition.cooldownMs ?? 0);
+          const failureAt = Date.now();
+          if (disposition.reason === 'rate-limited') {
+            if (
+              state.lastRateLimitedAt > 0 &&
+              failureAt - state.lastRateLimitedAt > this.options.rateLimitFailureDecayMs
+            ) {
+              state.rateLimitStrikes = 0;
+            }
+            state.rateLimitStrikes += 1;
+            state.lastRateLimitedAt = failureAt;
+          }
+          const cooldownMs = this.resolveCooldownMs(disposition, state);
           state.lastFailureReason = disposition.reason;
-          state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + cooldownMs);
+          state.cooldownUntil = Math.max(state.cooldownUntil, failureAt + cooldownMs);
           lastError = toError(error);
 
           console.warn(
