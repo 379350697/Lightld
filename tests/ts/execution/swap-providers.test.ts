@@ -195,6 +195,67 @@ describe('swap provider chain', () => {
 
     expect(fallback.executeExactIn).not.toHaveBeenCalled();
   });
+
+  it('continues to the next provider when preflight rejects before broadcast', async () => {
+    const keypair = Keypair.generate();
+    const fallback: SwapExecutionProvider = {
+      name: 'raydium',
+      enabled: () => true,
+      quoteExactIn: vi.fn(),
+      executeExactIn: vi.fn(async () => ({
+        providerName: 'raydium' as const,
+        outAmountLamports: '900',
+        signature: 'fallback-sig'
+      }))
+    };
+    const chain = new SwapProviderChain([
+      new JupiterV1SwapProvider({
+        getQuote: vi.fn(async () => ({
+          inputMint: 'token-mint',
+          outputMint: SOL_MINT,
+          inAmount: '12345',
+          outAmount: '900',
+          otherAmountThreshold: '850',
+          swapMode: 'ExactIn',
+          slippageBps: 100,
+          priceImpactPct: '0',
+          routePlan: []
+        })),
+        getSwapTransaction: vi.fn(async () => ({
+          swapTransaction: buildSerializedV0TransactionBase64(keypair.publicKey),
+          lastValidBlockHeight: 1
+        }))
+      } as any),
+      fallback
+    ]);
+
+    const result = await chain.executeExactIn(
+      buildRequest({ walletPublicKey: keypair.publicKey.toBase58() }),
+      {
+        keypair,
+        rpcClient: {} as any,
+        sendRawTransaction: vi.fn(async () => {
+          throw new Error('Solana RPC sendTransaction error: Transaction simulation failed: custom program error: 0x1773');
+        })
+      }
+    );
+
+    expect(result).toMatchObject({
+      providerName: 'raydium',
+      signature: 'fallback-sig',
+      providerAttempts: [
+        expect.objectContaining({
+          providerName: 'jupiter-v1',
+          status: 'failed'
+        }),
+        expect.objectContaining({
+          providerName: 'raydium',
+          status: 'succeeded'
+        })
+      ]
+    });
+    expect(fallback.executeExactIn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('JupiterV2SwapProvider', () => {

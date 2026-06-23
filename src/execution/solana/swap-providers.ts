@@ -168,6 +168,11 @@ function normalizeReason(error: unknown) {
   return message.replace(/\s+/g, ' ').trim();
 }
 
+function isPreBroadcastSubmissionFailure(error: unknown) {
+  return /Transaction simulation failed|preflight failure|simulate transaction failed/i
+    .test(normalizeReason(error));
+}
+
 function isNoRouteLike(error: unknown) {
   if (error instanceof JupiterNoRouteError || error instanceof JupiterQuoteAmountTooSmallError) {
     return true;
@@ -391,11 +396,17 @@ export class SwapProviderChainError extends Error {
 
 class SwapProviderSubmissionError extends Error {
   readonly providerName: SwapProviderName;
+  readonly terminal: boolean;
 
-  constructor(providerName: SwapProviderName, error: unknown) {
+  constructor(
+    providerName: SwapProviderName,
+    error: unknown,
+    options: { terminal?: boolean } = {}
+  ) {
     super(`swap-provider-submission-failed:${providerName}:${normalizeReason(error)}`);
     this.name = 'SwapProviderSubmissionError';
     this.providerName = providerName;
+    this.terminal = options.terminal ?? true;
 
     const status = extractHttpStatus(toError(error));
     if (status !== undefined) {
@@ -413,7 +424,9 @@ async function submitSignedTransaction(
   try {
     return await action();
   } catch (error) {
-    throw new SwapProviderSubmissionError(providerName, error);
+    throw new SwapProviderSubmissionError(providerName, error, {
+      terminal: !isPreBroadcastSubmissionFailure(error)
+    });
   }
 }
 
@@ -503,7 +516,7 @@ export class SwapProviderChain {
         };
       } catch (error) {
         this.recordFailure(provider.name, request, error, attempts);
-        if (error instanceof SwapProviderSubmissionError) {
+        if (error instanceof SwapProviderSubmissionError && error.terminal) {
           throw new SwapProviderChainError('execute', attempts);
         }
       }
