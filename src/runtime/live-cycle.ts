@@ -94,7 +94,8 @@ import type {
   RuntimeMode,
   PositionStateSnapshot,
   PositionLifecycleState,
-  PendingSubmissionSnapshot
+  PendingSubmissionSnapshot,
+  PendingFinality
 } from './state-types.ts';
 
 const STRATEGY_CONFIGS = {
@@ -1609,6 +1610,7 @@ async function appendIncident(
       | 'live-config'
       | 'reconciliation'
       | 'guards'
+      | 'signer'
       | 'broadcast'
       | 'recovery'
       | 'runtime-policy';

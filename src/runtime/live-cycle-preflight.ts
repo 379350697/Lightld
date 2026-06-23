@@ -7,6 +7,8 @@ import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { reconcileLiveState } from './reconcile-live-state.ts';
 import type { PendingSubmissionSnapshot, PositionLifecycleState } from './state-types.ts';
+import type { ExecutionLifecycleStatus } from './execution-lifecycle-status.ts';
+import type { ExecutionTerminalStatus } from './execution-terminal-status.ts';
 import { classifyAction } from './action-semantics.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 
@@ -24,8 +26,8 @@ export function resolveRecoveredOrderTerminalStatus(reason: PendingRecoveryReaso
   broadcastStatus: 'submitted' | 'failed';
   confirmationStatus: ConfirmationStatus;
   finality: 'confirmed' | 'finalized' | 'unknown';
-  lifecycleStatus: 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local';
-  terminalStatus: 'confirmed' | 'failed' | 'unknown_pending_reconciliation' | 'manual-review';
+  lifecycleStatus: ExecutionLifecycleStatus;
+  terminalStatus: ExecutionTerminalStatus;
 } | null {
   if (reason === 'pending-submission-confirmed' || reason === 'pending-submission-filled') {
     return {

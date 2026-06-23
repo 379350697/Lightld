@@ -14,7 +14,7 @@ import type {
   IncidentMirrorPayload,
   OrderMirrorEvent,
   OrderMirrorPayload,
-  type OrderBroadcastStatus,
+  OrderBroadcastStatus,
   ReconciliationMirrorEvent,
   ReconciliationMirrorPayload,
   RuntimeSnapshotMirrorEvent,
