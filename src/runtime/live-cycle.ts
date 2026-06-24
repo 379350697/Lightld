@@ -86,6 +86,7 @@ import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-expo
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import {
   classifyLpEntryFillBinding,
+  isTrustedFillAmountSource,
   isTrustedEntrySolSource,
   matchesPositionStateLifecycle,
   resolveTrustedLpEntry
@@ -272,6 +273,13 @@ function firstString(...values: unknown[]) {
   return '';
 }
 
+function firstValuationCompleteness(...values: unknown[]): 'complete' | 'incomplete' | 'untrusted' | undefined {
+  const value = firstString(...values);
+  return value === 'complete' || value === 'incomplete' || value === 'untrusted'
+    ? value
+    : undefined;
+}
+
 function roundSolLamports(value: number) {
   return Math.round(value * 1_000_000_000) / 1_000_000_000;
 }
@@ -304,7 +312,15 @@ function buildEvolutionExitMetrics(input: {
     lpNetPnlPct: typeof input.context.trader.lpNetPnlPct === 'number' ? input.context.trader.lpNetPnlPct : undefined,
     lpSolDepletedBins: typeof input.context.trader.lpSolDepletedBins === 'number' ? input.context.trader.lpSolDepletedBins : undefined,
     lpCurrentValueSol: typeof input.context.trader.lpCurrentValueSol === 'number' ? input.context.trader.lpCurrentValueSol : undefined,
-    lpUnclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number' ? input.context.trader.lpUnclaimedFeeSol : undefined
+    lpLiquidityValueSol: typeof input.context.trader.lpLiquidityValueSol === 'number' ? input.context.trader.lpLiquidityValueSol : undefined,
+    lpTotalValueSol: typeof input.context.trader.lpTotalValueSol === 'number' ? input.context.trader.lpTotalValueSol : undefined,
+    lpUnclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number' ? input.context.trader.lpUnclaimedFeeSol : undefined,
+    lpUnclaimedFeeValueSol: typeof input.context.trader.lpUnclaimedFeeValueSol === 'number' ? input.context.trader.lpUnclaimedFeeValueSol : undefined,
+    lpClaimedFeeValueSol: typeof input.context.trader.lpClaimedFeeValueSol === 'number' ? input.context.trader.lpClaimedFeeValueSol : undefined,
+    valuationCompleteness: firstValuationCompleteness(
+      input.context.trader.valuationCompleteness,
+      input.context.trader.lpValuationCompleteness
+    )
   };
 }
 
@@ -563,10 +579,33 @@ function hasTrustedContextLpPnlInputs(input: {
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
+  const lpTotalValueSol = typeof input.context.trader.lpTotalValueSol === 'number'
+    ? input.context.trader.lpTotalValueSol
+    : undefined;
+  const liquidityValueSol = typeof input.context.trader.lpLiquidityValueSol === 'number'
+    ? input.context.trader.lpLiquidityValueSol
+    : undefined;
+  const unclaimedFeeValueSol = typeof input.context.trader.lpUnclaimedFeeValueSol === 'number'
+    ? input.context.trader.lpUnclaimedFeeValueSol
+    : undefined;
+  const claimedFeeValueSol = typeof input.context.trader.lpClaimedFeeValueSol === 'number'
+    ? input.context.trader.lpClaimedFeeValueSol
+    : undefined;
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
+  const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
 
-  return hasTrustedLpExitValue({ currentValueSol, valuationStatus, valuationSource });
+  return hasTrustedLpExitValue({
+    currentValueSol,
+    lpTotalValueSol,
+    liquidityValueSol,
+    unclaimedFeeValueSol,
+    claimedFeeValueSol,
+    valuationStatus,
+    valuationSource,
+    valuationCompleteness,
+    tokenQuoteRequirement: 'unknown'
+  });
 }
 
 function hasReduceRiskWalletExposure(input: {
@@ -885,7 +924,11 @@ function buildLpExitSnapshotFromPosition(input: {
     hasInventory: true,
     hasLpPosition: true,
     lpCurrentValueSol: input.position.currentValueSol,
+    lpLiquidityValueSol: input.position.liquidityValueSol,
+    lpTotalValueSol: input.position.lpTotalValueSol,
     lpUnclaimedFeeSol: input.position.unclaimedFeeSol,
+    lpUnclaimedFeeValueSol: input.position.unclaimedFeeValueSol,
+    lpClaimedFeeValueSol: input.position.claimedFeeValueSol,
     lpSolDepletedBins,
     lpSolExposureStatus,
     lpActiveBinStatus: typeof input.position.activeBinId === 'number'
@@ -896,6 +939,7 @@ function buildLpExitSnapshotFromPosition(input: {
     valuationStatus: valuation.valuationStatus,
     valuationReason: valuation.valuationReason,
     valuationSource: input.position.valuationSource,
+    valuationCompleteness: input.position.valuationCompleteness,
     holdTimeMs: input.holdTimeMs,
     pendingConfirmationStatus: 'confirmed' as const,
     lifecycleState: 'open'
@@ -942,6 +986,143 @@ function resolvePositionStateOpenFill(input: {
   return input.fills
     .filter((fill) => classifyLpEntryFillBinding({ fill, positionState }) !== 'none')
     .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt))[0];
+}
+
+function trustedFillSolAmount(fill: LiveFillEntry) {
+  if (fill.hasFillEvidence !== true || !isTrustedFillAmountSource(fill.fillAmountSource)) {
+    return undefined;
+  }
+
+  const amount = typeof fill.actualFilledSol === 'number' && Number.isFinite(fill.actualFilledSol)
+    ? fill.actualFilledSol
+    : fill.amount;
+  return amount > 0 ? amount : undefined;
+}
+
+function fillRecordedAtMs(fill: LiveFillEntry) {
+  const recordedAtMs = Date.parse(fill.recordedAt);
+  return Number.isFinite(recordedAtMs) ? recordedAtMs : undefined;
+}
+
+function claimFeeFillStronglyMatchesPosition(input: {
+  fill: LiveFillEntry;
+  position?: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  positionState?: PositionStateSnapshot;
+}) {
+  const { fill, position, positionState } = input;
+  if (fill.side !== 'claim-fee') {
+    return false;
+  }
+
+  const chainPositionAddress = positionState?.chainPositionAddress ?? position?.chainPositionAddress ?? position?.positionAddress;
+  if (chainPositionAddress && fill.chainPositionAddress === chainPositionAddress) {
+    return true;
+  }
+
+  const positionId = positionState?.positionId ?? position?.positionId;
+  if (positionId && fill.positionId === positionId) {
+    return true;
+  }
+
+  if (positionState?.openIntentId && fill.openIntentId === positionState.openIntentId) {
+    return true;
+  }
+
+  const poolAddress = positionState?.activePoolAddress ?? position?.poolAddress;
+  const mint = positionState?.activeMint ?? position?.mint;
+  if (poolAddress && mint && fill.positionId === `${poolAddress}:${mint}`) {
+    return true;
+  }
+
+  return false;
+}
+
+function claimFeeFillCouldBelongToPosition(input: {
+  fill: LiveFillEntry;
+  position?: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  positionState?: PositionStateSnapshot;
+  openedAt?: string;
+}) {
+  const { fill, position, positionState } = input;
+  if (fill.side !== 'claim-fee') {
+    return false;
+  }
+
+  const mint = positionState?.activeMint ?? position?.mint;
+  if (mint && fill.mint !== mint) {
+    return false;
+  }
+
+  const openedAtMs = input.openedAt ? Date.parse(input.openedAt) : undefined;
+  const fillAtMs = fillRecordedAtMs(fill);
+  if (
+    typeof openedAtMs === 'number'
+    && Number.isFinite(openedAtMs)
+    && typeof fillAtMs === 'number'
+    && fillAtMs < openedAtMs - 60_000
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function resolveClaimedFeeValueSol(input: {
+  fills: LiveFillEntry[];
+  position?: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  positionState?: PositionStateSnapshot;
+  openedAt?: string;
+}): { status: 'resolved'; valueSol: number } | { status: 'ambiguous'; reason: string } {
+  const trustedClaimFills = input.fills.filter((fill) =>
+    fill.side === 'claim-fee'
+    && typeof trustedFillSolAmount(fill) === 'number'
+    && claimFeeFillCouldBelongToPosition({
+      fill,
+      position: input.position,
+      positionState: input.positionState,
+      openedAt: input.openedAt
+    })
+  );
+
+  const matched = trustedClaimFills.filter((fill) =>
+    claimFeeFillStronglyMatchesPosition({
+      fill,
+      position: input.position,
+      positionState: input.positionState
+    })
+  );
+  const ambiguous = trustedClaimFills.filter((fill) => !matched.includes(fill));
+
+  if (ambiguous.length > 0) {
+    return { status: 'ambiguous', reason: 'claim-fee-attribution-ambiguous' };
+  }
+
+  return {
+    status: 'resolved',
+    valueSol: matched.reduce((sum, fill) => sum + (trustedFillSolAmount(fill) ?? 0), 0)
+  };
+}
+
+function applyClaimedFeeValueToPosition(input: {
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number];
+  claimedFeeValueSol: number;
+}) {
+  const previousClaimedFeeValueSol = finiteNonnegative(input.position.claimedFeeValueSol) ?? 0;
+  const previousTotalValueSol = finiteNonnegative(input.position.lpTotalValueSol);
+  const liquidityValueSol = finiteNonnegative(input.position.liquidityValueSol);
+  const unclaimedFeeValueSol = finiteNonnegative(input.position.unclaimedFeeValueSol);
+  const lpTotalValueSol = typeof previousTotalValueSol === 'number'
+    ? Math.max(0, previousTotalValueSol - previousClaimedFeeValueSol + input.claimedFeeValueSol)
+    : typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
+      ? liquidityValueSol + unclaimedFeeValueSol + input.claimedFeeValueSol
+      : undefined;
+
+  return {
+    ...input.position,
+    claimedFeeValueSol: input.claimedFeeValueSol,
+    lpTotalValueSol,
+    currentValueSol: lpTotalValueSol ?? input.position.currentValueSol
+  };
 }
 
 function dedupeActiveLpPositions(accountState?: LiveAccountState) {
@@ -1006,47 +1187,149 @@ function getLpExitPriority(action: 'withdraw-lp' | 'claim-fee' | 'rebalance-lp',
   return 100;
 }
 
+function finiteNonnegative(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function rawLamportsAmountIsPositive(value: unknown) {
+  if (typeof value === 'string') {
+    return /^\d+$/.test(value) && BigInt(value) > 0n;
+  }
+
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function lpPositionRequiresTokenQuote(position: NonNullable<LiveAccountState['walletLpPositions']>[number]) {
+  return rawLamportsAmountIsPositive(position.withdrawTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.withdrawTokenAmountLamports)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountLamports);
+}
+
+function hasRequiredLpTokenQuotes(position: NonNullable<LiveAccountState['walletLpPositions']>[number]) {
+  const valuationSource = typeof position.valuationSource === 'string' ? position.valuationSource : '';
+  const needsWithdrawTokenQuote = rawLamportsAmountIsPositive(position.withdrawTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.withdrawTokenAmountLamports);
+  const needsFeeTokenQuote = rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountLamports);
+
+  if (
+    needsWithdrawTokenQuote
+    && (
+      !valuationSource.includes('swap-provider-sell-quote')
+      || typeof finiteNonnegative(position.withdrawTokenValueSol) !== 'number'
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    needsFeeTokenQuote
+    && (
+      !valuationSource.includes('fee-swap-provider-sell-quote')
+      || typeof finiteNonnegative(position.unclaimedFeeTokenValueSol) !== 'number'
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function resolveLpTotalValueSol(input: {
+  currentValueSol?: unknown;
+  lpTotalValueSol?: unknown;
+  liquidityValueSol?: unknown;
+  unclaimedFeeValueSol?: unknown;
+  claimedFeeValueSol?: unknown;
+}) {
+  const explicitTotal = finiteNonnegative(input.lpTotalValueSol);
+  if (typeof explicitTotal === 'number') {
+    return explicitTotal;
+  }
+
+  const liquidityValueSol = finiteNonnegative(input.liquidityValueSol);
+  const unclaimedFeeValueSol = finiteNonnegative(input.unclaimedFeeValueSol);
+  const claimedFeeValueSol = finiteNonnegative(input.claimedFeeValueSol) ?? 0;
+  if (typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number') {
+    return liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
+  }
+
+  return finiteNonnegative(input.currentValueSol);
+}
+
+type LpTokenQuoteRequirement = 'required' | 'not-required' | 'unknown';
+
+function tokenQuoteRequirementSatisfied(
+  valuationSource: string,
+  requirement: LpTokenQuoteRequirement | undefined,
+  evidenceMarker: string
+) {
+  if (requirement === 'not-required') {
+    return true;
+  }
+
+  return valuationSource.includes(evidenceMarker);
+}
+
 function hasTrustedLpExitValue(input: {
   currentValueSol?: unknown;
+  lpTotalValueSol?: unknown;
+  liquidityValueSol?: unknown;
+  unclaimedFeeValueSol?: unknown;
+  claimedFeeValueSol?: unknown;
   valuationStatus?: unknown;
   valuationSource?: unknown;
+  valuationCompleteness?: unknown;
+  tokenQuoteRequirement?: LpTokenQuoteRequirement;
+  feeTokenQuoteRequirement?: LpTokenQuoteRequirement;
 }) {
   const valuationSource = typeof input.valuationSource === 'string' ? input.valuationSource : '';
-  const trustedValuationSource = valuationSource === 'meteora-withdraw-simulation'
-    || valuationSource.includes('jupiter-sell-quote')
-    || valuationSource.includes('dlmm-active-bin-price-fallback');
+  const lpTotalValueSol = resolveLpTotalValueSol(input);
 
   return input.valuationStatus === 'ready'
-    && typeof input.currentValueSol === 'number'
-    && Number.isFinite(input.currentValueSol)
-    && input.currentValueSol >= 0
+    && input.valuationCompleteness === 'complete'
+    && typeof lpTotalValueSol === 'number'
     && valuationSource.includes('withdraw-simulation')
-    && trustedValuationSource;
+    && !valuationSource.includes('dlmm-active-bin-price-fallback')
+    && tokenQuoteRequirementSatisfied(
+      valuationSource,
+      input.tokenQuoteRequirement ?? 'unknown',
+      'swap-provider-sell-quote'
+    )
+    && tokenQuoteRequirementSatisfied(
+      valuationSource,
+      input.feeTokenQuoteRequirement ?? 'not-required',
+      'fee-swap-provider-sell-quote'
+    );
 }
 
 function computeTrustedLpNetPnlPct(input: {
   entrySol?: number;
   currentValueSol?: number;
-  unclaimedFeeSol?: number;
-  valuationSource?: string;
+  lpTotalValueSol?: number;
+  liquidityValueSol?: number;
+  unclaimedFeeValueSol?: number;
+  claimedFeeValueSol?: number;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
 }) {
+  const lpTotalValueSol = resolveLpTotalValueSol({
+    currentValueSol: input.currentValueSol,
+    lpTotalValueSol: input.lpTotalValueSol,
+    liquidityValueSol: input.liquidityValueSol,
+    unclaimedFeeValueSol: input.unclaimedFeeValueSol,
+    claimedFeeValueSol: input.claimedFeeValueSol
+  });
+
   if (
     typeof input.entrySol !== 'number'
     || input.entrySol <= 0
-    || typeof input.currentValueSol !== 'number'
-    || !Number.isFinite(input.currentValueSol)
+    || typeof lpTotalValueSol !== 'number'
   ) {
     return undefined;
   }
 
-  const currentValueIncludesFees = typeof input.valuationSource === 'string'
-    && input.valuationSource.includes('withdraw-simulation');
-  const accumulatedFeesSol = currentValueIncludesFees
-    ? 0
-    : (typeof input.unclaimedFeeSol === 'number' ? input.unclaimedFeeSol : 0);
-
-  return evaluateLpPnl(input.entrySol, input.currentValueSol, accumulatedFeesSol, {
+  return evaluateLpPnl(input.entrySol, lpTotalValueSol, 0, {
     stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
@@ -1067,16 +1350,16 @@ function selectTriggeredLpExit(input: {
     priority: number;
   }> = [];
 
-  for (const position of dedupeActiveLpPositions(input.accountState)) {
-    const mint = position.mint;
+  for (const rawPosition of dedupeActiveLpPositions(input.accountState)) {
+    const mint = rawPosition.mint;
     if (!mint) {
       continue;
     }
 
-    const lifecycleBound = matchesPositionStateLifecycle(position, input.positionState);
+    const lifecycleBound = matchesPositionStateLifecycle(rawPosition, input.positionState);
     const openFill = resolveLifecycleOpenFill({
       fills: input.fills,
-      position,
+      position: rawPosition,
       positionState: input.positionState
     });
     const trustedEntry = resolveTrustedLpEntry({
@@ -1085,18 +1368,51 @@ function selectTriggeredLpExit(input: {
       lifecycleBound
     });
     const entrySol = trustedEntry?.entrySol;
+    const claimedFeeResolution = resolveClaimedFeeValueSol({
+      fills: input.fills,
+      position: rawPosition,
+      positionState: lifecycleBound ? input.positionState : undefined,
+      openedAt: trustedEntry?.openedAt
+    });
+    const position = claimedFeeResolution.status === 'resolved'
+      ? applyClaimedFeeValueToPosition({
+        position: rawPosition,
+        claimedFeeValueSol: claimedFeeResolution.valueSol > 0
+          ? claimedFeeResolution.valueSol
+          : finiteNonnegative(rawPosition.claimedFeeValueSol) ?? 0
+      })
+      : {
+        ...rawPosition,
+        valuationStatus: 'unavailable' as const,
+        valuationReason: claimedFeeResolution.reason,
+        valuationCompleteness: 'incomplete' as const,
+        lpTotalValueSol: undefined,
+        currentValueSol: undefined
+      };
     const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
-    const unclaimedFeeSol = typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : 0;
+    const lpTotalValueSol = typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : undefined;
+    const liquidityValueSol = typeof position.liquidityValueSol === 'number' ? position.liquidityValueSol : undefined;
+    const unclaimedFeeValueSol = typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : undefined;
+    const resolvedClaimedFeeValueSol = typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : undefined;
     const lpNetPnlPct = hasTrustedLpExitValue({
       currentValueSol,
+      lpTotalValueSol,
+      liquidityValueSol,
+      unclaimedFeeValueSol,
+      claimedFeeValueSol: resolvedClaimedFeeValueSol,
       valuationStatus: position.valuationStatus,
-      valuationSource: position.valuationSource
+      valuationSource: position.valuationSource,
+      valuationCompleteness: position.valuationCompleteness,
+      tokenQuoteRequirement: lpPositionRequiresTokenQuote(position) ? 'required' : 'not-required'
     })
+      && (!lpPositionRequiresTokenQuote(position) || hasRequiredLpTokenQuotes(position))
       ? computeTrustedLpNetPnlPct({
         entrySol: trustedEntry?.entrySol,
         currentValueSol,
-        unclaimedFeeSol,
-        valuationSource: position.valuationSource,
+        lpTotalValueSol,
+        liquidityValueSol,
+        unclaimedFeeValueSol,
+        claimedFeeValueSol: resolvedClaimedFeeValueSol,
         config: input.config
       })
       : undefined;
@@ -1110,6 +1426,9 @@ function selectTriggeredLpExit(input: {
       holdTimeMs,
       solDepletionExitBins: input.config.lpConfig?.solDepletionExitBins
     });
+    if (typeof entrySol === 'number') {
+      snapshot.entrySol = entrySol;
+    }
     if (typeof lpNetPnlPct === 'number') {
       snapshot.lpNetPnlPct = lpNetPnlPct;
     }
@@ -1186,7 +1505,11 @@ function buildEngineSnapshot(
         ? context.trader.lpNetPnlPct
         : undefined,
       lpCurrentValueSol: typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol : undefined,
+      lpLiquidityValueSol: typeof context.trader.lpLiquidityValueSol === 'number' ? context.trader.lpLiquidityValueSol : undefined,
+      lpTotalValueSol: typeof context.trader.lpTotalValueSol === 'number' ? context.trader.lpTotalValueSol : undefined,
       lpUnclaimedFeeSol: typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol : undefined,
+      lpUnclaimedFeeValueSol: typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol : undefined,
+      lpClaimedFeeValueSol: typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol : undefined,
       lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
       lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
@@ -1195,6 +1518,7 @@ function buildEngineSnapshot(
       valuationStatus: firstString(context.trader.valuationStatus, context.trader.lpValuationStatus) as any,
       valuationReason: firstString(context.trader.valuationReason, context.trader.lpValuationReason),
       valuationSource: firstString(context.trader.valuationSource, context.trader.lpValuationSource),
+      valuationCompleteness: firstString(context.trader.valuationCompleteness, context.trader.lpValuationCompleteness),
       lifecycleState: typeof context.trader.lifecycleState === 'string' ? context.trader.lifecycleState : undefined
     };
   }
@@ -1214,10 +1538,59 @@ function maybePopulateLpNetPnlPct(input: {
   const currentValueSol = typeof input.context.trader.lpCurrentValueSol === 'number'
     ? input.context.trader.lpCurrentValueSol
     : undefined;
+  const liquidityValueSol = typeof input.context.trader.lpLiquidityValueSol === 'number'
+    ? input.context.trader.lpLiquidityValueSol
+    : undefined;
+  const unclaimedFeeValueSol = typeof input.context.trader.lpUnclaimedFeeValueSol === 'number'
+    ? input.context.trader.lpUnclaimedFeeValueSol
+    : undefined;
+  const claimedFeeResolution = resolveClaimedFeeValueSol({
+    fills: input.fills,
+    positionState: input.positionState,
+    openedAt: input.positionState?.openedAt
+  });
+  if (claimedFeeResolution.status === 'ambiguous') {
+    delete input.context.trader.lpNetPnlPct;
+    input.context.trader.valuationStatus = 'unavailable';
+    input.context.trader.lpValuationStatus = 'unavailable';
+    input.context.trader.valuationReason = claimedFeeResolution.reason;
+    input.context.trader.lpValuationReason = claimedFeeResolution.reason;
+    input.context.trader.valuationCompleteness = 'incomplete';
+    input.context.trader.lpValuationCompleteness = 'incomplete';
+    return;
+  }
+  const claimedFeeValueSol = claimedFeeResolution.valueSol > 0
+    ? claimedFeeResolution.valueSol
+    : typeof input.context.trader.lpClaimedFeeValueSol === 'number'
+      ? input.context.trader.lpClaimedFeeValueSol
+      : 0;
+  if (claimedFeeResolution.valueSol > 0) {
+    input.context.trader.lpClaimedFeeValueSol = claimedFeeValueSol;
+  }
+  const lpTotalValueSol = typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
+    ? liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol
+    : typeof input.context.trader.lpTotalValueSol === 'number'
+      ? input.context.trader.lpTotalValueSol
+      : undefined;
+  if (typeof lpTotalValueSol === 'number') {
+    input.context.trader.lpTotalValueSol = lpTotalValueSol;
+    input.context.trader.lpCurrentValueSol = lpTotalValueSol;
+  }
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
+  const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
 
-  if (!hasTrustedLpExitValue({ currentValueSol, valuationStatus, valuationSource })) {
+  if (!hasTrustedLpExitValue({
+    currentValueSol: lpTotalValueSol ?? currentValueSol,
+    lpTotalValueSol,
+    liquidityValueSol,
+    unclaimedFeeValueSol,
+    claimedFeeValueSol,
+    valuationStatus,
+    valuationSource,
+    valuationCompleteness,
+    tokenQuoteRequirement: 'unknown'
+  })) {
     delete input.context.trader.lpNetPnlPct;
     return;
   }
@@ -1233,11 +1606,11 @@ function maybePopulateLpNetPnlPct(input: {
   });
   const lpNetPnlPct = computeTrustedLpNetPnlPct({
     entrySol: trustedEntry?.entrySol,
-    currentValueSol,
-    unclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number'
-      ? input.context.trader.lpUnclaimedFeeSol
-      : undefined,
-    valuationSource,
+    currentValueSol: lpTotalValueSol ?? currentValueSol,
+    lpTotalValueSol,
+    liquidityValueSol,
+    unclaimedFeeValueSol,
+    claimedFeeValueSol,
     config: input.config
   });
 
@@ -1931,15 +2304,21 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     context.trader.hasLpPosition = true;
     context.trader.hasInventory = true;
     context.trader.lpCurrentValueSol = multiLpExit.position.currentValueSol;
+    context.trader.lpLiquidityValueSol = multiLpExit.position.liquidityValueSol;
+    context.trader.lpTotalValueSol = multiLpExit.position.lpTotalValueSol;
     context.trader.lpUnclaimedFeeSol = multiLpExit.position.unclaimedFeeSol;
+    context.trader.lpUnclaimedFeeValueSol = multiLpExit.position.unclaimedFeeValueSol;
+    context.trader.lpClaimedFeeValueSol = multiLpExit.position.claimedFeeValueSol;
     context.trader.lpSolDepletedBins = multiLpExit.snapshot.lpSolDepletedBins;
     context.trader.lpSolExposureStatus = multiLpExit.snapshot.lpSolExposureStatus;
     context.trader.valuationStatus = multiLpExit.position.valuationStatus;
     context.trader.valuationReason = multiLpExit.position.valuationReason;
     context.trader.valuationSource = multiLpExit.position.valuationSource;
+    context.trader.valuationCompleteness = multiLpExit.position.valuationCompleteness;
     context.trader.lpValuationStatus = multiLpExit.position.valuationStatus;
     context.trader.lpValuationReason = multiLpExit.position.valuationReason;
     context.trader.lpValuationSource = multiLpExit.position.valuationSource;
+    context.trader.lpValuationCompleteness = multiLpExit.position.valuationCompleteness;
     if (typeof multiLpExit.snapshot.lpNetPnlPct === 'number') {
       context.trader.lpNetPnlPct = multiLpExit.snapshot.lpNetPnlPct;
     } else {
@@ -2182,6 +2561,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
     (updatedSnapshot as any).valuationSource = firstString(context.trader.valuationSource, context.trader.lpValuationSource);
+    (updatedSnapshot as any).valuationCompleteness = firstString(
+      context.trader.valuationCompleteness,
+      context.trader.lpValuationCompleteness
+    );
     if (typeof (updatedSnapshot as any).lpSolExposureStatus !== 'string') {
       (updatedSnapshot as any).lpSolExposureStatus = deriveLpSolExposureStatus({
         solDepletedBins: typeof (updatedSnapshot as any).lpSolDepletedBins === 'number'
@@ -2221,12 +2604,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const lpAuditMetrics = [
     `entrySol=${typeof input.positionState?.entrySol === 'number' ? input.positionState.entrySol.toFixed(9) : 'n/a'}`,
     `lpCurrentValueSol=${typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol.toFixed(9) : 'n/a'}`,
+    `lpTotalValueSol=${typeof context.trader.lpTotalValueSol === 'number' ? context.trader.lpTotalValueSol.toFixed(9) : 'n/a'}`,
+    `lpLiquidityValueSol=${typeof context.trader.lpLiquidityValueSol === 'number' ? context.trader.lpLiquidityValueSol.toFixed(9) : 'n/a'}`,
     `lpUnclaimedFeeSol=${typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol.toFixed(9) : 'n/a'}`,
+    `lpUnclaimedFeeValueSol=${typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol.toFixed(9) : 'n/a'}`,
+    `lpClaimedFeeValueSol=${typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
     `lpSolExposureStatus=${typeof (updatedSnapshot as any).lpSolExposureStatus === 'string' ? (updatedSnapshot as any).lpSolExposureStatus : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
     `valuationReason=${typeof (updatedSnapshot as any).valuationReason === 'string' ? (updatedSnapshot as any).valuationReason : 'n/a'}`,
     `valuationSource=${typeof (updatedSnapshot as any).valuationSource === 'string' ? (updatedSnapshot as any).valuationSource : 'n/a'}`,
+    `valuationCompleteness=${typeof (updatedSnapshot as any).valuationCompleteness === 'string' ? (updatedSnapshot as any).valuationCompleteness : 'n/a'}`,
     `holdTimeMs=${typeof (updatedSnapshot as any).holdTimeMs === 'number' ? String((updatedSnapshot as any).holdTimeMs) : 'n/a'}`,
     `pendingConfirmationStatus=${typeof (updatedSnapshot as any).pendingConfirmationStatus === 'string' ? (updatedSnapshot as any).pendingConfirmationStatus : 'n/a'}`
   ];

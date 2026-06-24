@@ -439,6 +439,20 @@ export function buildDashboardHtml(): string {
     function escHtml(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
     function truncAddr(a) { if (!a || a.length < 12) return a || '--'; return a.slice(0, 6) + '...' + a.slice(-4); }
     function finiteNumberOrNull(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
+    function lpTotalValueOrNull(p) {
+      var total = finiteNumberOrNull(p && p.lpTotalValueSol);
+      return total !== null ? total : finiteNumberOrNull(p && p.currentValueSol);
+    }
+    function lpUnclaimedFeeValueOrZero(p) {
+      var fee = finiteNumberOrNull(p && p.unclaimedFeeValueSol);
+      if (fee !== null) return fee;
+      fee = finiteNumberOrNull(p && p.unclaimedFeeSol);
+      return fee !== null ? fee : 0;
+    }
+    function lpClaimedFeeValueOrZero(p) {
+      var fee = finiteNumberOrNull(p && p.claimedFeeValueSol);
+      return fee !== null ? fee : 0;
+    }
     function fmtSol(v) { return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : '--'; }
     function fmtSignedSol(v) {
       if (typeof v !== 'number' || !Number.isFinite(v)) return '--';
@@ -606,14 +620,15 @@ export function buildDashboardHtml(): string {
       var totalValue = 0, totalFees = 0, totalUPnl = 0, totalClaimed = 0;
       var totalUPnlEntrySol = 0;
       data.forEach(function(p) {
-        var value = finiteNumberOrNull(p.currentValueSol);
-        var fee = finiteNumberOrNull(p.unclaimedFeeSol) || 0;
+        var value = lpTotalValueOrNull(p);
+        var fee = lpUnclaimedFeeValueOrZero(p);
+        var claimed = lpClaimedFeeValueOrZero(p);
         var entry = finiteNumberOrNull(p.entrySol);
         if (value !== null) totalValue += value;
         totalFees += fee;
-        totalClaimed += 0;
+        totalClaimed += claimed;
         if (value !== null && entry !== null && entry > 0) {
-          totalUPnl += value + fee - entry;
+          totalUPnl += value - entry;
           totalUPnlEntrySol += entry;
         }
       });
@@ -638,16 +653,19 @@ export function buildDashboardHtml(): string {
         var priceProgress = typeof p.priceProgress === 'number' ? p.priceProgress : null;
         var leftPct = priceProgress !== null ? Math.max(0, Math.min(100, Math.round(priceProgress * 100))) : 50;
         var entrySol = finiteNumberOrNull(p.entrySol);
-        var currentValue = finiteNumberOrNull(p.currentValueSol);
-        var unclaimedFee = finiteNumberOrNull(p.unclaimedFeeSol) || 0;
-        var uPnl = currentValue !== null && entrySol !== null && entrySol > 0 ? (currentValue + unclaimedFee - entrySol) : null;
+        var currentValue = lpTotalValueOrNull(p);
+        var liquidityValue = finiteNumberOrNull(p.liquidityValueSol);
+        var unclaimedFee = lpUnclaimedFeeValueOrZero(p);
+        var claimedFee = lpClaimedFeeValueOrZero(p);
+        var valuationCompleteness = typeof p.valuationCompleteness === 'string' && p.valuationCompleteness ? p.valuationCompleteness : '--';
+        var uPnl = currentValue !== null && entrySol !== null && entrySol > 0 ? (currentValue - entrySol) : null;
         var uPnlPct = entrySol !== null && entrySol > 0 && typeof uPnl === 'number' ? (uPnl / entrySol) * 100 : null;
         var av = mint.charAt(0).toUpperCase() || '?';
         return '<tr>' +
           '<td><div class="token-cell"><div class="position-side-icon">↗</div><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(symbol) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(positionAddr)) + '</span></div></div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main">' + escHtml(ageLabel(p.openedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(p.openedAt)) + '</div></div></td>' +
-          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(fmtPrice(currentPrice)) + '</div></div></td>' +
-          '<td><div class="cell-metric"><div class="cell-main">0.00 SOL | <span class="cell-green">' + fmtSol(unclaimedFee) + ' SOL</span></div><div class="cell-sub">' + (entrySol !== null && entrySol > 0 ? fmtPct((unclaimedFee / entrySol) * 100) : '--') + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(valuationCompleteness) + ' · liquidity ' + fmtSol(liquidityValue) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(claimedFee) + ' SOL | <span class="cell-green">' + fmtSol(unclaimedFee) + ' SOL</span></div><div class="cell-sub">' + (entrySol !== null && entrySol > 0 ? fmtPct(((claimedFee + unclaimedFee) / entrySol) * 100) : '--') + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnl) + '">' + fmtSignedSol(uPnl) + ' SOL</div><div class="cell-sub ' + metricClass(uPnl) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnlPct) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
           '<td><div class="range-shell"><div class="range-labels"><span>' + fmtPrice(lowerPrice) + '</span><span>' + fmtPrice(upperPrice) + '</span></div><div class="range-bar"><div class="range-fill blue"></div><div class="range-marker lower" style="left:0%;"></div><div class="range-marker current" style="left:' + leftPct + '%;"></div><div class="range-marker upper"></div></div><div class="cell-sub">' + escHtml(p.solSide || '--') + '</div></div></td>' +
@@ -792,9 +810,8 @@ export function buildDashboardHtml(): string {
             ? ('proposal=' + String(evolution.latestReviewProposalId))
             : 'No outcome review yet.';
           var walletSol = typeof status.walletSol === 'number' ? status.walletSol : 0;
-          var openValue = Array.isArray(positions) ? positions.reduce(function(sum, p) { var value = finiteNumberOrNull(p.currentValueSol); return sum + (value !== null ? value : 0); }, 0) : 0;
-          var openFees = Array.isArray(positions) ? positions.reduce(function(sum, p) { var fee = finiteNumberOrNull(p.unclaimedFeeSol); return sum + (fee !== null ? fee : 0); }, 0) : 0;
-          $('#net-worth-num').textContent = (walletSol + openValue + openFees).toFixed(4) + ' ';
+          var openValue = Array.isArray(positions) ? positions.reduce(function(sum, p) { var value = lpTotalValueOrNull(p); return sum + (value !== null ? value : 0); }, 0) : 0;
+          $('#net-worth-num').textContent = (walletSol + openValue).toFixed(4) + ' ';
           $('#last-update').textContent = timeAgo(status.updatedAt || status.lastSuccessfulTickAt || '');
         }
         var totalCashflow = Number(pnl.totalCashflowSol != null ? pnl.totalCashflowSol : pnl.totalPnl);

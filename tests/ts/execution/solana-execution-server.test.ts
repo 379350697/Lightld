@@ -1415,6 +1415,9 @@ describe('createSolanaExecutionServer', () => {
       withdrawTokenAmountRaw: '123456',
       withdrawTokenMint: 'earthcoin-mint',
       unclaimedFeeSol: 0.001,
+      unclaimedFeeSolAmount: 0.001,
+      unclaimedFeeTokenAmountLamports: 0,
+      unclaimedFeeTokenAmountRaw: '0',
       positionStatus: 'active' as const,
       hasLiquidity: true,
       hasClaimableFees: true,
@@ -1459,9 +1462,14 @@ describe('createSolanaExecutionServer', () => {
         withdrawTokenAmountLamports: 123456,
         withdrawTokenAmountRaw: '123456',
         withdrawTokenValueSol: 0.02,
-        currentValueSol: 0.1,
+        liquidityValueSol: 0.1,
+        unclaimedFeeValueSol: 0.001,
+        claimedFeeValueSol: 0,
+        lpTotalValueSol: 0.101,
+        currentValueSol: 0.101,
         valuationStatus: 'ready',
         valuationReason: '',
+        valuationCompleteness: 'complete',
         valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
       })
     ]);
@@ -1501,6 +1509,9 @@ describe('createSolanaExecutionServer', () => {
       withdrawTokenMint: 'earthcoin-mint',
       withdrawTokenValueSol: 0.03,
       unclaimedFeeSol: 0.001,
+      unclaimedFeeSolAmount: 0.001,
+      unclaimedFeeTokenAmountLamports: 0,
+      unclaimedFeeTokenAmountRaw: '0',
       positionStatus: 'active' as const,
       hasLiquidity: true,
       hasClaimableFees: true,
@@ -1543,8 +1554,9 @@ describe('createSolanaExecutionServer', () => {
         mint: 'earthcoin-mint',
         withdrawTokenValueSol: 0.03,
         currentValueSol: 0.11,
-        valuationStatus: 'ready',
-        valuationReason: '',
+        valuationStatus: 'stale',
+        valuationReason: expect.stringContaining('withdraw-token-quote-failed:'),
+        valuationCompleteness: 'untrusted',
         valuationSource: 'meteora-withdraw-simulation+dlmm-active-bin-price-fallback'
       })
     ]);

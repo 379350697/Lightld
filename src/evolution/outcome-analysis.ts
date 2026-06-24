@@ -52,7 +52,7 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
     matchedFollowThroughCount += 1;
 
     if (outcome.actualExitReason.includes('lp-stop-loss')) {
-      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      const exitValue = outcome.exitMetrics.lpTotalValueSol ?? outcome.exitMetrics.lpCurrentValueSol;
       if (typeof exitValue === 'number' && snapshot.currentValueSol < exitValue * 0.75) {
         matchedSamples.lpStopLoss += 1;
       }
@@ -60,7 +60,7 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
     }
 
     if (outcome.actualExitReason.includes('lp-take-profit')) {
-      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      const exitValue = outcome.exitMetrics.lpTotalValueSol ?? outcome.exitMetrics.lpCurrentValueSol;
       if (typeof exitValue === 'number' && snapshot.currentValueSol > exitValue * 1.2) {
         matchedSamples.lpTakeProfit += 1;
       }
@@ -87,7 +87,7 @@ export function analyzeOutcomeEvidence(input: AnalyzeOutcomeEvidenceInput): Outc
       outcome.actualExitReason.includes('sol-depletion')
       || outcome.exitMetrics.lpSolDepletedBins === outcome.parameterSnapshot.lpSolDepletionExitBins
     ) {
-      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      const exitValue = outcome.exitMetrics.lpTotalValueSol ?? outcome.exitMetrics.lpCurrentValueSol;
       if (typeof exitValue === 'number' && snapshot.currentValueSol > exitValue * 1.2) {
         matchedSamples.solDepletion += 1;
       }

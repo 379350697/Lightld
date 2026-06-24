@@ -37,7 +37,17 @@ export type MeteoraLpPositionSnapshot = {
   withdrawTokenAmountRaw?: string;
   withdrawTokenMint?: string;
   withdrawTokenValueSol?: number;
+  liquidityValueSol?: number;
+  unclaimedFeeSolAmount?: number;
+  unclaimedFeeTokenAmountLamports?: number;
+  unclaimedFeeTokenAmountRaw?: string;
+  unclaimedFeeTokenMint?: string;
+  unclaimedFeeTokenValueSol?: number;
   unclaimedFeeSol?: number;
+  unclaimedFeeValueSol?: number;
+  claimedFeeValueSol?: number;
+  lpTotalValueSol?: number;
+  valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
   currentPrice?: number;
   lowerPrice?: number;
   upperPrice?: number;
@@ -739,30 +749,74 @@ export class MeteoraDlmmClient {
               tokenYDecimals
             })
             : undefined;
-          const currentValueSol = withdrawSimulation.valuationStatus === 'ready'
-            ? withdrawSimulation.withdrawSolAmount
-            : typeof withdrawSimulation.withdrawSolAmount === 'number' && typeof withdrawTokenValueSol === 'number'
-              ? withdrawSimulation.withdrawSolAmount + withdrawTokenValueSol
-              : undefined;
-          const valuationStatus = withdrawSimulation.valuationStatus === 'ready' || typeof currentValueSol === 'number'
-            ? 'ready' as const
-            : withdrawSimulation.valuationStatus;
-          const valuationReason = valuationStatus === 'ready' ? '' : withdrawSimulation.valuationReason;
-          const valuationSource = withdrawSimulation.valuationStatus === 'ready'
-            ? withdrawSimulation.valuationSource
-            : typeof currentValueSol === 'number'
-              ? `${withdrawSimulation.valuationSource}+dlmm-active-bin-price-fallback`
-              : withdrawSimulation.valuationSource;
-          const unclaimedFeeSol = hasPrice
-            ? computeSolValueFromPairAmounts({
+          const liquidityValueSol = typeof withdrawSimulation.withdrawSolAmount === 'number'
+            ? withdrawSimulation.withdrawTokenAmountRaw === '0'
+              ? withdrawSimulation.withdrawSolAmount
+              : typeof withdrawTokenValueSol === 'number'
+                ? withdrawSimulation.withdrawSolAmount + withdrawTokenValueSol
+                : undefined
+            : undefined;
+          const feeXRaw = toRawAmountString((position.positionData as any).feeXExcludeTransferFee ?? (position.positionData as any).feeX) ?? '0';
+          const feeYRaw = toRawAmountString((position.positionData as any).feeYExcludeTransferFee ?? (position.positionData as any).feeY) ?? '0';
+          const unclaimedFeeSolRaw = solSide === 'tokenX' ? feeXRaw : feeYRaw;
+          const unclaimedFeeTokenRaw = solSide === 'tokenX' ? feeYRaw : feeXRaw;
+          const unclaimedFeeSolLamports = rawAmountToNumber(unclaimedFeeSolRaw);
+          const unclaimedFeeSolAmount = typeof unclaimedFeeSolLamports === 'number'
+            ? unclaimedFeeSolLamports / LAMPORTS_PER_SOL
+            : undefined;
+          const unclaimedFeeTokenAmountLamports = rawAmountToNumber(unclaimedFeeTokenRaw);
+          const unclaimedFeeTokenValueSol = hasPrice && unclaimedFeeTokenRaw !== '0'
+            ? computeWithdrawTokenValueSol({
               solSide,
               pricePerToken: currentPrice,
-              tokenXAmountRaw: (position.positionData as any).feeXExcludeTransferFee ?? (position.positionData as any).feeX,
-              tokenYAmountRaw: (position.positionData as any).feeYExcludeTransferFee ?? (position.positionData as any).feeY,
+              withdrawTokenAmountRaw: unclaimedFeeTokenRaw,
               tokenXDecimals,
               tokenYDecimals
             })
             : undefined;
+          const unclaimedFeeSol = hasPrice
+            ? computeSolValueFromPairAmounts({
+              solSide,
+              pricePerToken: currentPrice,
+              tokenXAmountRaw: feeXRaw,
+              tokenYAmountRaw: feeYRaw,
+              tokenXDecimals,
+              tokenYDecimals
+            })
+            : undefined;
+          const unclaimedFeeValueSol = typeof unclaimedFeeSolAmount === 'number'
+            ? unclaimedFeeTokenRaw === '0'
+              ? unclaimedFeeSolAmount
+              : typeof unclaimedFeeTokenValueSol === 'number'
+                ? unclaimedFeeSolAmount + unclaimedFeeTokenValueSol
+                : undefined
+            : undefined;
+          const hasWithdrawToken = withdrawSimulation.withdrawTokenAmountRaw !== undefined
+            && withdrawSimulation.withdrawTokenAmountRaw !== '0';
+          const hasFeeToken = unclaimedFeeTokenRaw !== undefined && unclaimedFeeTokenRaw !== '0';
+          const requiresTokenQuote = hasWithdrawToken || hasFeeToken;
+          const lpTotalValueSol = typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
+            ? liquidityValueSol + unclaimedFeeValueSol
+            : undefined;
+          const currentValueSol = lpTotalValueSol;
+          const valuationCompleteness = typeof lpTotalValueSol === 'number'
+            ? (requiresTokenQuote ? 'untrusted' as const : 'complete' as const)
+            : 'incomplete' as const;
+          const valuationStatus = valuationCompleteness === 'complete'
+            ? 'ready' as const
+            : valuationCompleteness === 'untrusted'
+              ? 'stale' as const
+              : withdrawSimulation.valuationStatus;
+          const valuationReason = valuationCompleteness === 'complete'
+            ? ''
+            : valuationCompleteness === 'untrusted'
+              ? 'swap-provider-quote-required'
+              : withdrawSimulation.valuationReason;
+          const valuationSource = valuationCompleteness === 'complete'
+            ? withdrawSimulation.valuationSource
+            : valuationCompleteness === 'untrusted'
+              ? `${withdrawSimulation.valuationSource}+dlmm-active-bin-price-fallback`
+              : withdrawSimulation.valuationSource;
           const lowerPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof binStep === 'number'
             ? pricePerTokenFromBinId(summary.lowerBinId, binStep, tokenXDecimals, tokenYDecimals)
             : undefined;
@@ -792,7 +846,17 @@ export class MeteoraDlmmClient {
             withdrawTokenAmountRaw: withdrawSimulation.withdrawTokenAmountRaw,
             withdrawTokenMint: withdrawSimulation.withdrawTokenMint,
             withdrawTokenValueSol,
+            liquidityValueSol,
+            unclaimedFeeSolAmount,
+            unclaimedFeeTokenAmountLamports,
+            unclaimedFeeTokenAmountRaw: unclaimedFeeTokenRaw,
+            unclaimedFeeTokenMint: mint,
+            unclaimedFeeTokenValueSol,
             unclaimedFeeSol,
+            unclaimedFeeValueSol,
+            claimedFeeValueSol: 0,
+            lpTotalValueSol,
+            valuationCompleteness,
             currentPrice,
             lowerPrice,
             upperPrice,

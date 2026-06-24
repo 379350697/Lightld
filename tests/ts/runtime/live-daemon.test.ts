@@ -2267,7 +2267,7 @@ describe('runLiveDaemon', () => {
         walletSol: 1.2,
         lpValueSol: 1.0,
         unclaimedFeeSol: 0.05,
-        netWorthSol: 2.25,
+        netWorthSol: 2.2,
         openPositionCount: 2
       }
     });

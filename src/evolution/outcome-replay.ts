@@ -164,7 +164,7 @@ function resolveReplayableOutcomes(input: {
         closedAt: outcome.closedAt,
         watchlistSnapshots
       });
-      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      const exitValue = outcome.exitMetrics.lpTotalValueSol ?? outcome.exitMetrics.lpCurrentValueSol;
       if (
         !outcome.actualExitReason.includes('lp-stop-loss')
         || typeof outcome.lpStopLossNetPnlPctAtEntry !== 'number'
@@ -197,7 +197,7 @@ function resolveReplayableOutcomes(input: {
         closedAt: outcome.closedAt,
         watchlistSnapshots
       });
-      const exitValue = outcome.exitMetrics.lpCurrentValueSol;
+      const exitValue = outcome.exitMetrics.lpTotalValueSol ?? outcome.exitMetrics.lpCurrentValueSol;
       if (
         (!outcome.actualExitReason.includes('sol-depletion')
           && outcome.exitMetrics.lpSolDepletedBins !== oldValue)

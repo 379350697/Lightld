@@ -317,12 +317,46 @@ function readExecutionErrorMessage(error: unknown) {
 }
 
 function hasPoolPriceFallbackValue(position: MeteoraLpPositionSnapshot) {
-  return position.valuationStatus === 'ready'
-    && typeof position.currentValueSol === 'number'
+  return typeof position.currentValueSol === 'number'
     && Number.isFinite(position.currentValueSol)
     && position.currentValueSol >= 0
     && typeof position.valuationSource === 'string'
     && position.valuationSource.includes('dlmm-active-bin-price-fallback');
+}
+
+function nonnegativeFinite(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function markPoolPriceFallbackUntrusted(position: MeteoraLpPositionSnapshot, reason: string): AccountStateLpPosition {
+  return {
+    ...position,
+    valuationStatus: 'stale',
+    valuationReason: reason,
+    valuationCompleteness: 'untrusted',
+    valuationSource: position.valuationSource ?? 'meteora-withdraw-simulation+dlmm-active-bin-price-fallback'
+  };
+}
+
+function markLpValuationUnavailable(
+  position: MeteoraLpPositionSnapshot,
+  valuationSource: string,
+  reason: string
+): AccountStateLpPosition {
+  if (hasPoolPriceFallbackValue(position)) {
+    return markPoolPriceFallbackUntrusted(position, reason);
+  }
+
+  return {
+    ...position,
+    currentValueSol: undefined,
+    liquidityValueSol: undefined,
+    lpTotalValueSol: undefined,
+    valuationStatus: 'unavailable',
+    valuationReason: reason,
+    valuationCompleteness: 'incomplete',
+    valuationSource
+  };
 }
 
 async function enrichLpExitValues(input: {
@@ -332,97 +366,105 @@ async function enrichLpExitValues(input: {
   defaultSlippageBps: number;
 }): Promise<AccountStateLpPosition[]> {
   return Promise.all(input.positions.map(async (position) => {
-    const withdrawSolAmount = typeof position.withdrawSolAmount === 'number' && Number.isFinite(position.withdrawSolAmount) && position.withdrawSolAmount >= 0
-      ? position.withdrawSolAmount
-      : undefined;
-    const withdrawTokenAmountLamports = typeof position.withdrawTokenAmountLamports === 'number' && Number.isFinite(position.withdrawTokenAmountLamports) && position.withdrawTokenAmountLamports >= 0
-      ? position.withdrawTokenAmountLamports
-      : undefined;
+    const withdrawSolAmount = nonnegativeFinite(position.withdrawSolAmount);
+    const withdrawTokenAmountLamports = nonnegativeFinite(position.withdrawTokenAmountLamports);
     const withdrawTokenAmountRaw = typeof position.withdrawTokenAmountRaw === 'string'
       ? position.withdrawTokenAmountRaw
       : typeof withdrawTokenAmountLamports === 'number'
         ? String(Math.floor(withdrawTokenAmountLamports))
         : undefined;
+    const unclaimedFeeSolAmount = nonnegativeFinite(position.unclaimedFeeSolAmount)
+      ?? (position.hasClaimableFees === false ? 0 : undefined);
+    const unclaimedFeeTokenAmountLamports = nonnegativeFinite(position.unclaimedFeeTokenAmountLamports);
+    const unclaimedFeeTokenAmountRaw = typeof position.unclaimedFeeTokenAmountRaw === 'string'
+      ? position.unclaimedFeeTokenAmountRaw
+      : typeof unclaimedFeeTokenAmountLamports === 'number'
+        ? String(Math.floor(unclaimedFeeTokenAmountLamports))
+        : '0';
+    const claimedFeeValueSol = nonnegativeFinite(position.claimedFeeValueSol) ?? 0;
     const valuationSource = position.valuationSource ?? 'meteora-withdraw-simulation';
 
     if (typeof withdrawSolAmount !== 'number' || !withdrawTokenAmountRaw) {
-      return {
-        ...position,
-        currentValueSol: undefined,
-        valuationStatus: position.valuationStatus ?? 'unavailable',
-        valuationReason: position.valuationReason ?? 'missing-withdraw-simulation',
-        valuationSource
-      };
+      return markLpValuationUnavailable(position, valuationSource, position.valuationReason ?? 'missing-withdraw-simulation');
     }
 
-    if (isZeroLamportsAmount(withdrawTokenAmountRaw)) {
-      return {
-        ...position,
-        currentValueSol: withdrawSolAmount,
-        valuationStatus: 'ready',
-        valuationReason: '',
-        valuationSource
-      };
-    }
-
-    if (!position.withdrawTokenMint) {
-      if (hasPoolPriceFallbackValue(position)) {
-        return position;
-      }
-
-      return {
-        ...position,
-        currentValueSol: undefined,
-        valuationStatus: 'unavailable',
-        valuationReason: 'missing-withdraw-token-mint',
-        valuationSource
-      };
+    if (typeof unclaimedFeeSolAmount !== 'number') {
+      return markLpValuationUnavailable(position, valuationSource, 'missing-unclaimed-fee-sol-amount');
     }
 
     try {
-      const withdrawTokenValueSol = await resolveTokenCurrentValueSol({
-        swapProviderChain: input.swapProviderChain,
-        walletPublicKey: input.walletPublicKey,
-        mint: position.withdrawTokenMint,
-        amountLamports: withdrawTokenAmountRaw,
-        defaultSlippageBps: input.defaultSlippageBps,
-        poolAddress: position.poolAddress
-      });
+      let withdrawTokenValueSol = 0;
+      let unclaimedFeeTokenValueSol = 0;
+      let quoteSourceSuffix = '';
 
-      if (typeof withdrawTokenValueSol !== 'number') {
-        if (hasPoolPriceFallbackValue(position)) {
-          return position;
+      if (!isZeroLamportsAmount(withdrawTokenAmountRaw)) {
+        if (!position.withdrawTokenMint) {
+          return markLpValuationUnavailable(position, valuationSource, 'missing-withdraw-token-mint');
         }
 
-        return {
-          ...position,
-          currentValueSol: undefined,
-          valuationStatus: 'unavailable',
-          valuationReason: 'withdraw-token-quote-unavailable',
-          valuationSource
-        };
+        const quotedWithdrawTokenValueSol = await resolveTokenCurrentValueSol({
+          swapProviderChain: input.swapProviderChain,
+          walletPublicKey: input.walletPublicKey,
+          mint: position.withdrawTokenMint,
+          amountLamports: withdrawTokenAmountRaw,
+          defaultSlippageBps: input.defaultSlippageBps,
+          poolAddress: position.poolAddress
+        });
+
+        if (typeof quotedWithdrawTokenValueSol !== 'number') {
+          return markLpValuationUnavailable(position, valuationSource, 'withdraw-token-quote-unavailable');
+        }
+
+        withdrawTokenValueSol = quotedWithdrawTokenValueSol;
+        quoteSourceSuffix += '+swap-provider-sell-quote';
       }
+
+      if (!isZeroLamportsAmount(unclaimedFeeTokenAmountRaw)) {
+        const feeTokenMint = position.unclaimedFeeTokenMint ?? position.withdrawTokenMint;
+        if (!feeTokenMint) {
+          return markLpValuationUnavailable(position, valuationSource, 'missing-unclaimed-fee-token-mint');
+        }
+
+        const quotedFeeTokenValueSol = await resolveTokenCurrentValueSol({
+          swapProviderChain: input.swapProviderChain,
+          walletPublicKey: input.walletPublicKey,
+          mint: feeTokenMint,
+          amountLamports: unclaimedFeeTokenAmountRaw,
+          defaultSlippageBps: input.defaultSlippageBps,
+          poolAddress: position.poolAddress
+        });
+
+        if (typeof quotedFeeTokenValueSol !== 'number') {
+          return markLpValuationUnavailable(position, valuationSource, 'unclaimed-fee-token-quote-unavailable');
+        }
+
+        unclaimedFeeTokenValueSol = quotedFeeTokenValueSol;
+        quoteSourceSuffix += '+fee-swap-provider-sell-quote';
+      }
+
+      const liquidityValueSol = withdrawSolAmount + withdrawTokenValueSol;
+      const unclaimedFeeValueSol = unclaimedFeeSolAmount + unclaimedFeeTokenValueSol;
+      const lpTotalValueSol = liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
 
       return {
         ...position,
-        currentValueSol: withdrawSolAmount + withdrawTokenValueSol,
+        currentValueSol: lpTotalValueSol,
+        liquidityValueSol,
         withdrawTokenValueSol,
+        unclaimedFeeSolAmount,
+        unclaimedFeeTokenAmountRaw,
+        unclaimedFeeTokenMint: position.unclaimedFeeTokenMint ?? position.withdrawTokenMint,
+        unclaimedFeeTokenValueSol,
+        unclaimedFeeValueSol,
+        claimedFeeValueSol,
+        lpTotalValueSol,
         valuationStatus: 'ready',
         valuationReason: '',
-        valuationSource: valuationSource + '+swap-provider-sell-quote'
+        valuationCompleteness: 'complete',
+        valuationSource: valuationSource.replace('+dlmm-active-bin-price-fallback', '') + quoteSourceSuffix
       };
     } catch (error) {
-      if (hasPoolPriceFallbackValue(position)) {
-        return position;
-      }
-
-      return {
-        ...position,
-        currentValueSol: undefined,
-        valuationStatus: 'unavailable',
-        valuationReason: 'withdraw-token-quote-failed:' + readExecutionErrorMessage(error),
-        valuationSource
-      };
+      return markLpValuationUnavailable(position, valuationSource, 'withdraw-token-quote-failed:' + readExecutionErrorMessage(error));
     }
   }));
 }

@@ -37,6 +37,6 @@ describe('toRuntimeSnapshotEvent', () => {
         openPositionCount: 1
       }
     });
-    expect(event.payload.netWorthSol).toBeCloseTo(2.1, 10);
+    expect(event.payload.netWorthSol).toBeCloseTo(2.05, 10);
   });
 });

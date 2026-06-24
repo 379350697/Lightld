@@ -27,12 +27,25 @@ export function summarizeAccountEquity(
   let unclaimedFeeSol = 0;
 
   for (const position of activePositions) {
-    if (typeof position.currentValueSol === 'number' && Number.isFinite(position.currentValueSol)) {
-      lpValueSol += position.currentValueSol;
+    const positionValueSol = typeof position.lpTotalValueSol === 'number' && Number.isFinite(position.lpTotalValueSol)
+      ? position.lpTotalValueSol
+      : typeof position.currentValueSol === 'number' && Number.isFinite(position.currentValueSol)
+        ? position.currentValueSol
+        : undefined;
+
+    if (typeof positionValueSol === 'number') {
+      lpValueSol += positionValueSol;
     }
 
-    if (typeof position.unclaimedFeeSol === 'number' && Number.isFinite(position.unclaimedFeeSol)) {
-      unclaimedFeeSol += position.unclaimedFeeSol;
+    const unclaimedFeeValueSol = typeof position.unclaimedFeeValueSol === 'number'
+      && Number.isFinite(position.unclaimedFeeValueSol)
+      ? position.unclaimedFeeValueSol
+      : typeof position.unclaimedFeeSol === 'number' && Number.isFinite(position.unclaimedFeeSol)
+        ? position.unclaimedFeeSol
+        : undefined;
+
+    if (typeof unclaimedFeeValueSol === 'number') {
+      unclaimedFeeSol += unclaimedFeeValueSol;
     }
   }
 
@@ -42,7 +55,7 @@ export function summarizeAccountEquity(
     walletSol,
     lpValueSol,
     unclaimedFeeSol,
-    netWorthSol: walletSol === null ? null : walletSol + lpValueSol + unclaimedFeeSol,
+    netWorthSol: walletSol === null ? null : walletSol + lpValueSol,
     openPositionCount: activePositions.length
   };
 }

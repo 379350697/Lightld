@@ -158,7 +158,15 @@ type AccountStateSnapshot = {
     solSide?: string;
     solDepletedBins?: number;
     currentValueSol?: number;
+    liquidityValueSol?: number;
+    unclaimedFeeValueSol?: number;
+    claimedFeeValueSol?: number;
+    lpTotalValueSol?: number;
+    valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     unclaimedFeeSol?: number;
+    valuationStatus?: string;
+    valuationReason?: string;
+    valuationSource?: string;
     currentPrice?: number;
     lowerPrice?: number;
     upperPrice?: number;
@@ -438,6 +446,14 @@ async function handlePositions(): Promise<PositionResponse> {
         entrySolSource: trustedEntry ? positionState!.entrySolSource! : '',
         entryTrust: trustedEntry ? 'trusted' : 'missing',
         currentValueSol: typeof position.currentValueSol === 'number' ? position.currentValueSol : null,
+        liquidityValueSol: typeof position.liquidityValueSol === 'number' ? position.liquidityValueSol : null,
+        unclaimedFeeValueSol: typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : null,
+        claimedFeeValueSol: typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : null,
+        lpTotalValueSol: typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : null,
+        valuationCompleteness: position.valuationCompleteness ?? '',
+        valuationStatus: position.valuationStatus ?? '',
+        valuationReason: position.valuationReason ?? '',
+        valuationSource: position.valuationSource ?? '',
         unclaimedFeeSol: typeof position.unclaimedFeeSol === 'number' ? position.unclaimedFeeSol : null,
         currentPrice: typeof position.currentPrice === 'number' ? position.currentPrice : null,
         lowerPrice: typeof position.lowerPrice === 'number' ? position.lowerPrice : null,
@@ -867,7 +883,11 @@ function parseDecisionMetrics(reason: string) {
   return {
     entrySol: toNumber('entrySol'),
     lpCurrentValueSol: toNumber('lpCurrentValueSol'),
+    lpLiquidityValueSol: toNumber('lpLiquidityValueSol'),
+    lpTotalValueSol: toNumber('lpTotalValueSol'),
     lpUnclaimedFeeSol: toNumber('lpUnclaimedFeeSol'),
+    lpUnclaimedFeeValueSol: toNumber('lpUnclaimedFeeValueSol'),
+    lpClaimedFeeValueSol: toNumber('lpClaimedFeeValueSol'),
     lpNetPnlPct: toNumber('lpNetPnlPct'),
   };
 }

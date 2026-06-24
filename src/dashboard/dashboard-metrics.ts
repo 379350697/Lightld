@@ -59,7 +59,11 @@ type HistoricalDecisionFallback = {
   entrySol?: number;
   entrySolSource?: string;
   lpCurrentValueSol?: number;
+  lpLiquidityValueSol?: number;
+  lpTotalValueSol?: number;
   lpUnclaimedFeeSol?: number;
+  lpUnclaimedFeeValueSol?: number;
+  lpClaimedFeeValueSol?: number;
   lpNetPnlPct?: number;
 };
 
@@ -1010,10 +1014,12 @@ export function buildHistoricalActivity(input: {
         ? decision.entrySol
         : undefined,
       entrySolSource: hasTrustedDecisionEntry ? decision?.entrySolSource : undefined,
-      exitValueSol: hasTrustedDecisionEntry && typeof decision?.lpCurrentValueSol === 'number'
-        ? decision.lpCurrentValueSol + (decision.lpUnclaimedFeeSol ?? 0)
+      exitValueSol: hasTrustedDecisionEntry && typeof (decision?.lpTotalValueSol ?? decision?.lpCurrentValueSol) === 'number'
+        ? decision?.lpTotalValueSol ?? decision!.lpCurrentValueSol
         : undefined,
-      feeEarnedSol: hasTrustedDecisionEntry && typeof decision?.lpUnclaimedFeeSol === 'number' ? decision.lpUnclaimedFeeSol : undefined,
+      feeEarnedSol: hasTrustedDecisionEntry && typeof (decision?.lpUnclaimedFeeValueSol ?? decision?.lpUnclaimedFeeSol) === 'number'
+        ? decision?.lpUnclaimedFeeValueSol ?? decision!.lpUnclaimedFeeSol
+        : undefined,
       pnlPct: hasTrustedDecisionEntry && typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined
     });
   }

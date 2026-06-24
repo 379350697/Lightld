@@ -133,8 +133,13 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
           mint: 'mint-lp',
           hasLiquidity: true,
           currentValueSol: 0.021,
+          liquidityValueSol: 0.02,
+          unclaimedFeeValueSol: 0.001,
+          claimedFeeValueSol: 0,
+          lpTotalValueSol: 0.021,
           unclaimedFeeSol: 0.001,
           valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
           valuationSource: 'meteora-withdraw-simulation'
         }]
       },
@@ -166,7 +171,9 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       hasInventory: true,
       hasLpPosition: true,
       lpCurrentValueSol: 0.021,
-      valuationStatus: 'ready'
+      lpTotalValueSol: 0.021,
+      valuationStatus: 'ready',
+      valuationCompleteness: 'complete'
     });
   });
 });

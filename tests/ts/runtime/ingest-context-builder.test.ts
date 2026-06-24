@@ -542,8 +542,13 @@ describe('buildLiveCycleInputFromIngest', () => {
             positionAddress: 'pos-1',
             mint: 'mint-safe',
             currentValueSol: 0.123,
+            liquidityValueSol: 0.122,
+            unclaimedFeeValueSol: 0.001,
+            claimedFeeValueSol: 0,
+            lpTotalValueSol: 0.123,
             unclaimedFeeSol: 0.001,
             valuationStatus: 'ready',
+            valuationCompleteness: 'complete',
             valuationReason: '',
             valuationSource: 'meteora-withdraw-simulation',
             hasLiquidity: true
@@ -602,12 +607,97 @@ describe('buildLiveCycleInputFromIngest', () => {
       hasInventory: true,
       hasLpPosition: true,
       lpCurrentValueSol: 0.123,
+      lpLiquidityValueSol: 0.122,
+      lpTotalValueSol: 0.123,
       lpUnclaimedFeeSol: 0.001,
+      lpUnclaimedFeeValueSol: 0.001,
+      lpClaimedFeeValueSol: 0,
       valuationStatus: 'ready',
+      valuationCompleteness: 'complete',
       valuationSource: 'meteora-withdraw-simulation',
       lpValuationStatus: 'ready',
+      lpValuationCompleteness: 'complete',
       lpValuationSource: 'meteora-withdraw-simulation'
     });
+  });
+
+  it('does not mark token-side LP valuation ready without swap quote evidence', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      traderWallet: 'wallet-1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00'),
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-safe',
+            positionAddress: 'pos-1',
+            mint: 'mint-safe',
+            currentValueSol: 0.123,
+            liquidityValueSol: 0.122,
+            withdrawSolAmount: 0.02,
+            withdrawTokenAmountRaw: '1000000',
+            unclaimedFeeValueSol: 0.001,
+            claimedFeeValueSol: 0,
+            lpTotalValueSol: 0.123,
+            unclaimedFeeSol: 0.001,
+            valuationStatus: 'ready',
+            valuationCompleteness: 'complete',
+            valuationReason: '',
+            valuationSource: 'meteora-withdraw-simulation',
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [
+        {
+          address: 'pool-safe',
+          baseMint: 'mint-safe',
+          quoteMint: 'So11111111111111111111111111111111111111112',
+          baseSymbol: 'SAFE',
+          liquidityUsd: 12_500,
+          created_at: new Date('2026-03-21T09:58:00.000Z').getTime(),
+          pool_config: {
+            bin_step: 120,
+            base_fee_pct: 1
+          },
+          volume: {
+            '24h': 2_000_000
+          },
+          fee_tvl_ratio: {
+            '24h': 0.03
+          },
+          volume_5m: 4_000,
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }
+      ],
+      fetchPumpTradesImpl: async () => [
+        {
+          mint: 'mint-safe',
+          symbol: 'SAFE',
+          holders: 48,
+          timestamp: '2026-03-22T09:57:00.000Z'
+        }
+      ]
+    });
+
+    expect(result.context.trader).toMatchObject({
+      wallet: 'wallet-1',
+      hasInventory: true,
+      hasLpPosition: true,
+      valuationStatus: 'unavailable',
+      valuationCompleteness: 'incomplete',
+      lpValuationStatus: 'unavailable',
+      lpValuationCompleteness: 'incomplete'
+    });
+    expect(result.context.trader).not.toHaveProperty('lpCurrentValueSol');
+    expect(result.context.trader).not.toHaveProperty('lpTotalValueSol');
   });
 
   it('does not treat empty Meteora position accounts as funded inventory', async () => {

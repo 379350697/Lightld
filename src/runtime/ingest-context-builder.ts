@@ -359,6 +359,53 @@ function hasAccountLpPosition(accountState: LiveAccountState | undefined, mint: 
   );
 }
 
+function rawLamportsAmountIsPositive(value: unknown) {
+  if (typeof value === 'string') {
+    return /^\d+$/.test(value) && BigInt(value) > 0n;
+  }
+
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function lpPositionRequiresTokenQuote(position: NonNullable<LiveAccountState['walletLpPositions']>[number]) {
+  return rawLamportsAmountIsPositive(position.withdrawTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.withdrawTokenAmountLamports)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountLamports);
+}
+
+function hasRequiredLpTokenQuotes(position: NonNullable<LiveAccountState['walletLpPositions']>[number]) {
+  const valuationSource = typeof position.valuationSource === 'string' ? position.valuationSource : '';
+  const needsWithdrawTokenQuote = rawLamportsAmountIsPositive(position.withdrawTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.withdrawTokenAmountLamports);
+  const needsFeeTokenQuote = rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountRaw)
+    || rawLamportsAmountIsPositive(position.unclaimedFeeTokenAmountLamports);
+
+  if (
+    needsWithdrawTokenQuote
+    && (
+      !valuationSource.includes('swap-provider-sell-quote')
+      || typeof position.withdrawTokenValueSol !== 'number'
+      || !Number.isFinite(position.withdrawTokenValueSol)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    needsFeeTokenQuote
+    && (
+      !valuationSource.includes('fee-swap-provider-sell-quote')
+      || typeof position.unclaimedFeeTokenValueSol !== 'number'
+      || !Number.isFinite(position.unclaimedFeeTokenValueSol)
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveLpPositionSignal(
   accountState: LiveAccountState | undefined,
   input: { mint: string; poolAddress: string }
@@ -393,17 +440,42 @@ function resolveLpPositionSignal(
   const trustedValuePositions = relevantPositions.filter((position) => {
     const valuationSource = typeof position.valuationSource === 'string' ? position.valuationSource : '';
     return position.valuationStatus === 'ready'
+      && position.valuationCompleteness === 'complete'
       && valuationSource.includes('withdraw-simulation')
-      && (
-        valuationSource === 'meteora-withdraw-simulation'
-        || valuationSource.includes('jupiter-sell-quote')
-        || valuationSource.includes('dlmm-active-bin-price-fallback')
-      )
-      && typeof position.currentValueSol === 'number';
+      && !valuationSource.includes('dlmm-active-bin-price-fallback')
+      && (!lpPositionRequiresTokenQuote(position) || hasRequiredLpTokenQuotes(position))
+      && typeof (position.lpTotalValueSol ?? position.currentValueSol) === 'number';
   });
   const lpCurrentValueSol = trustedValuePositions.length === relevantPositions.length
-    ? trustedValuePositions.reduce<number | undefined>((sum, position) => (sum ?? 0) + position.currentValueSol!, undefined)
+    ? trustedValuePositions.reduce<number | undefined>((sum, position) => (sum ?? 0) + (position.lpTotalValueSol ?? position.currentValueSol!), undefined)
     : undefined;
+  const sumTrustedPositionValues = (
+    selector: (position: (typeof trustedValuePositions)[number]) => number | undefined
+  ) => {
+    if (trustedValuePositions.length !== relevantPositions.length) {
+      return undefined;
+    }
+
+    let sum = 0;
+    for (const position of trustedValuePositions) {
+      const value = selector(position);
+      if (typeof value !== 'number') {
+        return undefined;
+      }
+      sum += value;
+    }
+    return sum;
+  };
+  const lpLiquidityValueSol = trustedValuePositions.length === relevantPositions.length
+    ? sumTrustedPositionValues((position) => position.liquidityValueSol)
+    : undefined;
+  const lpUnclaimedFeeValueSol = trustedValuePositions.length === relevantPositions.length
+    ? sumTrustedPositionValues((position) => position.unclaimedFeeValueSol)
+    : undefined;
+  const lpClaimedFeeValueSol = trustedValuePositions.length === relevantPositions.length
+    ? trustedValuePositions.reduce<number>((sum, position) => sum + (position.claimedFeeValueSol ?? 0), 0)
+    : undefined;
+  const lpTotalValueSol = lpCurrentValueSol;
   const lpValuationStatus = trustedValuePositions.length === relevantPositions.length ? 'ready' : 'unavailable';
   const lpValuationReason = lpValuationStatus === 'ready'
     ? ''
@@ -422,13 +494,19 @@ function resolveLpPositionSignal(
   return {
     lpSolDepletedBins,
     lpCurrentValueSol,
+    lpLiquidityValueSol,
+    lpTotalValueSol,
     lpUnclaimedFeeSol,
+    lpUnclaimedFeeValueSol,
+    lpClaimedFeeValueSol,
     lpValuationStatus,
     lpValuationReason,
     lpValuationSource,
+    lpValuationCompleteness: lpValuationStatus === 'ready' ? 'complete' : 'incomplete',
     valuationStatus: lpValuationStatus,
     valuationReason: lpValuationReason,
-    valuationSource: lpValuationSource
+    valuationSource: lpValuationSource,
+    valuationCompleteness: lpValuationStatus === 'ready' ? 'complete' : 'incomplete'
   };
 }
 
@@ -682,8 +760,20 @@ function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLp
     ...(typeof lpPositionSignal.lpCurrentValueSol === 'number'
       ? { lpCurrentValueSol: lpPositionSignal.lpCurrentValueSol }
       : {}),
+    ...(typeof lpPositionSignal.lpLiquidityValueSol === 'number'
+      ? { lpLiquidityValueSol: lpPositionSignal.lpLiquidityValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.lpTotalValueSol === 'number'
+      ? { lpTotalValueSol: lpPositionSignal.lpTotalValueSol }
+      : {}),
     ...(typeof lpPositionSignal.lpUnclaimedFeeSol === 'number'
       ? { lpUnclaimedFeeSol: lpPositionSignal.lpUnclaimedFeeSol }
+      : {}),
+    ...(typeof lpPositionSignal.lpUnclaimedFeeValueSol === 'number'
+      ? { lpUnclaimedFeeValueSol: lpPositionSignal.lpUnclaimedFeeValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.lpClaimedFeeValueSol === 'number'
+      ? { lpClaimedFeeValueSol: lpPositionSignal.lpClaimedFeeValueSol }
       : {}),
     ...(typeof lpPositionSignal.valuationStatus === 'string'
       ? { valuationStatus: lpPositionSignal.valuationStatus, lpValuationStatus: lpPositionSignal.valuationStatus }
@@ -693,6 +783,12 @@ function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLp
       : {}),
     ...(typeof lpPositionSignal.valuationSource === 'string'
       ? { valuationSource: lpPositionSignal.valuationSource, lpValuationSource: lpPositionSignal.valuationSource }
+      : {}),
+    ...(typeof lpPositionSignal.valuationCompleteness === 'string'
+      ? {
+        valuationCompleteness: lpPositionSignal.valuationCompleteness,
+        lpValuationCompleteness: lpPositionSignal.valuationCompleteness
+      }
       : {})
   };
 }

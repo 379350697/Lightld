@@ -28,9 +28,12 @@ describe('buildDashboardHtml', () => {
     const html = buildDashboardHtml();
 
     expect(html).toContain('function finiteNumberOrNull');
-    expect(html).toContain('var currentValue = finiteNumberOrNull(p.currentValueSol);');
+    expect(html).toContain('function lpTotalValueOrNull');
+    expect(html).toContain('var currentValue = lpTotalValueOrNull(p);');
     expect(html).not.toContain('var currentValue = Number(p.currentValueSol);');
     expect(html).not.toContain('Number(p.currentValueSol) || 0');
+    expect(html).not.toContain('currentValue + unclaimedFee - entrySol');
+    expect(html).not.toContain('walletSol + openValue + openFees');
   });
 
   it('includes the historical trust badge copy for estimated and untrusted rows', () => {

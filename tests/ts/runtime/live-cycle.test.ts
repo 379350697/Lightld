@@ -395,9 +395,14 @@ describe('runLiveCycle', () => {
           lpNetPnlPct: -25,
           lpSolDepletedBins: 61,
           lpCurrentValueSol: 0.075,
+          lpLiquidityValueSol: 0.075,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.075,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -1004,6 +1009,53 @@ describe('runLiveCycle', () => {
       expect(result.context.trader.lpNetPnlPct).toBeUndefined();
     });
 
+  it('does not derive lpNetPnlPct from complete context valuation without provider quote evidence', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        openedAt,
+        lastClosedMint: '',
+        lastClosedAt: '',
+        updatedAt: openedAt,
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open'
+      } as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: 0.16,
+          lpLiquidityValueSol: 0.16,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.16,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-take-profit');
+    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+  });
+
   it('derives lpNetPnlPct from trusted withdraw-simulation valuations and triggers take profit', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
     const result = await runLiveCycle({
@@ -1047,11 +1099,16 @@ describe('runLiveCycle', () => {
           solSide: 'tokenX',
           solDepletedBins: 20,
           currentValueSol: 1.31,
+          liquidityValueSol: 1.31,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          lpTotalValueSol: 1.31,
           unclaimedFeeSol: 0.5,
           hasLiquidity: true,
           valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
           valuationReason: '',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         }],
         journalLpPositions: [],
         fills: []
@@ -1103,11 +1160,16 @@ describe('runLiveCycle', () => {
           solSide: 'tokenX',
           solDepletedBins: 20,
           currentValueSol: 0.04,
+          liquidityValueSol: 0.04,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          lpTotalValueSol: 0.04,
           unclaimedFeeSol: 0,
           hasLiquidity: true,
           valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
           valuationReason: '',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         }],
         journalLpPositions: [],
         fills: [{
@@ -1157,9 +1219,14 @@ describe('runLiveCycle', () => {
           hasInventory: true,
           hasLpPosition: true,
           lpCurrentValueSol: 0.160108238,
+          lpLiquidityValueSol: 0.160108238,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.160108238,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
       },
@@ -1178,11 +1245,16 @@ describe('runLiveCycle', () => {
           solSide: 'tokenX',
           solDepletedBins: 20,
           currentValueSol: 0.160108238,
+          liquidityValueSol: 0.160108238,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          lpTotalValueSol: 0.160108238,
           unclaimedFeeSol: 0,
           hasLiquidity: true,
           valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
           valuationReason: '',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         }],
         journalLpPositions: [],
         fills: [{
@@ -1234,7 +1306,7 @@ describe('runLiveCycle', () => {
             lpCurrentValueSol: 0.160108238,
             lpUnclaimedFeeSol: 0,
             valuationStatus: 'ready',
-            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+            valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
           },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         },
@@ -1257,7 +1329,7 @@ describe('runLiveCycle', () => {
             hasLiquidity: true,
             valuationStatus: 'ready',
             valuationReason: '',
-            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+            valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
           }],
           journalLpPositions: [],
           fills: [{
@@ -1399,9 +1471,14 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.135,
+          lpLiquidityValueSol: 0.135,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.135,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -1440,9 +1517,14 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.135,
+          lpLiquidityValueSol: 0.135,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.135,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
@@ -1482,9 +1564,14 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.14,
+          lpLiquidityValueSol: 0.14,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.14,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50, poolAddress: 'pool-selected-other' }
       }
@@ -1541,9 +1628,14 @@ describe('runLiveCycle', () => {
           hasLpPosition: true,
           lpNetPnlPct: 35,
           lpCurrentValueSol: 0.16,
+          lpLiquidityValueSol: 0.16,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.16,
           lpUnclaimedFeeSol: 0,
           valuationStatus: 'ready',
-          valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
         },
         route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50, poolAddress: 'pool-selected-other' }
       }
@@ -1649,7 +1741,7 @@ describe('runLiveCycle', () => {
             lpCurrentValueSol: 0.84,
             lpUnclaimedFeeSol: 0,
             valuationStatus: 'ready',
-            valuationSource: 'meteora-withdraw-simulation+jupiter-sell-quote'
+            valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
           },
           route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
         },

@@ -339,19 +339,26 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 0
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeCloseTo(0.861728, 10);
+    expect(snapshots[0]?.liquidityValueSol).toBeCloseTo(0.861728, 10);
+    expect(snapshots[0]?.unclaimedFeeValueSol).toBeCloseTo(0.1, 10);
+    expect(snapshots[0]?.lpTotalValueSol).toBeCloseTo(0.961728, 10);
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(0.961728, 10);
     expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(0.8, 10);
     expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(123456);
     expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('123456');
     expect(snapshots[0]?.withdrawTokenValueSol).toBeCloseTo(0.061728, 10);
-    expect(snapshots[0]?.valuationStatus).toBe('ready');
-    expect(snapshots[0]?.valuationReason).toBe('');
+    expect(snapshots[0]?.valuationStatus).toBe('stale');
+    expect(snapshots[0]?.valuationReason).toBe('swap-provider-quote-required');
+    expect(snapshots[0]?.valuationCompleteness).toBe('untrusted');
     expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation+dlmm-active-bin-price-fallback');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.1, 10);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(167, 100);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(100, 100);
     expect(dlmmPkg.getPriceOfBinByBinId).toHaveBeenCalledWith(168, 100);
-    expect(snapshots[1]?.currentValueSol).toBeCloseTo(0.2, 10);
+    expect(snapshots[1]?.liquidityValueSol).toBeCloseTo(0.2, 10);
+    expect(snapshots[1]?.unclaimedFeeValueSol).toBeCloseTo(0.01, 10);
+    expect(snapshots[1]?.lpTotalValueSol).toBeCloseTo(0.21, 10);
+    expect(snapshots[1]?.currentValueSol).toBeCloseTo(0.21, 10);
     expect(snapshots[1]?.withdrawSolAmount).toBeCloseTo(0.2, 10);
     expect(snapshots[1]?.withdrawTokenAmountLamports).toBe(0);
     expect(snapshots[1]?.withdrawTokenAmountRaw).toBe('0');
@@ -408,13 +415,17 @@ describe('MeteoraDlmmClient', () => {
         solDepletedBins: 67
       })
     ]);
-    expect(snapshots[0]?.currentValueSol).toBeCloseTo(2.1, 10);
+    expect(snapshots[0]?.liquidityValueSol).toBeCloseTo(2.1, 10);
+    expect(snapshots[0]?.unclaimedFeeValueSol).toBeCloseTo(0.6, 10);
+    expect(snapshots[0]?.lpTotalValueSol).toBeCloseTo(2.7, 10);
+    expect(snapshots[0]?.currentValueSol).toBeCloseTo(2.7, 10);
     expect(snapshots[0]?.withdrawSolAmount).toBeCloseTo(1.1, 10);
     expect(snapshots[0]?.withdrawTokenAmountLamports).toBe(4000000);
     expect(snapshots[0]?.withdrawTokenAmountRaw).toBe('4000000');
     expect(snapshots[0]?.withdrawTokenValueSol).toBeCloseTo(1, 10);
-    expect(snapshots[0]?.valuationStatus).toBe('ready');
-    expect(snapshots[0]?.valuationReason).toBe('');
+    expect(snapshots[0]?.valuationStatus).toBe('stale');
+    expect(snapshots[0]?.valuationReason).toBe('swap-provider-quote-required');
+    expect(snapshots[0]?.valuationCompleteness).toBe('untrusted');
     expect(snapshots[0]?.valuationSource).toBe('meteora-withdraw-simulation+dlmm-active-bin-price-fallback');
     expect(snapshots[0]?.unclaimedFeeSol).toBeCloseTo(0.6, 10);
     expect(simulateRebalancePosition).toHaveBeenCalledTimes(1);

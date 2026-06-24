@@ -203,6 +203,10 @@ function latestExitMetricValue(outcome: LiveCycleOutcomeRecord | undefined) {
     return outcome.exitMetrics.quoteOutputSol;
   }
 
+  if (typeof outcome.exitMetrics.lpTotalValueSol === 'number') {
+    return outcome.exitMetrics.lpTotalValueSol;
+  }
+
   if (typeof outcome.exitMetrics.lpCurrentValueSol === 'number') {
     return outcome.exitMetrics.lpCurrentValueSol;
   }

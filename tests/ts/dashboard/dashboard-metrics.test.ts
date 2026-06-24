@@ -987,6 +987,9 @@ describe('buildCashflowMetrics', () => {
           entrySolSource: 'actual_fill',
           lpCurrentValueSol: 0.042972091,
           lpUnclaimedFeeSol: 0.006224571,
+          lpUnclaimedFeeValueSol: 0.006224571,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.049196662,
           lpNetPnlPct: -60
         }
         ],
