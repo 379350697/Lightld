@@ -475,6 +475,9 @@ function resolveLpPositionSignal(
   const lpClaimedFeeValueSol = trustedValuePositions.length === relevantPositions.length
     ? trustedValuePositions.reduce<number>((sum, position) => sum + (position.claimedFeeValueSol ?? 0), 0)
     : undefined;
+  const lpRecoverableRentSol = trustedValuePositions.length === relevantPositions.length
+    ? trustedValuePositions.reduce<number>((sum, position) => sum + (position.recoverableRentSol ?? 0), 0)
+    : undefined;
   const lpTotalValueSol = lpCurrentValueSol;
   const lpValuationStatus = trustedValuePositions.length === relevantPositions.length ? 'ready' : 'unavailable';
   const lpValuationReason = lpValuationStatus === 'ready'
@@ -499,6 +502,7 @@ function resolveLpPositionSignal(
     lpUnclaimedFeeSol,
     lpUnclaimedFeeValueSol,
     lpClaimedFeeValueSol,
+    lpRecoverableRentSol,
     lpValuationStatus,
     lpValuationReason,
     lpValuationSource,
@@ -771,6 +775,9 @@ function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLp
       : {}),
     ...(typeof lpPositionSignal.lpUnclaimedFeeValueSol === 'number'
       ? { lpUnclaimedFeeValueSol: lpPositionSignal.lpUnclaimedFeeValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.lpRecoverableRentSol === 'number'
+      ? { lpRecoverableRentSol: lpPositionSignal.lpRecoverableRentSol }
       : {}),
     ...(typeof lpPositionSignal.lpClaimedFeeValueSol === 'number'
       ? { lpClaimedFeeValueSol: lpPositionSignal.lpClaimedFeeValueSol }

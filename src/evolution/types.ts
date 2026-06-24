@@ -249,6 +249,7 @@ export const LiveCycleExitMetricsSchema = z.object({
   lpUnclaimedFeeSol: z.number().finite().nonnegative().optional(),
   lpUnclaimedFeeValueSol: z.number().finite().nonnegative().optional(),
   lpClaimedFeeValueSol: z.number().finite().nonnegative().optional(),
+  lpRecoverableRentSol: z.number().finite().nonnegative().optional(),
   valuationCompleteness: z.enum(['complete', 'incomplete', 'untrusted']).optional()
 });
 export type LiveCycleExitMetrics = z.infer<typeof LiveCycleExitMetricsSchema>;

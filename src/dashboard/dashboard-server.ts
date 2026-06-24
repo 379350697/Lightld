@@ -161,6 +161,7 @@ type AccountStateSnapshot = {
     liquidityValueSol?: number;
     unclaimedFeeValueSol?: number;
     claimedFeeValueSol?: number;
+    recoverableRentSol?: number;
     lpTotalValueSol?: number;
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     unclaimedFeeSol?: number;
@@ -449,6 +450,7 @@ async function handlePositions(): Promise<PositionResponse> {
         liquidityValueSol: typeof position.liquidityValueSol === 'number' ? position.liquidityValueSol : null,
         unclaimedFeeValueSol: typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : null,
         claimedFeeValueSol: typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : null,
+        recoverableRentSol: typeof position.recoverableRentSol === 'number' ? position.recoverableRentSol : null,
         lpTotalValueSol: typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : null,
         valuationCompleteness: position.valuationCompleteness ?? '',
         valuationStatus: position.valuationStatus ?? '',
@@ -888,6 +890,7 @@ function parseDecisionMetrics(reason: string) {
     lpUnclaimedFeeSol: toNumber('lpUnclaimedFeeSol'),
     lpUnclaimedFeeValueSol: toNumber('lpUnclaimedFeeValueSol'),
     lpClaimedFeeValueSol: toNumber('lpClaimedFeeValueSol'),
+    lpRecoverableRentSol: toNumber('lpRecoverableRentSol'),
     lpNetPnlPct: toNumber('lpNetPnlPct'),
   };
 }

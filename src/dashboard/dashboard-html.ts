@@ -655,6 +655,7 @@ export function buildDashboardHtml(): string {
         var entrySol = finiteNumberOrNull(p.entrySol);
         var currentValue = lpTotalValueOrNull(p);
         var liquidityValue = finiteNumberOrNull(p.liquidityValueSol);
+        var recoverableRent = finiteNumberOrNull(p.recoverableRentSol);
         var unclaimedFee = lpUnclaimedFeeValueOrZero(p);
         var claimedFee = lpClaimedFeeValueOrZero(p);
         var valuationCompleteness = typeof p.valuationCompleteness === 'string' && p.valuationCompleteness ? p.valuationCompleteness : '--';
@@ -664,7 +665,7 @@ export function buildDashboardHtml(): string {
         return '<tr>' +
           '<td><div class="token-cell"><div class="position-side-icon">↗</div><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(symbol) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(positionAddr)) + '</span></div></div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main">' + escHtml(ageLabel(p.openedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(p.openedAt)) + '</div></div></td>' +
-          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(valuationCompleteness) + ' · liquidity ' + fmtSol(liquidityValue) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(valuationCompleteness) + ' · liq ' + fmtSol(liquidityValue) + ' · rent ' + fmtSol(recoverableRent) + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(claimedFee) + ' SOL | <span class="cell-green">' + fmtSol(unclaimedFee) + ' SOL</span></div><div class="cell-sub">' + (entrySol !== null && entrySol > 0 ? fmtPct(((claimedFee + unclaimedFee) / entrySol) * 100) : '--') + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnl) + '">' + fmtSignedSol(uPnl) + ' SOL</div><div class="cell-sub ' + metricClass(uPnl) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnlPct) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +

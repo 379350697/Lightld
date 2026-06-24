@@ -46,6 +46,7 @@ export type MeteoraLpPositionSnapshot = {
   unclaimedFeeSol?: number;
   unclaimedFeeValueSol?: number;
   claimedFeeValueSol?: number;
+  recoverableRentSol?: number;
   lpTotalValueSol?: number;
   valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
   currentPrice?: number;
@@ -268,6 +269,15 @@ function toRawAmountString(value: unknown) {
   }
 
   return undefined;
+}
+
+async function getRecoverableRentSol(connection: Connection, address: PublicKey) {
+  try {
+    const lamports = await connection.getBalance(address, 'confirmed');
+    return lamports > 0 ? lamports / LAMPORTS_PER_SOL : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function toPositiveRawAmountString(value: unknown) {
@@ -791,14 +801,16 @@ export class MeteoraDlmmClient {
                 ? unclaimedFeeSolAmount + unclaimedFeeTokenValueSol
                 : undefined
             : undefined;
+          const recoverableRentSol = await getRecoverableRentSol(connection, position.publicKey);
           const hasWithdrawToken = withdrawSimulation.withdrawTokenAmountRaw !== undefined
             && withdrawSimulation.withdrawTokenAmountRaw !== '0';
           const hasFeeToken = unclaimedFeeTokenRaw !== undefined && unclaimedFeeTokenRaw !== '0';
           const requiresTokenQuote = hasWithdrawToken || hasFeeToken;
           const lpTotalValueSol = typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
-            ? liquidityValueSol + unclaimedFeeValueSol
+            ? liquidityValueSol + unclaimedFeeValueSol + recoverableRentSol
             : undefined;
           const currentValueSol = lpTotalValueSol;
+          const rentSourceSuffix = recoverableRentSol > 0 ? '+position-account-rent' : '';
           const valuationCompleteness = typeof lpTotalValueSol === 'number'
             ? (requiresTokenQuote ? 'untrusted' as const : 'complete' as const)
             : 'incomplete' as const;
@@ -813,9 +825,9 @@ export class MeteoraDlmmClient {
               ? 'swap-provider-quote-required'
               : withdrawSimulation.valuationReason;
           const valuationSource = valuationCompleteness === 'complete'
-            ? withdrawSimulation.valuationSource
+            ? withdrawSimulation.valuationSource + rentSourceSuffix
             : valuationCompleteness === 'untrusted'
-              ? `${withdrawSimulation.valuationSource}+dlmm-active-bin-price-fallback`
+              ? `${withdrawSimulation.valuationSource}+dlmm-active-bin-price-fallback${rentSourceSuffix}`
               : withdrawSimulation.valuationSource;
           const lowerPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof binStep === 'number'
             ? pricePerTokenFromBinId(summary.lowerBinId, binStep, tokenXDecimals, tokenYDecimals)
@@ -855,6 +867,7 @@ export class MeteoraDlmmClient {
             unclaimedFeeSol,
             unclaimedFeeValueSol,
             claimedFeeValueSol: 0,
+            recoverableRentSol,
             lpTotalValueSol,
             valuationCompleteness,
             currentPrice,

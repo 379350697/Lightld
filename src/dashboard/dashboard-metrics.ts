@@ -64,6 +64,7 @@ type HistoricalDecisionFallback = {
   lpUnclaimedFeeSol?: number;
   lpUnclaimedFeeValueSol?: number;
   lpClaimedFeeValueSol?: number;
+  lpRecoverableRentSol?: number;
   lpNetPnlPct?: number;
 };
 

@@ -382,6 +382,7 @@ async function enrichLpExitValues(input: {
         ? String(Math.floor(unclaimedFeeTokenAmountLamports))
         : '0';
     const claimedFeeValueSol = nonnegativeFinite(position.claimedFeeValueSol) ?? 0;
+    const recoverableRentSol = nonnegativeFinite(position.recoverableRentSol) ?? 0;
     const valuationSource = position.valuationSource ?? 'meteora-withdraw-simulation';
 
     if (typeof withdrawSolAmount !== 'number' || !withdrawTokenAmountRaw) {
@@ -444,7 +445,10 @@ async function enrichLpExitValues(input: {
 
       const liquidityValueSol = withdrawSolAmount + withdrawTokenValueSol;
       const unclaimedFeeValueSol = unclaimedFeeSolAmount + unclaimedFeeTokenValueSol;
-      const lpTotalValueSol = liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
+      const lpTotalValueSol = liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol + recoverableRentSol;
+      const rentSourceSuffix = recoverableRentSol > 0 && !valuationSource.includes('position-account-rent')
+        ? '+position-account-rent'
+        : '';
 
       return {
         ...position,
@@ -457,11 +461,12 @@ async function enrichLpExitValues(input: {
         unclaimedFeeTokenValueSol,
         unclaimedFeeValueSol,
         claimedFeeValueSol,
+        recoverableRentSol,
         lpTotalValueSol,
         valuationStatus: 'ready',
         valuationReason: '',
         valuationCompleteness: 'complete',
-        valuationSource: valuationSource.replace('+dlmm-active-bin-price-fallback', '') + quoteSourceSuffix
+        valuationSource: valuationSource.replace('+dlmm-active-bin-price-fallback', '') + quoteSourceSuffix + rentSourceSuffix
       };
     } catch (error) {
       return markLpValuationUnavailable(position, valuationSource, 'withdraw-token-quote-failed:' + readExecutionErrorMessage(error));

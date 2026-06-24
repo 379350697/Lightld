@@ -1276,9 +1276,84 @@ describe('runLiveCycle', () => {
       expect(result.audit.reason).not.toBe('lp-take-profit');
       expect(result.orderIntent).toBeUndefined();
       expect(result.context.trader.lpNetPnlPct).toBeCloseTo(16.5135, 5);
+  });
+
+  it('counts recoverable LP position rent before triggering PnL stop loss', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.08,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-rent',
+        activePoolAddress: 'pool-rent',
+        chainPositionAddress: 'position-rent',
+        lifecycleState: 'open',
+        openedAt,
+        updatedAt: openedAt,
+        entrySol: 0.137416044,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-rent-open'
+      } as any,
+      context: {
+        pool: { address: 'pool-rent', liquidityUsd: 10_000 },
+        token: { mint: 'mint-rent', inSession: true, hasSolRoute: true, symbol: 'RENT' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-rent',
+          positionAddress: 'position-rent',
+          mint: 'mint-rent',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 20,
+          currentValueSol: 0.079998393,
+          liquidityValueSol: 0.079998393,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0.057416045,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationReason: '',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote+position-account-rent'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'sub-rent-open',
+          chainPositionAddress: 'position-rent',
+          mint: 'mint-rent',
+          side: 'add-lp',
+          amount: 0.137416044,
+          actualFilledSol: 0.137416044,
+          actualWalletDeltaSol: 0.137416044,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: openedAt
+        }]
+      }
     });
 
-    it('does not trust wallet-delta sourced LP open fills without explicit fill evidence', async () => {
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-stop-loss');
+    expect(result.context.trader.lpTotalValueSol).toBeCloseTo(0.137414438, 9);
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-0.00116871, 6);
+  });
+
+  it('does not trust wallet-delta sourced LP open fills without explicit fill evidence', async () => {
       const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const result = await runLiveCycle({
         strategy: 'new-token-v1',

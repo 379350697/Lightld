@@ -317,6 +317,7 @@ function buildEvolutionExitMetrics(input: {
     lpUnclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number' ? input.context.trader.lpUnclaimedFeeSol : undefined,
     lpUnclaimedFeeValueSol: typeof input.context.trader.lpUnclaimedFeeValueSol === 'number' ? input.context.trader.lpUnclaimedFeeValueSol : undefined,
     lpClaimedFeeValueSol: typeof input.context.trader.lpClaimedFeeValueSol === 'number' ? input.context.trader.lpClaimedFeeValueSol : undefined,
+    lpRecoverableRentSol: typeof input.context.trader.lpRecoverableRentSol === 'number' ? input.context.trader.lpRecoverableRentSol : undefined,
     valuationCompleteness: firstValuationCompleteness(
       input.context.trader.valuationCompleteness,
       input.context.trader.lpValuationCompleteness
@@ -591,6 +592,9 @@ function hasTrustedContextLpPnlInputs(input: {
   const claimedFeeValueSol = typeof input.context.trader.lpClaimedFeeValueSol === 'number'
     ? input.context.trader.lpClaimedFeeValueSol
     : undefined;
+  const recoverableRentSol = typeof input.context.trader.lpRecoverableRentSol === 'number'
+    ? input.context.trader.lpRecoverableRentSol
+    : undefined;
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
   const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
@@ -601,6 +605,7 @@ function hasTrustedContextLpPnlInputs(input: {
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
+    recoverableRentSol,
     valuationStatus,
     valuationSource,
     valuationCompleteness,
@@ -929,6 +934,7 @@ function buildLpExitSnapshotFromPosition(input: {
     lpUnclaimedFeeSol: input.position.unclaimedFeeSol,
     lpUnclaimedFeeValueSol: input.position.unclaimedFeeValueSol,
     lpClaimedFeeValueSol: input.position.claimedFeeValueSol,
+    lpRecoverableRentSol: input.position.recoverableRentSol,
     lpSolDepletedBins,
     lpSolExposureStatus,
     lpActiveBinStatus: typeof input.position.activeBinId === 'number'
@@ -1111,10 +1117,11 @@ function applyClaimedFeeValueToPosition(input: {
   const previousTotalValueSol = finiteNonnegative(input.position.lpTotalValueSol);
   const liquidityValueSol = finiteNonnegative(input.position.liquidityValueSol);
   const unclaimedFeeValueSol = finiteNonnegative(input.position.unclaimedFeeValueSol);
+  const recoverableRentSol = finiteNonnegative(input.position.recoverableRentSol) ?? 0;
   const lpTotalValueSol = typeof previousTotalValueSol === 'number'
     ? Math.max(0, previousTotalValueSol - previousClaimedFeeValueSol + input.claimedFeeValueSol)
     : typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
-      ? liquidityValueSol + unclaimedFeeValueSol + input.claimedFeeValueSol
+      ? liquidityValueSol + unclaimedFeeValueSol + input.claimedFeeValueSol + recoverableRentSol
       : undefined;
 
   return {
@@ -1242,6 +1249,7 @@ function resolveLpTotalValueSol(input: {
   liquidityValueSol?: unknown;
   unclaimedFeeValueSol?: unknown;
   claimedFeeValueSol?: unknown;
+  recoverableRentSol?: unknown;
 }) {
   const explicitTotal = finiteNonnegative(input.lpTotalValueSol);
   if (typeof explicitTotal === 'number') {
@@ -1251,8 +1259,9 @@ function resolveLpTotalValueSol(input: {
   const liquidityValueSol = finiteNonnegative(input.liquidityValueSol);
   const unclaimedFeeValueSol = finiteNonnegative(input.unclaimedFeeValueSol);
   const claimedFeeValueSol = finiteNonnegative(input.claimedFeeValueSol) ?? 0;
+  const recoverableRentSol = finiteNonnegative(input.recoverableRentSol) ?? 0;
   if (typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number') {
-    return liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
+    return liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol + recoverableRentSol;
   }
 
   return finiteNonnegative(input.currentValueSol);
@@ -1278,6 +1287,7 @@ function hasTrustedLpExitValue(input: {
   liquidityValueSol?: unknown;
   unclaimedFeeValueSol?: unknown;
   claimedFeeValueSol?: unknown;
+  recoverableRentSol?: unknown;
   valuationStatus?: unknown;
   valuationSource?: unknown;
   valuationCompleteness?: unknown;
@@ -1311,6 +1321,7 @@ function computeTrustedLpNetPnlPct(input: {
   liquidityValueSol?: number;
   unclaimedFeeValueSol?: number;
   claimedFeeValueSol?: number;
+  recoverableRentSol?: number;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
 }) {
   const lpTotalValueSol = resolveLpTotalValueSol({
@@ -1318,7 +1329,8 @@ function computeTrustedLpNetPnlPct(input: {
     lpTotalValueSol: input.lpTotalValueSol,
     liquidityValueSol: input.liquidityValueSol,
     unclaimedFeeValueSol: input.unclaimedFeeValueSol,
-    claimedFeeValueSol: input.claimedFeeValueSol
+    claimedFeeValueSol: input.claimedFeeValueSol,
+    recoverableRentSol: input.recoverableRentSol
   });
 
   if (
@@ -1334,21 +1346,26 @@ function computeTrustedLpNetPnlPct(input: {
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
 }
-function selectTriggeredLpExit(input: {
+type ActiveLpPosition = NonNullable<LiveAccountState['walletLpPositions']>[number];
+
+type EvaluatedLpPosition = {
+  position: ActiveLpPosition;
+  decision: ReturnType<typeof runEngineCycle>;
+  entrySol?: number;
+  snapshot: Record<string, unknown>;
+  holdTimeMs: number;
+  priority: number;
+  lifecycleBound: boolean;
+};
+
+function evaluateActiveLpPositions(input: {
   accountState?: LiveAccountState;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
   nowMs: number;
   fills: LiveFillEntry[];
   positionState?: PositionStateSnapshot;
-}) {
-  const triggered: Array<{
-    position: NonNullable<LiveAccountState['walletLpPositions']>[number];
-    decision: ReturnType<typeof runEngineCycle>;
-    entrySol?: number;
-    snapshot: Record<string, unknown>;
-    holdTimeMs: number;
-    priority: number;
-  }> = [];
+}): EvaluatedLpPosition[] {
+  const evaluated: EvaluatedLpPosition[] = [];
 
   for (const rawPosition of dedupeActiveLpPositions(input.accountState)) {
     const mint = rawPosition.mint;
@@ -1394,12 +1411,14 @@ function selectTriggeredLpExit(input: {
     const liquidityValueSol = typeof position.liquidityValueSol === 'number' ? position.liquidityValueSol : undefined;
     const unclaimedFeeValueSol = typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : undefined;
     const resolvedClaimedFeeValueSol = typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : undefined;
+    const recoverableRentSol = typeof position.recoverableRentSol === 'number' ? position.recoverableRentSol : undefined;
     const lpNetPnlPct = hasTrustedLpExitValue({
       currentValueSol,
       lpTotalValueSol,
       liquidityValueSol,
       unclaimedFeeValueSol,
       claimedFeeValueSol: resolvedClaimedFeeValueSol,
+      recoverableRentSol,
       valuationStatus: position.valuationStatus,
       valuationSource: position.valuationSource,
       valuationCompleteness: position.valuationCompleteness,
@@ -1413,6 +1432,7 @@ function selectTriggeredLpExit(input: {
         liquidityValueSol,
         unclaimedFeeValueSol,
         claimedFeeValueSol: resolvedClaimedFeeValueSol,
+        recoverableRentSol,
         config: input.config
       })
       : undefined;
@@ -1451,19 +1471,54 @@ function selectTriggeredLpExit(input: {
       }
     });
 
-    if (decision.action === 'withdraw-lp' || decision.action === 'claim-fee' || decision.action === 'rebalance-lp') {
-      triggered.push({
-        position,
-        decision,
-        entrySol,
-        snapshot,
-        holdTimeMs,
-        priority: getLpExitPriority(decision.action, decision.audit.reason)
-      });
-    }
+    evaluated.push({
+      position,
+      decision,
+      entrySol,
+      snapshot,
+      holdTimeMs,
+      priority: decision.action === 'withdraw-lp' || decision.action === 'claim-fee' || decision.action === 'rebalance-lp'
+        ? getLpExitPriority(decision.action, decision.audit.reason)
+        : 0,
+      lifecycleBound
+    });
   }
 
-  triggered.sort((left, right) => {
+  return evaluated;
+}
+
+function sortTriggeredLpExits(left: EvaluatedLpPosition, right: EvaluatedLpPosition) {
+  if (right.priority !== left.priority) {
+    return right.priority - left.priority;
+  }
+
+  if (right.holdTimeMs !== left.holdTimeMs) {
+    return right.holdTimeMs - left.holdTimeMs;
+  }
+
+  const rightBins = typeof right.position.solDepletedBins === 'number' ? right.position.solDepletedBins : -1;
+  const leftBins = typeof left.position.solDepletedBins === 'number' ? left.position.solDepletedBins : -1;
+  return rightBins - leftBins;
+}
+
+function selectTriggeredLpExitFromEvaluations(evaluations: EvaluatedLpPosition[]) {
+  const triggered = evaluations.filter((evaluation) =>
+    evaluation.decision.action === 'withdraw-lp'
+    || evaluation.decision.action === 'claim-fee'
+    || evaluation.decision.action === 'rebalance-lp'
+  );
+
+  triggered.sort(sortTriggeredLpExits);
+  return triggered[0] ?? null;
+}
+
+function selectObservedLpPositionFromEvaluations(evaluations: EvaluatedLpPosition[]) {
+  const observed = evaluations.slice();
+  observed.sort((left, right) => {
+    if (left.lifecycleBound !== right.lifecycleBound) {
+      return left.lifecycleBound ? -1 : 1;
+    }
+
     if (right.priority !== left.priority) {
       return right.priority - left.priority;
     }
@@ -1477,7 +1532,81 @@ function selectTriggeredLpExit(input: {
     return rightBins - leftBins;
   });
 
-  return triggered[0] ?? null;
+  return observed[0] ?? null;
+}
+
+function selectTriggeredLpExit(input: {
+  accountState?: LiveAccountState;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+  nowMs: number;
+  fills: LiveFillEntry[];
+  positionState?: PositionStateSnapshot;
+}) {
+  return selectTriggeredLpExitFromEvaluations(evaluateActiveLpPositions(input));
+}
+
+function applyLpObservationToContext(
+  context: ReturnType<typeof buildDecisionContext>,
+  observation: EvaluatedLpPosition
+) {
+  if (!observation.position.mint) {
+    return;
+  }
+
+  context.token.mint = observation.position.mint;
+  context.pool.address = observation.position.poolAddress;
+  context.token.symbol = firstString(context.token.symbol, observation.position.mint);
+  context.trader.hasLpPosition = true;
+  context.trader.hasInventory = true;
+  context.trader.lpCurrentValueSol = observation.position.currentValueSol;
+  context.trader.lpLiquidityValueSol = observation.position.liquidityValueSol;
+  context.trader.lpTotalValueSol = observation.position.lpTotalValueSol;
+  context.trader.lpUnclaimedFeeSol = observation.position.unclaimedFeeSol;
+  context.trader.lpUnclaimedFeeValueSol = observation.position.unclaimedFeeValueSol;
+  context.trader.lpClaimedFeeValueSol = observation.position.claimedFeeValueSol;
+  context.trader.lpRecoverableRentSol = observation.position.recoverableRentSol;
+  context.trader.lpSolDepletedBins = observation.snapshot.lpSolDepletedBins as number | undefined;
+  context.trader.lpSolExposureStatus = observation.snapshot.lpSolExposureStatus as
+    | 'sol-heavy'
+    | 'mixed'
+    | 'token-heavy'
+    | 'sol-depleted'
+    | undefined;
+  context.trader.valuationStatus = observation.position.valuationStatus;
+  context.trader.valuationReason = observation.position.valuationReason;
+  context.trader.valuationSource = observation.position.valuationSource;
+  context.trader.valuationCompleteness = observation.position.valuationCompleteness;
+  context.trader.lpValuationStatus = observation.position.valuationStatus;
+  context.trader.lpValuationReason = observation.position.valuationReason;
+  context.trader.lpValuationSource = observation.position.valuationSource;
+  context.trader.lpValuationCompleteness = observation.position.valuationCompleteness;
+  if (typeof observation.snapshot.lpNetPnlPct === 'number') {
+    context.trader.lpNetPnlPct = observation.snapshot.lpNetPnlPct;
+  } else {
+    delete context.trader.lpNetPnlPct;
+  }
+  context.trader.lpActiveBinStatus = observation.snapshot.lpActiveBinStatus as
+    | 'in-range'
+    | 'out-of-range'
+    | undefined;
+}
+
+function shouldApplyLpObservationToContext(
+  context: ReturnType<typeof buildDecisionContext>,
+  observation: EvaluatedLpPosition,
+  forced: boolean
+) {
+  if (forced || observation.lifecycleBound) {
+    return true;
+  }
+
+  const contextPoolAddress = firstString(context.pool.address, context.route.poolAddress);
+  if (contextPoolAddress) {
+    return observation.position.poolAddress === contextPoolAddress;
+  }
+
+  const contextMint = firstString(context.token.mint);
+  return !contextMint || observation.position.mint === contextMint;
 }
 
 function buildEngineSnapshot(
@@ -1510,6 +1639,7 @@ function buildEngineSnapshot(
       lpUnclaimedFeeSol: typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol : undefined,
       lpUnclaimedFeeValueSol: typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol : undefined,
       lpClaimedFeeValueSol: typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol : undefined,
+      lpRecoverableRentSol: typeof context.trader.lpRecoverableRentSol === 'number' ? context.trader.lpRecoverableRentSol : undefined,
       lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
       lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
@@ -1567,8 +1697,11 @@ function maybePopulateLpNetPnlPct(input: {
   if (claimedFeeResolution.valueSol > 0) {
     input.context.trader.lpClaimedFeeValueSol = claimedFeeValueSol;
   }
+  const recoverableRentSol = typeof input.context.trader.lpRecoverableRentSol === 'number'
+    ? input.context.trader.lpRecoverableRentSol
+    : 0;
   const lpTotalValueSol = typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number'
-    ? liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol
+    ? liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol + recoverableRentSol
     : typeof input.context.trader.lpTotalValueSol === 'number'
       ? input.context.trader.lpTotalValueSol
       : undefined;
@@ -1586,6 +1719,7 @@ function maybePopulateLpNetPnlPct(input: {
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
+    recoverableRentSol,
     valuationStatus,
     valuationSource,
     valuationCompleteness,
@@ -1611,6 +1745,7 @@ function maybePopulateLpNetPnlPct(input: {
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
+    recoverableRentSol,
     config: input.config
   });
 
@@ -2294,40 +2429,16 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
-  const multiLpExit = config.poolClass === 'new-token'
-    ? selectTriggeredLpExit({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState })
-    : null;
-  if (multiLpExit && multiLpExit.position.mint) {
-    context.token.mint = multiLpExit.position.mint;
-    context.pool.address = multiLpExit.position.poolAddress;
-    context.token.symbol = firstString(context.token.symbol, multiLpExit.position.mint);
-    context.trader.hasLpPosition = true;
-    context.trader.hasInventory = true;
-    context.trader.lpCurrentValueSol = multiLpExit.position.currentValueSol;
-    context.trader.lpLiquidityValueSol = multiLpExit.position.liquidityValueSol;
-    context.trader.lpTotalValueSol = multiLpExit.position.lpTotalValueSol;
-    context.trader.lpUnclaimedFeeSol = multiLpExit.position.unclaimedFeeSol;
-    context.trader.lpUnclaimedFeeValueSol = multiLpExit.position.unclaimedFeeValueSol;
-    context.trader.lpClaimedFeeValueSol = multiLpExit.position.claimedFeeValueSol;
-    context.trader.lpSolDepletedBins = multiLpExit.snapshot.lpSolDepletedBins;
-    context.trader.lpSolExposureStatus = multiLpExit.snapshot.lpSolExposureStatus;
-    context.trader.valuationStatus = multiLpExit.position.valuationStatus;
-    context.trader.valuationReason = multiLpExit.position.valuationReason;
-    context.trader.valuationSource = multiLpExit.position.valuationSource;
-    context.trader.valuationCompleteness = multiLpExit.position.valuationCompleteness;
-    context.trader.lpValuationStatus = multiLpExit.position.valuationStatus;
-    context.trader.lpValuationReason = multiLpExit.position.valuationReason;
-    context.trader.lpValuationSource = multiLpExit.position.valuationSource;
-    context.trader.lpValuationCompleteness = multiLpExit.position.valuationCompleteness;
-    if (typeof multiLpExit.snapshot.lpNetPnlPct === 'number') {
-      context.trader.lpNetPnlPct = multiLpExit.snapshot.lpNetPnlPct;
-    } else {
-      delete context.trader.lpNetPnlPct;
-    }
-    context.trader.lpActiveBinStatus = multiLpExit.snapshot.lpActiveBinStatus as
-      | 'in-range'
-      | 'out-of-range'
-      | undefined;
+  const lpEvaluations = config.poolClass === 'new-token'
+    ? evaluateActiveLpPositions({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState })
+    : [];
+  const multiLpExit = selectTriggeredLpExitFromEvaluations(lpEvaluations);
+  const observedLpPosition = multiLpExit ?? selectObservedLpPositionFromEvaluations(lpEvaluations);
+  if (
+    observedLpPosition
+    && shouldApplyLpObservationToContext(context, observedLpPosition, Boolean(multiLpExit))
+  ) {
+    applyLpObservationToContext(context, observedLpPosition);
   }
 
   let activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
@@ -2609,6 +2720,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpUnclaimedFeeSol=${typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol.toFixed(9) : 'n/a'}`,
     `lpUnclaimedFeeValueSol=${typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol.toFixed(9) : 'n/a'}`,
     `lpClaimedFeeValueSol=${typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol.toFixed(9) : 'n/a'}`,
+    `lpRecoverableRentSol=${typeof context.trader.lpRecoverableRentSol === 'number' ? context.trader.lpRecoverableRentSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
     `lpSolExposureStatus=${typeof (updatedSnapshot as any).lpSolExposureStatus === 'string' ? (updatedSnapshot as any).lpSolExposureStatus : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,

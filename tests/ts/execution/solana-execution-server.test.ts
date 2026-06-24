@@ -1418,6 +1418,7 @@ describe('createSolanaExecutionServer', () => {
       unclaimedFeeSolAmount: 0.001,
       unclaimedFeeTokenAmountLamports: 0,
       unclaimedFeeTokenAmountRaw: '0',
+      recoverableRentSol: 0.057416045,
       positionStatus: 'active' as const,
       hasLiquidity: true,
       hasClaimableFees: true,
@@ -1465,12 +1466,13 @@ describe('createSolanaExecutionServer', () => {
         liquidityValueSol: 0.1,
         unclaimedFeeValueSol: 0.001,
         claimedFeeValueSol: 0,
-        lpTotalValueSol: 0.101,
-        currentValueSol: 0.101,
+        recoverableRentSol: 0.057416045,
+        lpTotalValueSol: 0.158416045,
+        currentValueSol: 0.158416045,
         valuationStatus: 'ready',
         valuationReason: '',
         valuationCompleteness: 'complete',
-        valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
+        valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote+position-account-rent'
       })
     ]);
     expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);

@@ -36,6 +36,7 @@ export type LiveAccountState = {
     unclaimedFeeSol?: number;
     unclaimedFeeValueSol?: number;
     claimedFeeValueSol?: number;
+    recoverableRentSol?: number;
     lpTotalValueSol?: number;
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     currentPrice?: number;
@@ -80,6 +81,7 @@ export type LiveAccountState = {
     unclaimedFeeSol?: number;
     unclaimedFeeValueSol?: number;
     claimedFeeValueSol?: number;
+    recoverableRentSol?: number;
     lpTotalValueSol?: number;
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     currentPrice?: number;
