@@ -74,6 +74,104 @@ describe('pool fee yield profile', () => {
     expect(profile.status).toBe('ready');
   });
 
+  it('caps fee yield score at 105 for strong sustained fee/liquidity profiles', () => {
+    const sample = parseMeteoraPoolFeeYieldSample(poolRow({
+      fees: {
+        '30m': 8_000,
+        '1h': 8_100,
+        '2h': 8_200,
+        '4h': 12_000,
+        '12h': 20_000,
+        '24h': 30_000
+      },
+      protocol_fees: {
+        '30m': 0,
+        '1h': 0,
+        '2h': 0,
+        '4h': 0,
+        '12h': 0,
+        '24h': 0
+      }
+    }), new Date('2026-06-24T10:00:00.000Z'));
+    const profile = buildPoolFeeYieldProfile({ sample: sample! });
+
+    expect(profile.status).toBe('ready');
+    expect(profile.score).toBe(105);
+  });
+
+  it('limits high-ratio small-fee pools by absolute net fee size', () => {
+    const sample = parseMeteoraPoolFeeYieldSample(poolRow({
+      tvl: 1_000,
+      fees: {
+        '30m': 17,
+        '1h': 18,
+        '2h': 19,
+        '4h': 22,
+        '12h': 30,
+        '24h': 40
+      },
+      protocol_fees: {
+        '30m': 0,
+        '1h': 0,
+        '2h': 0,
+        '4h': 0,
+        '12h': 0,
+        '24h': 0
+      }
+    }), new Date('2026-06-24T10:00:00.000Z'));
+    const profile = buildPoolFeeYieldProfile({ sample: sample! });
+
+    expect(profile.status).toBe('ready');
+    expect(profile.netFeeYield1h).toBeCloseTo(0.018, 8);
+    expect(profile.netFeeUsd1h).toBe(18);
+    expect(profile.score).toBeLessThanOrEqual(20);
+  });
+
+  it('awards materially higher continuity points for sustained 2h/4h fee yield', () => {
+    const continuous = buildPoolFeeYieldProfile({
+      sample: parseMeteoraPoolFeeYieldSample(poolRow({
+        fees: {
+          '30m': 80,
+          '1h': 150,
+          '2h': 250,
+          '4h': 520,
+          '12h': 1_200,
+          '24h': 2_000
+        },
+        protocol_fees: {
+          '30m': 0,
+          '1h': 0,
+          '2h': 0,
+          '4h': 0,
+          '12h': 0,
+          '24h': 0
+        }
+      }), new Date('2026-06-24T10:00:00.000Z'))!
+    });
+    const burst = buildPoolFeeYieldProfile({
+      sample: parseMeteoraPoolFeeYieldSample(poolRow({
+        fees: {
+          '30m': 80,
+          '1h': 150,
+          '2h': 250,
+          '4h': 2_000,
+          '12h': 2_500,
+          '24h': 3_000
+        },
+        protocol_fees: {
+          '30m': 0,
+          '1h': 0,
+          '2h': 0,
+          '4h': 0,
+          '12h': 0,
+          '24h': 0
+        }
+      }), new Date('2026-06-24T10:00:00.000Z'))!
+    });
+
+    expect(continuous.score - burst.score).toBeCloseTo(15, 5);
+  });
+
   it('detects denominator fake yield when TVL drains but net fees do not grow', () => {
     const sample = parseMeteoraPoolFeeYieldSample(poolRow({
       tvl: 6_000,

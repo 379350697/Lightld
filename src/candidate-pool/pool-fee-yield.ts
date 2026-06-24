@@ -64,6 +64,15 @@ export type PoolFeeYieldStore = {
   }): Promise<Map<string, PoolFeeYieldProfile>>;
 };
 
+const FEE_YIELD_SCORE_CAP = 105;
+const FEE_YIELD_COMPONENT_CAPS = {
+  currentYield1h: 30,
+  netFeeUsd1h: 20,
+  recent30mMomentum: 15,
+  currentHourMomentum: 25,
+  continuity: 15
+} as const;
+
 const ZERO_WINDOWS = Object.freeze({
   '30m': 0,
   '1h': 0,
@@ -148,6 +157,50 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function lowAbsoluteFeeScoreCap(netFeeUsd1h: number) {
+  if (netFeeUsd1h < 10) {
+    return 10;
+  }
+  if (netFeeUsd1h < 25) {
+    return 20;
+  }
+  if (netFeeUsd1h < 50) {
+    return 35;
+  }
+  return FEE_YIELD_SCORE_CAP;
+}
+
+function poolFeeYieldScore(input: {
+  currentYield1h: number;
+  recent30mYield: number;
+  prev30mYield: number;
+  prevHourYield: number;
+  continuityYield: number;
+  netFeeUsd1h: number;
+}) {
+  const yieldScore = clamp(input.currentYield1h * 3_000, 0, FEE_YIELD_COMPONENT_CAPS.currentYield1h);
+  const netFeeUsdScore = clamp(input.netFeeUsd1h / 20, 0, FEE_YIELD_COMPONENT_CAPS.netFeeUsd1h);
+  const recent30mMomentumScore = input.recent30mYield > input.prev30mYield && input.prev30mYield > 0
+    ? clamp(((input.recent30mYield / input.prev30mYield) - 1) * 7.5, 0, FEE_YIELD_COMPONENT_CAPS.recent30mMomentum)
+    : 0;
+  const currentHourMomentumScore = input.currentYield1h > input.prevHourYield && input.prevHourYield > 0
+    ? clamp(((input.currentYield1h / input.prevHourYield) - 1) * 12, 0, FEE_YIELD_COMPONENT_CAPS.currentHourMomentum)
+    : 0;
+  const continuityScore = input.continuityYield > 0 && input.currentYield1h >= input.continuityYield * 0.75
+    ? clamp(input.currentYield1h / input.continuityYield * 18, 0, FEE_YIELD_COMPONENT_CAPS.continuity)
+    : 0;
+
+  return Math.min(
+    FEE_YIELD_SCORE_CAP,
+    yieldScore
+      + netFeeUsdScore
+      + recent30mMomentumScore
+      + currentHourMomentumScore
+      + continuityScore,
+    lowAbsoluteFeeScoreCap(input.netFeeUsd1h)
+  );
+}
+
 export function parseMeteoraPoolFeeYieldSample(
   row: Record<string, unknown>,
   observedAt: Date
@@ -225,22 +278,14 @@ export function buildPoolFeeYieldProfile(input: {
     && sample.netFeesUsd['1h'] <= Math.max(prevHourNetFeeUsd * 1.50, 5);
   const lowAbsoluteFee = sample.netFeesUsd['1h'] < 10;
 
-  let score = clamp(currentYield1h * 10_000, 0, 60);
-  if (recent30mYield > prev30mYield && prev30mYield > 0) {
-    score += clamp(((recent30mYield / prev30mYield) - 1) * 10, 0, 20);
-  }
-  if (currentYield1h > prevHourYield && prevHourYield > 0) {
-    score += clamp(((currentYield1h / prevHourYield) - 1) * 8, 0, 15);
-  }
-  if (continuityYield > 0 && currentYield1h >= continuityYield * 0.75) {
-    score += 10;
-  }
-  if (lowAbsoluteFee) {
-    score = Math.min(score, 10);
-  }
-  if (hasDrainWatch) {
-    score *= 0.35;
-  }
+  let score = poolFeeYieldScore({
+    currentYield1h,
+    recent30mYield,
+    prev30mYield,
+    prevHourYield,
+    continuityYield,
+    netFeeUsd1h: sample.netFeesUsd['1h']
+  });
 
   let status: PoolFeeYieldStatus = 'ready';
   let reason = 'fee-yield-ready';
