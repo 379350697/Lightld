@@ -25,7 +25,7 @@ import {
 import { PendingSubmissionStore } from './pending-submission-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
-import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type StrategyId } from './live-cycle.ts';
+import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type LiveCycleResult, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode } from './state-types.ts';
 import { classifyAction, isExposureReducingAction } from './action-semantics.ts';
@@ -56,6 +56,8 @@ import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
   positionState?: PositionStateSnapshot;
+  selectionMode?: 'default' | 'maintenance-only' | 'new-open-only';
+  skipMints?: string[];
 };
 
 type LiveDaemonOptions = {
@@ -81,6 +83,8 @@ type LiveDaemonOptions = {
   broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
   confirmationProvider?: LiveConfirmationProvider;
   lpEntryEvidenceProvider?: LpEntryEvidenceProvider;
+  maxActivePositions?: number;
+  openAfterMaintenanceHold?: boolean;
   evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
   evolutionOutcomeStore?: Pick<LiveCycleOutcomeStore, 'appendOutcome'>;
   sleep?: (delayMs: number) => Promise<void>;
@@ -539,6 +543,154 @@ function resolveTrackedCurrentValueSol(input: {
   }
 
   return null;
+}
+
+function collectActiveExposureMints(input: {
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
+}) {
+  const mints = new Set<string>();
+
+  if (input.positionState?.activeMint && input.positionState.lifecycleState !== 'closed') {
+    mints.add(input.positionState.activeMint);
+  }
+
+  for (const token of [
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ]) {
+    if (isNonStableMint(token.mint) && token.amount > 0) {
+      mints.add(token.mint);
+    }
+  }
+
+  for (const position of [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ]) {
+    if (isNonStableMint(position.mint) && (position.hasLiquidity ?? true)) {
+      mints.add(position.mint);
+    }
+  }
+
+  return [...mints];
+}
+
+function countActiveLpExposures(accountState?: LiveAccountState) {
+  const keys = new Set<string>();
+  for (const position of [
+    ...(accountState?.walletLpPositions ?? []),
+    ...(accountState?.journalLpPositions ?? [])
+  ]) {
+    if (!isNonStableMint(position.mint) || !(position.hasLiquidity ?? true)) {
+      continue;
+    }
+    keys.add(`${position.poolAddress}:${position.mint}`);
+  }
+  return keys.size;
+}
+
+function hasNonStableTokenInventory(accountState?: LiveAccountState) {
+  return [
+    ...(accountState?.walletTokens ?? []),
+    ...(accountState?.journalTokens ?? [])
+  ].some((token) => isNonStableMint(token.mint) && token.amount > 0);
+}
+
+function buildNewOpenExecutionAccountState(accountState?: LiveAccountState): LiveAccountState | undefined {
+  if (!accountState) {
+    return undefined;
+  }
+
+  return {
+    ...accountState,
+    walletTokens: [],
+    journalTokens: [],
+    walletLpPositions: [],
+    journalLpPositions: []
+  };
+}
+
+function hasReadyCompleteActiveLpValuation(input: {
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
+}) {
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => isNonStableMint(position.mint) && (position.hasLiquidity ?? true));
+
+  if (positions.length === 0) {
+    return false;
+  }
+
+  const active = input.positionState?.chainPositionAddress
+    ? positions.find((position) =>
+        position.positionAddress === input.positionState?.chainPositionAddress ||
+        position.chainPositionAddress === input.positionState?.chainPositionAddress
+      )
+    : input.positionState?.activePoolAddress
+      ? positions.find((position) => position.poolAddress === input.positionState?.activePoolAddress)
+      : input.positionState?.activeMint
+        ? positions.find((position) => position.mint === input.positionState?.activeMint)
+        : positions[0];
+
+  return active?.valuationStatus === 'ready' && active?.valuationCompleteness === 'complete';
+}
+
+function shouldUseNewOpenPassResult(result: LiveCycleResult) {
+  return result.action === 'add-lp' && result.liveOrderSubmitted;
+}
+
+function resolveNewOpenPassSkipReason(input: {
+  enabled: boolean;
+  maintenanceResult: LiveCycleResult;
+  runtimeMode: RuntimeMode;
+  pendingSubmission: boolean;
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
+  maxActivePositions: number;
+}) {
+  if (!input.enabled) {
+    return 'disabled';
+  }
+
+  if (input.maintenanceResult.action !== 'hold') {
+    return `maintenance-action-not-hold:${input.maintenanceResult.action}`;
+  }
+
+  if (input.maintenanceResult.liveOrderSubmitted) {
+    return 'maintenance-order-submitted';
+  }
+
+  if (input.maintenanceResult.failureKind) {
+    return `maintenance-failure:${input.maintenanceResult.failureKind}`;
+  }
+
+  if (input.pendingSubmission) {
+    return 'pending-submission';
+  }
+
+  if (input.runtimeMode !== 'healthy' && input.runtimeMode !== 'degraded') {
+    return `runtime-mode:${input.runtimeMode}`;
+  }
+
+  if (hasNonStableTokenInventory(input.accountState)) {
+    return 'inventory-exit-pending';
+  }
+
+  if (countActiveLpExposures(input.accountState) >= input.maxActivePositions) {
+    return 'capacity-full';
+  }
+
+  if (!hasReadyCompleteActiveLpValuation({
+    accountState: input.accountState,
+    positionState: input.positionState
+  })) {
+    return 'active-lp-valuation-unavailable';
+  }
+
+  return '';
 }
 
 async function updateEvolutionWatchlistBestEffort(input: {
@@ -1759,7 +1911,16 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
         }
 
-        cycleInput = await buildCycleInput(tickCount, { tickCount, positionState });
+        const shouldStartMaintenancePass = Boolean(
+          options.openAfterMaintenanceHold &&
+          positionState?.lifecycleState === 'open' &&
+          positionState.activeMint
+        );
+        cycleInput = await buildCycleInput(tickCount, {
+          tickCount,
+          positionState,
+          selectionMode: shouldStartMaintenancePass ? 'maintenance-only' : 'default'
+        });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         const residualSuppression = await suppressCooldownResidualWalletTokens({
           accountState: effectiveAccountState,
@@ -1797,7 +1958,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
         const evolutionSink = cycleInput.evolutionSink ?? evolutionOutcomeStore;
 
-        const result = await runLiveCycle({
+        let result = await runLiveCycle({
           strategy: options.strategy,
           journalRootDir,
           stateRootDir,
@@ -1816,6 +1977,94 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           accountState: effectiveAccountState,
           now: new Date()
         });
+
+        if (shouldStartMaintenancePass) {
+          const pendingAfterMaintenance = await pendingSubmissionStore.read();
+          const newOpenSkipReason = resolveNewOpenPassSkipReason({
+            enabled: true,
+            maintenanceResult: result,
+            runtimeMode: runtimeState.mode,
+            pendingSubmission: pendingAfterMaintenance !== null,
+            accountState: effectiveAccountState,
+            positionState,
+            maxActivePositions: options.maxActivePositions ?? 5
+          });
+
+          if (newOpenSkipReason) {
+            console.log(`[LiveDaemon] new-open-pass skipped reason=${newOpenSkipReason}`);
+          } else {
+            const skipMints = collectActiveExposureMints({
+              accountState: effectiveAccountState,
+              positionState
+            });
+            console.log(`[LiveDaemon] new-open-pass starting skipMints=${skipMints.join(',') || 'none'}`);
+            let newOpenCycleInput = await buildCycleInput(tickCount, {
+              tickCount,
+              positionState,
+              selectionMode: 'new-open-only',
+              skipMints
+            });
+            let newOpenAccountState = await resolveEffectiveAccountState(newOpenCycleInput, effectiveAccountState);
+            const newOpenResidualSuppression = await suppressCooldownResidualWalletTokens({
+              accountState: newOpenAccountState,
+              residualTokenSweepStore,
+              residualTokenSweepMinValueSol,
+              suppressAllEligibleResidualTokens: Boolean(nextResidualTokenSweepAt && nextResidualTokenSweepAt > nowIso()),
+              nowIso: nowIso()
+            });
+            newOpenAccountState = newOpenResidualSuppression.accountState;
+            if (newOpenResidualSuppression.suppressedMints.length > 0) {
+              const residualBlockReason = `residual-sweep-cooldown:${newOpenResidualSuppression.suppressedMints[0]}`;
+              newOpenCycleInput = {
+                ...newOpenCycleInput,
+                context: {
+                  ...(newOpenCycleInput.context ?? {}),
+                  pool: {
+                    ...((newOpenCycleInput.context?.pool as Record<string, unknown> | undefined) ?? {}),
+                    blockReason: residualBlockReason
+                  },
+                  token: {
+                    ...((newOpenCycleInput.context?.token as Record<string, unknown> | undefined) ?? {}),
+                    blockReason: residualBlockReason
+                  },
+                  route: {
+                    ...((newOpenCycleInput.context?.route as Record<string, unknown> | undefined) ?? {}),
+                    blockReason: residualBlockReason
+                  }
+                }
+              };
+            }
+
+            const newOpenResult = await runLiveCycle({
+              strategy: options.strategy,
+              journalRootDir,
+              stateRootDir,
+              runtimeMode: runtimeState.mode,
+              mirrorSink: mirrorRuntime,
+              ...newOpenCycleInput,
+              evolutionSink,
+              accountState: buildNewOpenExecutionAccountState(newOpenAccountState),
+              positionState: undefined
+            });
+
+            await updateEvolutionWatchlistBestEffort({
+              strategy: options.strategy,
+              store: evolutionWatchlistStore,
+              cycleInput: newOpenCycleInput,
+              accountState: newOpenAccountState,
+              now: new Date()
+            });
+
+            if (shouldUseNewOpenPassResult(newOpenResult)) {
+              console.log(`[LiveDaemon] new-open-pass selected action=${newOpenResult.action} reason=${newOpenResult.reason}`);
+              result = newOpenResult;
+              cycleInput = newOpenCycleInput;
+              effectiveAccountState = newOpenAccountState;
+            } else {
+              console.log(`[LiveDaemon] new-open-pass observed no actionable candidate reason=${newOpenResult.reason}`);
+            }
+          }
+        }
 
         if (result.failureKind && result.failureSource) {
           const dependencyKey = result.failureSource === 'broadcast'

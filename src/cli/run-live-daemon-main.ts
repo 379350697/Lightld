@@ -15,7 +15,7 @@ import {
   createHousekeepingRunner,
   DEFAULT_JOURNAL_RETENTION_DAYS
 } from '../runtime/housekeeping.ts';
-import { buildLiveCycleInputFromIngest } from '../runtime/ingest-context-builder.ts';
+import { buildLiveCycleInputFromIngest, type IngestSelectionMode } from '../runtime/ingest-context-builder.ts';
 import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.ts';
 import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtime/lp-entry-evidence-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
@@ -274,6 +274,10 @@ async function main() {
   const evolutionPaths = resolveEvolutionPaths(strategy, join(args.stateRootDir, 'evolution'));
   const candidateScanStore = new CandidateScanStore(evolutionPaths.candidateScansPath);
   const candidatePoolReadEnabled = parseBoolean(process.env.LIVE_CANDIDATE_POOL_READ_ENABLED, true);
+  const openAfterMaintenanceHold = parseBoolean(
+    process.env.LIVE_OPEN_AFTER_MAINTENANCE_HOLD,
+    (args.maxActivePositions ?? 5) > 1
+  );
   const candidatePoolReader = candidatePoolReadEnabled
     ? new SqliteCandidatePool({
         path: process.env.LIVE_CANDIDATE_POOL_DB_PATH ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite'),
@@ -306,6 +310,8 @@ async function main() {
     confirmationProvider: executionAdapters.confirmationProvider,
     mirrorRuntime,
     housekeepingRunner,
+    maxActivePositions: args.maxActivePositions,
+    openAfterMaintenanceHold,
     buildCycleInput: async (_tickCount, buildContext) => {
       const accountState = executionAdapters.accountProvider
         ? await executionAdapters.accountProvider.readState()
@@ -327,7 +333,9 @@ async function main() {
         candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
         newCandidateSafetyMaxBatchSize: parsePositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE, 1),
         newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
-        positionState: buildContext?.positionState
+        positionState: buildContext?.positionState,
+        selectionMode: buildContext?.selectionMode as IngestSelectionMode | undefined,
+        skipMints: buildContext?.skipMints
       });
 
       return {

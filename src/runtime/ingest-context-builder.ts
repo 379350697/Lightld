@@ -66,6 +66,8 @@ export type IngestBackedCycleInput = Omit<LiveCycleInput, 'strategy'> & {
   sessionPhase: 'active' | 'closed';
 };
 
+export type IngestSelectionMode = 'default' | 'maintenance-only' | 'new-open-only';
+
 type IngestContextBuilderInput = {
   strategy: StrategyId;
   traderWallet?: string;
@@ -92,6 +94,8 @@ type IngestContextBuilderInput = {
   candidatePoolReader?: CandidatePoolReader;
   candidatePoolReadEnabled?: boolean;
   candidatePoolMaxAgeMs?: number;
+  selectionMode?: IngestSelectionMode;
+  skipMints?: string[];
 };
 
 type PumpIndexes = {
@@ -881,6 +885,54 @@ function resolveRecentlyClosedExcludedMints(input: {
   return input.now.getTime() - closedAtMs < RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS ? [mint] : [];
 }
 
+function resolveOpenCandidateExcludedMints(input: {
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot;
+  now: Date;
+  skipMints?: string[];
+}) {
+  const excluded = new Set<string>();
+
+  for (const mint of resolveRecentlyClosedExcludedMints({
+    positionState: input.positionState,
+    now: input.now
+  })) {
+    if (mint) {
+      excluded.add(mint);
+    }
+  }
+
+  for (const mint of input.skipMints ?? []) {
+    if (mint) {
+      excluded.add(mint);
+    }
+  }
+
+  if (input.positionState?.activeMint && input.positionState.lifecycleState !== 'closed') {
+    excluded.add(input.positionState.activeMint);
+  }
+
+  for (const token of [
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ]) {
+    if (token.mint && token.mint !== SOL_MINT && token.amount > 0) {
+      excluded.add(token.mint);
+    }
+  }
+
+  for (const position of [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ]) {
+    if (position.mint && position.mint !== SOL_MINT && (position.hasLiquidity ?? true)) {
+      excluded.add(position.mint);
+    }
+  }
+
+  return [...excluded];
+}
+
 function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput, now: Date): IngestCandidate | null {
   const positions = [
     ...(input.accountState?.walletLpPositions ?? []),
@@ -979,7 +1031,14 @@ async function buildCandidatePoolBackedCycleInput(
     entry = await input.candidatePoolReader.selectOpenableCandidate(input.strategy, {
       now,
       maxAgeMs: input.candidatePoolMaxAgeMs,
-      excludedMints: resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now })
+      excludedMints: input.selectionMode === 'new-open-only'
+        ? resolveOpenCandidateExcludedMints({
+            accountState: input.accountState,
+            positionState: input.positionState,
+            now,
+            skipMints: input.skipMints
+          })
+        : resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now })
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1294,11 +1353,14 @@ export async function buildLiveCycleInputFromIngest(
   const now = input.now ?? new Date();
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
-  const accountBackedActiveLpCandidate = resolveAccountBackedActiveLpCandidate(input, now);
+  const selectionMode = input.selectionMode ?? 'default';
+  const accountBackedActiveLpCandidate = selectionMode === 'new-open-only'
+    ? null
+    : resolveAccountBackedActiveLpCandidate(input, now);
 
   if (accountBackedActiveLpCandidate) {
     console.log(
-      `[Ingest] Account-backed active LP maintenance context selected; skipping candidate pool and new-candidate ingest mint=${accountBackedActiveLpCandidate.mint} pool=${accountBackedActiveLpCandidate.address}`
+      `[Ingest] maintenance-pass account-backed active LP context selected; skipping new-candidate ingest mint=${accountBackedActiveLpCandidate.mint} pool=${accountBackedActiveLpCandidate.address}`
     );
 
     return buildActiveLpMaintenanceContext(
@@ -1308,6 +1370,20 @@ export async function buildLiveCycleInputFromIngest(
       config.solRouteLimits.maxSlippageBps,
       null,
       accountBackedActiveLpCandidate
+    );
+  }
+
+  if (selectionMode === 'maintenance-only') {
+    return buildFallbackContext(
+      input,
+      input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
+      sessionActive,
+      config.solRouteLimits.maxSlippageBps,
+      null,
+      {
+        blockReason: 'no-active-lp-maintenance-target',
+        blockDetails: 'maintenance-only pass found no active LP position'
+      }
     );
   }
 
@@ -1398,11 +1474,13 @@ export async function buildLiveCycleInputFromIngest(
   const maxActivePositions = input.maxActivePositions ?? 5;
   const shouldDeferNewCandidateSafety = activePositionsCount >= maxActivePositions;
   const inScanWindow = isInScanWindow(now);
-  const activeLpMaintenanceCandidate = resolveActiveLpMaintenanceCandidate({
-    candidates: lpEligibleCandidates,
-    accountState: input.accountState,
-    positionState: input.positionState
-  });
+  const activeLpMaintenanceCandidate = input.selectionMode === 'new-open-only'
+    ? null
+    : resolveActiveLpMaintenanceCandidate({
+        candidates: lpEligibleCandidates,
+        accountState: input.accountState,
+        positionState: input.positionState
+      });
 
   if (activeLpMaintenanceCandidate) {
     console.log(
@@ -1436,6 +1514,19 @@ export async function buildLiveCycleInputFromIngest(
       config.solRouteLimits.maxSlippageBps,
       traderSnapshot,
       activeLpMaintenanceCandidate
+    );
+  }
+  if (input.selectionMode === 'new-open-only') {
+    const excludedMints = new Set(resolveOpenCandidateExcludedMints({
+      accountState: input.accountState,
+      positionState: input.positionState,
+      now,
+      skipMints: input.skipMints
+    }));
+    candidates = candidates.filter((candidate) =>
+      !candidate.hasInventory &&
+      !candidate.hasLpPosition &&
+      !excludedMints.has(candidate.mint)
     );
   }
   const newCandidateSafetyMaxBatchSize = Math.max(1, Math.floor(input.newCandidateSafetyMaxBatchSize ?? 1));

@@ -164,6 +164,294 @@ describe('runLiveDaemon', () => {
     expect(health.housekeeping?.mirrorPruneDeletedRows).toBe(3);
   });
 
+  it('runs a new-open pass after safe LP maintenance hold when capacity remains', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'open',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active',
+      positionId: 'position-active',
+      chainPositionAddress: 'position-active',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      fills: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'position-active',
+        mint: 'mint-active',
+        hasLiquidity: true,
+        currentValueSol: 0.11,
+        liquidityValueSol: 0.1,
+        lpTotalValueSol: 0.11,
+        valuationStatus: 'ready' as const,
+        valuationCompleteness: 'complete' as const
+      }],
+      journalLpPositions: []
+    };
+    const modes: Array<string | undefined> = [];
+    const skipMints: string[][] = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      maxActivePositions: 2,
+      openAfterMaintenanceHold: true,
+      buildCycleInput: async (_tick, context) => {
+        modes.push(context?.selectionMode);
+        skipMints.push(context?.skipMints ?? []);
+        if (context?.selectionMode === 'new-open-only') {
+          return {
+            requestedPositionSol: 0.1,
+            accountState,
+            context: {
+              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
+              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
+              trader: { hasInventory: false, hasLpPosition: false },
+              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+            }
+          };
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState,
+          context: {
+            pool: { address: 'pool-active', liquidityUsd: 20_000 },
+            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            trader: {
+              hasInventory: true,
+              hasLpPosition: true,
+              lpCurrentValueSol: 0.11,
+              lpTotalValueSol: 0.11,
+              lpTradingValueSol: 0.1,
+              lpEntryTradingSol: 0.1,
+              lpNetPnlPct: 0,
+              valuationStatus: 'ready',
+              valuationCompleteness: 'complete'
+            },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    const nextPositionState = await runtimeStateStore.readPositionState();
+    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(skipMints[1]).toContain('mint-active');
+    expect(nextPositionState).toMatchObject({
+      lastAction: 'add-lp',
+      activeMint: 'mint-next',
+      activePoolAddress: 'pool-next'
+    });
+  });
+
+  it('skips the new-open pass when residual token inventory needs exit handling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-inventory-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'open',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active',
+      positionId: 'position-active',
+      chainPositionAddress: 'position-active',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+    const modes: Array<string | undefined> = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      maxActivePositions: 2,
+      openAfterMaintenanceHold: true,
+      buildCycleInput: async (_tick, context) => {
+        modes.push(context?.selectionMode);
+        if (context?.selectionMode === 'new-open-only') {
+          throw new Error('new-open pass should be skipped while residual inventory exists');
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState: {
+            walletSol: 1.25,
+            journalSol: 1.25,
+            walletTokens: [],
+            journalTokens: [{ mint: 'mint-residual', symbol: 'RES', amount: 5, currentValueSol: 0.02 }],
+            fills: [],
+            walletLpPositions: [{
+              poolAddress: 'pool-active',
+              positionAddress: 'position-active',
+              mint: 'mint-active',
+              hasLiquidity: true,
+              currentValueSol: 0.11,
+              liquidityValueSol: 0.1,
+              lpTotalValueSol: 0.11,
+              valuationStatus: 'ready' as const,
+              valuationCompleteness: 'complete' as const
+            }],
+            journalLpPositions: []
+          },
+          context: {
+            pool: { address: 'pool-active', liquidityUsd: 20_000 },
+            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            trader: {
+              hasInventory: true,
+              hasLpPosition: true,
+              lpCurrentValueSol: 0.11,
+              lpTotalValueSol: 0.11,
+              lpTradingValueSol: 0.1,
+              lpEntryTradingSol: 0.1,
+              lpNetPnlPct: 0,
+              valuationStatus: 'ready',
+              valuationCompleteness: 'complete'
+            },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    expect(modes).toEqual(['maintenance-only']);
+  });
+
+  it('does not let a failed new-open pass overwrite the safe maintenance hold result', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-fail-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'open',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active',
+      positionId: 'position-active',
+      chainPositionAddress: 'position-active',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      fills: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'position-active',
+        mint: 'mint-active',
+        hasLiquidity: true,
+        currentValueSol: 0.11,
+        liquidityValueSol: 0.1,
+        lpTotalValueSol: 0.11,
+        valuationStatus: 'ready' as const,
+        valuationCompleteness: 'complete' as const
+      }],
+      journalLpPositions: []
+    };
+    const modes: Array<string | undefined> = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      maxActivePositions: 2,
+      openAfterMaintenanceHold: true,
+      buildCycleInput: async (_tick, context) => {
+        modes.push(context?.selectionMode);
+        if (context?.selectionMode === 'new-open-only') {
+          return {
+            requestedPositionSol: 0.1,
+            accountState,
+            signer: {
+              sign: async () => {
+                throw new ExecutionRequestError('signer', {
+                  kind: 'hard',
+                  reason: 'new-open-signer-down',
+                  retryable: false
+                });
+              }
+            },
+            context: {
+              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
+              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
+              trader: { hasInventory: false, hasLpPosition: false },
+              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+            }
+          };
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState,
+          context: {
+            pool: { address: 'pool-active', liquidityUsd: 20_000 },
+            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            trader: {
+              hasInventory: true,
+              hasLpPosition: true,
+              lpCurrentValueSol: 0.11,
+              lpTotalValueSol: 0.11,
+              lpTradingValueSol: 0.1,
+              lpEntryTradingSol: 0.1,
+              lpNetPnlPct: 0,
+              valuationStatus: 'ready',
+              valuationCompleteness: 'complete'
+            },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    const nextPositionState = await runtimeStateStore.readPositionState();
+    const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
+      mode: string;
+    };
+    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(nextPositionState).toMatchObject({
+      lastAction: 'hold',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active'
+    });
+    expect(health.mode).toBe('healthy');
+  });
+
   it('warms the account provider once before the first tick', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-account-warmup-'));
     const stateRootDir = join(root, 'state');

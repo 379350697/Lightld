@@ -176,4 +176,91 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       valuationCompleteness: 'complete'
     });
   });
+
+  it('selects a fresh new-open candidate while excluding active exposure mints', async () => {
+    const reader: CandidatePoolReader = {
+      selectOpenableCandidate: vi.fn(async () => makeEntry(makeCandidate({
+        address: 'pool-next',
+        mint: 'mint-next',
+        symbol: 'NEXT'
+      })))
+    };
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.02,
+      now: new Date('2026-06-21T10:00:00.000Z'),
+      candidatePoolReadEnabled: true,
+      candidatePoolReader: reader,
+      selectionMode: 'new-open-only',
+      skipMints: ['mint-explicit-skip'],
+      accountState: {
+        walletSol: 0.4,
+        journalSol: 0.4,
+        walletTokens: [{ mint: 'mint-wallet-token', amount: 1, currentValueSol: 0.01 }],
+        journalTokens: [],
+        fills: [],
+        journalLpPositions: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-lp',
+          positionAddress: 'position-lp',
+          mint: 'mint-lp',
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete'
+        }]
+      },
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        lifecycleState: 'open',
+        activeMint: 'mint-lp',
+        activePoolAddress: 'pool-lp',
+        updatedAt: '2026-06-21T09:56:00.000Z'
+      }
+    });
+
+    expect(reader.selectOpenableCandidate).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
+      excludedMints: expect.arrayContaining(['mint-lp', 'mint-wallet-token', 'mint-explicit-skip'])
+    }));
+    expect(result.context.token).toMatchObject({
+      mint: 'mint-next',
+      symbol: 'NEXT'
+    });
+    expect(result.context.trader).toMatchObject({
+      hasInventory: false,
+      hasLpPosition: false
+    });
+  });
+
+  it('does not open from a maintenance-only pass when there is no active LP', async () => {
+    const reader: CandidatePoolReader = {
+      selectOpenableCandidate: vi.fn(async () => makeEntry())
+    };
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.02,
+      now: new Date('2026-06-21T10:00:00.000Z'),
+      candidatePoolReadEnabled: true,
+      candidatePoolReader: reader,
+      selectionMode: 'maintenance-only',
+      accountState: {
+        walletSol: 0.4,
+        journalSol: 0.4,
+        walletTokens: [],
+        journalTokens: [],
+        fills: [],
+        journalLpPositions: [],
+        walletLpPositions: []
+      }
+    });
+
+    expect(reader.selectOpenableCandidate).not.toHaveBeenCalled();
+    expect(result.context.route).toMatchObject({
+      hasSolRoute: false,
+      blockReason: 'no-active-lp-maintenance-target'
+    });
+  });
 });
