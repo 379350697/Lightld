@@ -289,6 +289,7 @@ async function resolveTokenCurrentValueSol(input: {
   amountLamports: number | string | bigint;
   defaultSlippageBps: number;
   poolAddress?: string;
+  skipBalanceDependentProviders?: boolean;
 }) {
   const quoteAmount = normalizeLamportsAmount(input.amountLamports);
   if (!quoteAmount) {
@@ -301,7 +302,8 @@ async function resolveTokenCurrentValueSol(input: {
     amountLamports: quoteAmount,
     walletPublicKey: input.walletPublicKey,
     poolAddress: input.poolAddress,
-    slippageBps: input.defaultSlippageBps
+    slippageBps: input.defaultSlippageBps,
+    skipBalanceDependentProviders: input.skipBalanceDependentProviders
   });
   const outAmountLamports = Number(quoteResponse.outAmountLamports ?? 0);
   const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
@@ -409,7 +411,8 @@ async function enrichLpExitValues(input: {
           mint: position.withdrawTokenMint,
           amountLamports: withdrawTokenAmountRaw,
           defaultSlippageBps: input.defaultSlippageBps,
-          poolAddress: position.poolAddress
+          poolAddress: position.poolAddress,
+          skipBalanceDependentProviders: true
         });
 
         if (typeof quotedWithdrawTokenValueSol !== 'number') {
@@ -432,7 +435,8 @@ async function enrichLpExitValues(input: {
           mint: feeTokenMint,
           amountLamports: unclaimedFeeTokenAmountRaw,
           defaultSlippageBps: input.defaultSlippageBps,
-          poolAddress: position.poolAddress
+          poolAddress: position.poolAddress,
+          skipBalanceDependentProviders: true
         });
 
         if (typeof quotedFeeTokenValueSol !== 'number') {

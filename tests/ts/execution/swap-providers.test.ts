@@ -73,6 +73,84 @@ describe('swap provider chain', () => {
     expect(fallback.quoteExactIn).toHaveBeenCalledTimes(1);
   });
 
+  it('skips balance-dependent providers for synthetic valuation quotes', async () => {
+    const fallback: SwapExecutionProvider = {
+      name: 'jupiter-v2',
+      enabled: () => true,
+      quoteExactIn: vi.fn(async () => ({
+        providerName: 'jupiter-v2' as const,
+        outAmountLamports: '900',
+        minOutAmountLamports: '850'
+      })),
+      executeExactIn: vi.fn()
+    };
+    const dlmmClient = {
+      swapTokenToSol: vi.fn(async () => {
+        throw new Error('should not be called');
+      })
+    };
+    const chain = new SwapProviderChain([
+      new MeteoraDirectSwapProvider(dlmmClient as any),
+      fallback
+    ]);
+
+    const result = await chain.quoteExactIn(buildRequest({
+      skipBalanceDependentProviders: true
+    }));
+
+    expect(result.providerName).toBe('jupiter-v2');
+    expect(result.providerAttempts).toMatchObject([
+      {
+        providerName: 'meteora-dlmm-direct',
+        status: 'skipped',
+        reason: 'balance-dependent-provider-skipped-for-valuation'
+      },
+      { providerName: 'jupiter-v2', status: 'succeeded' }
+    ]);
+    expect(dlmmClient.swapTokenToSol).not.toHaveBeenCalled();
+  });
+
+  it('cools down Meteora direct simulation failures before retrying later quotes', async () => {
+    let now = 0;
+    const fallback: SwapExecutionProvider = {
+      name: 'jupiter-v2',
+      enabled: () => true,
+      quoteExactIn: vi.fn(async () => ({
+        providerName: 'jupiter-v2' as const,
+        outAmountLamports: '900'
+      })),
+      executeExactIn: vi.fn()
+    };
+    const dlmmClient = {
+      swapTokenToSol: vi.fn(async () => {
+        throw new Error('Transaction simulation failed: custom program error: 0x1 insufficient funds');
+      })
+    };
+    const chain = new SwapProviderChain([
+      new MeteoraDirectSwapProvider(dlmmClient as any),
+      fallback
+    ], {
+      cooldownMs: 1_000,
+      nowMs: () => now
+    });
+
+    await expect(chain.quoteExactIn(buildRequest())).resolves.toMatchObject({
+      providerName: 'jupiter-v2'
+    });
+    await expect(chain.quoteExactIn(buildRequest())).resolves.toMatchObject({
+      providerName: 'jupiter-v2',
+      providerAttempts: [
+        expect.objectContaining({ providerName: 'meteora-dlmm-direct', status: 'skipped' }),
+        expect.objectContaining({ providerName: 'jupiter-v2', status: 'succeeded' })
+      ]
+    });
+
+    expect(dlmmClient.swapTokenToSol).toHaveBeenCalledTimes(1);
+    now = 1_001;
+    await chain.quoteExactIn(buildRequest());
+    expect(dlmmClient.swapTokenToSol).toHaveBeenCalledTimes(2);
+  });
+
   it('cools down a rate-limited provider and continues to the next provider', async () => {
     let now = 0;
     const hotProvider: SwapExecutionProvider = {

@@ -37,6 +37,7 @@ export type SwapExactInRequest = {
   poolAddress?: string;
   slippageBps: number;
   jitoTipLamports?: number;
+  skipBalanceDependentProviders?: boolean;
 };
 
 export type SwapQuoteResult = {
@@ -187,6 +188,11 @@ function isMeteoraDirectMismatch(error: unknown) {
     .test(normalizeReason(error));
 }
 
+function isMeteoraDirectSimulationFailure(error: unknown) {
+  return /Transaction simulation failed|custom program error|AccountNotEnoughKeys|insufficient funds/i
+    .test(normalizeReason(error));
+}
+
 function classifyFailure(providerName: SwapProviderName, error: unknown): ProviderFailureClassification {
   const normalized = toError(error);
   const status = extractHttpStatus(normalized);
@@ -198,6 +204,16 @@ function classifyFailure(providerName: SwapProviderName, error: unknown): Provid
       noRoute: false,
       cooldown: false,
       skip: true,
+      reason
+    };
+  }
+
+  if (providerName === 'meteora-dlmm-direct' && isMeteoraDirectSimulationFailure(error)) {
+    return {
+      retryable: false,
+      noRoute: false,
+      cooldown: true,
+      skip: false,
       reason
     };
   }
@@ -528,6 +544,10 @@ export class SwapProviderChain {
   private readSkipReason(provider: SwapExecutionProvider, request: SwapExactInRequest) {
     if (!provider.enabled()) {
       return provider.disabledReason?.() ?? 'disabled';
+    }
+
+    if (request.skipBalanceDependentProviders && provider.name === 'meteora-dlmm-direct') {
+      return 'balance-dependent-provider-skipped-for-valuation';
     }
 
     const now = this.nowMs();
