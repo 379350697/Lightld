@@ -105,4 +105,50 @@ describe('valuation providers', () => {
       ]
     });
   });
+
+  it('does not negative-cache transient Meteora quote-only failures', async () => {
+    const exitProvider = {
+      name: 'meteora-dlmm-quote-only' as const,
+      enabled: () => true,
+      quoteTokenToSol: vi.fn()
+        .mockRejectedValueOnce(new Error('No RPC endpoint available for dlmm'))
+        .mockResolvedValueOnce({
+          providerName: 'meteora-dlmm-quote-only' as const,
+          valueSol: 0.02,
+          trust: 'exit_quote' as const,
+          source: 'meteora-dlmm-swap-quote'
+        })
+    };
+    const marketProvider = {
+      name: 'dexscreener-pair' as const,
+      enabled: () => true,
+      quoteTokenToSol: vi.fn(async () => ({
+        providerName: 'dexscreener-pair' as const,
+        valueSol: 0.01,
+        trust: 'market_price' as const,
+        source: 'dexscreener-pair'
+      }))
+    };
+    const chain = new ValuationProviderChain([exitProvider, marketProvider], {
+      cooldownMs: 30_000,
+      negativeCacheTtlMs: 60_000
+    });
+    const request = {
+      inputMint: 'token-mint',
+      amountLamports: '1000000',
+      tokenDecimals: 6,
+      poolAddress: 'pool-1',
+      slippageBps: 100
+    };
+
+    const first = await chain.quoteTokenToSol(request);
+    const second = await chain.quoteTokenToSol(request);
+
+    expect(first.trust).toBe('market_price');
+    expect(second).toMatchObject({
+      providerName: 'meteora-dlmm-quote-only',
+      trust: 'exit_quote'
+    });
+    expect(exitProvider.quoteTokenToSol).toHaveBeenCalledTimes(2);
+  });
 });

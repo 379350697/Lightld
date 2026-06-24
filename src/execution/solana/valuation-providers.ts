@@ -114,11 +114,15 @@ function classifyRetryable(error: unknown) {
   const reason = normalizeReason(error);
   return status === 429
     || (typeof status === 'number' && status >= 500)
-    || /timeout|AbortError|fetch failed|rate.?limit|too many requests/i.test(reason);
+    || /timeout|AbortError|fetch failed|rate.?limit|too many requests|No RPC endpoint available/i.test(reason);
 }
 
 function routeKey(providerName: ValuationProviderName, request: TokenValuationRequest) {
   return `${providerName}|${request.poolAddress ?? ''}|${request.inputMint}`;
+}
+
+function isPermanentMeteoraQuoteOnlyFailure(reason: string) {
+  return /not part of Meteora pool|not a .+\/SOL pair|amount must be positive|requires poolAddress|missing token mints|returned zero SOL output/i.test(reason);
 }
 
 export class ValuationProviderChain {
@@ -206,6 +210,13 @@ export class ValuationProviderChain {
     reason: string,
     retryable: boolean
   ) {
+    if (
+      providerName === 'meteora-dlmm-quote-only'
+      && !isPermanentMeteoraQuoteOnlyFailure(reason)
+    ) {
+      return;
+    }
+
     if (retryable && this.cooldownMs > 0) {
       this.cooldownUntil.set(providerName, {
         untilMs: this.nowMs() + this.cooldownMs,
