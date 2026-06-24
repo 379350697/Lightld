@@ -162,6 +162,8 @@ type AccountStateSnapshot = {
     unclaimedFeeValueSol?: number;
     claimedFeeValueSol?: number;
     recoverableRentSol?: number;
+    lpTradingValueSol?: number;
+    lpEntryTradingSol?: number;
     lpTotalValueSol?: number;
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     unclaimedFeeSol?: number;
@@ -374,6 +376,17 @@ type PositionResponse = Array<{
   hasClaimableFees: boolean;
   entrySolSource: string;
   entryTrust: 'trusted' | 'missing';
+  liquidityValueSol?: number | null;
+  unclaimedFeeValueSol?: number | null;
+  claimedFeeValueSol?: number | null;
+  recoverableRentSol?: number | null;
+  lpTradingValueSol?: number | null;
+  lpEntryTradingSol?: number | null;
+  lpTotalValueSol?: number | null;
+  valuationCompleteness?: string;
+  valuationStatus?: string;
+  valuationReason?: string;
+  valuationSource?: string;
 }>;
 
 type PositionStateFile = {
@@ -451,6 +464,14 @@ async function handlePositions(): Promise<PositionResponse> {
         unclaimedFeeValueSol: typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : null,
         claimedFeeValueSol: typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : null,
         recoverableRentSol: typeof position.recoverableRentSol === 'number' ? position.recoverableRentSol : null,
+        lpTradingValueSol: trustedEntry && typeof position.lpTotalValueSol === 'number' && typeof position.recoverableRentSol === 'number'
+          ? Math.max(0, position.lpTotalValueSol - position.recoverableRentSol)
+          : null,
+        lpEntryTradingSol: trustedEntry && typeof positionState?.entrySol === 'number' && typeof position.recoverableRentSol === 'number' && positionState.entrySol > position.recoverableRentSol
+          ? positionState.entrySol - position.recoverableRentSol
+          : trustedEntry
+            ? positionState!.entrySol!
+            : null,
         lpTotalValueSol: typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : null,
         valuationCompleteness: position.valuationCompleteness ?? '',
         valuationStatus: position.valuationStatus ?? '',
@@ -891,6 +912,8 @@ function parseDecisionMetrics(reason: string) {
     lpUnclaimedFeeValueSol: toNumber('lpUnclaimedFeeValueSol'),
     lpClaimedFeeValueSol: toNumber('lpClaimedFeeValueSol'),
     lpRecoverableRentSol: toNumber('lpRecoverableRentSol'),
+    lpTradingValueSol: toNumber('lpTradingValueSol'),
+    lpEntryTradingSol: toNumber('lpEntryTradingSol'),
     lpNetPnlPct: toNumber('lpNetPnlPct'),
   };
 }

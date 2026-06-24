@@ -318,6 +318,8 @@ function buildEvolutionExitMetrics(input: {
     lpUnclaimedFeeValueSol: typeof input.context.trader.lpUnclaimedFeeValueSol === 'number' ? input.context.trader.lpUnclaimedFeeValueSol : undefined,
     lpClaimedFeeValueSol: typeof input.context.trader.lpClaimedFeeValueSol === 'number' ? input.context.trader.lpClaimedFeeValueSol : undefined,
     lpRecoverableRentSol: typeof input.context.trader.lpRecoverableRentSol === 'number' ? input.context.trader.lpRecoverableRentSol : undefined,
+    lpTradingValueSol: typeof input.context.trader.lpTradingValueSol === 'number' ? input.context.trader.lpTradingValueSol : undefined,
+    lpEntryTradingSol: typeof input.context.trader.lpEntryTradingSol === 'number' ? input.context.trader.lpEntryTradingSol : undefined,
     valuationCompleteness: firstValuationCompleteness(
       input.context.trader.valuationCompleteness,
       input.context.trader.lpValuationCompleteness
@@ -1267,6 +1269,47 @@ function resolveLpTotalValueSol(input: {
   return finiteNonnegative(input.currentValueSol);
 }
 
+function resolveLpTradingValueSol(input: {
+  currentValueSol?: unknown;
+  lpTotalValueSol?: unknown;
+  liquidityValueSol?: unknown;
+  unclaimedFeeValueSol?: unknown;
+  claimedFeeValueSol?: unknown;
+  recoverableRentSol?: unknown;
+}) {
+  const liquidityValueSol = finiteNonnegative(input.liquidityValueSol);
+  const unclaimedFeeValueSol = finiteNonnegative(input.unclaimedFeeValueSol);
+  const claimedFeeValueSol = finiteNonnegative(input.claimedFeeValueSol) ?? 0;
+  if (typeof liquidityValueSol === 'number' && typeof unclaimedFeeValueSol === 'number') {
+    return liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
+  }
+
+  const recoverableRentSol = finiteNonnegative(input.recoverableRentSol);
+  const lpTotalValueSol = resolveLpTotalValueSol(input);
+  if (typeof lpTotalValueSol === 'number' && typeof recoverableRentSol === 'number') {
+    return Math.max(0, lpTotalValueSol - recoverableRentSol);
+  }
+
+  return undefined;
+}
+
+function resolveLpEntryTradingSol(input: {
+  entrySol?: unknown;
+  recoverableRentSol?: unknown;
+}) {
+  const entrySol = finiteNonnegative(input.entrySol);
+  if (typeof entrySol !== 'number') {
+    return undefined;
+  }
+
+  const recoverableRentSol = finiteNonnegative(input.recoverableRentSol);
+  if (typeof recoverableRentSol === 'number' && recoverableRentSol > 0 && entrySol > recoverableRentSol) {
+    return entrySol - recoverableRentSol;
+  }
+
+  return entrySol;
+}
+
 type LpTokenQuoteRequirement = 'required' | 'not-required' | 'unknown';
 
 function tokenQuoteRequirementSatisfied(
@@ -1324,7 +1367,7 @@ function computeTrustedLpNetPnlPct(input: {
   recoverableRentSol?: number;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
 }) {
-  const lpTotalValueSol = resolveLpTotalValueSol({
+  const lpTradingValueSol = resolveLpTradingValueSol({
     currentValueSol: input.currentValueSol,
     lpTotalValueSol: input.lpTotalValueSol,
     liquidityValueSol: input.liquidityValueSol,
@@ -1332,16 +1375,20 @@ function computeTrustedLpNetPnlPct(input: {
     claimedFeeValueSol: input.claimedFeeValueSol,
     recoverableRentSol: input.recoverableRentSol
   });
+  const entryTradingSol = resolveLpEntryTradingSol({
+    entrySol: input.entrySol,
+    recoverableRentSol: input.recoverableRentSol
+  });
 
   if (
-    typeof input.entrySol !== 'number'
-    || input.entrySol <= 0
-    || typeof lpTotalValueSol !== 'number'
+    typeof entryTradingSol !== 'number'
+    || entryTradingSol <= 0
+    || typeof lpTradingValueSol !== 'number'
   ) {
     return undefined;
   }
 
-  return evaluateLpPnl(input.entrySol, lpTotalValueSol, 0, {
+  return evaluateLpPnl(entryTradingSol, lpTradingValueSol, 0, {
     stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
@@ -1412,6 +1459,18 @@ function evaluateActiveLpPositions(input: {
     const unclaimedFeeValueSol = typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : undefined;
     const resolvedClaimedFeeValueSol = typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : undefined;
     const recoverableRentSol = typeof position.recoverableRentSol === 'number' ? position.recoverableRentSol : undefined;
+    const lpTradingValueSol = resolveLpTradingValueSol({
+      currentValueSol,
+      lpTotalValueSol,
+      liquidityValueSol,
+      unclaimedFeeValueSol,
+      claimedFeeValueSol: resolvedClaimedFeeValueSol,
+      recoverableRentSol
+    });
+    const lpEntryTradingSol = resolveLpEntryTradingSol({
+      entrySol,
+      recoverableRentSol
+    });
     const lpNetPnlPct = hasTrustedLpExitValue({
       currentValueSol,
       lpTotalValueSol,
@@ -1448,6 +1507,12 @@ function evaluateActiveLpPositions(input: {
     });
     if (typeof entrySol === 'number') {
       snapshot.entrySol = entrySol;
+    }
+    if (typeof lpTradingValueSol === 'number') {
+      snapshot.lpTradingValueSol = lpTradingValueSol;
+    }
+    if (typeof lpEntryTradingSol === 'number') {
+      snapshot.lpEntryTradingSol = lpEntryTradingSol;
     }
     if (typeof lpNetPnlPct === 'number') {
       snapshot.lpNetPnlPct = lpNetPnlPct;
@@ -1565,6 +1630,8 @@ function applyLpObservationToContext(
   context.trader.lpUnclaimedFeeValueSol = observation.position.unclaimedFeeValueSol;
   context.trader.lpClaimedFeeValueSol = observation.position.claimedFeeValueSol;
   context.trader.lpRecoverableRentSol = observation.position.recoverableRentSol;
+  context.trader.lpTradingValueSol = observation.snapshot.lpTradingValueSol;
+  context.trader.lpEntryTradingSol = observation.snapshot.lpEntryTradingSol;
   context.trader.lpSolDepletedBins = observation.snapshot.lpSolDepletedBins as number | undefined;
   context.trader.lpSolExposureStatus = observation.snapshot.lpSolExposureStatus as
     | 'sol-heavy'
@@ -1640,6 +1707,8 @@ function buildEngineSnapshot(
       lpUnclaimedFeeValueSol: typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol : undefined,
       lpClaimedFeeValueSol: typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol : undefined,
       lpRecoverableRentSol: typeof context.trader.lpRecoverableRentSol === 'number' ? context.trader.lpRecoverableRentSol : undefined,
+      lpTradingValueSol: typeof context.trader.lpTradingValueSol === 'number' ? context.trader.lpTradingValueSol : undefined,
+      lpEntryTradingSol: typeof context.trader.lpEntryTradingSol === 'number' ? context.trader.lpEntryTradingSol : undefined,
       lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
       lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
@@ -1709,6 +1778,19 @@ function maybePopulateLpNetPnlPct(input: {
     input.context.trader.lpTotalValueSol = lpTotalValueSol;
     input.context.trader.lpCurrentValueSol = lpTotalValueSol;
   }
+  const lpTradingValueSol = resolveLpTradingValueSol({
+    currentValueSol: lpTotalValueSol ?? currentValueSol,
+    lpTotalValueSol,
+    liquidityValueSol,
+    unclaimedFeeValueSol,
+    claimedFeeValueSol,
+    recoverableRentSol
+  });
+  if (typeof lpTradingValueSol === 'number') {
+    input.context.trader.lpTradingValueSol = lpTradingValueSol;
+  } else {
+    delete input.context.trader.lpTradingValueSol;
+  }
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
   const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
@@ -1738,6 +1820,15 @@ function maybePopulateLpNetPnlPct(input: {
     openFill,
     lifecycleBound: input.positionState?.lifecycleState === 'open'
   });
+  const lpEntryTradingSol = resolveLpEntryTradingSol({
+    entrySol: trustedEntry?.entrySol,
+    recoverableRentSol
+  });
+  if (typeof lpEntryTradingSol === 'number') {
+    input.context.trader.lpEntryTradingSol = lpEntryTradingSol;
+  } else {
+    delete input.context.trader.lpEntryTradingSol;
+  }
   const lpNetPnlPct = computeTrustedLpNetPnlPct({
     entrySol: trustedEntry?.entrySol,
     currentValueSol: lpTotalValueSol ?? currentValueSol,
@@ -2721,6 +2812,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpUnclaimedFeeValueSol=${typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol.toFixed(9) : 'n/a'}`,
     `lpClaimedFeeValueSol=${typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol.toFixed(9) : 'n/a'}`,
     `lpRecoverableRentSol=${typeof context.trader.lpRecoverableRentSol === 'number' ? context.trader.lpRecoverableRentSol.toFixed(9) : 'n/a'}`,
+    `lpTradingValueSol=${typeof context.trader.lpTradingValueSol === 'number' ? context.trader.lpTradingValueSol.toFixed(9) : 'n/a'}`,
+    `lpEntryTradingSol=${typeof context.trader.lpEntryTradingSol === 'number' ? context.trader.lpEntryTradingSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
     `lpSolExposureStatus=${typeof (updatedSnapshot as any).lpSolExposureStatus === 'string' ? (updatedSnapshot as any).lpSolExposureStatus : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
