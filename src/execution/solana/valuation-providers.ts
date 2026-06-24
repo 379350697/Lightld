@@ -125,6 +125,12 @@ function isPermanentMeteoraQuoteOnlyFailure(reason: string) {
   return /not part of Meteora pool|not a .+\/SOL pair|amount must be positive|requires poolAddress|missing token mints|returned zero SOL output/i.test(reason);
 }
 
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export class ValuationProviderChain {
   private readonly cooldownUntil = new Map<ValuationProviderName, CooldownEntry>();
   private readonly negativeCacheUntil = new Map<string, CooldownEntry>();
@@ -237,9 +243,22 @@ export class ValuationProviderChain {
 export class MeteoraDlmmQuoteOnlyValuationProvider implements ValuationProvider {
   readonly name = 'meteora-dlmm-quote-only' as const;
   private readonly dlmmClient?: MeteoraDlmmClient;
+  private readonly maxAttempts: number;
+  private readonly retryDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
-  constructor(dlmmClient?: MeteoraDlmmClient) {
+  constructor(
+    dlmmClient?: MeteoraDlmmClient,
+    options: {
+      maxAttempts?: number;
+      retryDelayMs?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {}
+  ) {
     this.dlmmClient = dlmmClient;
+    this.maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 2));
+    this.retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? 200));
+    this.sleep = options.sleep ?? sleepMs;
   }
 
   enabled() {
@@ -258,12 +277,7 @@ export class MeteoraDlmmQuoteOnlyValuationProvider implements ValuationProvider 
       throw new Error('Meteora quote-only requires poolAddress');
     }
 
-    const quote = await this.dlmmClient.quoteTokenToSol(
-      request.poolAddress,
-      request.inputMint,
-      request.amountLamports,
-      request.slippageBps
-    );
+    const quote = await this.quoteWithTransientRetry(request);
     const valueSol = Number(quote.outAmountLamports) / LAMPORTS_PER_SOL;
     if (!Number.isFinite(valueSol) || valueSol <= 0) {
       throw new Error('Meteora quote-only returned invalid SOL value');
@@ -275,6 +289,36 @@ export class MeteoraDlmmQuoteOnlyValuationProvider implements ValuationProvider 
       trust: 'exit_quote',
       source: 'meteora-dlmm-swap-quote'
     };
+  }
+
+  private async quoteWithTransientRetry(request: TokenValuationRequest) {
+    if (!this.dlmmClient || !request.poolAddress) {
+      throw new Error('Meteora quote-only not ready');
+    }
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        return await this.dlmmClient.quoteTokenToSol(
+          request.poolAddress,
+          request.inputMint,
+          request.amountLamports,
+          request.slippageBps
+        );
+      } catch (error) {
+        lastError = error;
+        const reason = normalizeReason(error);
+        const canRetry = classifyRetryable(error) && !isPermanentMeteoraQuoteOnlyFailure(reason);
+        if (!canRetry || attempt >= this.maxAttempts) {
+          throw error;
+        }
+        if (this.retryDelayMs > 0) {
+          await this.sleep(this.retryDelayMs);
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
 
