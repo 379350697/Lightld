@@ -56,4 +56,4 @@ live:
   enabled: true
   maxLivePositionSol: 0.15
   autoFlattenRequired: true
-  maxHoldHours: 10
+  maxHoldHours: 8
