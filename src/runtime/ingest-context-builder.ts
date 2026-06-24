@@ -1463,9 +1463,9 @@ export async function buildLiveCycleInputFromIngest(
       (async () => {
         try {
           return await (input.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
-            pageSize: input.meteoraPageSize ?? 500,
+            pageSize: input.meteoraPageSize ?? 1000,
             query: input.meteoraQuery,
-            sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
+            sortBy: input.meteoraSortBy ?? 'fee_tvl_ratio_1h:desc',
             filterBy: input.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
           });
         } catch (error) {

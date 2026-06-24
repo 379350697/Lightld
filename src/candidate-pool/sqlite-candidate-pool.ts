@@ -6,6 +6,13 @@ import { DatabaseSync } from 'node:sqlite';
 import type { IngestCandidate } from '../runtime/ingest-candidate-selection.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
 import { deriveCandidatePoolEntry } from './aggregator.ts';
+import {
+  buildPoolFeeYieldProfile,
+  parseMeteoraPoolFeeYieldSample,
+  type PoolFeeYieldProfile,
+  type PoolFeeYieldSample,
+  type PoolFeeYieldStore
+} from './pool-fee-yield.ts';
 import type {
   CandidatePoolEntry,
   CandidatePoolReader,
@@ -60,6 +67,68 @@ const SCHEMA = [
       details TEXT NOT NULL
     )
   `,
+  `
+    CREATE TABLE IF NOT EXISTS pool_fee_yield_samples (
+      pool_address TEXT NOT NULL,
+      token_mint TEXT NOT NULL,
+      token_symbol TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      tvl_usd REAL NOT NULL,
+      dynamic_fee_pct REAL NOT NULL,
+      net_fee_usd_30m REAL NOT NULL,
+      net_fee_usd_1h REAL NOT NULL,
+      net_fee_usd_2h REAL NOT NULL,
+      net_fee_usd_4h REAL NOT NULL,
+      net_fee_usd_12h REAL NOT NULL,
+      net_fee_usd_24h REAL NOT NULL,
+      net_fee_yield_30m REAL NOT NULL,
+      net_fee_yield_1h REAL NOT NULL,
+      net_fee_yield_2h REAL NOT NULL,
+      net_fee_yield_4h REAL NOT NULL,
+      net_fee_yield_12h REAL NOT NULL,
+      net_fee_yield_24h REAL NOT NULL,
+      volume_usd_1h REAL NOT NULL,
+      raw_json TEXT NOT NULL,
+      PRIMARY KEY (pool_address, observed_at)
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_pool_fee_yield_samples_pool_time ON pool_fee_yield_samples (pool_address, observed_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_pool_fee_yield_samples_observed_at ON pool_fee_yield_samples (observed_at DESC)`,
+  `
+    CREATE TABLE IF NOT EXISTS pool_fee_yield_profiles (
+      pool_address TEXT PRIMARY KEY,
+      token_mint TEXT NOT NULL,
+      token_symbol TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      score REAL NOT NULL,
+      reason TEXT NOT NULL,
+      tvl_usd REAL NOT NULL,
+      tvl_change_1h_pct REAL,
+      net_fee_usd_1h REAL NOT NULL,
+      net_fee_yield_30m REAL NOT NULL,
+      net_fee_yield_1h REAL NOT NULL,
+      net_fee_yield_2h REAL NOT NULL,
+      net_fee_yield_4h REAL NOT NULL,
+      fake_yield_reason TEXT NOT NULL,
+      retired_until TEXT,
+      raw_json TEXT NOT NULL
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_pool_fee_yield_profiles_score ON pool_fee_yield_profiles (status, score DESC, observed_at DESC)`,
+  `
+    CREATE TABLE IF NOT EXISTS pool_fee_yield_retirements (
+      pool_address TEXT PRIMARY KEY,
+      token_mint TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      retired_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_observed_at TEXT NOT NULL,
+      raw_json TEXT NOT NULL
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS idx_pool_fee_yield_retirements_expires_at ON pool_fee_yield_retirements (expires_at DESC)`,
   `DROP VIEW IF EXISTS candidate_pool_current`,
   `
     CREATE VIEW candidate_pool_current AS
@@ -112,7 +181,7 @@ function parseCandidate(rawJson: string): IngestCandidate | null {
   }
 }
 
-export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWriter {
+export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWriter, PoolFeeYieldStore {
   private readonly path: string;
   private readonly readOnly: boolean;
   private readonly busyTimeoutMs: number;
@@ -303,6 +372,79 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     );
   }
 
+  async recordPoolFeeYieldSamples(input: {
+    strategyId: StrategyId;
+    rows: Record<string, unknown>[];
+    observedAt: Date;
+    sampleIntervalMs?: number;
+    minTvlUsd?: number;
+    retirementMs?: number;
+    retentionMs?: number;
+  }): Promise<Map<string, PoolFeeYieldProfile>> {
+    await this.open();
+    if (!this.database || this.readOnly) {
+      return new Map();
+    }
+
+    const database = this.db();
+    const nowIso = input.observedAt.toISOString();
+    const sampleIntervalMs = input.sampleIntervalMs ?? 5 * 60 * 1000;
+    const retentionMs = input.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
+    const profiles = new Map<string, PoolFeeYieldProfile>();
+    const samples = input.rows
+      .map((row) => parseMeteoraPoolFeeYieldSample(row, input.observedAt))
+      .filter((sample): sample is PoolFeeYieldSample => Boolean(sample));
+
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      for (const sample of samples) {
+        const activeRetirement = this.readActivePoolFeeYieldRetirement(database, sample.poolAddress, nowIso);
+        if (activeRetirement) {
+          const profile = this.readPoolFeeYieldProfile(database, sample.poolAddress)
+            ?? this.retirementToProfile(sample, activeRetirement);
+          profiles.set(sample.poolAddress, profile);
+          continue;
+        }
+
+        const lastObservedAt = this.readLatestPoolFeeYieldSampleObservedAt(database, sample.poolAddress);
+        if (lastObservedAt) {
+          const ageMs = input.observedAt.getTime() - Date.parse(lastObservedAt);
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < sampleIntervalMs) {
+            const profile = this.readPoolFeeYieldProfile(database, sample.poolAddress);
+            if (profile) {
+              profiles.set(sample.poolAddress, profile);
+            }
+            continue;
+          }
+        }
+
+        const previousTvlUsd = this.readReferencePoolFeeYieldTvl(database, sample.poolAddress, input.observedAt);
+        const profile = buildPoolFeeYieldProfile({
+          sample,
+          previousTvlUsd,
+          minTvlUsd: input.minTvlUsd,
+          retirementMs: input.retirementMs
+        });
+        this.insertPoolFeeYieldSample(database, sample);
+        this.upsertPoolFeeYieldProfile(database, profile);
+        if (profile.status === 'retired_liquidity_drain' && profile.retiredUntil) {
+          this.upsertPoolFeeYieldRetirement(database, profile);
+        }
+        profiles.set(sample.poolAddress, profile);
+      }
+
+      const retentionCutoff = new Date(input.observedAt.getTime() - retentionMs).toISOString();
+      database.prepare('DELETE FROM pool_fee_yield_samples WHERE observed_at < ?').run(retentionCutoff);
+      database.prepare('DELETE FROM pool_fee_yield_retirements WHERE expires_at < ?').run(nowIso);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+
+    return profiles;
+  }
+
   private hasFreshOkWorker(strategyId: StrategyId, now: Date) {
     const row = this.db().prepare(`
       SELECT status, expires_at FROM candidate_pool_worker_status WHERE strategy_id=?
@@ -399,5 +541,194 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
         }
       })()
     }));
+  }
+
+  private readLatestPoolFeeYieldSampleObservedAt(database: DatabaseSync, poolAddress: string) {
+    const row = database.prepare(`
+      SELECT observed_at FROM pool_fee_yield_samples
+      WHERE pool_address=?
+      ORDER BY observed_at DESC
+      LIMIT 1
+    `).get(poolAddress) as Row | undefined;
+    return row ? readString(row, 'observed_at') : '';
+  }
+
+  private readReferencePoolFeeYieldTvl(database: DatabaseSync, poolAddress: string, observedAt: Date) {
+    const minAt = new Date(observedAt.getTime() - 75 * 60 * 1000).toISOString();
+    const maxAt = new Date(observedAt.getTime() - 30 * 60 * 1000).toISOString();
+    const row = database.prepare(`
+      SELECT tvl_usd FROM pool_fee_yield_samples
+      WHERE pool_address=? AND observed_at >= ? AND observed_at <= ?
+      ORDER BY observed_at DESC
+      LIMIT 1
+    `).get(poolAddress, minAt, maxAt) as Row | undefined;
+    return row ? readNumber(row, 'tvl_usd') : null;
+  }
+
+  private readActivePoolFeeYieldRetirement(database: DatabaseSync, poolAddress: string, nowIso: string) {
+    return database.prepare(`
+      SELECT * FROM pool_fee_yield_retirements
+      WHERE pool_address=? AND expires_at > ?
+      LIMIT 1
+    `).get(poolAddress, nowIso) as Row | undefined;
+  }
+
+  private readPoolFeeYieldProfile(database: DatabaseSync, poolAddress: string): PoolFeeYieldProfile | null {
+    const row = database.prepare(`
+      SELECT * FROM pool_fee_yield_profiles WHERE pool_address=?
+    `).get(poolAddress) as Row | undefined;
+    if (!row) {
+      return null;
+    }
+    return {
+      poolAddress: readString(row, 'pool_address'),
+      tokenMint: readString(row, 'token_mint'),
+      tokenSymbol: readString(row, 'token_symbol'),
+      observedAt: readString(row, 'observed_at'),
+      status: readString(row, 'status') as PoolFeeYieldProfile['status'],
+      score: readNumber(row, 'score'),
+      reason: readString(row, 'reason'),
+      tvlUsd: readNumber(row, 'tvl_usd'),
+      tvlChange1hPct: row.tvl_change_1h_pct === null ? null : readNumber(row, 'tvl_change_1h_pct'),
+      netFeeUsd1h: readNumber(row, 'net_fee_usd_1h'),
+      netFeeYield30m: readNumber(row, 'net_fee_yield_30m'),
+      netFeeYield1h: readNumber(row, 'net_fee_yield_1h'),
+      netFeeYield2h: readNumber(row, 'net_fee_yield_2h'),
+      netFeeYield4h: readNumber(row, 'net_fee_yield_4h'),
+      currentYield1h: readNumber(row, 'net_fee_yield_1h'),
+      prevHourYield: 0,
+      recent30mYield: readNumber(row, 'net_fee_yield_30m'),
+      prev30mYield: 0,
+      fakeYieldReason: readString(row, 'fake_yield_reason'),
+      retiredUntil: readString(row, 'retired_until') || undefined
+    };
+  }
+
+  private retirementToProfile(sample: PoolFeeYieldSample, retirement: Row): PoolFeeYieldProfile {
+    return {
+      poolAddress: sample.poolAddress,
+      tokenMint: sample.tokenMint,
+      tokenSymbol: sample.tokenSymbol,
+      observedAt: sample.observedAt,
+      status: 'retired_liquidity_drain',
+      score: 0,
+      reason: readString(retirement, 'reason') || 'pool-fee-yield-retired',
+      tvlUsd: sample.tvlUsd,
+      tvlChange1hPct: null,
+      netFeeUsd1h: sample.netFeesUsd['1h'],
+      netFeeYield30m: sample.netFeeYield['30m'],
+      netFeeYield1h: sample.netFeeYield['1h'],
+      netFeeYield2h: sample.netFeeYield['2h'],
+      netFeeYield4h: sample.netFeeYield['4h'],
+      currentYield1h: sample.netFeeYield['1h'],
+      prevHourYield: 0,
+      recent30mYield: sample.netFeeYield['30m'],
+      prev30mYield: 0,
+      fakeYieldReason: '',
+      retiredUntil: readString(retirement, 'expires_at') || undefined
+    };
+  }
+
+  private insertPoolFeeYieldSample(database: DatabaseSync, sample: PoolFeeYieldSample) {
+    database.prepare(`
+      INSERT OR REPLACE INTO pool_fee_yield_samples (
+        pool_address, token_mint, token_symbol, observed_at, tvl_usd, dynamic_fee_pct,
+        net_fee_usd_30m, net_fee_usd_1h, net_fee_usd_2h, net_fee_usd_4h, net_fee_usd_12h, net_fee_usd_24h,
+        net_fee_yield_30m, net_fee_yield_1h, net_fee_yield_2h, net_fee_yield_4h, net_fee_yield_12h, net_fee_yield_24h,
+        volume_usd_1h, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      sample.poolAddress,
+      sample.tokenMint,
+      sample.tokenSymbol,
+      sample.observedAt,
+      sample.tvlUsd,
+      sample.dynamicFeePct,
+      sample.netFeesUsd['30m'],
+      sample.netFeesUsd['1h'],
+      sample.netFeesUsd['2h'],
+      sample.netFeesUsd['4h'],
+      sample.netFeesUsd['12h'],
+      sample.netFeesUsd['24h'],
+      sample.netFeeYield['30m'],
+      sample.netFeeYield['1h'],
+      sample.netFeeYield['2h'],
+      sample.netFeeYield['4h'],
+      sample.netFeeYield['12h'],
+      sample.netFeeYield['24h'],
+      sample.volumeUsd['1h'],
+      JSON.stringify(sample.rawJson)
+    );
+  }
+
+  private upsertPoolFeeYieldProfile(database: DatabaseSync, profile: PoolFeeYieldProfile) {
+    database.prepare(`
+      INSERT INTO pool_fee_yield_profiles (
+        pool_address, token_mint, token_symbol, observed_at, status, score, reason,
+        tvl_usd, tvl_change_1h_pct, net_fee_usd_1h,
+        net_fee_yield_30m, net_fee_yield_1h, net_fee_yield_2h, net_fee_yield_4h,
+        fake_yield_reason, retired_until, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(pool_address) DO UPDATE SET
+        token_mint=excluded.token_mint,
+        token_symbol=excluded.token_symbol,
+        observed_at=excluded.observed_at,
+        status=excluded.status,
+        score=excluded.score,
+        reason=excluded.reason,
+        tvl_usd=excluded.tvl_usd,
+        tvl_change_1h_pct=excluded.tvl_change_1h_pct,
+        net_fee_usd_1h=excluded.net_fee_usd_1h,
+        net_fee_yield_30m=excluded.net_fee_yield_30m,
+        net_fee_yield_1h=excluded.net_fee_yield_1h,
+        net_fee_yield_2h=excluded.net_fee_yield_2h,
+        net_fee_yield_4h=excluded.net_fee_yield_4h,
+        fake_yield_reason=excluded.fake_yield_reason,
+        retired_until=excluded.retired_until,
+        raw_json=excluded.raw_json
+    `).run(
+      profile.poolAddress,
+      profile.tokenMint,
+      profile.tokenSymbol,
+      profile.observedAt,
+      profile.status,
+      profile.score,
+      profile.reason,
+      profile.tvlUsd,
+      profile.tvlChange1hPct,
+      profile.netFeeUsd1h,
+      profile.netFeeYield30m,
+      profile.netFeeYield1h,
+      profile.netFeeYield2h,
+      profile.netFeeYield4h,
+      profile.fakeYieldReason,
+      profile.retiredUntil ?? null,
+      JSON.stringify(profile)
+    );
+  }
+
+  private upsertPoolFeeYieldRetirement(database: DatabaseSync, profile: PoolFeeYieldProfile) {
+    database.prepare(`
+      INSERT INTO pool_fee_yield_retirements (
+        pool_address, token_mint, status, reason, retired_at, expires_at, last_observed_at, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(pool_address) DO UPDATE SET
+        token_mint=excluded.token_mint,
+        status=excluded.status,
+        reason=excluded.reason,
+        retired_at=excluded.retired_at,
+        expires_at=excluded.expires_at,
+        last_observed_at=excluded.last_observed_at,
+        raw_json=excluded.raw_json
+    `).run(
+      profile.poolAddress,
+      profile.tokenMint,
+      profile.status,
+      profile.reason,
+      profile.observedAt,
+      profile.retiredUntil ?? profile.observedAt,
+      profile.observedAt,
+      JSON.stringify(profile)
+    );
   }
 }

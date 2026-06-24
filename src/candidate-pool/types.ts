@@ -1,7 +1,9 @@
 import type { IngestCandidate } from '../runtime/ingest-candidate-selection.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
 
-export type CandidateSourceName = 'meteora' | 'jupiter_route' | 'gmgn' | 'chain_fast_safety';
+import type { PoolFeeYieldStore } from './pool-fee-yield.ts';
+
+export type CandidateSourceName = 'meteora' | 'jupiter_route' | 'gmgn' | 'chain_fast_safety' | 'pool_fee_yield';
 export type CandidateSourceStatus = 'passed' | 'blocked' | 'failed' | 'deferred' | 'stale';
 export type CandidatePoolStatus = 'observed' | 'eligible' | 'openable' | 'blocked' | 'stale' | 'source_unavailable';
 export type CandidateWorkerStatus = 'running' | 'ok' | 'failed';
@@ -63,6 +65,8 @@ export interface CandidatePoolWriter {
     details?: string;
   }): Promise<void>;
 }
+
+export type CandidatePoolFeeYieldWriter = CandidatePoolWriter & PoolFeeYieldStore;
 
 export type CandidateSourceAdapter = {
   source: CandidateSourceName;

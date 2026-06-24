@@ -7,6 +7,12 @@ import {
   type IngestCandidate
 } from '../runtime/ingest-candidate-selection.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
+import {
+  applyPoolFeeYieldProfile,
+  buildPoolFeeYieldObservation,
+  type PoolFeeYieldProfile,
+  type PoolFeeYieldStore
+} from './pool-fee-yield.ts';
 import { buildFailedRouteObservation, buildGmgnObservation, buildMeteoraObservation } from './source-observations.ts';
 import type { CandidatePoolWriter, CandidateSourceAdapter } from './types.ts';
 import { buildMeteoraCandidate, isMeteoraPoolPrefiltered } from './meteora-candidate-builder.ts';
@@ -42,6 +48,10 @@ export type CandidateWorkerOptions = {
   meteoraQuery?: string;
   meteoraSortBy?: string;
   meteoraFilterBy?: string;
+  poolFeeYieldStore?: PoolFeeYieldStore;
+  poolFeeYieldSampleIntervalMs?: number;
+  poolFeeYieldRetirementMs?: number;
+  poolFeeYieldRetentionMs?: number;
   fetchMeteoraPoolsImpl?: FetchMeteoraPoolsImpl;
   fetchTokenSafetyBatchImpl?: FetchTokenSafetyBatchImpl;
   routeSource: CandidateSourceAdapter;
@@ -79,15 +89,33 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
   });
   const fetchStartedAt = Date.now();
   const rows = await (options.fetchMeteoraPoolsImpl ?? fetchMeteoraPools)({
-    pageSize: options.meteoraPageSize ?? 500,
+    pageSize: options.meteoraPageSize ?? 1000,
     query: options.meteoraQuery,
-    sortBy: options.meteoraSortBy ?? 'fee_tvl_ratio_24h:desc',
+    sortBy: options.meteoraSortBy ?? 'fee_tvl_ratio_1h:desc',
     filterBy: options.meteoraFilterBy ?? 'tvl>=1000 && is_blacklisted=false'
   });
   const fetchLatencyMs = Date.now() - fetchStartedAt;
+  let feeYieldProfiles = new Map<string, PoolFeeYieldProfile>();
+  if (options.poolFeeYieldStore) {
+    feeYieldProfiles = await options.poolFeeYieldStore.recordPoolFeeYieldSamples({
+      strategyId: options.strategy,
+      rows,
+      observedAt: now,
+      sampleIntervalMs: options.poolFeeYieldSampleIntervalMs,
+      minTvlUsd: config.filters.minLiquidityUsd,
+      retirementMs: options.poolFeeYieldRetirementMs,
+      retentionMs: options.poolFeeYieldRetentionMs
+    }).catch((error) => {
+      options.logger?.warn(`[CandidateWorker] pool fee yield sampling failed soft: ${error instanceof Error ? error.message : String(error)}`);
+      return new Map<string, PoolFeeYieldProfile>();
+    });
+  }
   const maxPoolAgeMs = 3 * 24 * 60 * 60 * 1000;
   const prefiltered = rows.filter((row) => isMeteoraPoolPrefiltered(row, now, maxPoolAgeMs));
-  const candidates = prefiltered.map((row) => buildMeteoraCandidate(row));
+  const candidates = prefiltered.map((row) => {
+    const candidate = buildMeteoraCandidate(row);
+    return applyPoolFeeYieldProfile(candidate, feeYieldProfiles.get(candidate.address));
+  });
   const lpEligible = rankCandidatesForSafety(filterLpEligibleCandidates(candidates, config));
   let openableCount = 0;
   const routeOpenableCandidates: IngestCandidate[] = [];
@@ -98,7 +126,14 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
       candidate,
       observedAt: now.toISOString(),
       sourceObservations: [
-        buildMeteoraObservation({ strategyId: options.strategy, candidate, now, ttlMs: staleMs, latencyMs: fetchLatencyMs })
+        buildMeteoraObservation({ strategyId: options.strategy, candidate, now, ttlMs: staleMs, latencyMs: fetchLatencyMs }),
+        buildPoolFeeYieldObservation({
+          strategyId: options.strategy,
+          candidate,
+          profile: feeYieldProfiles.get(candidate.address),
+          now,
+          ttlMs: staleMs
+        })
       ]
     });
 

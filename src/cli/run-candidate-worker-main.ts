@@ -17,6 +17,9 @@ type ParsedArgs = {
   meteoraQuery?: string;
   meteoraSortBy?: string;
   meteoraFilterBy?: string;
+  poolFeeYieldSampleIntervalMs: number;
+  poolFeeYieldRetirementMs: number;
+  poolFeeYieldRetentionMs: number;
 };
 
 function parsePositiveInteger(value: string | undefined, fallback: number) {
@@ -46,7 +49,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     meteoraPageSize: parseOptionalPositiveInteger(process.env.LIVE_METEORA_PAGE_SIZE),
     meteoraQuery: process.env.LIVE_METEORA_QUERY,
     meteoraSortBy: process.env.LIVE_METEORA_SORT_BY,
-    meteoraFilterBy: process.env.LIVE_METEORA_FILTER_BY
+    meteoraFilterBy: process.env.LIVE_METEORA_FILTER_BY,
+    poolFeeYieldSampleIntervalMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_SAMPLE_INTERVAL_MS, 300_000),
+    poolFeeYieldRetirementMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_RETIREMENT_MS, 6 * 60 * 60 * 1000),
+    poolFeeYieldRetentionMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_RETENTION_MS, 7 * 24 * 60 * 60 * 1000)
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -165,6 +171,10 @@ async function main() {
       gmgnSourceMode: parseGmgnSourceMode(process.env.LIVE_GMGN_SOURCE_MODE),
       runSoftSourcesInBackground: true,
       routeSource,
+      poolFeeYieldStore: writer,
+      poolFeeYieldSampleIntervalMs: args.poolFeeYieldSampleIntervalMs,
+      poolFeeYieldRetirementMs: args.poolFeeYieldRetirementMs,
+      poolFeeYieldRetentionMs: args.poolFeeYieldRetentionMs,
       meteoraPageSize: args.meteoraPageSize,
       meteoraQuery: args.meteoraQuery,
       meteoraSortBy: args.meteoraSortBy,

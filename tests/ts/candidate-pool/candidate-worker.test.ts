@@ -81,7 +81,7 @@ describe('candidate worker', () => {
     const writer = new MemoryWriter();
     const fetchTokenSafetyBatchImpl = vi.fn(async () => {
       expect(writer.upserts.map((upsert) => upsert.sourceObservations.map((item) => item.source))).toEqual([
-        ['meteora'],
+        ['meteora', 'pool_fee_yield'],
         ['jupiter_route']
       ]);
       return [{
@@ -132,7 +132,7 @@ describe('candidate worker', () => {
     });
 
     expect(writer.upserts.map((upsert) => upsert.sourceObservations.map((item) => item.source))).toEqual([
-      ['meteora'],
+      ['meteora', 'pool_fee_yield'],
       ['jupiter_route']
     ]);
   });
@@ -157,7 +157,7 @@ describe('candidate worker', () => {
 
     expect(fetchTokenSafetyBatchImpl).not.toHaveBeenCalled();
     expect(writer.upserts.map((upsert) => upsert.sourceObservations.map((item) => item.source))).toEqual([
-      ['meteora'],
+      ['meteora', 'pool_fee_yield'],
       ['jupiter_route']
     ]);
   });

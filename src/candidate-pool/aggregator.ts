@@ -9,6 +9,7 @@ import type {
 
 const REQUIRED_HARD_SOURCES: CandidateSourceName[] = ['meteora', 'jupiter_route'];
 const GMGN_BLOCK_REASON_PREFIX = 'gmgn:';
+const POOL_FEE_YIELD_BLOCK_REASON_PREFIX = 'pool_fee_yield:';
 
 function parseTime(value: string) {
   const parsed = Date.parse(value);
@@ -35,6 +36,10 @@ function minIso(values: string[], fallback: string) {
 }
 
 function feeTvlScore(candidate: IngestCandidate) {
+  if (candidate.poolFeeYieldStatus && candidate.poolFeeYieldStatus !== 'yield_profile_missing') {
+    return 0;
+  }
+
   if (candidate.feeTvlRatio24h > 0.20) return 40;
   if (candidate.feeTvlRatio24h >= 0.10) return 30;
   if (candidate.feeTvlRatio24h >= 0.05) return 20;
@@ -86,6 +91,16 @@ function resolveStatus(input: {
         ? `${GMGN_BLOCK_REASON_PREFIX}${gmgn.hardRejectReason}`
         : 'gmgn-blocked'
       };
+  }
+
+  const feeYield = bySource.get('pool_fee_yield');
+  if (feeYield?.status === 'blocked' && parseTime(feeYield.expiresAt) > nowMs) {
+    return {
+      status: 'blocked' as CandidatePoolStatus,
+      blockReason: feeYield.hardRejectReason
+        ? `${POOL_FEE_YIELD_BLOCK_REASON_PREFIX}${feeYield.hardRejectReason}`
+        : 'pool_fee_yield-blocked'
+    };
   }
 
   const route = bySource.get('jupiter_route');

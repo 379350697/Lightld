@@ -21,7 +21,10 @@ function feeTvlScore(feeTvlRatio24h: number) {
 }
 
 function candidateScore(candidate: IngestCandidate) {
-  return feeTvlScore(candidate.feeTvlRatio24h)
+  const fallbackFeeTvlScore = candidate.poolFeeYieldStatus && candidate.poolFeeYieldStatus !== 'yield_profile_missing'
+    ? 0
+    : feeTvlScore(candidate.feeTvlRatio24h);
+  return fallbackFeeTvlScore
     + boundedPositive(candidate.volume24h / 100_000, 25)
     + boundedPositive(candidate.liquidityUsd / 10_000, 25);
 }
@@ -48,6 +51,12 @@ export function buildMeteoraObservation(input: {
       liquidityUsd: input.candidate.liquidityUsd,
       volume24h: input.candidate.volume24h,
       feeTvlRatio24h: input.candidate.feeTvlRatio24h,
+      poolFeeYieldStatus: input.candidate.poolFeeYieldStatus,
+      poolFeeYieldScore: input.candidate.poolFeeYieldScore,
+      poolFeeYieldReason: input.candidate.poolFeeYieldReason,
+      netFeeUsd1h: input.candidate.netFeeUsd1h,
+      netFeeYield1h: input.candidate.netFeeYield1h,
+      tvlChange1hPct: input.candidate.tvlChange1hPct,
       binStep: input.candidate.binStep,
       baseFeePct: input.candidate.baseFeePct
     }

@@ -432,7 +432,7 @@ describe('runLiveCycle', () => {
         lpTakeProfitNetPnlPct: 30,
         lpSolDepletionExitBins: 60,
         lpMinBinStep: 80,
-        maxHoldHours: 10
+        maxHoldHours: 8
       },
       exitMetrics: {
         lpNetPnlPct: expect.any(Number),

@@ -48,6 +48,16 @@ export type IngestCandidate = {
   baseFeePct: number;
   volume24h: number;
   feeTvlRatio24h: number;
+  poolFeeYieldStatus?: string;
+  poolFeeYieldScore?: number;
+  poolFeeYieldReason?: string;
+  netFeeUsd1h?: number;
+  netFeeYield30m?: number;
+  netFeeYield1h?: number;
+  netFeeYield2h?: number;
+  netFeeYield4h?: number;
+  tvlChange1hPct?: number | null;
+  feeYieldObservedAt?: string;
   safetyScore?: number;
 } & Partial<AuxiliarySignalFields>;
 
