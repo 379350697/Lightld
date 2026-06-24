@@ -47,6 +47,21 @@ const SolanaExecutionConfigSchema = z.object({
   okxDexSecretKey: z.string().min(1).optional(),
   okxDexPassphrase: z.string().min(1).optional(),
   okxDexProjectId: z.string().min(1).optional(),
+  valuationProviderOrder: z.array(z.string().min(1)).default([
+    'meteora-dlmm-quote-only',
+    'birdeye-price',
+    'jupiter-price-v3',
+    'dexscreener-pair',
+    'geckoterminal-token',
+    'dlmm-active-bin-display-fallback'
+  ]),
+  valuationProviderCooldownMs: z.number().int().nonnegative().default(30_000),
+  valuationProviderNegativeCacheTtlMs: z.number().int().nonnegative().default(60_000),
+  birdeyeApiUrl: z.string().url().default('https://public-api.birdeye.so'),
+  birdeyeApiKey: z.string().min(1).optional(),
+  jupiterPriceApiUrl: z.string().url().default('https://api.jup.ag'),
+  dexscreenerApiUrl: z.string().url().default('https://api.dexscreener.com'),
+  geckoterminalApiUrl: z.string().url().default('https://api.geckoterminal.com/api/v2'),
   authToken: z.string().min(1).optional(),
   maxOutputSol: z.number().finite().positive().optional(),
   defaultSlippageBps: z.number().int().min(1).max(5000).default(100),
@@ -137,6 +152,20 @@ export function loadSolanaExecutionConfig(
     okxDexSecretKey: env.OKX_DEX_SECRET_KEY,
     okxDexPassphrase: env.OKX_DEX_PASSPHRASE,
     okxDexProjectId: env.OKX_DEX_PROJECT_ID,
+    valuationProviderOrder: splitCsv(env.VALUATION_PROVIDER_ORDER).length > 0
+      ? splitCsv(env.VALUATION_PROVIDER_ORDER)
+      : undefined,
+    valuationProviderCooldownMs: env.VALUATION_PROVIDER_COOLDOWN_MS
+      ? Number(env.VALUATION_PROVIDER_COOLDOWN_MS)
+      : 30_000,
+    valuationProviderNegativeCacheTtlMs: env.VALUATION_PROVIDER_NEGATIVE_CACHE_TTL_MS
+      ? Number(env.VALUATION_PROVIDER_NEGATIVE_CACHE_TTL_MS)
+      : 60_000,
+    birdeyeApiUrl: env.BIRDEYE_API_URL ?? 'https://public-api.birdeye.so',
+    birdeyeApiKey: env.BIRDEYE_API_KEY,
+    jupiterPriceApiUrl: env.JUPITER_PRICE_API_URL ?? env.JUPITER_API_URL ?? 'https://api.jup.ag',
+    dexscreenerApiUrl: env.DEXSCREENER_API_URL ?? 'https://api.dexscreener.com',
+    geckoterminalApiUrl: env.GECKOTERMINAL_API_URL ?? 'https://api.geckoterminal.com/api/v2',
     authToken: env.SOLANA_EXECUTION_AUTH_TOKEN ?? env.LIVE_AUTH_TOKEN,
     maxOutputSol: env.SOLANA_MAX_OUTPUT_SOL
       ? Number(env.SOLANA_MAX_OUTPUT_SOL)

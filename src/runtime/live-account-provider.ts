@@ -38,6 +38,10 @@ export type LiveAccountState = {
     claimedFeeValueSol?: number;
     recoverableRentSol?: number;
     lpTotalValueSol?: number;
+    exitQuoteValueSol?: number;
+    marketValueSol?: number;
+    displayValueSol?: number;
+    valuationTrust?: 'exit_quote' | 'market_price' | 'fallback_display';
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     currentPrice?: number;
     lowerPrice?: number;
@@ -83,6 +87,10 @@ export type LiveAccountState = {
     claimedFeeValueSol?: number;
     recoverableRentSol?: number;
     lpTotalValueSol?: number;
+    exitQuoteValueSol?: number;
+    marketValueSol?: number;
+    displayValueSol?: number;
+    valuationTrust?: 'exit_quote' | 'market_price' | 'fallback_display';
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     currentPrice?: number;
     lowerPrice?: number;

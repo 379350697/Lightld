@@ -654,11 +654,12 @@ export function buildDashboardHtml(): string {
         var leftPct = priceProgress !== null ? Math.max(0, Math.min(100, Math.round(priceProgress * 100))) : 50;
         var entrySol = finiteNumberOrNull(p.entrySol);
         var currentValue = lpTotalValueOrNull(p);
+        var exitQuoteValue = finiteNumberOrNull(p.exitQuoteValueSol);
         var liquidityValue = finiteNumberOrNull(p.liquidityValueSol);
         var recoverableRent = finiteNumberOrNull(p.recoverableRentSol);
         var tradingValue = finiteNumberOrNull(p.lpTradingValueSol);
-        if (tradingValue === null && currentValue !== null && recoverableRent !== null) {
-          tradingValue = Math.max(0, currentValue - recoverableRent);
+        if (tradingValue === null && exitQuoteValue !== null && recoverableRent !== null) {
+          tradingValue = Math.max(0, exitQuoteValue - recoverableRent);
         }
         var entryTrading = finiteNumberOrNull(p.lpEntryTradingSol);
         if (entryTrading === null && entrySol !== null && recoverableRent !== null && entrySol > recoverableRent) {
@@ -667,13 +668,14 @@ export function buildDashboardHtml(): string {
         var unclaimedFee = lpUnclaimedFeeValueOrZero(p);
         var claimedFee = lpClaimedFeeValueOrZero(p);
         var valuationCompleteness = typeof p.valuationCompleteness === 'string' && p.valuationCompleteness ? p.valuationCompleteness : '--';
+        var valuationTrust = typeof p.valuationTrust === 'string' && p.valuationTrust ? p.valuationTrust : '--';
         var uPnl = tradingValue !== null && entryTrading !== null && entryTrading > 0 ? (tradingValue - entryTrading) : null;
         var uPnlPct = entryTrading !== null && entryTrading > 0 && typeof uPnl === 'number' ? (uPnl / entryTrading) * 100 : null;
         var av = mint.charAt(0).toUpperCase() || '?';
         return '<tr>' +
           '<td><div class="token-cell"><div class="position-side-icon">↗</div><div class="token-avatar">' + escHtml(av) + '</div><div class="token-info"><div class="token-name">' + escHtml(symbol) + ' / SOL</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(positionAddr)) + '</span></div></div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main">' + escHtml(ageLabel(p.openedAt)) + '</div><div class="cell-sub">' + escHtml(fmtDateTime(p.openedAt)) + '</div></div></td>' +
-          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(valuationCompleteness) + ' · liq ' + fmtSol(liquidityValue) + ' · rent ' + fmtSol(recoverableRent) + '</div></div></td>' +
+          '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(currentValue) + ' ◎</div><div class="cell-sub">' + escHtml(valuationTrust) + ' · ' + escHtml(valuationCompleteness) + ' · liq ' + fmtSol(liquidityValue) + ' · rent ' + fmtSol(recoverableRent) + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(claimedFee) + ' SOL | <span class="cell-green">' + fmtSol(unclaimedFee) + ' SOL</span></div><div class="cell-sub">' + (entryTrading !== null && entryTrading > 0 ? fmtPct(((claimedFee + unclaimedFee) / entryTrading) * 100) : '--') + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnl) + '">' + fmtSignedSol(uPnl) + ' SOL</div><div class="cell-sub ' + metricClass(uPnl) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +
           '<td><div class="cell-metric"><div class="cell-main ' + metricClass(uPnlPct) + '">' + fmtPct(uPnlPct) + '</div></div></td>' +

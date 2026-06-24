@@ -198,6 +198,8 @@ describe('runLiveDaemon', () => {
         currentValueSol: 0.11,
         liquidityValueSol: 0.1,
         lpTotalValueSol: 0.11,
+        exitQuoteValueSol: 0.11,
+        valuationTrust: 'exit_quote' as const,
         valuationStatus: 'ready' as const,
         valuationCompleteness: 'complete' as const
       }],
@@ -241,10 +243,12 @@ describe('runLiveDaemon', () => {
               hasLpPosition: true,
               lpCurrentValueSol: 0.11,
               lpTotalValueSol: 0.11,
+              exitQuoteValueSol: 0.11,
               lpTradingValueSol: 0.1,
               lpEntryTradingSol: 0.1,
               lpNetPnlPct: 0,
               valuationStatus: 'ready',
+              valuationTrust: 'exit_quote',
               valuationCompleteness: 'complete'
             },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -377,6 +381,8 @@ describe('runLiveDaemon', () => {
         currentValueSol: 0.11,
         liquidityValueSol: 0.1,
         lpTotalValueSol: 0.11,
+        exitQuoteValueSol: 0.11,
+        valuationTrust: 'exit_quote' as const,
         valuationStatus: 'ready' as const,
         valuationCompleteness: 'complete' as const
       }],
@@ -427,10 +433,12 @@ describe('runLiveDaemon', () => {
               hasLpPosition: true,
               lpCurrentValueSol: 0.11,
               lpTotalValueSol: 0.11,
+              exitQuoteValueSol: 0.11,
               lpTradingValueSol: 0.1,
               lpEntryTradingSol: 0.1,
               lpNetPnlPct: 0,
               valuationStatus: 'ready',
+              valuationTrust: 'exit_quote',
               valuationCompleteness: 'complete'
             },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }

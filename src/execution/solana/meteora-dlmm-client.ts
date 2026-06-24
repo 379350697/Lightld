@@ -36,12 +36,14 @@ export type MeteoraLpPositionSnapshot = {
   withdrawTokenAmountLamports?: number;
   withdrawTokenAmountRaw?: string;
   withdrawTokenMint?: string;
+  withdrawTokenDecimals?: number;
   withdrawTokenValueSol?: number;
   liquidityValueSol?: number;
   unclaimedFeeSolAmount?: number;
   unclaimedFeeTokenAmountLamports?: number;
   unclaimedFeeTokenAmountRaw?: string;
   unclaimedFeeTokenMint?: string;
+  unclaimedFeeTokenDecimals?: number;
   unclaimedFeeTokenValueSol?: number;
   unclaimedFeeSol?: number;
   unclaimedFeeValueSol?: number;
@@ -68,6 +70,14 @@ export type MeteoraDirectSwapResult = {
   consumedInAmountLamports: string;
   priceImpactPct?: number;
   provider: 'meteora-dlmm-direct';
+};
+
+export type MeteoraQuoteOnlyResult = {
+  outAmountLamports: string;
+  minOutAmountLamports: string;
+  consumedInAmountLamports: string;
+  priceImpactPct?: number;
+  provider: 'meteora-dlmm-quote-only';
 };
 
 const TARGET_SINGLE_SIDED_BIN_COUNT = 69;
@@ -672,6 +682,62 @@ export class MeteoraDlmmClient {
     });
   }
 
+  async quoteTokenToSol(
+    poolAddress: string,
+    tokenMint: string,
+    amountLamports: number | string | bigint,
+    slippageBps = 100
+  ): Promise<MeteoraQuoteOnlyResult> {
+    const amountRaw = toPositiveRawAmountString(amountLamports);
+    if (!amountRaw) {
+      throw new Error('Meteora quote-only amount must be positive');
+    }
+
+    return this.withConnection(async (connection) => {
+      const lbPair = new PublicKey(poolAddress);
+      const inToken = new PublicKey(tokenMint);
+      const dlmmPool = await DLMM.create(connection, lbPair);
+      const tokenX = ((dlmmPool as any).tokenX?.publicKey ?? (dlmmPool as any).lbPair?.tokenXMint) as PublicKey | undefined;
+      const tokenY = ((dlmmPool as any).tokenY?.publicKey ?? (dlmmPool as any).lbPair?.tokenYMint) as PublicKey | undefined;
+
+      if (!tokenX || !tokenY) {
+        throw new Error(`Meteora pool ${poolAddress} is missing token mints`);
+      }
+
+      const tokenXIsInput = tokenX.equals(inToken);
+      const tokenYIsInput = tokenY.equals(inToken);
+      const tokenXIsSol = tokenX.equals(SOL_MINT);
+      const tokenYIsSol = tokenY.equals(SOL_MINT);
+
+      if (!(tokenXIsInput || tokenYIsInput)) {
+        throw new Error(`Token ${tokenMint} is not part of Meteora pool ${poolAddress}`);
+      }
+
+      if (!((tokenXIsInput && tokenYIsSol) || (tokenYIsInput && tokenXIsSol))) {
+        throw new Error(`Meteora pool ${poolAddress} is not a ${tokenMint}/SOL pair`);
+      }
+
+      const swapForY = tokenXIsInput && tokenYIsSol;
+      const allowedSlippage = new BN(Math.max(1, Math.floor(slippageBps)));
+      const inAmount = new BN(amountRaw);
+      const binArrays = await dlmmPool.getBinArrayForSwap(swapForY);
+      const quote = dlmmPool.swapQuote(inAmount, swapForY, allowedSlippage, binArrays, false);
+
+      if (isZeroLike(quote?.outAmount) || isZeroLike(quote?.minOutAmount)) {
+        throw new Error(`Meteora quote-only returned zero SOL output for ${tokenMint}`);
+      }
+
+      const priceImpactPct = toFiniteNumber(quote?.priceImpact);
+      return {
+        outAmountLamports: String(quote.outAmount),
+        minOutAmountLamports: String(quote.minOutAmount),
+        consumedInAmountLamports: String(quote.consumedInAmount ?? amountRaw),
+        priceImpactPct,
+        provider: 'meteora-dlmm-quote-only'
+      };
+    });
+  }
+
   async getPositions(walletPublicKey: PublicKey): Promise<Map<string, PositionInfo>> {
     return this.withConnection((connection) => DLMM.getAllLbPairPositionsByUser(connection, walletPublicKey));
   }
@@ -857,12 +923,14 @@ export class MeteoraDlmmClient {
             withdrawTokenAmountLamports: withdrawSimulation.withdrawTokenAmountLamports,
             withdrawTokenAmountRaw: withdrawSimulation.withdrawTokenAmountRaw,
             withdrawTokenMint: withdrawSimulation.withdrawTokenMint,
+            withdrawTokenDecimals: solSide === 'tokenX' ? tokenYDecimals : tokenXDecimals,
             withdrawTokenValueSol,
             liquidityValueSol,
             unclaimedFeeSolAmount,
             unclaimedFeeTokenAmountLamports,
             unclaimedFeeTokenAmountRaw: unclaimedFeeTokenRaw,
             unclaimedFeeTokenMint: mint,
+            unclaimedFeeTokenDecimals: solSide === 'tokenX' ? tokenYDecimals : tokenXDecimals,
             unclaimedFeeTokenValueSol,
             unclaimedFeeSol,
             unclaimedFeeValueSol,

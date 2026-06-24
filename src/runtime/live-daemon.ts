@@ -635,7 +635,9 @@ function hasReadyCompleteActiveLpValuation(input: {
         ? positions.find((position) => position.mint === input.positionState?.activeMint)
         : positions[0];
 
-  return active?.valuationStatus === 'ready' && active?.valuationCompleteness === 'complete';
+  return active?.valuationStatus === 'ready'
+    && active?.valuationCompleteness === 'complete'
+    && active?.valuationTrust === 'exit_quote';
 }
 
 function shouldUseNewOpenPassResult(result: LiveCycleResult) {
@@ -1539,6 +1541,13 @@ function resolvePersistedLpIdentity(input: {
       chainPositionAddress: undefined,
       valuationStatus: undefined,
       valuationReason: undefined,
+      valuationTrust: undefined,
+      valuationSource: undefined,
+      valuationCompleteness: undefined,
+      exitQuoteValueSol: undefined,
+      marketValueSol: undefined,
+      displayValueSol: undefined,
+      lpTotalValueSol: undefined,
       lastValuationAt: undefined
     };
   }
@@ -1558,6 +1567,13 @@ function resolvePersistedLpIdentity(input: {
     chainPositionAddress,
     valuationStatus: boundPosition?.valuationStatus ?? input.positionState?.valuationStatus,
     valuationReason: boundPosition?.valuationReason ?? input.positionState?.valuationReason,
+    valuationTrust: boundPosition?.valuationTrust ?? input.positionState?.valuationTrust,
+    valuationSource: boundPosition?.valuationSource ?? input.positionState?.valuationSource,
+    valuationCompleteness: boundPosition?.valuationCompleteness ?? input.positionState?.valuationCompleteness,
+    exitQuoteValueSol: boundPosition?.exitQuoteValueSol ?? input.positionState?.exitQuoteValueSol,
+    marketValueSol: boundPosition?.marketValueSol ?? input.positionState?.marketValueSol,
+    displayValueSol: boundPosition?.displayValueSol ?? input.positionState?.displayValueSol,
+    lpTotalValueSol: boundPosition?.lpTotalValueSol ?? input.positionState?.lpTotalValueSol,
     lastValuationAt: boundPosition?.lastValuationAt ?? input.positionState?.lastValuationAt
   };
 }
@@ -2409,6 +2425,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           openedAt: orphanedIdentity?.openedAt ?? inferredPositionMetadata.openedAt,
           valuationStatus: orphanedIdentity?.valuationStatus ?? persistedIdentity.valuationStatus,
           valuationReason: orphanedIdentity?.valuationReason ?? persistedIdentity.valuationReason,
+          valuationTrust: persistedIdentity.valuationTrust,
+          valuationSource: persistedIdentity.valuationSource,
+          valuationCompleteness: persistedIdentity.valuationCompleteness,
+          exitQuoteValueSol: persistedIdentity.exitQuoteValueSol,
+          marketValueSol: persistedIdentity.marketValueSol,
+          displayValueSol: persistedIdentity.displayValueSol,
+          lpTotalValueSol: persistedIdentity.lpTotalValueSol,
           lastValuationAt: orphanedIdentity?.lastValuationAt ?? persistedIdentity.lastValuationAt,
           lastClosedMint: closedMint,
           lastClosedAt: closedAt,

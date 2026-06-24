@@ -165,6 +165,10 @@ type AccountStateSnapshot = {
     lpTradingValueSol?: number;
     lpEntryTradingSol?: number;
     lpTotalValueSol?: number;
+    exitQuoteValueSol?: number;
+    marketValueSol?: number;
+    displayValueSol?: number;
+    valuationTrust?: 'exit_quote' | 'market_price' | 'fallback_display';
     valuationCompleteness?: 'complete' | 'incomplete' | 'untrusted';
     unclaimedFeeSol?: number;
     valuationStatus?: string;
@@ -383,6 +387,10 @@ type PositionResponse = Array<{
   lpTradingValueSol?: number | null;
   lpEntryTradingSol?: number | null;
   lpTotalValueSol?: number | null;
+  exitQuoteValueSol?: number | null;
+  marketValueSol?: number | null;
+  displayValueSol?: number | null;
+  valuationTrust?: string;
   valuationCompleteness?: string;
   valuationStatus?: string;
   valuationReason?: string;
@@ -465,7 +473,7 @@ async function handlePositions(): Promise<PositionResponse> {
         claimedFeeValueSol: typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : null,
         recoverableRentSol: typeof position.recoverableRentSol === 'number' ? position.recoverableRentSol : null,
         lpTradingValueSol: trustedEntry && typeof position.lpTotalValueSol === 'number' && typeof position.recoverableRentSol === 'number'
-          ? Math.max(0, position.lpTotalValueSol - position.recoverableRentSol)
+          ? Math.max(0, (position.exitQuoteValueSol ?? position.lpTotalValueSol) - position.recoverableRentSol)
           : null,
         lpEntryTradingSol: trustedEntry && typeof positionState?.entrySol === 'number' && typeof position.recoverableRentSol === 'number' && positionState.entrySol > position.recoverableRentSol
           ? positionState.entrySol - position.recoverableRentSol
@@ -473,6 +481,10 @@ async function handlePositions(): Promise<PositionResponse> {
             ? positionState!.entrySol!
             : null,
         lpTotalValueSol: typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : null,
+        exitQuoteValueSol: typeof position.exitQuoteValueSol === 'number' ? position.exitQuoteValueSol : null,
+        marketValueSol: typeof position.marketValueSol === 'number' ? position.marketValueSol : null,
+        displayValueSol: typeof position.displayValueSol === 'number' ? position.displayValueSol : null,
+        valuationTrust: position.valuationTrust ?? '',
         valuationCompleteness: position.valuationCompleteness ?? '',
         valuationStatus: position.valuationStatus ?? '',
         valuationReason: position.valuationReason ?? '',
@@ -908,6 +920,9 @@ function parseDecisionMetrics(reason: string) {
     lpCurrentValueSol: toNumber('lpCurrentValueSol'),
     lpLiquidityValueSol: toNumber('lpLiquidityValueSol'),
     lpTotalValueSol: toNumber('lpTotalValueSol'),
+    exitQuoteValueSol: toNumber('exitQuoteValueSol'),
+    marketValueSol: toNumber('marketValueSol'),
+    displayValueSol: toNumber('displayValueSol'),
     lpUnclaimedFeeSol: toNumber('lpUnclaimedFeeSol'),
     lpUnclaimedFeeValueSol: toNumber('lpUnclaimedFeeValueSol'),
     lpClaimedFeeValueSol: toNumber('lpClaimedFeeValueSol'),

@@ -1394,10 +1394,16 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
-  it('serves wallet LP positions with withdraw-simulation plus Jupiter exit valuation', async () => {
+  it('serves wallet LP positions with withdraw-simulation plus quote-only exit valuation', async () => {
     const keypair = Keypair.generate();
     const buildSellQuoteParams = vi.fn((mint: string, amount: number) => ({ mint, amount }));
     const getQuote = vi.fn(async () => ({ outAmount: String(0.02 * 1_000_000_000), routePlan: [] }));
+    const quoteTokenToSol = vi.fn(async () => ({
+      providerName: 'meteora-dlmm-quote-only' as const,
+      valueSol: 0.02,
+      trust: 'exit_quote' as const,
+      source: 'meteora-dlmm-swap-quote'
+    }));
     const getPositionSnapshots = vi.fn(async () => [{
       poolAddress: 'pool-lp-1',
       positionAddress: 'position-lp-1',
@@ -1440,6 +1446,7 @@ describe('createSolanaExecutionServer', () => {
         getQuote,
       } as any,
       dlmmClient: { getPositionSnapshots } as any,
+      valuationProviderChain: { quoteTokenToSol } as any,
       authToken: 'test-token'
     });
 
@@ -1468,19 +1475,23 @@ describe('createSolanaExecutionServer', () => {
         claimedFeeValueSol: 0,
         recoverableRentSol: 0.057416045,
         lpTotalValueSol: 0.158416045,
+        exitQuoteValueSol: 0.158416045,
+        displayValueSol: 0.158416045,
+        valuationTrust: 'exit_quote',
         currentValueSol: 0.158416045,
         valuationStatus: 'ready',
         valuationReason: '',
         valuationCompleteness: 'complete',
-        valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote+position-account-rent'
+        valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote+position-account-rent'
       })
     ]);
     expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);
     expect(buildSellQuoteParams).not.toHaveBeenCalled();
-    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
+    expect(getQuote).not.toHaveBeenCalled();
+    expect(quoteTokenToSol).toHaveBeenCalledWith(expect.objectContaining({
       inputMint: 'earthcoin-mint',
-      outputMint: 'So11111111111111111111111111111111111111112',
-      amount: '123456'
+      amountLamports: '123456',
+      poolAddress: 'pool-lp-1'
     }));
     expect(getPositionSnapshots).toHaveBeenCalledWith(keypair.publicKey);
 
@@ -1555,20 +1566,21 @@ describe('createSolanaExecutionServer', () => {
         positionAddress: 'position-lp-1',
         mint: 'earthcoin-mint',
         withdrawTokenValueSol: 0.03,
-        currentValueSol: 0.11,
+        currentValueSol: 0.111,
+        liquidityValueSol: 0.11,
+        unclaimedFeeValueSol: 0.001,
+        lpTotalValueSol: 0.111,
+        displayValueSol: 0.111,
         valuationStatus: 'stale',
-        valuationReason: expect.stringContaining('withdraw-token-quote-failed:'),
+        valuationReason: 'valuation-not-exit-quote:meteora-withdraw-simulation+dlmm-active-bin-price-fallback',
         valuationCompleteness: 'untrusted',
+        valuationTrust: 'fallback_display',
         valuationSource: 'meteora-withdraw-simulation+dlmm-active-bin-price-fallback'
       })
     ]);
     expect(payload.journalLpPositions).toEqual(payload.walletLpPositions);
     expect(buildSellQuoteParams).not.toHaveBeenCalled();
-    expect(getQuote).toHaveBeenCalledWith(expect.objectContaining({
-      inputMint: 'earthcoin-mint',
-      outputMint: 'So11111111111111111111111111111111111111112',
-      amount: '123456'
-    }));
+    expect(getQuote).not.toHaveBeenCalled();
 
     await server.stop();
   });

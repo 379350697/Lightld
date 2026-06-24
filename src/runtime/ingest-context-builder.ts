@@ -410,6 +410,25 @@ function hasRequiredLpTokenQuotes(position: NonNullable<LiveAccountState['wallet
   return true;
 }
 
+function mergeValuationTrustForSignal(
+  current: 'exit_quote' | 'market_price' | 'fallback_display' | undefined,
+  next: 'exit_quote' | 'market_price' | 'fallback_display' | undefined
+) {
+  if (!next) {
+    return current;
+  }
+
+  if (current === 'fallback_display' || next === 'fallback_display') {
+    return 'fallback_display' as const;
+  }
+
+  if (current === 'market_price' || next === 'market_price') {
+    return 'market_price' as const;
+  }
+
+  return 'exit_quote' as const;
+}
+
 function resolveLpPositionSignal(
   accountState: LiveAccountState | undefined,
   input: { mint: string; poolAddress: string }
@@ -445,9 +464,14 @@ function resolveLpPositionSignal(
     const valuationSource = typeof position.valuationSource === 'string' ? position.valuationSource : '';
     return position.valuationStatus === 'ready'
       && position.valuationCompleteness === 'complete'
-      && valuationSource.includes('withdraw-simulation')
-      && !valuationSource.includes('dlmm-active-bin-price-fallback')
-      && (!lpPositionRequiresTokenQuote(position) || hasRequiredLpTokenQuotes(position))
+      && (
+        position.valuationTrust === 'exit_quote'
+        || (
+          valuationSource.includes('withdraw-simulation')
+          && !valuationSource.includes('dlmm-active-bin-price-fallback')
+          && (!lpPositionRequiresTokenQuote(position) || hasRequiredLpTokenQuotes(position))
+        )
+      )
       && typeof (position.lpTotalValueSol ?? position.currentValueSol) === 'number';
   });
   const lpCurrentValueSol = trustedValuePositions.length === relevantPositions.length
@@ -483,6 +507,21 @@ function resolveLpPositionSignal(
     ? trustedValuePositions.reduce<number>((sum, position) => sum + (position.recoverableRentSol ?? 0), 0)
     : undefined;
   const lpTotalValueSol = lpCurrentValueSol;
+  const exitQuoteValueSol = trustedValuePositions.length === relevantPositions.length
+    ? sumTrustedPositionValues((position) => position.exitQuoteValueSol)
+    : undefined;
+  const marketValueSol = trustedValuePositions.length === relevantPositions.length
+    ? sumTrustedPositionValues((position) => position.marketValueSol)
+    : undefined;
+  const displayValueSol = trustedValuePositions.length === relevantPositions.length
+    ? sumTrustedPositionValues((position) => position.displayValueSol)
+    : undefined;
+  const valuationTrust = trustedValuePositions.length === relevantPositions.length
+    ? trustedValuePositions.reduce<'exit_quote' | 'market_price' | 'fallback_display' | undefined>(
+        (trust, position) => mergeValuationTrustForSignal(trust, position.valuationTrust),
+        undefined
+      )
+    : undefined;
   const lpValuationStatus = trustedValuePositions.length === relevantPositions.length ? 'ready' : 'unavailable';
   const lpValuationReason = lpValuationStatus === 'ready'
     ? ''
@@ -503,6 +542,9 @@ function resolveLpPositionSignal(
     lpCurrentValueSol,
     lpLiquidityValueSol,
     lpTotalValueSol,
+    exitQuoteValueSol,
+    marketValueSol,
+    displayValueSol,
     lpUnclaimedFeeSol,
     lpUnclaimedFeeValueSol,
     lpClaimedFeeValueSol,
@@ -511,10 +553,12 @@ function resolveLpPositionSignal(
     lpValuationReason,
     lpValuationSource,
     lpValuationCompleteness: lpValuationStatus === 'ready' ? 'complete' : 'incomplete',
+    lpValuationTrust: valuationTrust,
     valuationStatus: lpValuationStatus,
     valuationReason: lpValuationReason,
     valuationSource: lpValuationSource,
-    valuationCompleteness: lpValuationStatus === 'ready' ? 'complete' : 'incomplete'
+    valuationCompleteness: lpValuationStatus === 'ready' ? 'complete' : 'incomplete',
+    valuationTrust
   };
 }
 
@@ -774,6 +818,15 @@ function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLp
     ...(typeof lpPositionSignal.lpTotalValueSol === 'number'
       ? { lpTotalValueSol: lpPositionSignal.lpTotalValueSol }
       : {}),
+    ...(typeof lpPositionSignal.exitQuoteValueSol === 'number'
+      ? { exitQuoteValueSol: lpPositionSignal.exitQuoteValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.marketValueSol === 'number'
+      ? { marketValueSol: lpPositionSignal.marketValueSol }
+      : {}),
+    ...(typeof lpPositionSignal.displayValueSol === 'number'
+      ? { displayValueSol: lpPositionSignal.displayValueSol }
+      : {}),
     ...(typeof lpPositionSignal.lpUnclaimedFeeSol === 'number'
       ? { lpUnclaimedFeeSol: lpPositionSignal.lpUnclaimedFeeSol }
       : {}),
@@ -799,6 +852,12 @@ function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLp
       ? {
         valuationCompleteness: lpPositionSignal.valuationCompleteness,
         lpValuationCompleteness: lpPositionSignal.valuationCompleteness
+      }
+      : {}),
+    ...(typeof lpPositionSignal.valuationTrust === 'string'
+      ? {
+        valuationTrust: lpPositionSignal.valuationTrust,
+        lpValuationTrust: lpPositionSignal.valuationTrust
       }
       : {})
   };

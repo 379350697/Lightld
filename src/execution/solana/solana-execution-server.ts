@@ -16,6 +16,11 @@ import {
   type SwapProviderAttempt
 } from './swap-providers.ts';
 import {
+  createDefaultValuationProviderChain,
+  type ValuationProviderChain,
+  type ValuationTrust
+} from './valuation-providers.ts';
+import {
   signedIntentIdempotencyFingerprint,
   verifySignedIntent
 } from '../signed-intent-verifier.ts';
@@ -100,6 +105,7 @@ type SolanaExecutionServerOptions = {
   jupiterClient: JupiterClient;
   dlmmClient?: MeteoraDlmmClient;
   swapProviderChain?: SwapProviderChain;
+  valuationProviderChain?: ValuationProviderChain;
   authToken?: string;
   expectedSignerPublicKeys?: string[];
   maxOutputSol?: number;
@@ -312,6 +318,10 @@ async function resolveTokenCurrentValueSol(input: {
 
 type AccountStateLpPosition = MeteoraLpPositionSnapshot & {
   withdrawTokenValueSol?: number;
+  exitQuoteValueSol?: number;
+  marketValueSol?: number;
+  displayValueSol?: number;
+  valuationTrust?: ValuationTrust;
 };
 
 function readExecutionErrorMessage(error: unknown) {
@@ -328,6 +338,18 @@ function hasPoolPriceFallbackValue(position: MeteoraLpPositionSnapshot) {
 
 function nonnegativeFinite(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function mergeValuationTrust(current: ValuationTrust, next: ValuationTrust): ValuationTrust {
+  if (current === 'fallback_display' || next === 'fallback_display') {
+    return 'fallback_display';
+  }
+
+  if (current === 'market_price' || next === 'market_price') {
+    return 'market_price';
+  }
+
+  return 'exit_quote';
 }
 
 function markPoolPriceFallbackUntrusted(position: MeteoraLpPositionSnapshot, reason: string): AccountStateLpPosition {
@@ -363,7 +385,7 @@ function markLpValuationUnavailable(
 
 async function enrichLpExitValues(input: {
   positions: MeteoraLpPositionSnapshot[];
-  swapProviderChain: SwapProviderChain;
+  valuationProviderChain: ValuationProviderChain;
   walletPublicKey: string;
   defaultSlippageBps: number;
 }): Promise<AccountStateLpPosition[]> {
@@ -398,29 +420,32 @@ async function enrichLpExitValues(input: {
     try {
       let withdrawTokenValueSol = 0;
       let unclaimedFeeTokenValueSol = 0;
-      let quoteSourceSuffix = '';
+      let valuationTrust: ValuationTrust = 'exit_quote';
+      const valuationSources = ['meteora-withdraw-simulation'];
+      let hasMarketValuation = false;
 
       if (!isZeroLamportsAmount(withdrawTokenAmountRaw)) {
         if (!position.withdrawTokenMint) {
           return markLpValuationUnavailable(position, valuationSource, 'missing-withdraw-token-mint');
         }
 
-        const quotedWithdrawTokenValueSol = await resolveTokenCurrentValueSol({
-          swapProviderChain: input.swapProviderChain,
-          walletPublicKey: input.walletPublicKey,
-          mint: position.withdrawTokenMint,
+        const quotedWithdrawTokenValueSol = await input.valuationProviderChain.quoteTokenToSol({
+          inputMint: position.withdrawTokenMint,
           amountLamports: withdrawTokenAmountRaw,
-          defaultSlippageBps: input.defaultSlippageBps,
+          tokenDecimals: position.withdrawTokenDecimals,
           poolAddress: position.poolAddress,
-          skipBalanceDependentProviders: true
+          slippageBps: input.defaultSlippageBps,
+          fallbackDisplayValueSol: position.withdrawTokenValueSol
         });
 
-        if (typeof quotedWithdrawTokenValueSol !== 'number') {
+        if (typeof quotedWithdrawTokenValueSol.valueSol !== 'number') {
           return markLpValuationUnavailable(position, valuationSource, 'withdraw-token-quote-unavailable');
         }
 
-        withdrawTokenValueSol = quotedWithdrawTokenValueSol;
-        quoteSourceSuffix += '+swap-provider-sell-quote';
+        withdrawTokenValueSol = quotedWithdrawTokenValueSol.valueSol;
+        valuationTrust = mergeValuationTrust(valuationTrust, quotedWithdrawTokenValueSol.trust);
+        hasMarketValuation ||= quotedWithdrawTokenValueSol.trust === 'market_price';
+        valuationSources.push(quotedWithdrawTokenValueSol.source);
       }
 
       if (!isZeroLamportsAmount(unclaimedFeeTokenAmountRaw)) {
@@ -429,22 +454,23 @@ async function enrichLpExitValues(input: {
           return markLpValuationUnavailable(position, valuationSource, 'missing-unclaimed-fee-token-mint');
         }
 
-        const quotedFeeTokenValueSol = await resolveTokenCurrentValueSol({
-          swapProviderChain: input.swapProviderChain,
-          walletPublicKey: input.walletPublicKey,
-          mint: feeTokenMint,
+        const quotedFeeTokenValueSol = await input.valuationProviderChain.quoteTokenToSol({
+          inputMint: feeTokenMint,
           amountLamports: unclaimedFeeTokenAmountRaw,
-          defaultSlippageBps: input.defaultSlippageBps,
+          tokenDecimals: position.unclaimedFeeTokenDecimals ?? position.withdrawTokenDecimals,
           poolAddress: position.poolAddress,
-          skipBalanceDependentProviders: true
+          slippageBps: input.defaultSlippageBps,
+          fallbackDisplayValueSol: position.unclaimedFeeTokenValueSol
         });
 
-        if (typeof quotedFeeTokenValueSol !== 'number') {
+        if (typeof quotedFeeTokenValueSol.valueSol !== 'number') {
           return markLpValuationUnavailable(position, valuationSource, 'unclaimed-fee-token-quote-unavailable');
         }
 
-        unclaimedFeeTokenValueSol = quotedFeeTokenValueSol;
-        quoteSourceSuffix += '+fee-swap-provider-sell-quote';
+        unclaimedFeeTokenValueSol = quotedFeeTokenValueSol.valueSol;
+        valuationTrust = mergeValuationTrust(valuationTrust, quotedFeeTokenValueSol.trust);
+        hasMarketValuation ||= quotedFeeTokenValueSol.trust === 'market_price';
+        valuationSources.push('fee-' + quotedFeeTokenValueSol.source);
       }
 
       const liquidityValueSol = withdrawSolAmount + withdrawTokenValueSol;
@@ -453,6 +479,9 @@ async function enrichLpExitValues(input: {
       const rentSourceSuffix = recoverableRentSol > 0 && !valuationSource.includes('position-account-rent')
         ? '+position-account-rent'
         : '';
+      const valuationStatus = valuationTrust === 'exit_quote' ? 'ready' : 'stale';
+      const valuationCompleteness = valuationTrust === 'exit_quote' ? 'complete' : 'untrusted';
+      const fullValuationSource = valuationSources.join('+') + rentSourceSuffix;
 
       return {
         ...position,
@@ -467,10 +496,14 @@ async function enrichLpExitValues(input: {
         claimedFeeValueSol,
         recoverableRentSol,
         lpTotalValueSol,
-        valuationStatus: 'ready',
-        valuationReason: '',
-        valuationCompleteness: 'complete',
-        valuationSource: valuationSource.replace('+dlmm-active-bin-price-fallback', '') + quoteSourceSuffix + rentSourceSuffix
+        exitQuoteValueSol: valuationTrust === 'exit_quote' ? lpTotalValueSol : undefined,
+        marketValueSol: hasMarketValuation ? lpTotalValueSol : undefined,
+        displayValueSol: lpTotalValueSol,
+        valuationTrust,
+        valuationStatus,
+        valuationReason: valuationTrust === 'exit_quote' ? '' : `valuation-not-exit-quote:${fullValuationSource}`,
+        valuationCompleteness,
+        valuationSource: fullValuationSource
       };
     } catch (error) {
       return markLpValuationUnavailable(position, valuationSource, 'withdraw-token-quote-failed:' + readExecutionErrorMessage(error));
@@ -703,6 +736,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   const swapProviderChain = options.swapProviderChain ?? createDefaultSwapProviderChain({
     providerOrder: ['meteora-direct', 'jupiter-v1'],
     jupiterClient,
+    dlmmClient: options.dlmmClient
+  });
+  const valuationProviderChain = options.valuationProviderChain ?? createDefaultValuationProviderChain({
+    providerOrder: ['meteora-dlmm-quote-only', 'dlmm-active-bin-display-fallback'],
     dlmmClient: options.dlmmClient
   });
   const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
@@ -1428,7 +1465,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   .filter((position) => position.positionStatus !== 'empty');
                 walletLpPositions = await enrichLpExitValues({
                   positions: dlmmPositions,
-                  swapProviderChain,
+                  valuationProviderChain,
                   walletPublicKey,
                   defaultSlippageBps
                 });

@@ -314,6 +314,7 @@ function buildEvolutionExitMetrics(input: {
     lpCurrentValueSol: typeof input.context.trader.lpCurrentValueSol === 'number' ? input.context.trader.lpCurrentValueSol : undefined,
     lpLiquidityValueSol: typeof input.context.trader.lpLiquidityValueSol === 'number' ? input.context.trader.lpLiquidityValueSol : undefined,
     lpTotalValueSol: typeof input.context.trader.lpTotalValueSol === 'number' ? input.context.trader.lpTotalValueSol : undefined,
+    exitQuoteValueSol: typeof input.context.trader.exitQuoteValueSol === 'number' ? input.context.trader.exitQuoteValueSol : undefined,
     lpUnclaimedFeeSol: typeof input.context.trader.lpUnclaimedFeeSol === 'number' ? input.context.trader.lpUnclaimedFeeSol : undefined,
     lpUnclaimedFeeValueSol: typeof input.context.trader.lpUnclaimedFeeValueSol === 'number' ? input.context.trader.lpUnclaimedFeeValueSol : undefined,
     lpClaimedFeeValueSol: typeof input.context.trader.lpClaimedFeeValueSol === 'number' ? input.context.trader.lpClaimedFeeValueSol : undefined,
@@ -323,7 +324,8 @@ function buildEvolutionExitMetrics(input: {
     valuationCompleteness: firstValuationCompleteness(
       input.context.trader.valuationCompleteness,
       input.context.trader.lpValuationCompleteness
-    )
+    ),
+    valuationTrust: firstString(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust)
   };
 }
 
@@ -600,10 +602,12 @@ function hasTrustedContextLpPnlInputs(input: {
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
   const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
+  const valuationTrust = firstString(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust);
 
   return hasTrustedLpExitValue({
     currentValueSol,
     lpTotalValueSol,
+    exitQuoteValueSol: input.context.trader.exitQuoteValueSol,
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
@@ -611,6 +615,7 @@ function hasTrustedContextLpPnlInputs(input: {
     valuationStatus,
     valuationSource,
     valuationCompleteness,
+    valuationTrust,
     tokenQuoteRequirement: 'unknown'
   });
 }
@@ -933,6 +938,9 @@ function buildLpExitSnapshotFromPosition(input: {
     lpCurrentValueSol: input.position.currentValueSol,
     lpLiquidityValueSol: input.position.liquidityValueSol,
     lpTotalValueSol: input.position.lpTotalValueSol,
+    exitQuoteValueSol: input.position.exitQuoteValueSol,
+    marketValueSol: input.position.marketValueSol,
+    displayValueSol: input.position.displayValueSol,
     lpUnclaimedFeeSol: input.position.unclaimedFeeSol,
     lpUnclaimedFeeValueSol: input.position.unclaimedFeeValueSol,
     lpClaimedFeeValueSol: input.position.claimedFeeValueSol,
@@ -948,6 +956,7 @@ function buildLpExitSnapshotFromPosition(input: {
     valuationReason: valuation.valuationReason,
     valuationSource: input.position.valuationSource,
     valuationCompleteness: input.position.valuationCompleteness,
+    valuationTrust: input.position.valuationTrust,
     holdTimeMs: input.holdTimeMs,
     pendingConfirmationStatus: 'confirmed' as const,
     lifecycleState: 'open'
@@ -1272,11 +1281,18 @@ function resolveLpTotalValueSol(input: {
 function resolveLpTradingValueSol(input: {
   currentValueSol?: unknown;
   lpTotalValueSol?: unknown;
+  exitQuoteValueSol?: unknown;
   liquidityValueSol?: unknown;
   unclaimedFeeValueSol?: unknown;
   claimedFeeValueSol?: unknown;
   recoverableRentSol?: unknown;
 }) {
+  const exitQuoteValueSol = finiteNonnegative(input.exitQuoteValueSol);
+  const recoverableRentSol = finiteNonnegative(input.recoverableRentSol);
+  if (typeof exitQuoteValueSol === 'number' && typeof recoverableRentSol === 'number') {
+    return Math.max(0, exitQuoteValueSol - recoverableRentSol);
+  }
+
   const liquidityValueSol = finiteNonnegative(input.liquidityValueSol);
   const unclaimedFeeValueSol = finiteNonnegative(input.unclaimedFeeValueSol);
   const claimedFeeValueSol = finiteNonnegative(input.claimedFeeValueSol) ?? 0;
@@ -1284,7 +1300,6 @@ function resolveLpTradingValueSol(input: {
     return liquidityValueSol + unclaimedFeeValueSol + claimedFeeValueSol;
   }
 
-  const recoverableRentSol = finiteNonnegative(input.recoverableRentSol);
   const lpTotalValueSol = resolveLpTotalValueSol(input);
   if (typeof lpTotalValueSol === 'number' && typeof recoverableRentSol === 'number') {
     return Math.max(0, lpTotalValueSol - recoverableRentSol);
@@ -1327,6 +1342,7 @@ function tokenQuoteRequirementSatisfied(
 function hasTrustedLpExitValue(input: {
   currentValueSol?: unknown;
   lpTotalValueSol?: unknown;
+  exitQuoteValueSol?: unknown;
   liquidityValueSol?: unknown;
   unclaimedFeeValueSol?: unknown;
   claimedFeeValueSol?: unknown;
@@ -1334,11 +1350,19 @@ function hasTrustedLpExitValue(input: {
   valuationStatus?: unknown;
   valuationSource?: unknown;
   valuationCompleteness?: unknown;
+  valuationTrust?: unknown;
   tokenQuoteRequirement?: LpTokenQuoteRequirement;
   feeTokenQuoteRequirement?: LpTokenQuoteRequirement;
 }) {
   const valuationSource = typeof input.valuationSource === 'string' ? input.valuationSource : '';
   const lpTotalValueSol = resolveLpTotalValueSol(input);
+
+  if (input.valuationTrust === 'exit_quote') {
+    return input.valuationStatus === 'ready'
+      && input.valuationCompleteness === 'complete'
+      && typeof lpTotalValueSol === 'number'
+      && typeof finiteNonnegative(input.exitQuoteValueSol) === 'number';
+  }
 
   return input.valuationStatus === 'ready'
     && input.valuationCompleteness === 'complete'
@@ -1361,6 +1385,7 @@ function computeTrustedLpNetPnlPct(input: {
   entrySol?: number;
   currentValueSol?: number;
   lpTotalValueSol?: number;
+  exitQuoteValueSol?: number;
   liquidityValueSol?: number;
   unclaimedFeeValueSol?: number;
   claimedFeeValueSol?: number;
@@ -1371,6 +1396,7 @@ function computeTrustedLpNetPnlPct(input: {
     currentValueSol: input.currentValueSol,
     lpTotalValueSol: input.lpTotalValueSol,
     liquidityValueSol: input.liquidityValueSol,
+    exitQuoteValueSol: input.exitQuoteValueSol,
     unclaimedFeeValueSol: input.unclaimedFeeValueSol,
     claimedFeeValueSol: input.claimedFeeValueSol,
     recoverableRentSol: input.recoverableRentSol
@@ -1455,6 +1481,7 @@ function evaluateActiveLpPositions(input: {
       };
     const currentValueSol = typeof position.currentValueSol === 'number' ? position.currentValueSol : undefined;
     const lpTotalValueSol = typeof position.lpTotalValueSol === 'number' ? position.lpTotalValueSol : undefined;
+    const exitQuoteValueSol = typeof position.exitQuoteValueSol === 'number' ? position.exitQuoteValueSol : undefined;
     const liquidityValueSol = typeof position.liquidityValueSol === 'number' ? position.liquidityValueSol : undefined;
     const unclaimedFeeValueSol = typeof position.unclaimedFeeValueSol === 'number' ? position.unclaimedFeeValueSol : undefined;
     const resolvedClaimedFeeValueSol = typeof position.claimedFeeValueSol === 'number' ? position.claimedFeeValueSol : undefined;
@@ -1462,6 +1489,7 @@ function evaluateActiveLpPositions(input: {
     const lpTradingValueSol = resolveLpTradingValueSol({
       currentValueSol,
       lpTotalValueSol,
+      exitQuoteValueSol,
       liquidityValueSol,
       unclaimedFeeValueSol,
       claimedFeeValueSol: resolvedClaimedFeeValueSol,
@@ -1474,6 +1502,7 @@ function evaluateActiveLpPositions(input: {
     const lpNetPnlPct = hasTrustedLpExitValue({
       currentValueSol,
       lpTotalValueSol,
+      exitQuoteValueSol,
       liquidityValueSol,
       unclaimedFeeValueSol,
       claimedFeeValueSol: resolvedClaimedFeeValueSol,
@@ -1481,13 +1510,19 @@ function evaluateActiveLpPositions(input: {
       valuationStatus: position.valuationStatus,
       valuationSource: position.valuationSource,
       valuationCompleteness: position.valuationCompleteness,
+      valuationTrust: position.valuationTrust,
       tokenQuoteRequirement: lpPositionRequiresTokenQuote(position) ? 'required' : 'not-required'
     })
-      && (!lpPositionRequiresTokenQuote(position) || hasRequiredLpTokenQuotes(position))
+      && (
+        position.valuationTrust === 'exit_quote'
+        || !lpPositionRequiresTokenQuote(position)
+        || hasRequiredLpTokenQuotes(position)
+      )
       ? computeTrustedLpNetPnlPct({
         entrySol: trustedEntry?.entrySol,
         currentValueSol,
         lpTotalValueSol,
+        exitQuoteValueSol,
         liquidityValueSol,
         unclaimedFeeValueSol,
         claimedFeeValueSol: resolvedClaimedFeeValueSol,
@@ -1626,6 +1661,9 @@ function applyLpObservationToContext(
   context.trader.lpCurrentValueSol = observation.position.currentValueSol;
   context.trader.lpLiquidityValueSol = observation.position.liquidityValueSol;
   context.trader.lpTotalValueSol = observation.position.lpTotalValueSol;
+  context.trader.exitQuoteValueSol = observation.position.exitQuoteValueSol;
+  context.trader.marketValueSol = observation.position.marketValueSol;
+  context.trader.displayValueSol = observation.position.displayValueSol;
   context.trader.lpUnclaimedFeeSol = observation.position.unclaimedFeeSol;
   context.trader.lpUnclaimedFeeValueSol = observation.position.unclaimedFeeValueSol;
   context.trader.lpClaimedFeeValueSol = observation.position.claimedFeeValueSol;
@@ -1643,10 +1681,12 @@ function applyLpObservationToContext(
   context.trader.valuationReason = observation.position.valuationReason;
   context.trader.valuationSource = observation.position.valuationSource;
   context.trader.valuationCompleteness = observation.position.valuationCompleteness;
+  context.trader.valuationTrust = observation.position.valuationTrust;
   context.trader.lpValuationStatus = observation.position.valuationStatus;
   context.trader.lpValuationReason = observation.position.valuationReason;
   context.trader.lpValuationSource = observation.position.valuationSource;
   context.trader.lpValuationCompleteness = observation.position.valuationCompleteness;
+  context.trader.lpValuationTrust = observation.position.valuationTrust;
   if (typeof observation.snapshot.lpNetPnlPct === 'number') {
     context.trader.lpNetPnlPct = observation.snapshot.lpNetPnlPct;
   } else {
@@ -1703,6 +1743,9 @@ function buildEngineSnapshot(
       lpCurrentValueSol: typeof context.trader.lpCurrentValueSol === 'number' ? context.trader.lpCurrentValueSol : undefined,
       lpLiquidityValueSol: typeof context.trader.lpLiquidityValueSol === 'number' ? context.trader.lpLiquidityValueSol : undefined,
       lpTotalValueSol: typeof context.trader.lpTotalValueSol === 'number' ? context.trader.lpTotalValueSol : undefined,
+      exitQuoteValueSol: typeof context.trader.exitQuoteValueSol === 'number' ? context.trader.exitQuoteValueSol : undefined,
+      marketValueSol: typeof context.trader.marketValueSol === 'number' ? context.trader.marketValueSol : undefined,
+      displayValueSol: typeof context.trader.displayValueSol === 'number' ? context.trader.displayValueSol : undefined,
       lpUnclaimedFeeSol: typeof context.trader.lpUnclaimedFeeSol === 'number' ? context.trader.lpUnclaimedFeeSol : undefined,
       lpUnclaimedFeeValueSol: typeof context.trader.lpUnclaimedFeeValueSol === 'number' ? context.trader.lpUnclaimedFeeValueSol : undefined,
       lpClaimedFeeValueSol: typeof context.trader.lpClaimedFeeValueSol === 'number' ? context.trader.lpClaimedFeeValueSol : undefined,
@@ -1781,6 +1824,7 @@ function maybePopulateLpNetPnlPct(input: {
   const lpTradingValueSol = resolveLpTradingValueSol({
     currentValueSol: lpTotalValueSol ?? currentValueSol,
     lpTotalValueSol,
+    exitQuoteValueSol: input.context.trader.exitQuoteValueSol,
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
@@ -1794,10 +1838,12 @@ function maybePopulateLpNetPnlPct(input: {
   const valuationStatus = firstString(input.context.trader.valuationStatus, input.context.trader.lpValuationStatus);
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
   const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
+  const valuationTrust = firstString(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust);
 
   if (!hasTrustedLpExitValue({
     currentValueSol: lpTotalValueSol ?? currentValueSol,
     lpTotalValueSol,
+    exitQuoteValueSol: input.context.trader.exitQuoteValueSol,
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
@@ -1805,6 +1851,7 @@ function maybePopulateLpNetPnlPct(input: {
     valuationStatus,
     valuationSource,
     valuationCompleteness,
+    valuationTrust,
     tokenQuoteRequirement: 'unknown'
   })) {
     delete input.context.trader.lpNetPnlPct;

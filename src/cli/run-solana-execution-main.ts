@@ -8,6 +8,20 @@ import { MeteoraDlmmClient } from '../execution/solana/meteora-dlmm-client.ts';
 import { RpcEndpointRegistry } from '../execution/rpc-endpoint-registry.ts';
 import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
 import { createDefaultSwapProviderChain } from '../execution/solana/swap-providers.ts';
+import { createDefaultValuationProviderChain } from '../execution/solana/valuation-providers.ts';
+
+function formatEndpointForLog(rawUrl: string) {
+  try {
+    const url = new URL(rawUrl);
+    return url.origin;
+  } catch {
+    return rawUrl.includes('?') ? rawUrl.slice(0, rawUrl.indexOf('?')) : rawUrl;
+  }
+}
+
+function formatEndpointListForLog(urls: string[]) {
+  return urls.map(formatEndpointForLog).join(', ');
+}
 
 async function main() {
   const config = loadSolanaExecutionConfig();
@@ -17,11 +31,12 @@ async function main() {
   });
 
   process.stdout.write(`Wallet: ${keypair.publicKey.toBase58()}\n`);
-  process.stdout.write(`Trade RPCs: ${config.writeRpcUrls.join(', ')}\n`);
-  process.stdout.write(`Read RPCs: ${config.readRpcUrls.join(', ')}\n`);
-  process.stdout.write(`DLMM RPCs: ${config.dlmmRpcUrls.join(', ')}\n`);
-  process.stdout.write(`Jupiter: ${config.jupiterApiUrl}\n`);
+  process.stdout.write(`Trade RPCs: ${formatEndpointListForLog(config.writeRpcUrls)}\n`);
+  process.stdout.write(`Read RPCs: ${formatEndpointListForLog(config.readRpcUrls)}\n`);
+  process.stdout.write(`DLMM RPCs: ${formatEndpointListForLog(config.dlmmRpcUrls)}\n`);
+  process.stdout.write(`Jupiter: ${formatEndpointForLog(config.jupiterApiUrl)}\n`);
   process.stdout.write(`Swap providers: ${config.swapProviderOrder.join(', ')}\n`);
+  process.stdout.write(`Valuation providers: ${config.valuationProviderOrder.join(', ')}\n`);
 
   const endpointRegistry = new RpcEndpointRegistry({
     rateLimitedCooldownMs: config.rpc429CooldownMs,
@@ -92,6 +107,17 @@ async function main() {
     cooldownMs: config.swapProviderCooldownMs,
     noRouteTtlMs: config.jupiterNegativeRouteCacheTtlMs
   });
+  const valuationProviderChain = createDefaultValuationProviderChain({
+    providerOrder: config.valuationProviderOrder,
+    dlmmClient,
+    birdeyeApiUrl: config.birdeyeApiUrl,
+    birdeyeApiKey: config.birdeyeApiKey,
+    jupiterPriceApiUrl: config.jupiterPriceApiUrl,
+    dexscreenerApiUrl: config.dexscreenerApiUrl,
+    geckoterminalApiUrl: config.geckoterminalApiUrl,
+    cooldownMs: config.valuationProviderCooldownMs,
+    negativeCacheTtlMs: config.valuationProviderNegativeCacheTtlMs
+  });
 
   const server = createSolanaExecutionServer({
     host: config.host,
@@ -102,6 +128,7 @@ async function main() {
     jupiterClient,
     dlmmClient,
     swapProviderChain,
+    valuationProviderChain,
     authToken: config.authToken,
     expectedSignerPublicKeys: config.expectedSignerPublicKeys,
     maxOutputSol: config.maxOutputSol,

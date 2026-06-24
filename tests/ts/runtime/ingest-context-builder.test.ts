@@ -546,11 +546,14 @@ describe('buildLiveCycleInputFromIngest', () => {
             unclaimedFeeValueSol: 0.001,
             claimedFeeValueSol: 0,
             lpTotalValueSol: 0.123,
+            exitQuoteValueSol: 0.123,
+            displayValueSol: 0.123,
             unclaimedFeeSol: 0.001,
             valuationStatus: 'ready',
             valuationCompleteness: 'complete',
+            valuationTrust: 'exit_quote',
             valuationReason: '',
-            valuationSource: 'meteora-withdraw-simulation',
+            valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote',
             hasLiquidity: true
           }
         ],
@@ -609,15 +612,19 @@ describe('buildLiveCycleInputFromIngest', () => {
       lpCurrentValueSol: 0.123,
       lpLiquidityValueSol: 0.122,
       lpTotalValueSol: 0.123,
+      exitQuoteValueSol: 0.123,
+      displayValueSol: 0.123,
       lpUnclaimedFeeSol: 0.001,
       lpUnclaimedFeeValueSol: 0.001,
       lpClaimedFeeValueSol: 0,
       valuationStatus: 'ready',
       valuationCompleteness: 'complete',
-      valuationSource: 'meteora-withdraw-simulation',
+      valuationTrust: 'exit_quote',
+      valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote',
       lpValuationStatus: 'ready',
       lpValuationCompleteness: 'complete',
-      lpValuationSource: 'meteora-withdraw-simulation'
+      lpValuationTrust: 'exit_quote',
+      lpValuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote'
     });
   });
 
