@@ -28,6 +28,7 @@ describe('loadLiveRuntimeConfig', () => {
       broadcastTimeoutMs: 30_000,
       confirmationServiceUrl: 'https://confirm.example/api',
       accountStateUrl: 'https://account.example/api',
+      accountStateTimeoutMs: 45_000,
       authToken: 'secret'
     });
   });
@@ -46,6 +47,23 @@ describe('loadLiveRuntimeConfig', () => {
     ).toMatchObject({
       executionMode: 'http',
       broadcastTimeoutMs: 22_000
+    });
+  });
+
+  it('loads a custom account-state timeout override from env', () => {
+    expect(
+      loadLiveRuntimeConfig({
+        LIVE_EXECUTION_MODE: 'http',
+        LIVE_QUOTE_URL: 'https://quote.example/api',
+        LIVE_SIGN_URL: 'https://sign.example/api',
+        LIVE_BROADCAST_URL: 'https://broadcast.example/api',
+        LIVE_CONFIRMATION_URL: 'https://confirm.example/api',
+        LIVE_ACCOUNT_STATE_URL: 'https://account.example/api',
+        LIVE_ACCOUNT_STATE_TIMEOUT_MS: '60000'
+      })
+    ).toMatchObject({
+      executionMode: 'http',
+      accountStateTimeoutMs: 60_000
     });
   });
 

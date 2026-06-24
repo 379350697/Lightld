@@ -18,6 +18,8 @@ describe('incident taxonomy', () => {
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1771').rootCause).toContain('invalidBinId');
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1774').rootCause).toContain('exceededBinSlippageTolerance');
     expect(classifyIncidentReason('unknown_pending_reconciliation:missing-fill-evidence').kind).toBe('missing_fill_evidence');
+    expect(classifyIncidentReason('entry-fill-evidence-missing: trusted LP entry fill evidence is not locally verifiable').kind).toBe('missing_fill_evidence');
+    expect(classifyIncidentReason('entry-fill-target-mismatch: trusted LP entry fill belongs to a different active mint').kind).toBe('reconciliation_required');
     expect(classifyIncidentReason('lp-position-missing-entry-metadata:abc').kind).toBe('missing_lp_entry_metadata');
     expect(classifyIncidentReason('position-already-closed:Position not found for pool').kind).toBe('position_already_closed');
     expect(classifyIncidentReason('Position not found for pool').kind).toBe('position_already_closed');

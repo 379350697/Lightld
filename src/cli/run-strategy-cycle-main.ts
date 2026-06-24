@@ -78,7 +78,8 @@ async function main() {
         }),
         accountProvider: new HttpLiveAccountStateProvider({
           url: runtimeConfig.accountStateUrl,
-          authToken: runtimeConfig.authToken
+          authToken: runtimeConfig.authToken,
+          timeoutMs: runtimeConfig.accountStateTimeoutMs
         })
       }
     : {};

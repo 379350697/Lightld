@@ -38,6 +38,18 @@ describe('runLiveDaemon', () => {
     })).toBe('closed');
   });
 
+  it('preserves the previous lifecycle state when account state is unavailable', () => {
+    expect(resolveLifecycleStateForPersist({
+      previousLifecycleState: 'open',
+      pendingSubmission: false,
+      lastAction: 'hold',
+      lastReason: 'account-state-timeout',
+      chainPositionAddress: 'pos-open',
+      activeMint: 'mint-open',
+      activePoolAddress: 'pool-open'
+    })).toBe('open');
+  });
+
   it('clears active identity when persisted account state is terminally closed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-flat-terminal-'));
     const stateRootDir = join(root, 'state');
@@ -116,6 +128,109 @@ describe('runLiveDaemon', () => {
     });
     expect(positionState?.activeMint).toBeUndefined();
     expect(positionState?.activePoolAddress).toBeUndefined();
+  });
+
+  it('rebounds a mixed local position state to the chain-backed account LP identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-position-rebind-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lastReason: 'hold',
+      activeMint: 'mint-quest',
+      activePoolAddress: 'pool-quest',
+      positionId: 'pos-world',
+      chainPositionAddress: 'pos-world',
+      lifecycleState: 'open',
+      entrySol: 0.137416044,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-world-open',
+      openedAt: '2026-06-24T14:40:02.959Z',
+      updatedAt: '2026-06-24T14:53:31.571Z'
+    });
+
+    const accountState = {
+      walletSol: 0.322224573,
+      journalSol: 0.322224573,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        mint: 'mint-world',
+        poolAddress: 'pool-world',
+        positionAddress: 'pos-world',
+        chainPositionAddress: 'pos-world',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 130,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 0,
+        hasLiquidity: true,
+        currentValueSol: 0.137406241,
+        exitQuoteValueSol: 0.137406241,
+        displayValueSol: 0.137406241,
+        lpTotalValueSol: 0.137406241,
+        valuationStatus: 'ready' as const,
+        valuationTrust: 'exit_quote' as const,
+        valuationCompleteness: 'complete' as const,
+        valuationSource: 'meteora-dlmm-swap-quote'
+      }],
+      journalLpPositions: [],
+      fills: [{
+        submissionId: 'sub-world-open',
+        mint: 'mint-world',
+        side: 'add-lp' as const,
+        amount: 0.137416044,
+        filledSol: 0.137416044,
+        actualFilledSol: 0.137416044,
+        actualWalletDeltaSol: 0.137416044,
+        fillAmountSource: 'wallet-delta' as const,
+        hasFillEvidence: true,
+        recordedAt: '2026-06-24T14:40:02.959Z'
+      }]
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      accountProvider: {
+        readState: async () => accountState
+      },
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.08,
+        accountState,
+        context: {
+          pool: { address: 'pool-quest', liquidityUsd: 10_000 },
+          token: { mint: 'mint-quest', inSession: true, hasSolRoute: true, symbol: 'QUEST' },
+          trader: { hasInventory: false, hasLpPosition: true, lpSolDepletedBins: 0 },
+          route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lifecycleState: 'open',
+      activeMint: 'mint-world',
+      activePoolAddress: 'pool-world',
+      positionId: 'pos-world',
+      chainPositionAddress: 'pos-world',
+      entrySol: 0.137416044,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-world-open',
+      valuationStatus: 'ready',
+      valuationTrust: 'exit_quote',
+      valuationCompleteness: 'complete',
+      exitQuoteValueSol: 0.137406241,
+      lpTotalValueSol: 0.137406241
+    });
   });
 
   it('writes a health snapshot after running a single tick', async () => {
@@ -263,8 +378,10 @@ describe('runLiveDaemon', () => {
     expect(nextPositionState).toMatchObject({
       lastAction: 'add-lp',
       activeMint: 'mint-next',
-      activePoolAddress: 'pool-next'
+      activePoolAddress: 'pool-next',
+      positionId: 'pool-next:mint-next'
     });
+    expect(nextPositionState?.chainPositionAddress).toBeUndefined();
   });
 
   it('skips the new-open pass when residual token inventory needs exit handling', async () => {
@@ -460,7 +577,7 @@ describe('runLiveDaemon', () => {
     expect(health.mode).toBe('healthy');
   });
 
-  it('warms the account provider once before the first tick', async () => {
+  it('warms the account provider before the first tick', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-account-warmup-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -490,7 +607,7 @@ describe('runLiveDaemon', () => {
       })
     });
 
-    expect(readState).toHaveBeenCalledTimes(1);
+    expect(readState).toHaveBeenCalledTimes(2);
   });
 
   it('tracks watchlist tokens from selected, filtered, wallet, and lp sources and emits due snapshots', async () => {
@@ -1782,7 +1899,18 @@ describe('runLiveDaemon', () => {
             }
           ],
           journalLpPositions: [],
-          fills: []
+          fills: [{
+            submissionId: 'sub-open',
+            mint: 'mint-open',
+            side: 'add-lp' as const,
+            amount: 0.1,
+            filledSol: 0.1,
+            actualFilledSol: 0.1,
+            actualWalletDeltaSol: 0.1,
+            fillAmountSource: 'wallet-delta' as const,
+            hasFillEvidence: true,
+            recordedAt: '2026-04-18T00:00:00.000Z'
+          }]
         },
         context: {
           pool: { address: 'pool-selected-other', liquidityUsd: 10_000, score: 90 },
@@ -1854,7 +1982,18 @@ describe('runLiveDaemon', () => {
             }
           ],
           journalLpPositions: [],
-          fills: []
+          fills: [{
+            submissionId: 'sub-open',
+            mint: 'mint-open',
+            side: 'add-lp' as const,
+            amount: 0.1,
+            filledSol: 0.1,
+            actualFilledSol: 0.1,
+            actualWalletDeltaSol: 0.1,
+            fillAmountSource: 'wallet-delta' as const,
+            hasFillEvidence: true,
+            recordedAt: '2026-04-18T00:00:00.000Z'
+          }]
         },
         context: {
           pool: { address: 'pool-selected-other', liquidityUsd: 10_000, score: 90 },
@@ -2161,6 +2300,214 @@ describe('runLiveDaemon', () => {
         hasFillEvidence: true
       })
     }));
+    });
+
+    it('clears a trusted LP entry bound to another mint before reconstructing the active chain position', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-entry-mismatch-repair-'));
+      const stateRootDir = join(root, 'state');
+      const journalRootDir = join(root, 'journals');
+      const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+      const questOpenedAt = '2026-06-24T14:40:02.959Z';
+      const condorOpenedAt = '2026-06-24T15:00:40.000Z';
+
+      await runtimeStateStore.writePositionState({
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        lastReason: 'live-order-submitted',
+        activeMint: 'mint-condor',
+        activePoolAddress: 'pool-condor',
+        chainPositionAddress: 'pos-condor',
+        lifecycleState: 'open',
+        entrySol: 0.107416045,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-quest-open',
+        openedAt: questOpenedAt,
+        updatedAt: condorOpenedAt
+      });
+
+      await appendJsonLine(join(journalRootDir, 'new-token-v1-live-fills.jsonl'), {
+        submissionId: 'sub-quest-open',
+        mint: 'mint-quest',
+        side: 'add-lp',
+        amount: 0.107416045,
+        filledSol: 0.107416045,
+        actualFilledSol: 0.107416045,
+        actualWalletDeltaSol: 0.107416045,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true,
+        chainPositionAddress: 'pos-quest',
+        recordedAt: questOpenedAt
+      }, {
+        rotateDaily: true,
+        now: new Date(questOpenedAt)
+      });
+
+      const evidenceProvider = {
+        reconstructEntry: vi.fn(async () => ({
+          status: 'trusted' as const,
+          entrySol: 0.077416045,
+          openedAt: condorOpenedAt,
+          signature: 'sig-condor-open',
+          source: 'reconstructed_chain' as const,
+          poolAddress: 'pool-condor',
+          chainPositionAddress: 'pos-condor'
+        }))
+      };
+      const accountState = {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-condor',
+          positionAddress: 'pos-condor',
+          mint: 'mint-condor',
+          currentValueSol: 0.078,
+          exitQuoteValueSol: 0.078,
+          lpTotalValueSol: 0.078,
+          valuationStatus: 'ready' as const,
+          valuationTrust: 'exit_quote' as const,
+          valuationCompleteness: 'complete' as const,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      };
+
+      await runLiveDaemon({
+        strategy: 'new-token-v1',
+        stateRootDir,
+        journalRootDir,
+        tickIntervalMs: 1,
+        maxTicks: 1,
+        lpEntryEvidenceProvider: evidenceProvider,
+        accountProvider: {
+          readState: async () => accountState
+        },
+        buildCycleInput: async () => ({
+          runtimeMode: 'paused',
+          requestedPositionSol: 0.08,
+          accountState
+        })
+      });
+
+      const positionState = await runtimeStateStore.readPositionState();
+      const incidentPath = resolveActiveJsonlPath(
+        join(journalRootDir, 'new-token-v1-live-incidents.jsonl'),
+        new Date()
+      );
+      const incidentLines = (await readFile(incidentPath, 'utf8')).trim().split(/\r?\n/);
+      const incidents = incidentLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+      expect(evidenceProvider.reconstructEntry).toHaveBeenCalledTimes(1);
+      expect(positionState).toMatchObject({
+        activeMint: 'mint-condor',
+        activePoolAddress: 'pool-condor',
+        chainPositionAddress: 'pos-condor',
+        lifecycleState: 'open',
+        entrySol: 0.077416045,
+        entrySolSource: 'reconstructed_chain',
+        entryFillSubmissionId: 'sig-condor-open',
+        openedAt: condorOpenedAt,
+        valuationStatus: 'ready',
+        valuationTrust: 'exit_quote',
+        valuationCompleteness: 'complete'
+      });
+      expect(incidents).toContainEqual(expect.objectContaining({
+        reason: 'entry-fill-target-mismatch: trusted LP entry fill belongs to a different active mint',
+        tokenMint: 'mint-condor',
+        poolAddress: 'pool-condor',
+        chainPositionAddress: 'pos-condor'
+      }));
+    });
+
+    it('does not keep an actual-fill LP entry when the fill evidence is missing locally', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-entry-missing-evidence-repair-'));
+      const stateRootDir = join(root, 'state');
+      const journalRootDir = join(root, 'journals');
+      const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+      const staleOpenedAt = '2026-06-24T15:11:38.375Z';
+      const repairedOpenedAt = '2026-06-24T15:00:40.000Z';
+
+      await runtimeStateStore.writePositionState({
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        lastReason: 'hold',
+        activeMint: 'mint-condor',
+        activePoolAddress: 'pool-condor',
+        chainPositionAddress: 'pos-condor',
+        lifecycleState: 'open',
+        entrySol: 0.107416045,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-missing-local-evidence',
+        openedAt: staleOpenedAt,
+        updatedAt: staleOpenedAt
+      });
+
+      const evidenceProvider = {
+        reconstructEntry: vi.fn(async () => ({
+          status: 'trusted' as const,
+          entrySol: 0.077416045,
+          openedAt: repairedOpenedAt,
+          signature: 'sig-condor-reconstructed',
+          source: 'reconstructed_chain' as const,
+          poolAddress: 'pool-condor',
+          chainPositionAddress: 'pos-condor'
+        }))
+      };
+      const accountState = {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-condor',
+          positionAddress: 'pos-condor',
+          mint: 'mint-condor',
+          currentValueSol: 0.078,
+          exitQuoteValueSol: 0.078,
+          lpTotalValueSol: 0.078,
+          valuationStatus: 'ready' as const,
+          valuationTrust: 'exit_quote' as const,
+          valuationCompleteness: 'complete' as const,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      };
+
+      await runLiveDaemon({
+        strategy: 'new-token-v1',
+        stateRootDir,
+        journalRootDir,
+        tickIntervalMs: 1,
+        maxTicks: 1,
+        lpEntryEvidenceProvider: evidenceProvider,
+        accountProvider: {
+          readState: async () => accountState
+        },
+        buildCycleInput: async () => ({
+          runtimeMode: 'paused',
+          requestedPositionSol: 0.08,
+          accountState
+        })
+      });
+
+      const positionState = await runtimeStateStore.readPositionState();
+
+      expect(evidenceProvider.reconstructEntry).toHaveBeenCalledTimes(1);
+      expect(positionState).toMatchObject({
+        activeMint: 'mint-condor',
+        activePoolAddress: 'pool-condor',
+        chainPositionAddress: 'pos-condor',
+        lifecycleState: 'open',
+        entrySol: 0.077416045,
+        entrySolSource: 'reconstructed_chain',
+        entryFillSubmissionId: 'sig-condor-reconstructed',
+        openedAt: repairedOpenedAt
+      });
     });
 
     it('does not mark reconstructed LP entry trusted when reconstructed fill mirroring fails', async () => {
@@ -2708,7 +3055,18 @@ describe('runLiveDaemon', () => {
         hasLiquidity: true
       }],
       journalLpPositions: [],
-      fills: []
+      fills: [{
+        submissionId: 'sub-open',
+        mint: 'mint-safe',
+        side: 'add-lp' as const,
+        amount: 0.1,
+        filledSol: 0.1,
+        actualFilledSol: 0.1,
+        actualWalletDeltaSol: 0.1,
+        fillAmountSource: 'wallet-delta' as const,
+        hasFillEvidence: true,
+        recordedAt: openedAt
+      }]
     };
 
     await runLiveDaemon({

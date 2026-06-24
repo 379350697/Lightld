@@ -150,8 +150,13 @@ export function classifyIncidentReason(reason: string): IncidentClassification {
     lower.includes('dlmm') && lower.includes('simulation')
   ) {
     kind = 'dlmm_simulation_error';
-  } else if (lower.includes('missing-fill-evidence')) {
+  } else if (
+    lower.includes('missing-fill-evidence') ||
+    lower.includes('entry-fill-evidence-missing')
+  ) {
     kind = 'missing_fill_evidence';
+  } else if (lower.includes('entry-fill-target-mismatch')) {
+    kind = 'reconciliation_required';
   } else if (
     lower.includes('orphaned-position-without-bound-entry') ||
     lower.includes('orphaned_position_without_bound_entry')

@@ -57,6 +57,7 @@ import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
   positionState?: PositionStateSnapshot;
+  accountState?: LiveAccountState;
   selectionMode?: 'default' | 'maintenance-only' | 'new-open-only';
   skipMints?: string[];
 };
@@ -944,12 +945,17 @@ async function readTrustedAddLpFills(input: {
   });
 }
 
-function resolveConfirmedOpenFillEntry(resultFill?: LiveCycleConfirmedFill): TrustedLpEntryMetadata | undefined {
+function resolveConfirmedOpenFillEntry(input: {
+  resultFill?: LiveCycleConfirmedFill;
+  activeMint?: string;
+}): TrustedLpEntryMetadata | undefined {
+  const resultFill = input.resultFill;
   if (
     resultFill?.side !== 'add-lp'
     || resultFill.fillAmountSource !== 'wallet-delta'
     || resultFill.hasFillEvidence !== true
     || resultFill.filledSol <= 0
+    || (input.activeMint && resultFill.mint !== input.activeMint)
   ) {
     return undefined;
   }
@@ -971,6 +977,51 @@ function trustedEntryChanged(current: PositionStateSnapshot | undefined, next: T
     || current?.entrySolSource !== next.entrySolSource
     || current?.entryFillSubmissionId !== next.entryFillSubmissionId
     || (!current?.openedAt && Boolean(next.openedAt));
+}
+
+function positionStateTargetMatches(input: {
+  positionState?: PositionStateSnapshot | null;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  return Boolean(
+    input.positionState?.activeMint &&
+    input.positionState?.activePoolAddress &&
+    input.activeMint &&
+    input.activePoolAddress &&
+    input.positionState.activeMint === input.activeMint &&
+    input.positionState.activePoolAddress === input.activePoolAddress
+  );
+}
+
+function resolveTrustedEntryEvidenceProblem(input: {
+  positionState: PositionStateSnapshot;
+  fills: RuntimeFillEntry[];
+}): 'missing' | 'mismatch' | undefined {
+  if (
+    !input.positionState.entryFillSubmissionId ||
+    !input.positionState.activeMint ||
+    !isTrustedEntrySolSource(input.positionState.entrySolSource)
+  ) {
+    return undefined;
+  }
+
+  if (input.positionState.entrySolSource !== 'actual_fill') {
+    return undefined;
+  }
+
+  const matchedFill = input.fills.find((fill) =>
+    fill.submissionId === input.positionState.entryFillSubmissionId
+    && fill.side === 'add-lp'
+    && fill.hasFillEvidence === true
+    && isTrustedFillAmountSource(fill.fillAmountSource)
+  );
+
+  if (!matchedFill) {
+    return 'missing';
+  }
+
+  return matchedFill.mint === input.positionState.activeMint ? undefined : 'mismatch';
 }
 
 type ResidualSweepExecutionResult = {
@@ -1201,13 +1252,14 @@ function isOpenPathFetchFailure(input: {
 
 async function warmAccountProvider(accountProvider?: LiveAccountStateProvider) {
   if (!accountProvider) {
-    return;
+    return undefined;
   }
 
   try {
-    await accountProvider.readState();
+    return await accountProvider.readState();
   } catch {
     // Best-effort warmup only; normal tick handling still owns real failures.
+    return undefined;
   }
 }
 
@@ -1328,6 +1380,7 @@ function applyTransientCircuitAutoHeal(input: {
 
 function hasMatchingLpPosition(input: {
   accountState?: LiveAccountState;
+  chainPositionAddress?: string;
   activeMint?: string;
   activePoolAddress?: string;
 }) {
@@ -1336,12 +1389,30 @@ function hasMatchingLpPosition(input: {
     ...(input.accountState?.journalLpPositions ?? [])
   ];
 
-  return positions.some((position) =>
-    isManageableLpPosition(position) && (
-      (input.activeMint && position.mint === input.activeMint) ||
-      (input.activePoolAddress && position.poolAddress === input.activePoolAddress)
-    )
-  );
+  return positions.some((position) => {
+    if (!isManageableLpPosition(position)) {
+      return false;
+    }
+
+    if (input.chainPositionAddress) {
+      return position.positionAddress === input.chainPositionAddress
+        || position.chainPositionAddress === input.chainPositionAddress;
+    }
+
+    if (input.activeMint && input.activePoolAddress) {
+      return position.mint === input.activeMint && position.poolAddress === input.activePoolAddress;
+    }
+
+    if (input.activeMint) {
+      return position.mint === input.activeMint;
+    }
+
+    if (input.activePoolAddress) {
+      return position.poolAddress === input.activePoolAddress;
+    }
+
+    return false;
+  });
 }
 
 function hasOpenInventory(accountState?: LiveAccountState) {
@@ -1460,9 +1531,16 @@ function resolveBoundLpPosition(input: {
   ].filter((position) => isManageableLpPosition(position));
 
   if (input.chainPositionAddress) {
-    const exact = positions.find((position) => position.positionAddress === input.chainPositionAddress);
+    const exact = positions.find((position) =>
+      position.positionAddress === input.chainPositionAddress
+      || position.chainPositionAddress === input.chainPositionAddress
+    );
     if (exact) {
       return exact;
+    }
+
+    if (positions.length === 1) {
+      return positions[0];
     }
   }
 
@@ -1514,8 +1592,18 @@ function resolvePersistedActiveTarget(input: {
   });
 
   if (boundPosition) {
-    activeMint = activeMint || boundPosition.mint;
-    activePoolAddress = activePoolAddress || boundPosition.poolAddress;
+    const actionOpenedNewPosition = isOpeningActionName(input.action) && input.liveOrderSubmitted;
+    const boundMatchesRequestedTarget = Boolean(
+      activeMint &&
+      activePoolAddress &&
+      boundPosition.mint === activeMint &&
+      boundPosition.poolAddress === activePoolAddress
+    );
+
+    if (!actionOpenedNewPosition || boundMatchesRequestedTarget || (!activeMint && !activePoolAddress)) {
+      activeMint = boundPosition.mint;
+      activePoolAddress = boundPosition.poolAddress;
+    }
   }
 
   return { activeMint, activePoolAddress };
@@ -1528,15 +1616,23 @@ function resolvePersistedLpIdentity(input: {
   accountState?: LiveAccountState;
   activeMint?: string;
   activePoolAddress?: string;
+  action?: string;
+  liveOrderSubmitted?: boolean;
 }) {
+  const actionOpenedNewPosition = isOpeningActionName(input.action) && input.liveOrderSubmitted === true;
+  const priorStateMatchesTarget = positionStateTargetMatches(input);
+  const ignorePriorStateIdentity = actionOpenedNewPosition && !priorStateMatchesTarget;
+  const priorChainPositionAddress = ignorePriorStateIdentity
+    ? input.pendingSubmission?.chainPositionAddress
+    : input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress;
   const boundPosition = resolveBoundLpPosition({
     accountState: input.accountState,
-    chainPositionAddress: input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress,
+    chainPositionAddress: priorChainPositionAddress,
     activeMint: input.activeMint,
     activePoolAddress: input.activePoolAddress
   });
   const chainPositionAddress = boundPosition?.positionAddress
-    || input.positionState?.chainPositionAddress
+    || (!ignorePriorStateIdentity ? input.positionState?.chainPositionAddress : undefined)
     || input.pendingSubmission?.chainPositionAddress;
 
   if (input.lifecycleState === 'closed') {
@@ -1558,11 +1654,11 @@ function resolvePersistedLpIdentity(input: {
   }
 
   return {
-    openIntentId: input.pendingSubmission?.openIntentId || input.positionState?.openIntentId,
+    openIntentId: input.pendingSubmission?.openIntentId || (!ignorePriorStateIdentity ? input.positionState?.openIntentId : undefined),
     positionId: chainPositionAddress
       ? createPositionId({ chainPositionAddress })
       : input.pendingSubmission?.positionId
-        || input.positionState?.positionId
+        || (!ignorePriorStateIdentity ? input.positionState?.positionId : undefined)
         || ((input.activeMint || input.activePoolAddress)
           ? createPositionId({
               poolAddress: input.activePoolAddress,
@@ -1594,12 +1690,18 @@ export function resolveLifecycleStateForPersist(input: {
   accountState?: LiveAccountState;
   lastAction?: string;
   lastReason?: string;
+  chainPositionAddress?: string;
   activeMint?: string;
   activePoolAddress?: string;
 }): PositionLifecycleState {
+  if (!input.accountState && !input.nextLifecycleState) {
+    return input.previousLifecycleState ?? 'closed';
+  }
+
   const hasInventory = hasOpenInventory(input.accountState);
   const hasMatchingPosition = hasMatchingLpPosition({
     accountState: input.accountState,
+    chainPositionAddress: input.chainPositionAddress,
     activeMint: input.activeMint,
     activePoolAddress: input.activePoolAddress
   });
@@ -1707,13 +1809,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const lpEntryEvidenceCooldowns = new Map<string, string>();
 
   await mirrorRuntime?.start();
-  await warmAccountProvider(options.accountProvider);
+  let warmedAccountState = await warmAccountProvider(options.accountProvider);
 
   try {
     while (tickCount < maxTicks) {
       tickCount += 1;
       let cycleInput: Omit<LiveCycleInput, 'strategy'> | undefined;
-      let effectiveAccountState: LiveAccountState | undefined;
+      let effectiveAccountState: LiveAccountState | undefined = warmedAccountState;
+      warmedAccountState = undefined;
       let tickError: unknown;
       let pendingSubmission = await pendingSubmissionStore.read();
       let pendingSubmissionBeforeCycle = pendingSubmission;
@@ -1778,7 +1881,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: nowIso()
         });
 
-        if (!effectiveAccountState && options.accountProvider && options.signer && options.broadcaster) {
+        if (!effectiveAccountState && options.accountProvider) {
           effectiveAccountState = await options.accountProvider.readState();
         }
 
@@ -1818,41 +1921,112 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
         }
 
-        if (
-          positionState?.lifecycleState === 'open'
-          && !isTrustedEntrySolSource(positionState.entrySolSource)
-        ) {
+        if (positionState?.lifecycleState === 'open') {
+          const boundPosition = resolveBoundLpPosition({
+            accountState: effectiveAccountState,
+            chainPositionAddress: positionState.chainPositionAddress,
+            activeMint: positionState.activeMint,
+            activePoolAddress: positionState.activePoolAddress
+          });
+          if (
+            boundPosition &&
+            (
+              positionState.activeMint !== boundPosition.mint ||
+              positionState.activePoolAddress !== boundPosition.poolAddress ||
+              positionState.chainPositionAddress !== boundPosition.positionAddress ||
+              positionState.positionId !== createPositionId({ chainPositionAddress: boundPosition.positionAddress })
+            )
+          ) {
+            positionState = {
+              ...positionState,
+              activeMint: boundPosition.mint,
+              activePoolAddress: boundPosition.poolAddress,
+              positionId: createPositionId({ chainPositionAddress: boundPosition.positionAddress }),
+              chainPositionAddress: boundPosition.positionAddress,
+              updatedAt: nowIso()
+            };
+            await runtimeStateStore.writePositionState(positionState);
+          }
+
           const journalFills = await readTrustedAddLpFills({
             strategy: options.strategy,
             journalRootDir
           });
-          let repairedEntry = resolveTrustedEntryFromFills({
-            positionState,
-            fills: [
-              ...(effectiveAccountState?.fills ?? []),
-              ...journalFills
-            ]
-          });
+          const trustedFills = [
+            ...(effectiveAccountState?.fills ?? []),
+            ...journalFills
+          ];
 
-          if (!repairedEntry && options.lpEntryEvidenceProvider && positionState.activeMint) {
-            const evidenceKey = positionState.chainPositionAddress
-              || positionState.positionId
-              || `${positionState.activePoolAddress ?? ''}:${positionState.activeMint}`;
-            const cooldownUntil = lpEntryEvidenceCooldowns.get(evidenceKey) ?? '';
+          const canEvaluateEntryFillEvidence = Boolean(effectiveAccountState || journalFills.length > 0);
+          const entryEvidenceProblem = canEvaluateEntryFillEvidence
+            ? resolveTrustedEntryEvidenceProblem({
+                positionState,
+                fills: trustedFills
+              })
+            : undefined;
 
-            if (!cooldownUntil || cooldownUntil <= nowIso()) {
-              lpEntryEvidenceCooldowns.set(
-                evidenceKey,
-                new Date(Date.now() + LP_ENTRY_EVIDENCE_COOLDOWN_MS).toISOString()
-              );
-              try {
-                const evidence = await options.lpEntryEvidenceProvider.reconstructEntry({
-                  tokenMint: positionState.activeMint,
-                  poolAddress: positionState.activePoolAddress,
-                  chainPositionAddress: positionState.chainPositionAddress,
-                  openedAtHint: positionState.openedAt,
-                  orderSignature: positionState.lastOrderIdempotencyKey
-                });
+          if (entryEvidenceProblem) {
+            const reason = entryEvidenceProblem === 'mismatch'
+              ? 'entry-fill-target-mismatch: trusted LP entry fill belongs to a different active mint'
+              : 'entry-fill-evidence-missing: trusted LP entry fill evidence is not locally verifiable';
+            positionState = {
+              ...positionState,
+              entrySol: undefined,
+              entrySolSource: undefined,
+              entryFillSubmissionId: undefined,
+              openedAt: undefined,
+              valuationStatus: 'unavailable',
+              valuationReason: entryEvidenceProblem === 'mismatch'
+                ? 'entry-fill-target-mismatch'
+                : 'entry-fill-evidence-missing',
+              valuationTrust: undefined,
+              valuationSource: undefined,
+              valuationCompleteness: undefined,
+              exitQuoteValueSol: undefined,
+              marketValueSol: undefined,
+              displayValueSol: undefined,
+              lpTotalValueSol: undefined,
+              updatedAt: nowIso()
+            };
+            await runtimeStateStore.writePositionState(positionState);
+            await appendDaemonIncident({
+              mirrorRuntime,
+              strategyId: options.strategy,
+              journalRootDir,
+              runtimeMode: runtimeState.mode,
+              stage: 'reconciliation',
+              reason,
+              tokenMint: positionState.activeMint,
+              poolAddress: positionState.activePoolAddress,
+              chainPositionAddress: positionState.chainPositionAddress
+            });
+          }
+
+          if (!isTrustedEntrySolSource(positionState.entrySolSource)) {
+            let repairedEntry = resolveTrustedEntryFromFills({
+              positionState,
+              fills: trustedFills
+            });
+
+            if (!repairedEntry && options.lpEntryEvidenceProvider && positionState.activeMint) {
+              const evidenceKey = positionState.chainPositionAddress
+                || positionState.positionId
+                || `${positionState.activePoolAddress ?? ''}:${positionState.activeMint}`;
+              const cooldownUntil = lpEntryEvidenceCooldowns.get(evidenceKey) ?? '';
+
+              if (!cooldownUntil || cooldownUntil <= nowIso()) {
+                lpEntryEvidenceCooldowns.set(
+                  evidenceKey,
+                  new Date(Date.now() + LP_ENTRY_EVIDENCE_COOLDOWN_MS).toISOString()
+                );
+                try {
+                  const evidence = await options.lpEntryEvidenceProvider.reconstructEntry({
+                    tokenMint: positionState.activeMint,
+                    poolAddress: positionState.activePoolAddress,
+                    chainPositionAddress: positionState.chainPositionAddress,
+                    openedAtHint: positionState.openedAt,
+                    orderSignature: positionState.lastOrderIdempotencyKey
+                  });
 
                   if (evidence.status === 'trusted') {
                     const reconstructedEntry: TrustedLpEntryResolution = {
@@ -1903,32 +2077,33 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
                       chainPositionAddress: positionState.chainPositionAddress
                     });
                   }
-              } catch {
-                await appendDaemonIncident({
-                  mirrorRuntime,
-                  strategyId: options.strategy,
-                  journalRootDir,
-                  runtimeMode: runtimeState.mode,
-                  stage: 'reconciliation',
-                  reason: 'orphaned-position-without-bound-entry: active LP entry reconstruction failed',
-                  tokenMint: positionState.activeMint,
-                  poolAddress: positionState.activePoolAddress,
-                  chainPositionAddress: positionState.chainPositionAddress
-                });
+                } catch {
+                  await appendDaemonIncident({
+                    mirrorRuntime,
+                    strategyId: options.strategy,
+                    journalRootDir,
+                    runtimeMode: runtimeState.mode,
+                    stage: 'reconciliation',
+                    reason: 'orphaned-position-without-bound-entry: active LP entry reconstruction failed',
+                    tokenMint: positionState.activeMint,
+                    poolAddress: positionState.activePoolAddress,
+                    chainPositionAddress: positionState.chainPositionAddress
+                  });
+                }
               }
             }
-          }
 
-          if (trustedEntryChanged(positionState, repairedEntry)) {
-            positionState = {
-              ...positionState,
-              entrySol: repairedEntry!.entrySol,
-              entrySolSource: repairedEntry!.entrySolSource,
-              entryFillSubmissionId: repairedEntry!.entryFillSubmissionId,
-              openedAt: repairedEntry!.openedAt ?? positionState.openedAt,
-              updatedAt: nowIso()
-            };
-            await runtimeStateStore.writePositionState(positionState);
+            if (trustedEntryChanged(positionState, repairedEntry)) {
+              positionState = {
+                ...positionState,
+                entrySol: repairedEntry!.entrySol,
+                entrySolSource: repairedEntry!.entrySolSource,
+                entryFillSubmissionId: repairedEntry!.entryFillSubmissionId,
+                openedAt: repairedEntry!.openedAt ?? positionState.openedAt,
+                updatedAt: nowIso()
+              };
+              await runtimeStateStore.writePositionState(positionState);
+            }
           }
         }
 
@@ -1940,6 +2115,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         cycleInput = await buildCycleInput(tickCount, {
           tickCount,
           positionState,
+          accountState: effectiveAccountState,
           selectionMode: shouldStartMaintenancePass ? 'maintenance-only' : 'default'
         });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
@@ -2022,6 +2198,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             let newOpenCycleInput = await buildCycleInput(tickCount, {
               tickCount,
               positionState,
+              accountState: effectiveAccountState,
               selectionMode: 'new-open-only',
               skipMints
             });
@@ -2317,6 +2494,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           accountState: effectiveAccountState,
           lastAction: result.action,
           lastReason: result.reason,
+          chainPositionAddress: positionState?.chainPositionAddress
+            || persistedPendingSubmission?.chainPositionAddress
+            || pendingSubmissionBeforeCycle?.chainPositionAddress,
           activeMint: persistedActiveMint,
           activePoolAddress: persistedPoolAddress
         });
@@ -2336,9 +2516,17 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const persistedActiveMintForState = persistedLifecycleState === 'closed' ? undefined : persistedActiveMint;
         const persistedActivePoolAddressForState = persistedLifecycleState === 'closed' ? undefined : persistedPoolAddress;
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
-          ? resolveConfirmedOpenFillEntry(result.confirmedFill)
+          ? resolveConfirmedOpenFillEntry({
+              resultFill: result.confirmedFill,
+              activeMint: persistedActiveMint
+            })
           : undefined;
         const retainedOpenEntry: TrustedLpEntryMetadata | undefined = !positionClosed
+          && positionStateTargetMatches({
+            positionState,
+            activeMint: persistedActiveMint,
+            activePoolAddress: persistedPoolAddress
+          })
           && isTrustedEntrySolSource(positionState?.entrySolSource)
           && typeof positionState?.entrySol === 'number'
           && positionState.entrySol > 0
@@ -2349,9 +2537,20 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               openedAt: positionState.openedAt
             }
           : undefined;
+        const accountOpenEntry: TrustedLpEntryMetadata | undefined = !positionClosed
+          && positionState
+          ? resolveTrustedEntryFromFills({
+              positionState: {
+                ...positionState,
+                activeMint: persistedActiveMint,
+                activePoolAddress: persistedPoolAddress
+              },
+              fills: effectiveAccountState?.fills ?? []
+            })
+          : undefined;
         const persistedEntryMetadata = positionClosed
           ? undefined
-          : submittedOpenEntry ?? retainedOpenEntry;
+          : submittedOpenEntry ?? retainedOpenEntry ?? accountOpenEntry;
         const persistedEntrySol = persistedEntryMetadata?.entrySol;
         const persistedEntrySolSource = persistedEntryMetadata?.entrySolSource;
         const persistedEntryFillSubmissionId = persistedEntryMetadata?.entryFillSubmissionId;
@@ -2378,7 +2577,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           positionState,
           accountState: effectiveAccountState,
           activeMint: persistedActiveMint,
-          activePoolAddress: persistedPoolAddress
+          activePoolAddress: persistedPoolAddress,
+          action: result.action,
+          liveOrderSubmitted: result.liveOrderSubmitted
         });
         const inferredPositionMetadata = persistedLifecycleState === 'open'
           ? inferOpenPositionMetadata({
@@ -2541,7 +2742,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const persistedLifecycleState = resolveLifecycleStateForPersist({
           previousLifecycleState: positionState?.lifecycleState,
           pendingSubmission: persistedPendingSubmission !== null,
-          accountState: effectiveAccountState
+          accountState: effectiveAccountState,
+          chainPositionAddress: positionState?.chainPositionAddress,
+          activeMint: positionState?.activeMint,
+          activePoolAddress: positionState?.activePoolAddress
         });
         const persistedIdentity = resolvePersistedLpIdentity({
           lifecycleState: persistedLifecycleState,
@@ -2551,21 +2755,22 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activeMint: positionState?.activeMint,
           activePoolAddress: positionState?.activePoolAddress
         });
+        const positionClosed = persistedLifecycleState === 'closed';
         await runtimeStateStore.writePositionState({
           allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: 'hold',
           lastOrderIdempotencyKey: positionState?.lastOrderIdempotencyKey,
-          activeMint: positionState?.activeMint,
+          activeMint: positionClosed ? undefined : positionState?.activeMint,
           openIntentId: persistedIdentity.openIntentId,
           positionId: persistedIdentity.positionId,
           chainPositionAddress: persistedIdentity.chainPositionAddress,
-          activePoolAddress: positionState?.activePoolAddress,
+          activePoolAddress: positionClosed ? undefined : positionState?.activePoolAddress,
           lifecycleState: persistedLifecycleState,
-          entrySol: positionState?.entrySol,
-          entrySolSource: positionState?.entrySolSource,
-          entryFillSubmissionId: positionState?.entryFillSubmissionId,
-          openedAt: positionState?.openedAt,
+          entrySol: positionClosed ? undefined : positionState?.entrySol,
+          entrySolSource: positionClosed ? undefined : positionState?.entrySolSource,
+          entryFillSubmissionId: positionClosed ? undefined : positionState?.entryFillSubmissionId,
+          openedAt: positionClosed ? undefined : positionState?.openedAt,
           valuationStatus: persistedIdentity.valuationStatus,
           valuationReason: persistedIdentity.valuationReason,
           lastValuationAt: persistedIdentity.lastValuationAt,

@@ -219,7 +219,8 @@ async function main() {
         }),
         accountProvider: new HttpLiveAccountStateProvider({
           url: runtimeConfig.accountStateUrl,
-          authToken: runtimeConfig.authToken
+          authToken: runtimeConfig.authToken,
+          timeoutMs: runtimeConfig.accountStateTimeoutMs
         }),
         lpEntryEvidenceProvider: new HttpLpEntryEvidenceProvider({
           url: deriveLpEntryEvidenceUrl(runtimeConfig.accountStateUrl),
@@ -313,9 +314,9 @@ async function main() {
     maxActivePositions: args.maxActivePositions,
     openAfterMaintenanceHold,
     buildCycleInput: async (_tickCount, buildContext) => {
-      const accountState = executionAdapters.accountProvider
+      const accountState = buildContext?.accountState ?? (executionAdapters.accountProvider
         ? await executionAdapters.accountProvider.readState()
-        : undefined;
+        : undefined);
 
       const ingestInput = await buildLiveCycleInputFromIngest({
         strategy,

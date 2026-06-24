@@ -204,7 +204,17 @@ export function resolveTrustedEntryFromFills(input: {
     .filter((fill) => classifyLpEntryFillBinding({ fill, positionState }) === 'strict-window')
     .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
 
-  const selected = strongCandidates[0] ?? (strictWindowCandidates.length === 1 ? strictWindowCandidates[0] : undefined);
+  const uniquePoolCandidates = (input.fills ?? [])
+    .filter((fill) =>
+      isTrustedLpOpenFill(fill)
+      && fill.mint === positionState.activeMint
+      && fillMatchesActivePool(fill, positionState)
+    )
+    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
+
+  const selected = strongCandidates[0]
+    ?? (strictWindowCandidates.length === 1 ? strictWindowCandidates[0] : undefined)
+    ?? (uniquePoolCandidates.length === 1 ? uniquePoolCandidates[0] : undefined);
   if (!selected) {
     return undefined;
   }
