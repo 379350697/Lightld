@@ -1411,7 +1411,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const lamports = await rpcClient.getBalance(walletPublicKey);
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
-            let walletTokens: { mint: string; symbol: string; amount: number; currentValueSol?: number }[] = [];
+            let walletTokens: {
+              mint: string;
+              symbol: string;
+              amount: number;
+              amountLamports: number;
+              currentValueSol?: number;
+            }[] = [];
             let walletLpPositions: AccountStateLpPosition[] = [];
 
             try {
@@ -1454,7 +1460,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 }
               }
 
-              walletTokens = walletTokenCandidates.map(({ amountLamports: _amountLamports, ...token }) => token);
+              walletTokens = walletTokenCandidates;
             } catch {
               // Token accounts query may fail on free RPC
             }

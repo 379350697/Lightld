@@ -41,6 +41,7 @@ import { createPositionId, markOrphanedLpPosition } from './lp-position-record.t
 import { isResolvedConfirmation } from './live-cycle-state.ts';
 import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
+import { hasActionableTokenAmount } from './token-inventory.ts';
 import { DEFAULT_SOL_DEPLETION_EXIT_BINS } from './lp-sol-exposure.ts';
 import {
   isTrustedEntrySolSource,
@@ -339,7 +340,7 @@ function collectWatchlistCandidates(input: {
   ];
 
   for (const token of input.accountState?.walletTokens ?? []) {
-    if (token.amount > 0 && isNonStableMint(token.mint)) {
+    if (hasActionableTokenAmount(token) && isNonStableMint(token.mint)) {
       candidates.push({
         tokenMint: token.mint,
         tokenSymbol: token.symbol ?? '',
@@ -486,8 +487,12 @@ function buildWatchlistSnapshot(input: {
   observationAt: string;
   windowLabel: string;
 }): WatchlistSnapshotRecord {
-  const walletToken = (input.accountState?.walletTokens ?? []).find((token) => token.mint === input.trackedToken.tokenMint && token.amount > 0);
-  const journalToken = (input.accountState?.journalTokens ?? []).find((token) => token.mint === input.trackedToken.tokenMint && token.amount > 0);
+  const walletToken = (input.accountState?.walletTokens ?? []).find((token) =>
+    token.mint === input.trackedToken.tokenMint && hasActionableTokenAmount(token)
+  );
+  const journalToken = (input.accountState?.journalTokens ?? []).find((token) =>
+    token.mint === input.trackedToken.tokenMint && hasActionableTokenAmount(token)
+  );
   const lpPosition = [
     ...(input.accountState?.walletLpPositions ?? []),
     ...(input.accountState?.journalLpPositions ?? [])
@@ -559,7 +564,7 @@ function collectActiveExposureMints(input: {
     ...(input.accountState?.walletTokens ?? []),
     ...(input.accountState?.journalTokens ?? [])
   ]) {
-    if (isNonStableMint(token.mint) && token.amount > 0) {
+    if (isNonStableMint(token.mint) && hasActionableTokenAmount(token)) {
       mints.add(token.mint);
     }
   }
@@ -594,7 +599,7 @@ function hasNonStableTokenInventory(accountState?: LiveAccountState) {
   return [
     ...(accountState?.walletTokens ?? []),
     ...(accountState?.journalTokens ?? [])
-  ].some((token) => isNonStableMint(token.mint) && token.amount > 0);
+  ].some((token) => isNonStableMint(token.mint) && hasActionableTokenAmount(token));
 }
 
 function buildNewOpenExecutionAccountState(accountState?: LiveAccountState): LiveAccountState | undefined {
@@ -1016,7 +1021,7 @@ async function runResidualTokenSweepIfDue(input: {
   await input.residualTokenSweepStore.pruneExpired(nowIsoValue);
   const eligibleTokens = (input.accountState?.walletTokens ?? [])
     .filter((token) =>
-      token.amount > 0
+      hasActionableTokenAmount(token)
       && isNonStableMint(token.mint)
       && typeof token.currentValueSol === 'number'
       && token.currentValueSol >= input.residualTokenSweepMinValueSol
@@ -1341,7 +1346,7 @@ function hasMatchingLpPosition(input: {
 
 function hasOpenInventory(accountState?: LiveAccountState) {
   return Boolean(
-    accountState?.walletTokens?.some((token) => token.amount > 0
+    accountState?.walletTokens?.some((token) => hasActionableTokenAmount(token)
       && token.mint !== 'So11111111111111111111111111111111111111112'
       && token.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') ||
     accountState?.walletLpPositions?.some((position) =>

@@ -108,12 +108,14 @@ export type LiveAccountState = {
     mint: string;
     symbol?: string;
     amount: number;
+    amountLamports?: number;
     currentValueSol?: number;
   }>;
   journalTokens?: Array<{
     mint: string;
     symbol?: string;
     amount: number;
+    amountLamports?: number;
     currentValueSol?: number;
   }>;
   fills?: Array<{

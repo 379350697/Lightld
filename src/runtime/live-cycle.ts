@@ -84,6 +84,7 @@ import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
+import { hasActionableTokenAmount } from './token-inventory.ts';
 import {
   classifyLpEntryFillBinding,
   isTrustedFillAmountSource,
@@ -111,7 +112,9 @@ const STABLE_MINTS = new Set([
 
 function hasNonStableInventory(accountState: LiveAccountState | undefined) {
   return Boolean(
-    accountState?.walletTokens?.some((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)) ||
+    accountState?.walletTokens?.some((token) =>
+      hasActionableTokenAmount(token) && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)
+    ) ||
     accountState?.walletLpPositions?.some((position) =>
       position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && isManageableLpPosition(position)
     ) ||
@@ -123,7 +126,7 @@ function hasNonStableInventory(accountState: LiveAccountState | undefined) {
 
 function findLargestNonStableInventory(accountState: LiveAccountState | undefined) {
   return (accountState?.walletTokens ?? [])
-    .filter((token) => token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
+    .filter((token) => hasActionableTokenAmount(token) && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
     .sort((a, b) => b.amount - a.amount)[0];
 }
 
@@ -645,7 +648,7 @@ function hasReduceRiskWalletExposure(input: {
 
   if (input.action === 'dca-out') {
     return (input.accountState.walletTokens ?? []).some((token) =>
-      token.mint === input.tokenMint && token.amount > 0
+      token.mint === input.tokenMint && hasActionableTokenAmount(token)
     );
   }
 
@@ -661,7 +664,7 @@ function hasPositiveWalletTokenBalance(input: {
   }
 
   return input.accountState.walletTokens.some((token) =>
-    token.mint === input.tokenMint && token.amount > 0
+    token.mint === input.tokenMint && hasActionableTokenAmount(token)
   );
 }
 

@@ -646,6 +646,46 @@ describe('runLiveCycle', () => {
     expect(allowedExit.action).toBe('withdraw-lp');
   });
 
+  it('does not force a dca-out for unsellable token dust below the raw amount floor', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      runtimeMode: 'flatten_only',
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{
+          mint: 'mint-dust',
+          symbol: 'DUST',
+          amount: 0.000009,
+          amountLamports: 9
+        }],
+        journalTokens: [{
+          mint: 'mint-dust',
+          symbol: 'DUST',
+          amount: 0.000009,
+          amountLamports: 9
+        }],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.action).toBe('hold');
+    expect(result.reason).toBe('runtime-flatten-only');
+    expect(result.liveOrderSubmitted).toBe(false);
+  });
+
   it('opens LP positions once LP eligibility passed', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
