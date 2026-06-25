@@ -2696,7 +2696,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           : undefined;
         const persistedEntryMetadata = positionClosed
           ? undefined
-          : submittedOpenEntry ?? retainedOpenEntry ?? accountOpenEntry;
+          : submittedOpenEntry ?? accountOpenEntry ?? retainedOpenEntry;
         const persistedEntrySol = persistedEntryMetadata?.entrySol;
         const persistedEntrySolSource = persistedEntryMetadata?.entrySolSource;
         const persistedEntryFillSubmissionId = persistedEntryMetadata?.entryFillSubmissionId;

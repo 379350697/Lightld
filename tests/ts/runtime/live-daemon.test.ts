@@ -2712,9 +2712,95 @@ describe('runLiveDaemon', () => {
         poolAddress: 'pool-condor',
         chainPositionAddress: 'pos-condor'
       }));
+  });
+
+  it('prefers trusted account open-fill evidence over stale persisted LP entry metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-stale-entry-account-fill-repair-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const staleOpenedAt = '2026-06-25T02:32:09.860Z';
+    const realOpenedAt = '2026-06-25T02:25:44.622Z';
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lastReason: 'hold',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-safe',
+      lifecycleState: 'open',
+      entrySol: 0.137416044,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'stale-open',
+      openedAt: staleOpenedAt,
+      updatedAt: staleOpenedAt
     });
 
-    it('does not keep an actual-fill LP entry when the fill evidence is missing locally', async () => {
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-safe',
+        positionAddress: 'current-position',
+        mint: 'mint-safe',
+        currentValueSol: 0.07740664,
+        exitQuoteValueSol: 0.07740664,
+        lpTotalValueSol: 0.07740664,
+        liquidityValueSol: 0.019999289,
+        unclaimedFeeValueSol: 0.000001271,
+        recoverableRentSol: 0.05740608,
+        valuationStatus: 'ready' as const,
+        valuationTrust: 'exit_quote' as const,
+        valuationCompleteness: 'complete' as const,
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: [{
+        submissionId: 'real-open',
+        mint: 'mint-safe',
+        side: 'add-lp' as const,
+        amount: 0.077416045,
+        actualFilledSol: 0.077416045,
+        actualWalletDeltaSol: -0.077416045,
+        fillAmountSource: 'wallet-delta' as const,
+        hasFillEvidence: true,
+        positionId: 'pool-safe:mint-safe',
+        recordedAt: realOpenedAt
+      }]
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      accountProvider: {
+        readState: async () => accountState
+      },
+      buildCycleInput: async () => ({
+        runtimeMode: 'paused',
+        requestedPositionSol: 0.08,
+        accountState
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    expect(positionState).toMatchObject({
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-safe',
+      lifecycleState: 'open',
+      entrySol: 0.077416045,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'real-open',
+      openedAt: realOpenedAt
+    });
+  });
+
+  it('does not keep an actual-fill LP entry when the fill evidence is missing locally', async () => {
       const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-entry-missing-evidence-repair-'));
       const stateRootDir = join(root, 'state');
       const journalRootDir = join(root, 'journals');
