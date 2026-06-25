@@ -366,6 +366,15 @@ function mergeValuationTrust(current: ValuationTrust, next: ValuationTrust): Val
   return 'exit_quote';
 }
 
+const LP_VALUATION_FEE_DUST_VALUE_SOL = 0.000001;
+
+function isDustFeeValueSol(valueSol: unknown) {
+  return typeof valueSol === 'number'
+    && Number.isFinite(valueSol)
+    && valueSol >= 0
+    && valueSol <= LP_VALUATION_FEE_DUST_VALUE_SOL;
+}
+
 function markPoolPriceFallbackUntrusted(position: MeteoraLpPositionSnapshot, reason: string): AccountStateLpPosition {
   return {
     ...position,
@@ -482,9 +491,12 @@ async function enrichLpExitValues(input: {
         }
 
         unclaimedFeeTokenValueSol = quotedFeeTokenValueSol.valueSol;
-        valuationTrust = mergeValuationTrust(valuationTrust, quotedFeeTokenValueSol.trust);
-        hasMarketValuation ||= quotedFeeTokenValueSol.trust === 'market_price';
-        valuationSources.push('fee-' + quotedFeeTokenValueSol.source);
+        const feeTokenQuoteIsDust = isDustFeeValueSol(quotedFeeTokenValueSol.valueSol);
+        if (quotedFeeTokenValueSol.trust === 'exit_quote' || !feeTokenQuoteIsDust) {
+          valuationTrust = mergeValuationTrust(valuationTrust, quotedFeeTokenValueSol.trust);
+          hasMarketValuation ||= quotedFeeTokenValueSol.trust === 'market_price';
+        }
+        valuationSources.push((feeTokenQuoteIsDust ? 'fee-dust-' : 'fee-') + quotedFeeTokenValueSol.source);
       }
 
       const liquidityValueSol = withdrawSolAmount + withdrawTokenValueSol;

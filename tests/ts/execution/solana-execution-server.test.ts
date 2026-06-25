@@ -1622,6 +1622,99 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('does not downgrade LP exit valuation when only fee token market value is dust', async () => {
+    const keypair = Keypair.generate();
+    const quoteTokenToSol = vi.fn(async ({ amountLamports }: { amountLamports: string }) => {
+      if (amountLamports === '123456') {
+        return {
+          valueSol: 0.02,
+          source: 'meteora-dlmm-swap-quote',
+          trust: 'exit_quote'
+        };
+      }
+
+      return {
+        valueSol: 0.00000001,
+        source: 'dexscreener-pair',
+        trust: 'market_price'
+      };
+    });
+    const getPositionSnapshots = vi.fn(async () => [{
+      poolAddress: 'pool-lp-1',
+      positionAddress: 'position-lp-1',
+      mint: 'earthcoin-mint',
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 130,
+      binCount: 69,
+      fundedBinCount: 2,
+      solSide: 'tokenX' as const,
+      solDepletedBins: 30,
+      withdrawSolAmount: 0.08,
+      withdrawTokenAmountLamports: 123456,
+      withdrawTokenAmountRaw: '123456',
+      withdrawTokenMint: 'earthcoin-mint',
+      unclaimedFeeSol: 0,
+      unclaimedFeeSolAmount: 0,
+      unclaimedFeeTokenAmountLamports: 12,
+      unclaimedFeeTokenAmountRaw: '12',
+      unclaimedFeeTokenMint: 'earthcoin-mint',
+      recoverableRentSol: 0.057416045,
+      positionStatus: 'active' as const,
+      hasLiquidity: true,
+      hasClaimableFees: true,
+      valuationStatus: 'unavailable' as const,
+      valuationReason: 'withdraw-token-quote-required',
+      valuationSource: 'meteora-withdraw-simulation'
+    }]);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000,
+        getTokenAccountsByOwner: async () => []
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote: vi.fn(),
+      } as any,
+      dlmmClient: { getPositionSnapshots } as any,
+      valuationProviderChain: { quoteTokenToSol } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(server.origin + '/account-state', {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.walletLpPositions).toEqual([
+      expect.objectContaining({
+        liquidityValueSol: 0.1,
+        unclaimedFeeValueSol: 0.00000001,
+        lpTotalValueSol: 0.157416055,
+        exitQuoteValueSol: 0.157416055,
+        displayValueSol: 0.157416055,
+        valuationTrust: 'exit_quote',
+        valuationStatus: 'ready',
+        valuationReason: '',
+        valuationCompleteness: 'complete',
+        valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote+fee-dust-dexscreener-pair+position-account-rent'
+      })
+    ]);
+    expect(quoteTokenToSol).toHaveBeenCalledTimes(2);
+
+    await server.stop();
+  });
+
   it('keeps DLMM pool-price LP valuation when Jupiter exit valuation is unavailable', async () => {
     const keypair = Keypair.generate();
     const buildSellQuoteParams = vi.fn((mint: string, amount: number) => ({ mint, amount }));
