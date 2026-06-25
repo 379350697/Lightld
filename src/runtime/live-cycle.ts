@@ -1388,33 +1388,36 @@ function computeTrustedLpNetPnlPct(input: {
   entrySol?: number;
   currentValueSol?: number;
   lpTotalValueSol?: number;
+  exitQuoteValueSol?: number;
   liquidityValueSol?: number;
   unclaimedFeeValueSol?: number;
   claimedFeeValueSol?: number;
   recoverableRentSol?: number;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
 }) {
-  const lpExitValueSol = resolveLpTotalValueSol({
+  const lpTradingValueSol = resolveLpTradingValueSol({
     currentValueSol: input.currentValueSol,
     lpTotalValueSol: input.lpTotalValueSol,
+    exitQuoteValueSol: input.exitQuoteValueSol,
     liquidityValueSol: input.liquidityValueSol,
     unclaimedFeeValueSol: input.unclaimedFeeValueSol,
     claimedFeeValueSol: input.claimedFeeValueSol,
     recoverableRentSol: input.recoverableRentSol
   });
-  const entrySol = typeof input.entrySol === 'number' && Number.isFinite(input.entrySol)
-    ? input.entrySol
-    : undefined;
+  const entryTradingSol = resolveLpEntryTradingSol({
+    entrySol: input.entrySol,
+    recoverableRentSol: input.recoverableRentSol
+  });
 
   if (
-    typeof entrySol !== 'number'
-    || entrySol <= 0
-    || typeof lpExitValueSol !== 'number'
+    typeof entryTradingSol !== 'number'
+    || entryTradingSol <= 0
+    || typeof lpTradingValueSol !== 'number'
   ) {
     return undefined;
   }
 
-  return evaluateLpPnl(entrySol, lpExitValueSol, 0, {
+  return evaluateLpPnl(entryTradingSol, lpTradingValueSol, 0, {
     stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
@@ -1522,6 +1525,7 @@ function evaluateActiveLpPositions(input: {
         entrySol: trustedEntry?.entrySol,
         currentValueSol,
         lpTotalValueSol,
+        exitQuoteValueSol,
         liquidityValueSol,
         unclaimedFeeValueSol,
         claimedFeeValueSol: resolvedClaimedFeeValueSol,
@@ -1879,6 +1883,7 @@ function maybePopulateLpNetPnlPct(input: {
     entrySol: trustedEntry?.entrySol,
     currentValueSol: lpTotalValueSol ?? currentValueSol,
     lpTotalValueSol,
+    exitQuoteValueSol: finiteNonnegative(input.context.trader.exitQuoteValueSol),
     liquidityValueSol,
     unclaimedFeeValueSol,
     claimedFeeValueSol,
