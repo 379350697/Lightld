@@ -68,6 +68,14 @@ const LpEntryEvidenceRequestSchema = z.object({
   orderSignature: z.string().optional()
 });
 
+function accountStateUnavailablePayload(error: unknown) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return {
+    error: 'account-state unavailable',
+    reason
+  };
+}
+
 const BroadcastResultSchema = z.object({
   status: z.literal('submitted'),
   submissionId: z.string(),
@@ -76,7 +84,11 @@ const BroadcastResultSchema = z.object({
   submissionIds: z.array(z.string()).optional(),
   confirmationSignatures: z.array(z.string()).optional(),
   batchStatus: z.enum(['complete', 'partial']).optional(),
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  residualSweepStatus: z.enum(['complete', 'incomplete', 'dust_ignored']).optional(),
+  residualUnsoldMints: z.array(z.string()).optional(),
+  residualIgnoredMints: z.array(z.string()).optional(),
+  residualFailureReasons: z.array(z.string()).optional()
 });
 
 const SubmissionEntrySchema = z.object({
@@ -110,6 +122,8 @@ type SolanaExecutionServerOptions = {
   expectedSignerPublicKeys?: string[];
   maxOutputSol?: number;
   defaultSlippageBps?: number;
+  residualTokenMinValueSol?: number;
+  residualTokenDustMaxUiAmount?: number;
   jitoTipLamports?: number;
 };
 
@@ -544,7 +558,9 @@ function isRateLimitLikeError(error: unknown) {
 
 type ResidualTokenSweepResult = {
   unsoldMints: string[];
+  ignoredMints: string[];
   failureReasons: string[];
+  ignoredReasons: string[];
 };
 
 async function liquidateResidualTokensToSol(input: {
@@ -559,31 +575,111 @@ async function liquidateResidualTokensToSol(input: {
   acceptedSignatures?: string[];
   excludedMints?: string[];
   poolAddressByMint?: Map<string, string>;
+  residualTokenMinValueSol: number;
+  residualTokenDustMaxUiAmount: number;
 }): Promise<ResidualTokenSweepResult> {
   const soldMints = new Set<string>(input.excludedMints ?? []);
+  const ignoredMints = new Set<string>();
   const failureReasonByMint = new Map<string, string>();
+  const ignoredReasonByMint = new Map<string, string>();
+
+  type SellableResidualToken = {
+    mint: string;
+    amount: number;
+    uiAmount?: number;
+  };
 
   const listSellableTokens = async () => {
     const tokenAccounts = await input.rpcClient.getTokenAccountsByOwner(input.walletPublicKey);
     return tokenAccounts
-      .map((account) => ({
-        mint: account.account.data.parsed.info.mint as string,
-        amount: Number(account.account.data.parsed.info.tokenAmount.amount)
-      }))
-      .filter((token) => token.mint !== SOL_MINT && token.amount > 0 && !soldMints.has(token.mint));
+      .map((account) => {
+        const info = account.account.data.parsed.info;
+        return {
+          mint: info.mint as string,
+          amount: Number(info.tokenAmount.amount),
+          uiAmount: typeof info.tokenAmount.uiAmount === 'number' ? info.tokenAmount.uiAmount : undefined
+        };
+      })
+      .filter((token) =>
+        token.mint !== SOL_MINT &&
+        token.amount > 0 &&
+        !soldMints.has(token.mint) &&
+        !ignoredMints.has(token.mint)
+      );
   };
 
-  const buildResult = (sellable: { mint: string; amount: number }[]): ResidualTokenSweepResult => {
+  const classifyUnsoldResidual = async (token: SellableResidualToken) => {
+    const poolAddress = input.poolAddressByMint?.get(token.mint);
+
+    try {
+      const valueSol = await resolveTokenCurrentValueSol({
+        swapProviderChain: input.swapProviderChain,
+        walletPublicKey: input.walletPublicKey,
+        mint: token.mint,
+        amountLamports: token.amount,
+        defaultSlippageBps: input.defaultSlippageBps,
+        poolAddress,
+        skipBalanceDependentProviders: true
+      });
+      if (typeof valueSol === 'number' && Number.isFinite(valueSol)) {
+        if (valueSol < input.residualTokenMinValueSol) {
+          return {
+            ignored: true,
+            reason: `${token.mint}: residual_dust_ignored:value-sol=${valueSol}`
+          };
+        }
+
+        return { ignored: false };
+      }
+    } catch {
+      // Fall through to the tiny-token dust guard. If the amount is not tiny,
+      // keep the residual actionable because the value is unknown.
+    }
+
+    if (
+      typeof token.uiAmount === 'number' &&
+      Number.isFinite(token.uiAmount) &&
+      token.uiAmount <= input.residualTokenDustMaxUiAmount
+    ) {
+      return {
+        ignored: true,
+        reason: `${token.mint}: residual_dust_ignored:ui-amount=${token.uiAmount}`
+      };
+    }
+
+    return { ignored: false };
+  };
+
+  const buildResult = async (sellable: SellableResidualToken[]): Promise<ResidualTokenSweepResult> => {
+    for (const token of sellable) {
+      if (soldMints.has(token.mint) || ignoredMints.has(token.mint)) {
+        continue;
+      }
+
+      const classification = await classifyUnsoldResidual(token);
+      if (classification.ignored) {
+        ignoredMints.add(token.mint);
+        if (classification.reason) {
+          ignoredReasonByMint.set(token.mint, classification.reason);
+        }
+      }
+    }
+
     const unsoldMints = Array.from(new Set(
       sellable
-        .filter((token) => !soldMints.has(token.mint))
+        .filter((token) => !soldMints.has(token.mint) && !ignoredMints.has(token.mint))
         .map((token) => token.mint)
     ));
+    const ignoredMintList = Array.from(ignoredMints);
 
     return {
       unsoldMints,
+      ignoredMints: ignoredMintList,
       failureReasons: unsoldMints
         .map((mint) => failureReasonByMint.get(mint))
+        .filter((reason): reason is string => typeof reason === 'string'),
+      ignoredReasons: ignoredMintList
+        .map((mint) => ignoredReasonByMint.get(mint))
         .filter((reason): reason is string => typeof reason === 'string')
     };
   };
@@ -605,7 +701,12 @@ async function liquidateResidualTokensToSol(input: {
         continue;
       }
 
-      return { unsoldMints: [], failureReasons: [] };
+      return {
+        unsoldMints: [],
+        ignoredMints: Array.from(ignoredMints),
+        failureReasons: [],
+        ignoredReasons: Array.from(ignoredReasonByMint.values())
+      };
     }
 
     let soldAny = false;
@@ -660,13 +761,13 @@ async function liquidateResidualTokensToSol(input: {
         continue;
       }
 
-      return buildResult(sellable);
+      return await buildResult(sellable);
     }
 
     await sleep(RESIDUAL_BALANCE_CHECK_DELAY_MS);
   }
 
-  return buildResult(await listSellableTokens());
+  return await buildResult(await listSellableTokens());
 }
 
 function durationMs(startedAt: number) {
@@ -742,12 +843,18 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     providerOrder: ['meteora-dlmm-quote-only', 'dlmm-active-bin-display-fallback'],
     dlmmClient: options.dlmmClient
   });
+  const residualTokenMinValueSol = options.residualTokenMinValueSol ?? 0.1;
+  const residualTokenDustMaxUiAmount = options.residualTokenDustMaxUiAmount ?? 0.00001;
   const toTransactionBatch = (txParams: unknown) => Array.isArray(txParams) ? txParams : [txParams];
   const buildSubmittedBroadcastResult = (input: {
     idempotencyKey: string;
     signatures: string[];
     batchStatus?: 'complete' | 'partial';
     reason?: string;
+    residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
+    residualUnsoldMints?: string[];
+    residualIgnoredMints?: string[];
+    residualFailureReasons?: string[];
   }): LiveBroadcastResult => ({
     status: 'submitted',
     submissionId: input.signatures[input.signatures.length - 1] ?? '',
@@ -756,7 +863,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     submissionIds: input.signatures,
     confirmationSignatures: input.signatures,
     batchStatus: input.batchStatus ?? 'complete',
-    reason: input.reason
+    reason: input.reason,
+    residualSweepStatus: input.residualSweepStatus,
+    residualUnsoldMints: input.residualUnsoldMints,
+    residualIgnoredMints: input.residualIgnoredMints,
+    residualFailureReasons: input.residualFailureReasons
   });
   const buildFailedBroadcastResult = (input: {
     idempotencyKey: string;
@@ -1224,7 +1335,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   sendRawTransaction: sendVisibleRawTransaction,
                   sendTxMs,
                   acceptedSignatures: txSignatures,
-                  poolAddressByMint: new Map([[intent.tokenMint, intent.poolAddress]])
+                  poolAddressByMint: new Map([[intent.tokenMint, intent.poolAddress]]),
+                  residualTokenMinValueSol,
+                  residualTokenDustMaxUiAmount
                 });
 
                 if (residualSweep.unsoldMints.length > 0) {
@@ -1258,7 +1371,40 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
                     batchStatus: 'partial',
+                    reason,
+                    residualSweepStatus: 'incomplete',
+                    residualUnsoldMints: residualSweep.unsoldMints,
+                    residualIgnoredMints: residualSweep.ignoredMints,
+                    residualFailureReasons: residualSweep.failureReasons
+                  }));
+                  return;
+                }
+
+                if (residualSweep.ignoredMints.length > 0) {
+                  const reason = 'residual_dust_ignored: '
+                    + residualSweep.ignoredMints.join(',')
+                    + (residualSweep.ignoredReasons.length > 0 ? ` (${residualSweep.ignoredReasons.join('; ')})` : '');
+
+                  console.info(JSON.stringify({
+                    event: 'solana-execution-residual-sweep',
+                    recordedAt: new Date().toISOString(),
+                    strategyId: intent.strategyId,
+                    idempotencyKey: intent.idempotencyKey,
+                    side,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint,
+                    result: 'dust_ignored',
+                    ignoredMints: residualSweep.ignoredMints,
                     reason
+                  }));
+
+                  await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                    idempotencyKey: intent.idempotencyKey,
+                    signatures: txSignatures,
+                    reason,
+                    residualSweepStatus: 'dust_ignored',
+                    residualIgnoredMints: residualSweep.ignoredMints,
+                    residualFailureReasons: residualSweep.ignoredReasons
                   }));
                   return;
                 }
@@ -1408,7 +1554,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
           // Account state — query wallet SOL and token balances from RPC
           if (request.method === 'GET' && request.url === '/account-state') {
-            const lamports = await rpcClient.getBalance(walletPublicKey);
+            let lamports: number;
+            try {
+              lamports = await rpcClient.getBalance(walletPublicKey);
+            } catch (error) {
+              writeJson(response, 503, accountStateUnavailablePayload(error));
+              return;
+            }
             const walletSol = lamports / LAMPORTS_PER_SOL;
 
             let walletTokens: {

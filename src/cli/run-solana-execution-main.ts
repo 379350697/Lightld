@@ -133,6 +133,8 @@ async function main() {
     expectedSignerPublicKeys: config.expectedSignerPublicKeys,
     maxOutputSol: config.maxOutputSol,
     defaultSlippageBps: config.defaultSlippageBps,
+    residualTokenMinValueSol: config.residualTokenMinValueSol,
+    residualTokenDustMaxUiAmount: config.residualTokenDustMaxUiAmount,
     jitoTipLamports: config.jitoTipLamports
   });
 

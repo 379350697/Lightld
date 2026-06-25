@@ -14,6 +14,7 @@ import { resolveLifecycleStateForPersist, runLiveDaemon } from '../../../src/run
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
+import { TargetOpenCooldownStore } from '../../../src/runtime/target-open-cooldown-store';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 
 describe('runLiveDaemon', () => {
@@ -128,6 +129,123 @@ describe('runLiveDaemon', () => {
     });
     expect(positionState?.activeMint).toBeUndefined();
     expect(positionState?.activePoolAddress).toBeUndefined();
+  });
+
+  it('records a 60 minute same target reopen cooldown after LP stop-loss exits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-stop-loss-cooldown-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const openedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    await new RuntimeStateStore(stateRootDir).writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'open',
+      activeMint: 'mint-loss',
+      activePoolAddress: 'pool-loss',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        context: {
+          pool: { address: 'pool-loss', liquidityUsd: 20_000 },
+          token: { mint: 'mint-loss', inSession: true, hasSolRoute: true, symbol: 'LOSS' },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            lpNetPnlPct: -25,
+            lpTotalValueSol: 0.08,
+            exitQuoteValueSol: 0.08,
+            lpTradingValueSol: 0.08,
+            lpEntryTradingSol: 0.1,
+            valuationStatus: 'ready',
+            valuationTrust: 'exit_quote',
+            valuationCompleteness: 'complete',
+            pendingConfirmationStatus: 'confirmed'
+          },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const cooldown = await new TargetOpenCooldownStore(stateRootDir).readActive({
+      poolAddress: 'pool-loss',
+      tokenMint: 'mint-loss',
+      now: new Date().toISOString()
+    });
+    expect(cooldown).toMatchObject({
+      poolAddress: 'pool-loss',
+      tokenMint: 'mint-loss'
+    });
+    expect(cooldown?.reason).toContain('lp-stop-loss');
+    expect(Date.parse(cooldown!.cooldownUntil) - Date.now()).toBeGreaterThan(50 * 60_000);
+  });
+
+  it('records only a short reconcile cooldown after LP take-profit exits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-take-profit-cooldown-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const openedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    await new RuntimeStateStore(stateRootDir).writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'open',
+      activeMint: 'mint-profit',
+      activePoolAddress: 'pool-profit',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        context: {
+          pool: { address: 'pool-profit', liquidityUsd: 20_000 },
+          token: { mint: 'mint-profit', inSession: true, hasSolRoute: true, symbol: 'PROFIT' },
+          trader: {
+            hasInventory: true,
+            hasLpPosition: true,
+            holdTimeMs: 10 * 60_000,
+            lpNetPnlPct: 50,
+            lpTotalValueSol: 0.15,
+            exitQuoteValueSol: 0.15,
+            lpTradingValueSol: 0.15,
+            lpEntryTradingSol: 0.1,
+            valuationStatus: 'ready',
+            valuationTrust: 'exit_quote',
+            valuationCompleteness: 'complete',
+            pendingConfirmationStatus: 'confirmed'
+          },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        }
+      })
+    });
+
+    const cooldown = await new TargetOpenCooldownStore(stateRootDir).readActive({
+      poolAddress: 'pool-profit',
+      tokenMint: 'mint-profit',
+      now: new Date().toISOString()
+    });
+    expect(cooldown?.reason).toContain('lp-take-profit');
+    expect(Date.parse(cooldown!.cooldownUntil) - Date.now()).toBeLessThan(10 * 60_000);
   });
 
   it('rebounds a mixed local position state to the chain-backed account LP identity', async () => {
@@ -331,13 +449,16 @@ describe('runLiveDaemon', () => {
       maxTicks: 1,
       maxActivePositions: 2,
       openAfterMaintenanceHold: true,
+      accountProvider: {
+        readState: async () => accountState
+      },
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
         skipMints.push(context?.skipMints ?? []);
         if (context?.selectionMode === 'new-open-only') {
           return {
             requestedPositionSol: 0.1,
-            accountState,
+            accountState: context?.accountState ?? accountState,
             context: {
               pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
               token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
@@ -384,6 +505,110 @@ describe('runLiveDaemon', () => {
     expect(nextPositionState?.chainPositionAddress).toBeUndefined();
   });
 
+  it('rebounds inventory-exit-ready to open when the bound LP is still active before new-open pass', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-rebound-inventory-exit-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lifecycleState: 'inventory_exit_ready',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active',
+      positionId: 'position-active',
+      chainPositionAddress: 'position-active',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      openedAt,
+      updatedAt: openedAt
+    });
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [{ mint: 'mint-dust', symbol: 'DUST', amount: 0.01, amountLamports: 10_000, currentValueSol: 0.00002 }],
+      journalTokens: [],
+      fills: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'position-active',
+        mint: 'mint-active',
+        hasLiquidity: true,
+        currentValueSol: 0.11,
+        liquidityValueSol: 0.1,
+        lpTotalValueSol: 0.11,
+        exitQuoteValueSol: 0.11,
+        valuationTrust: 'exit_quote' as const,
+        valuationStatus: 'ready' as const,
+        valuationCompleteness: 'complete' as const
+      }],
+      journalLpPositions: []
+    };
+    const modes: Array<string | undefined> = [];
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      maxActivePositions: 2,
+      openAfterMaintenanceHold: true,
+      accountProvider: {
+        readState: async () => accountState
+      },
+      buildCycleInput: async (_tick, context) => {
+        modes.push(context?.selectionMode);
+        if (context?.selectionMode === 'new-open-only') {
+          return {
+            requestedPositionSol: 0.1,
+            accountState: context?.accountState ?? accountState,
+            context: {
+              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
+              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
+              trader: { hasInventory: false, hasLpPosition: false },
+              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+            }
+          };
+        }
+
+        return {
+          requestedPositionSol: 0.1,
+          accountState,
+          context: {
+            pool: { address: 'pool-active', liquidityUsd: 20_000 },
+            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            trader: {
+              hasInventory: true,
+              hasLpPosition: true,
+              lpCurrentValueSol: 0.11,
+              lpTotalValueSol: 0.11,
+              exitQuoteValueSol: 0.11,
+              lpTradingValueSol: 0.1,
+              lpEntryTradingSol: 0.1,
+              lpNetPnlPct: 0,
+              lifecycleState: 'inventory_exit_ready',
+              valuationStatus: 'ready',
+              valuationTrust: 'exit_quote',
+              valuationCompleteness: 'complete'
+            },
+            route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    const nextPositionState = await runtimeStateStore.readPositionState();
+    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(nextPositionState).toMatchObject({
+      lastAction: 'add-lp',
+      activeMint: 'mint-next',
+      activePoolAddress: 'pool-next'
+    });
+  });
+
   it('skips the new-open pass when residual token inventory needs exit handling', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-inventory-'));
     const stateRootDir = join(root, 'state');
@@ -426,7 +651,7 @@ describe('runLiveDaemon', () => {
             walletSol: 1.25,
             journalSol: 1.25,
             walletTokens: [],
-            journalTokens: [{ mint: 'mint-residual', symbol: 'RES', amount: 5, currentValueSol: 0.02 }],
+            journalTokens: [{ mint: 'mint-residual', symbol: 'RES', amount: 5, currentValueSol: 0.2 }],
             fills: [],
             walletLpPositions: [{
               poolAddress: 'pool-active',
@@ -1656,6 +1881,73 @@ describe('runLiveDaemon', () => {
           }
         };
       }
+    });
+
+    const runtimeState = await runtimeStateStore.readRuntimeState();
+    const dependencyHealth = await runtimeStateStore.readDependencyHealth();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(runtimeState).toMatchObject({
+      mode: 'healthy',
+      circuitReason: '',
+      cooldownUntil: '',
+      transientRecoverySuccessTicks: 0
+    });
+    expect(dependencyHealth?.account.consecutiveFailures).toBe(0);
+    expect(health).toMatchObject({
+      mode: 'healthy',
+      allowNewOpens: true,
+      dependencyHealth: {
+        reconcileFailures: 0
+      }
+    });
+  });
+
+  it('auto-heals legacy account http-400 circuit state after two consecutive successful ticks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-account-http400-auto-heal-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runtimeStateStore.writeRuntimeState({
+      mode: 'circuit_open',
+      circuitReason: 'http-400',
+      cooldownUntil: '2026-03-22T00:10:00.000Z',
+      transientAutoHealEligible: false,
+      transientRecoverySuccessTicks: 0,
+      lastHealthyAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:05:00.000Z'
+    });
+    await runtimeStateStore.writeDependencyHealth({
+      quote: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      signer: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      broadcaster: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' },
+      account: { consecutiveFailures: 1, lastSuccessAt: '', lastFailureAt: '2026-03-22T00:05:00.000Z', lastFailureReason: 'http-400' },
+      confirmation: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' }
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          token: { mint: '', symbol: '', inSession: true, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+        }
+      })
     });
 
     const runtimeState = await runtimeStateStore.readRuntimeState();

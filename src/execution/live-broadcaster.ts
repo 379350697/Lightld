@@ -11,6 +11,10 @@ export type LiveBroadcastResult =
       confirmationSignatures?: string[];
       batchStatus?: 'complete' | 'partial';
       reason?: string;
+      residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
+      residualUnsoldMints?: string[];
+      residualIgnoredMints?: string[];
+      residualFailureReasons?: string[];
     }
   | {
       status: 'failed';

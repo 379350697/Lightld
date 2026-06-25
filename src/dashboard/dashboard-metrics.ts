@@ -780,6 +780,70 @@ function matchesClosedPositionSnapshot(
   return Math.abs(entryClosedAtMs - snapshotClosedAtMs) <= 180_000;
 }
 
+function closedSnapshotPriority(snapshot: ClosedPositionSnapshot) {
+  if (snapshot.source === 'wallet-delta') {
+    return 3;
+  }
+
+  return snapshot.confidence === 'exact' ? 2 : 1;
+}
+
+function snapshotsRepresentSameClose(left: ClosedPositionSnapshot, right: ClosedPositionSnapshot) {
+  if (left.tokenMint !== right.tokenMint) {
+    return false;
+  }
+
+  if (
+    left.positionAddress.length > 0
+    && right.positionAddress.length > 0
+    && left.positionAddress !== right.positionAddress
+  ) {
+    return false;
+  }
+
+  if (
+    left.positionAddress.length === 0
+    && right.positionAddress.length === 0
+    && left.poolAddress.length > 0
+    && right.poolAddress.length > 0
+    && left.poolAddress !== right.poolAddress
+  ) {
+    return false;
+  }
+
+  const leftClosedAtMs = toRecordedAtMillis(left.closedAt);
+  const rightClosedAtMs = toRecordedAtMillis(right.closedAt);
+  if (!Number.isFinite(leftClosedAtMs) || !Number.isFinite(rightClosedAtMs)) {
+    return false;
+  }
+
+  return Math.abs(leftClosedAtMs - rightClosedAtMs) <= 180_000;
+}
+
+function dedupeClosedPositionSnapshots(snapshots: ClosedPositionSnapshot[]) {
+  const ordered = snapshots
+    .slice()
+    .sort((left, right) => {
+      const priorityDelta = closedSnapshotPriority(right) - closedSnapshotPriority(left);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+
+      return right.closedAt.localeCompare(left.closedAt);
+    });
+  const selected: ClosedPositionSnapshot[] = [];
+
+  for (const snapshot of ordered) {
+    if (selected.some((existing) => snapshotsRepresentSameClose(existing, snapshot))) {
+      continue;
+    }
+
+    selected.push(snapshot);
+  }
+
+  return selected.sort((left, right) => left.closedAt.localeCompare(right.closedAt));
+}
+
 export function buildCashflowMetrics(input: {
   fills: CashflowFill[];
   orderFallback?: CashflowOrderFallback[];
@@ -1067,12 +1131,14 @@ export function buildHistoricalActivity(input: {
     lifecycles.push(lifecycle);
   }
 
-  const chainSnapshots = (input.chainSnapshots ?? [])
-    .filter((snapshot) =>
-      snapshot.tokenMint.length > 0
-      && snapshot.closedAt.length > 0
-      && isValidClosedPositionSnapshot(snapshot)
-    );
+  const chainSnapshots = dedupeClosedPositionSnapshots(
+    (input.chainSnapshots ?? [])
+      .filter((snapshot) =>
+        snapshot.tokenMint.length > 0
+        && snapshot.closedAt.length > 0
+        && isValidClosedPositionSnapshot(snapshot)
+      )
+  );
   const localEntries = lifecycles
     .map((lifecycle) => buildLifecycleEntry(lifecycle))
     .filter((entry): entry is DashboardHistoricalActivityEntry => entry !== null);

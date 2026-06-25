@@ -48,4 +48,34 @@ describe('deriveRuntimeMode', () => {
       reason: 'cooldown-active'
     });
   });
+
+  it('keeps moderate account reconcile failures in recovering before opening the circuit', () => {
+    expect(
+      deriveRuntimeMode({
+        currentMode: 'healthy',
+        quoteFailures: 0,
+        reconcileFailures: 2,
+        hasUnknownSubmissionOutcome: false,
+        cooldownActive: false,
+        flattenOnlyRequested: false
+      })
+    ).toEqual({
+      mode: 'recovering',
+      reason: 'reconcile-degraded'
+    });
+
+    expect(
+      deriveRuntimeMode({
+        currentMode: 'healthy',
+        quoteFailures: 0,
+        reconcileFailures: 5,
+        hasUnknownSubmissionOutcome: false,
+        cooldownActive: false,
+        flattenOnlyRequested: false
+      })
+    ).toEqual({
+      mode: 'circuit_open',
+      reason: 'reconcile-failures'
+    });
+  });
 });

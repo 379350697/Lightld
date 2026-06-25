@@ -468,6 +468,10 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     }
 
     const excluded = new Set(options.excludedMints ?? []);
+    const excludedTargets = new Set(
+      (options.excludedTargets ?? [])
+        .map((target) => `${target.poolAddress ?? ''}::${target.tokenMint ?? ''}`)
+    );
     const rows = this.database.prepare(`
       SELECT * FROM candidate_pool
       WHERE strategy_id=?
@@ -480,6 +484,14 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     for (const candidateRow of rows) {
       const mint = readString(candidateRow, 'token_mint');
       if (excluded.has(mint)) {
+        continue;
+      }
+      const poolAddress = readString(candidateRow, 'pool_address');
+      if (
+        excludedTargets.has(`${poolAddress}::${mint}`) ||
+        excludedTargets.has(`::${mint}`) ||
+        excludedTargets.has(`${poolAddress}::`)
+      ) {
         continue;
       }
       const candidate = parseCandidate(readString(candidateRow, 'raw_candidate_json'));
@@ -497,7 +509,7 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
 
       return {
         strategyId: readString(candidateRow, 'strategy_id') as StrategyId,
-        poolAddress: readString(candidateRow, 'pool_address'),
+        poolAddress,
         tokenMint: mint,
         tokenSymbol: readString(candidateRow, 'token_symbol'),
         status: readString(candidateRow, 'status') as CandidatePoolEntry['status'],

@@ -70,7 +70,7 @@ export type ClosedPositionSnapshot = {
   feeTokenAmount: number;
   feeTokenValueSol: number;
   pnlSol: number;
-  source: 'solana-chain';
+  source: 'solana-chain' | 'wallet-delta';
   confidence: 'exact' | 'partial';
 };
 

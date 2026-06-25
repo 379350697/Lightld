@@ -194,6 +194,14 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       candidatePoolReader: reader,
       selectionMode: 'new-open-only',
       skipMints: ['mint-explicit-skip'],
+      openCooldowns: [{
+        poolAddress: 'pool-cooldown',
+        tokenMint: 'mint-cooldown',
+        reason: 'lp-stop-loss',
+        cooldownUntil: '2026-06-21T10:59:00.000Z',
+        lastFailedAt: '2026-06-21T10:00:00.000Z',
+        updatedAt: '2026-06-21T10:00:00.000Z'
+      }],
       accountState: {
         walletSol: 0.4,
         journalSol: 0.4,
@@ -222,7 +230,8 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
     });
 
     expect(reader.selectOpenableCandidate).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
-      excludedMints: expect.arrayContaining(['mint-lp', 'mint-wallet-token', 'mint-explicit-skip'])
+      excludedMints: expect.arrayContaining(['mint-lp', 'mint-wallet-token', 'mint-explicit-skip']),
+      excludedTargets: expect.arrayContaining([{ poolAddress: 'pool-cooldown', tokenMint: 'mint-cooldown' }])
     }));
     expect(result.context.token).toMatchObject({
       mint: 'mint-next',

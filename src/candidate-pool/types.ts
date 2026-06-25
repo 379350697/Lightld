@@ -46,6 +46,7 @@ export type CandidatePoolEntry = {
 export type CandidatePoolReaderOptions = {
   now?: Date;
   excludedMints?: string[];
+  excludedTargets?: Array<{ poolAddress?: string; tokenMint?: string }>;
   maxAgeMs?: number;
   requireFreshWorker?: boolean;
 };

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildClosedPositionOrderSeeds,
+  buildClosedPositionSnapshotsFromTrustedFills,
   syncClosedPositionSnapshots
 } from '../../../src/history/closed-position-snapshot-sync';
 
@@ -68,6 +69,85 @@ describe('buildClosedPositionOrderSeeds', () => {
     ]);
 
     expect(seeds).toEqual([]);
+  });
+
+  it('pairs a trusted close fill with an account-repaired open row for the same chain position', () => {
+    const seeds = buildClosedPositionOrderSeeds([
+      {
+        tokenMint: 'mint-earth',
+        tokenSymbol: 'earthcoin',
+        poolAddress: 'pool-1',
+        positionAddress: POSITION_ADDRESS,
+        action: 'add-lp',
+        createdAt: '2026-04-22T13:07:01.000Z',
+        signature: ''
+      },
+      {
+        tokenMint: 'mint-earth',
+        tokenSymbol: 'earthcoin',
+        poolAddress: 'pool-1',
+        positionAddress: POSITION_ADDRESS,
+        action: 'withdraw-lp',
+        createdAt: '2026-04-22T14:39:45.000Z',
+        signature: 'sig-close-from-fill'
+      }
+    ]);
+
+    expect(seeds).toEqual([
+      {
+        tokenMint: 'mint-earth',
+        tokenSymbol: 'earthcoin',
+        poolAddress: 'pool-1',
+        positionAddress: POSITION_ADDRESS,
+        openedAt: '2026-04-22T13:07:01.000Z',
+        closedAt: '2026-04-22T14:39:45.000Z',
+        openSignature: '',
+        closeSignature: 'sig-close-from-fill'
+      }
+    ]);
+  });
+});
+
+describe('buildClosedPositionSnapshotsFromTrustedFills', () => {
+  it('pairs trusted wallet-delta add and withdraw fills even when only the close has a chain position', () => {
+    const snapshots = buildClosedPositionSnapshotsFromTrustedFills({
+      walletAddress: 'wallet-1',
+      fills: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: '',
+          side: 'add-lp',
+          recordedAt: '2026-04-22T13:07:01.000Z',
+          filledSol: 0.137416044
+        },
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: POSITION_ADDRESS,
+          side: 'withdraw-lp',
+          recordedAt: '2026-04-22T14:39:45.000Z',
+          filledSol: 0.137396754
+        }
+      ]
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      walletAddress: 'wallet-1',
+      tokenMint: 'mint-earth',
+      poolAddress: 'pool-1',
+      positionAddress: POSITION_ADDRESS,
+      openedAt: '2026-04-22T13:07:01.000Z',
+      closedAt: '2026-04-22T14:39:45.000Z',
+      depositSol: 0.137416044,
+      withdrawSol: 0.137396754,
+      source: 'wallet-delta',
+      confidence: 'exact'
+    });
+    expect(snapshots[0]?.pnlSol).toBeCloseTo(-0.00001929, 12);
   });
 });
 
@@ -427,6 +507,32 @@ describe('syncClosedPositionSnapshots', () => {
     expect(result[0]?.positionAddress).toBe(POSITION_ADDRESS);
     expect(getTransaction).toHaveBeenCalledWith('sig-open');
     expect(getTransaction).toHaveBeenCalledWith('sig-close');
+  });
+
+  it('skips a seed when transaction lookup fails instead of aborting the whole sync', async () => {
+    const result = await syncClosedPositionSnapshots({
+      walletAddress: 'wallet-1',
+      seeds: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: POSITION_ADDRESS,
+          openedAt: '2026-04-22T13:07:01.000Z',
+          closedAt: '2026-04-22T14:39:45.000Z',
+          openSignature: 'sig-open',
+          closeSignature: 'sig-close'
+        }
+      ],
+      rpcClient: {
+        getTransaction: vi.fn(async () => {
+          throw new Error('fetch failed');
+        })
+      },
+      loadTokenPriceInSol: vi.fn(async () => 0.00000107745)
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('drops reconstructed snapshots when the open comes after the close or deposit is zero', async () => {

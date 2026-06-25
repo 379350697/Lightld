@@ -1193,6 +1193,93 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('keeps withdraw-lp submitted when only residual dust remains after the close tx is visible', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const keypair = Keypair.generate();
+    const sendRawTransaction = vi.fn(async () => 'sig-close');
+    const getTokenAccountsByOwner = vi.fn(async () => [
+      {
+        pubkey: 'token-account-dust',
+        account: {
+          data: {
+            parsed: {
+              info: {
+                mint: 'dust-mint',
+                owner: keypair.publicKey.toBase58(),
+                tokenAmount: {
+                  amount: '9',
+                  decimals: 6,
+                  uiAmount: 0.000009,
+                  uiAmountString: '0.000009'
+                }
+              },
+              type: 'account'
+            },
+            program: 'spl-token'
+          }
+        }
+      }
+    ]);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction,
+        getSignatureStatuses: async () => ({
+          value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+        }),
+        getTokenAccountsByOwner
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(() => ({ inputMint: 'dust-mint' })),
+        getQuote: vi.fn(async () => {
+          throw new Error('amount below minimum');
+        })
+      } as any,
+      dlmmClient: {
+        removeLiquidity: async () => [new FakeTransaction('close-1')] as any,
+        invalidatePositionSnapshots: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(server.origin + '/broadcast', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'dust-mint',
+        liquidateResidualTokenToSol: true
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-close',
+      submissionIds: ['sig-close'],
+      batchStatus: 'complete',
+      residualSweepStatus: 'dust_ignored',
+      residualIgnoredMints: ['dust-mint']
+    });
+    expect(payload.reason).toContain('residual_dust_ignored');
+    expect(payload.reason).not.toContain('residual token sweep incomplete');
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(getTokenAccountsByOwner).toHaveBeenCalled();
+
+    await server.stop();
+  });
+
   it('records withdraw-lp as partial when residual sweep leaves a non-SOL token unsold', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const keypair = Keypair.generate();
@@ -1390,6 +1477,43 @@ describe('createSolanaExecutionServer', () => {
     expect(secondResponse.status).toBe(200);
     expect(secondPayload.walletTokens).toEqual(payload.walletTokens);
     expect(getQuote).toHaveBeenCalledTimes(1);
+
+    await server.stop();
+  });
+
+  it('returns retryable service unavailable when account-state balance read fails', async () => {
+    const keypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => {
+          throw new Error('fetch failed');
+        },
+        getTokenAccountsByOwner: async () => []
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/account-state`, {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(payload).toMatchObject({
+      error: 'account-state unavailable',
+      reason: 'fetch failed'
+    });
 
     await server.stop();
   });

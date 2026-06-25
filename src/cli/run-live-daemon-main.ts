@@ -336,7 +336,8 @@ async function main() {
         newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
         positionState: buildContext?.positionState,
         selectionMode: buildContext?.selectionMode as IngestSelectionMode | undefined,
-        skipMints: buildContext?.skipMints
+        skipMints: buildContext?.skipMints,
+        openCooldowns: buildContext?.openCooldowns
       });
 
       return {

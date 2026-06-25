@@ -440,6 +440,69 @@ describe('SqliteMirrorWriter', () => {
     ]);
   });
 
+  it('replaces overlapping chain closed snapshots with wallet-delta truth for the same position', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-closed-snapshots-priority-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+    const chainSnapshot: ClosedPositionSnapshot = {
+      walletAddress: 'wallet-1',
+      tokenMint: 'mint-earth',
+      tokenSymbol: 'earthcoin',
+      poolAddress: 'pool-1',
+      positionAddress: 'position-1',
+      openedAt: '2026-04-22T13:07:01.000Z',
+      closedAt: '2026-04-22T14:39:45.000Z',
+      depositSol: 0.02,
+      depositTokenAmount: 0,
+      withdrawSol: 0.019999,
+      withdrawTokenAmount: 0,
+      withdrawTokenValueSol: 0,
+      feeSol: 0,
+      feeTokenAmount: 0,
+      feeTokenValueSol: 0,
+      pnlSol: -0.000001,
+      source: 'solana-chain',
+      confidence: 'exact'
+    };
+
+    await writer.open();
+    await writer.writeClosedPositionSnapshots([chainSnapshot]);
+    await writer.writeClosedPositionSnapshots([
+      {
+        ...chainSnapshot,
+        closedAt: '2026-04-22T14:40:00.000Z',
+        depositSol: 0.077416045,
+        withdrawSol: 0.077400999,
+        pnlSol: -0.000015046,
+        source: 'wallet-delta'
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const rows = db.prepare(`
+      SELECT deposit_sol, withdraw_sol, pnl_sol, source
+      FROM closed_position_snapshots
+      WHERE wallet_address = 'wallet-1'
+    `).all() as Array<{
+      deposit_sol: number;
+      withdraw_sol: number;
+      pnl_sol: number;
+      source: string;
+    }>;
+    db.close();
+
+    expect(rows).toEqual([
+      {
+        deposit_sol: 0.077416045,
+        withdraw_sol: 0.077400999,
+        pnl_sol: -0.000015046,
+        source: 'wallet-delta'
+      }
+    ]);
+  });
+
   it('writes and queries mirrored evolution research rows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-evolution-'));
     directories.push(root);

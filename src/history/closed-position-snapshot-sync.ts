@@ -25,6 +25,16 @@ export type ClosedPositionOrderSeed = {
   closeSignature: string;
 };
 
+export type TrustedClosedPositionFillRow = {
+  tokenMint: string;
+  tokenSymbol: string;
+  poolAddress: string;
+  positionAddress: string;
+  side: 'add-lp' | 'withdraw-lp';
+  recordedAt: string;
+  filledSol: number;
+};
+
 type AddressSignatureInfo = {
   signature: string;
   slot: number;
@@ -100,6 +110,82 @@ function rowsCanShareLifecycle(open: ClosedPositionOrderSeedRow, close: ClosedPo
   return open.createdAt.localeCompare(close.createdAt) <= 0;
 }
 
+function fillRowsCanShareLifecycle(open: TrustedClosedPositionFillRow, close: TrustedClosedPositionFillRow) {
+  if (open.tokenMint !== close.tokenMint) {
+    return false;
+  }
+
+  if (open.poolAddress.length > 0 && close.poolAddress.length > 0 && open.poolAddress !== close.poolAddress) {
+    return false;
+  }
+
+  if (
+    looksLikeBase58Address(open.positionAddress)
+    && looksLikeBase58Address(close.positionAddress)
+    && open.positionAddress !== close.positionAddress
+  ) {
+    return false;
+  }
+
+  return open.recordedAt.localeCompare(close.recordedAt) <= 0;
+}
+
+export function buildClosedPositionSnapshotsFromTrustedFills(input: {
+  walletAddress: string;
+  fills: TrustedClosedPositionFillRow[];
+}) {
+  const opens = input.fills
+    .filter((row) => row.side === 'add-lp' && row.filledSol > 0)
+    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+  const closes = input.fills
+    .filter((row) => row.side === 'withdraw-lp' && row.filledSol > 0)
+    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+  const usedOpenIndexes = new Set<number>();
+  const snapshots: ClosedPositionSnapshot[] = [];
+
+  for (const close of closes) {
+    let matchedOpenIndex = -1;
+
+    for (let index = opens.length - 1; index >= 0; index -= 1) {
+      if (usedOpenIndexes.has(index) || !fillRowsCanShareLifecycle(opens[index], close)) {
+        continue;
+      }
+
+      matchedOpenIndex = index;
+      break;
+    }
+
+    if (matchedOpenIndex < 0) {
+      continue;
+    }
+
+    const open = opens[matchedOpenIndex];
+    usedOpenIndexes.add(matchedOpenIndex);
+    snapshots.push({
+      walletAddress: input.walletAddress,
+      tokenMint: open.tokenMint,
+      tokenSymbol: open.tokenSymbol || close.tokenSymbol,
+      poolAddress: close.poolAddress || open.poolAddress,
+      positionAddress: close.positionAddress || open.positionAddress || `${open.poolAddress}:${open.tokenMint}`,
+      openedAt: open.recordedAt,
+      closedAt: close.recordedAt,
+      depositSol: open.filledSol,
+      depositTokenAmount: 0,
+      withdrawSol: close.filledSol,
+      withdrawTokenAmount: 0,
+      withdrawTokenValueSol: 0,
+      feeSol: 0,
+      feeTokenAmount: 0,
+      feeTokenValueSol: 0,
+      pnlSol: close.filledSol - open.filledSol,
+      source: 'wallet-delta',
+      confidence: 'exact'
+    });
+  }
+
+  return snapshots;
+}
+
 export function buildClosedPositionOrderSeeds(rows: ClosedPositionOrderSeedRow[]) {
   const dedupedRows = dedupeLifecycleRows(rows);
   const opens = dedupedRows
@@ -169,77 +255,81 @@ export async function syncClosedPositionSnapshots(input: {
   const snapshots: ClosedPositionSnapshot[] = [];
 
   for (const seed of input.seeds) {
-    const [openSignature, closeSignature, tokenPriceInSol] = await Promise.all([
-      seed.openSignature.length > 0
-        ? Promise.resolve(seed.openSignature)
-        : resolveLifecycleSignature({
-            rpcClient: input.rpcClient,
-            addressCandidates: [seed.positionAddress, seed.poolAddress],
-            targetAt: seed.openedAt,
-            instructionName: 'AddLiquidityByStrategy2'
-          }),
-      seed.closeSignature.length > 0
-        ? Promise.resolve(seed.closeSignature)
-        : resolveLifecycleSignature({
-            rpcClient: input.rpcClient,
-            addressCandidates: [seed.positionAddress, seed.poolAddress],
-            targetAt: seed.closedAt,
-            instructionName: 'RemoveLiquidityByRange2'
-          }),
-      input.loadTokenPriceInSol(seed)
-    ]);
+    try {
+      const [openSignature, closeSignature, tokenPriceInSol] = await Promise.all([
+        seed.openSignature.length > 0
+          ? Promise.resolve(seed.openSignature)
+          : resolveLifecycleSignature({
+              rpcClient: input.rpcClient,
+              addressCandidates: [seed.positionAddress, seed.poolAddress],
+              targetAt: seed.openedAt,
+              instructionName: 'AddLiquidityByStrategy2'
+            }),
+        seed.closeSignature.length > 0
+          ? Promise.resolve(seed.closeSignature)
+          : resolveLifecycleSignature({
+              rpcClient: input.rpcClient,
+              addressCandidates: [seed.positionAddress, seed.poolAddress],
+              targetAt: seed.closedAt,
+              instructionName: 'RemoveLiquidityByRange2'
+            }),
+        input.loadTokenPriceInSol(seed)
+      ]);
 
-    const [openTransaction, closeTransaction] = await Promise.all([
-      openSignature ? input.rpcClient.getTransaction(openSignature) : Promise.resolve(null),
-      closeSignature ? input.rpcClient.getTransaction(closeSignature) : Promise.resolve(null)
-    ]);
+      const [openTransaction, closeTransaction] = await Promise.all([
+        openSignature ? input.rpcClient.getTransaction(openSignature) : Promise.resolve(null),
+        closeSignature ? input.rpcClient.getTransaction(closeSignature) : Promise.resolve(null)
+      ]);
 
-    if (!openTransaction || !closeTransaction) {
-      continue;
-    }
+      if (!openTransaction || !closeTransaction) {
+        continue;
+      }
 
-    const events = [
-      ...extractLifecycleEventsFromTransaction({
+      const events = [
+        ...extractLifecycleEventsFromTransaction({
+          walletAddress: input.walletAddress,
+          tokenMint: seed.tokenMint,
+          tokenSymbol: seed.tokenSymbol,
+          tokenPriceInSol,
+          poolAddress: seed.poolAddress,
+          positionAddress: seed.positionAddress,
+          transaction: openTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
+        }),
+        ...extractLifecycleEventsFromTransaction({
+          walletAddress: input.walletAddress,
+          tokenMint: seed.tokenMint,
+          tokenSymbol: seed.tokenSymbol,
+          tokenPriceInSol,
+          poolAddress: seed.poolAddress,
+          positionAddress: seed.positionAddress,
+          transaction: closeTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
+        })
+      ];
+
+      const snapshot = reconstructClosedPositionSnapshot({
         walletAddress: input.walletAddress,
         tokenMint: seed.tokenMint,
-        tokenSymbol: seed.tokenSymbol,
-        tokenPriceInSol,
-        poolAddress: seed.poolAddress,
-        positionAddress: seed.positionAddress,
-        transaction: openTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
-      }),
-      ...extractLifecycleEventsFromTransaction({
-        walletAddress: input.walletAddress,
-        tokenMint: seed.tokenMint,
-        tokenSymbol: seed.tokenSymbol,
-        tokenPriceInSol,
-        poolAddress: seed.poolAddress,
-        positionAddress: seed.positionAddress,
-        transaction: closeTransaction as Parameters<typeof extractLifecycleEventsFromTransaction>[0]['transaction']
-      })
-    ];
+        events
+      });
 
-    const snapshot = reconstructClosedPositionSnapshot({
-      walletAddress: input.walletAddress,
-      tokenMint: seed.tokenMint,
-      events
-    });
+      if (
+        !snapshot
+        || snapshot.depositSol <= 0
+        || snapshot.openedAt.localeCompare(snapshot.closedAt) >= 0
+      ) {
+        continue;
+      }
 
-    if (
-      !snapshot
-      || snapshot.depositSol <= 0
-      || snapshot.openedAt.localeCompare(snapshot.closedAt) >= 0
-    ) {
+      snapshots.push({
+        ...snapshot,
+        tokenSymbol: snapshot.tokenSymbol || seed.tokenSymbol,
+        poolAddress: snapshot.poolAddress || seed.poolAddress,
+        positionAddress: snapshot.positionAddress || seed.positionAddress,
+        confidence: tokenPriceInSol > 0 ? snapshot.confidence : 'partial'
+      });
+    } catch {
       continue;
     }
-
-    snapshots.push({
-      ...snapshot,
-      tokenSymbol: snapshot.tokenSymbol || seed.tokenSymbol,
-      poolAddress: snapshot.poolAddress || seed.poolAddress,
-      positionAddress: snapshot.positionAddress || seed.positionAddress,
-      confidence: tokenPriceInSol > 0 ? snapshot.confidence : 'partial'
-    });
   }
 
   if (input.writer && snapshots.length > 0) {

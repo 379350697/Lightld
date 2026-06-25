@@ -65,6 +65,8 @@ const SolanaExecutionConfigSchema = z.object({
   authToken: z.string().min(1).optional(),
   maxOutputSol: z.number().finite().positive().optional(),
   defaultSlippageBps: z.number().int().min(1).max(5000).default(100),
+  residualTokenMinValueSol: z.number().finite().nonnegative().default(0.1),
+  residualTokenDustMaxUiAmount: z.number().finite().nonnegative().default(0.00001),
   jitoTipLamports: z.number().int().nonnegative().optional()
 });
 
@@ -173,6 +175,14 @@ export function loadSolanaExecutionConfig(
     defaultSlippageBps: env.SOLANA_DEFAULT_SLIPPAGE_BPS
       ? Number(env.SOLANA_DEFAULT_SLIPPAGE_BPS)
       : 100,
+    residualTokenMinValueSol: env.SOLANA_RESIDUAL_TOKEN_MIN_VALUE_SOL
+      ? Number(env.SOLANA_RESIDUAL_TOKEN_MIN_VALUE_SOL)
+      : env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL
+        ? Number(env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL)
+        : 0.1,
+    residualTokenDustMaxUiAmount: env.SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT
+      ? Number(env.SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT)
+      : 0.00001,
     jitoTipLamports: env.JITO_TIP_LAMPORTS
       ? Number(env.JITO_TIP_LAMPORTS)
       : undefined

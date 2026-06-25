@@ -289,6 +289,57 @@ describe('SqliteCandidatePool', () => {
     await pool.close();
   });
 
+  it('skips only the exact open cooldown target when selecting from the candidate pool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-candidate-pool-target-cooldown-'));
+    roots.push(root);
+    const path = join(root, 'pool.sqlite');
+    const pool = new SqliteCandidatePool({ path });
+    const observedAt = '2026-06-21T10:00:00.000Z';
+
+    await pool.upsertCandidate({
+      strategyId: 'new-token-v1',
+      candidate: makeCandidate({
+        address: 'pool-cooldown',
+        mint: 'mint-shared',
+        symbol: 'COOL'
+      }),
+      observedAt,
+      sourceObservations: [
+        observation('meteora', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 }),
+        observation('jupiter_route', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 })
+      ]
+    });
+    await pool.upsertCandidate({
+      strategyId: 'new-token-v1',
+      candidate: makeCandidate({
+        address: 'pool-other',
+        mint: 'mint-shared',
+        symbol: 'OTHER'
+      }),
+      observedAt,
+      sourceObservations: [
+        observation('meteora', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 }),
+        observation('jupiter_route', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 })
+      ]
+    });
+    await pool.writeWorkerStatus({
+      strategyId: 'new-token-v1',
+      status: 'ok',
+      observedAt,
+      expiresAt: '2026-06-21T10:01:00.000Z'
+    });
+
+    await expect(pool.selectOpenableCandidate('new-token-v1', {
+      now: new Date('2026-06-21T10:00:10.000Z'),
+      excludedTargets: [{ poolAddress: 'pool-cooldown', tokenMint: 'mint-shared' }]
+    })).resolves.toMatchObject({
+      poolAddress: 'pool-other',
+      tokenMint: 'mint-shared'
+    });
+
+    await pool.close();
+  });
+
   it('marks non-openable missing candidates stale when they disappear from a worker cycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-candidate-pool-'));
     roots.push(root);

@@ -29,7 +29,7 @@ export function deriveRuntimeMode(input: {
     };
   }
 
-  if (input.reconcileFailures >= 2) {
+  if (input.reconcileFailures >= 5) {
     return {
       mode: 'circuit_open' as const,
       reason: 'reconcile-failures'
@@ -47,6 +47,13 @@ export function deriveRuntimeMode(input: {
     return {
       mode: 'recovering' as const,
       reason: 'cooldown-active'
+    };
+  }
+
+  if (input.reconcileFailures >= 1) {
+    return {
+      mode: 'recovering' as const,
+      reason: 'reconcile-degraded'
     };
   }
 

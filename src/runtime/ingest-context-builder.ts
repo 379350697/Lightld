@@ -35,7 +35,7 @@ import {
 } from './ingest-candidate-selection.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
-import type { PositionStateSnapshot } from './state-types.ts';
+import type { PositionStateSnapshot, TargetOpenCooldownSnapshot } from './state-types.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -96,6 +96,7 @@ type IngestContextBuilderInput = {
   candidatePoolMaxAgeMs?: number;
   selectionMode?: IngestSelectionMode;
   skipMints?: string[];
+  openCooldowns?: TargetOpenCooldownSnapshot[];
 };
 
 type PumpIndexes = {
@@ -758,8 +759,17 @@ function resolveActiveLpMaintenanceCandidate(input: {
   candidates: IngestCandidate[];
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
+  openCooldowns?: TargetOpenCooldownSnapshot[];
+  now: Date;
 }) {
-  const activeCandidates = input.candidates.filter((candidate) => candidate.hasLpPosition);
+  const activeCooldowns = activeOpenCooldownTargets({
+    cooldowns: input.openCooldowns,
+    now: input.now
+  });
+  const activeCandidates = input.candidates.filter((candidate) =>
+    candidate.hasLpPosition &&
+    !activeCooldowns.some((cooldown) => targetOpenCooldownMatches(candidate, cooldown))
+  );
   if (activeCandidates.length === 0) {
     return null;
   }
@@ -944,6 +954,44 @@ function resolveRecentlyClosedExcludedMints(input: {
   return input.now.getTime() - closedAtMs < RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS ? [mint] : [];
 }
 
+function activeOpenCooldownTargets(input: {
+  cooldowns?: TargetOpenCooldownSnapshot[];
+  now: Date;
+}) {
+  return (input.cooldowns ?? [])
+    .filter((cooldown) => cooldown.cooldownUntil > input.now.toISOString());
+}
+
+function targetOpenCooldownMatches(
+  candidate: { address: string; mint: string },
+  cooldown: { poolAddress?: string; tokenMint?: string }
+) {
+  const poolAddress = cooldown.poolAddress ?? '';
+  const tokenMint = cooldown.tokenMint ?? '';
+  const poolMatches = !poolAddress || poolAddress === candidate.address;
+  const mintMatches = !tokenMint || tokenMint === candidate.mint;
+  return poolMatches && mintMatches;
+}
+
+function filterOpenCooldownCandidates(
+  candidates: IngestCandidate[],
+  input: {
+    cooldowns?: TargetOpenCooldownSnapshot[];
+    now: Date;
+  }
+) {
+  const cooldowns = activeOpenCooldownTargets(input);
+  if (cooldowns.length === 0) {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) =>
+    candidate.hasInventory ||
+    candidate.hasLpPosition ||
+    !cooldowns.some((cooldown) => targetOpenCooldownMatches(candidate, cooldown))
+  );
+}
+
 function resolveOpenCandidateExcludedMints(input: {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
@@ -990,6 +1038,19 @@ function resolveOpenCandidateExcludedMints(input: {
   }
 
   return [...excluded];
+}
+
+function resolveOpenCandidateExcludedTargets(input: {
+  cooldowns?: TargetOpenCooldownSnapshot[];
+  now: Date;
+}) {
+  return activeOpenCooldownTargets({
+    cooldowns: input.cooldowns,
+    now: input.now
+  }).map((cooldown) => ({
+    poolAddress: cooldown.poolAddress,
+    tokenMint: cooldown.tokenMint
+  }));
 }
 
 function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput, now: Date): IngestCandidate | null {
@@ -1097,7 +1158,11 @@ async function buildCandidatePoolBackedCycleInput(
             now,
             skipMints: input.skipMints
           })
-        : resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now })
+        : resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now }),
+      excludedTargets: resolveOpenCandidateExcludedTargets({
+        cooldowns: input.openCooldowns,
+        now
+      })
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1538,7 +1603,9 @@ export async function buildLiveCycleInputFromIngest(
     : resolveActiveLpMaintenanceCandidate({
         candidates: lpEligibleCandidates,
         accountState: input.accountState,
-        positionState: input.positionState
+        positionState: input.positionState,
+        openCooldowns: input.openCooldowns,
+        now
       });
 
   if (activeLpMaintenanceCandidate) {
@@ -1626,6 +1693,10 @@ export async function buildLiveCycleInputFromIngest(
     lastClosedMint: input.positionState?.lastClosedMint,
     lastClosedAt: input.positionState?.lastClosedAt,
     cooldownMs: RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS,
+    now
+  });
+  candidates = filterOpenCooldownCandidates(candidates, {
+    cooldowns: input.openCooldowns,
     now
   });
   const postRecentlyClosedCooldownCount = candidates.length;

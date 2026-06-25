@@ -87,6 +87,8 @@ describe('solana rpc config policy', () => {
     expect(defaults.raydiumTradeApiUrl).toBe('https://transaction-v1.raydium.io');
     expect(defaults.okxDexApiUrl).toBe('https://web3.okx.com');
     expect(defaults.okxDexChainIndex).toBe('501');
+    expect(defaults.residualTokenMinValueSol).toBe(0.1);
+    expect(defaults.residualTokenDustMaxUiAmount).toBe(0.00001);
 
     const config = loadSolanaExecutionConfig(envBase({
       RPC_429_COOLDOWN_MS: '45000',
@@ -102,7 +104,9 @@ describe('solana rpc config policy', () => {
       OKX_DEX_CHAIN_INDEX: 'solana-mainnet',
       OKX_DEX_API_KEY: 'okx-key',
       OKX_DEX_SECRET_KEY: 'okx-secret',
-      OKX_DEX_PASSPHRASE: 'okx-passphrase'
+      OKX_DEX_PASSPHRASE: 'okx-passphrase',
+      LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL: '0.05',
+      SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT: '0.00002'
     }));
     expect(config.rpc429CooldownMs).toBe(45_000);
     expect(config.rpcEndpointMinIntervalMs).toBe(125);
@@ -118,6 +122,17 @@ describe('solana rpc config policy', () => {
     expect(config.okxDexApiKey).toBe('okx-key');
     expect(config.okxDexSecretKey).toBe('okx-secret');
     expect(config.okxDexPassphrase).toBe('okx-passphrase');
+    expect(config.residualTokenMinValueSol).toBe(0.05);
+    expect(config.residualTokenDustMaxUiAmount).toBe(0.00002);
+  });
+
+  it('lets the solana residual token threshold override the daemon fallback', () => {
+    const config = loadSolanaExecutionConfig(envBase({
+      LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL: '0.05',
+      SOLANA_RESIDUAL_TOKEN_MIN_VALUE_SOL: '0.02'
+    }));
+
+    expect(config.residualTokenMinValueSol).toBe(0.02);
   });
 
   it('loads solana execution state and expected signer allowlist config', () => {

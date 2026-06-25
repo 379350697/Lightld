@@ -174,6 +174,64 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]?.dprPct).toBeCloseTo(-17.7148748);
   });
 
+  it('prefers wallet-delta closed snapshots over overlapping solana-chain snapshots for the same position', () => {
+    const result = buildHistoricalActivity({
+      fills: [],
+      orderFallback: [],
+      chainSnapshots: [
+        {
+          walletAddress: 'wallet-1',
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          openedAt: '2026-04-22T13:07:01.000Z',
+          closedAt: '2026-04-22T14:39:45.000Z',
+          depositSol: 0.02,
+          depositTokenAmount: 0,
+          withdrawSol: 0.019999,
+          withdrawTokenAmount: 0,
+          withdrawTokenValueSol: 0,
+          feeSol: 0,
+          feeTokenAmount: 0,
+          feeTokenValueSol: 0,
+          pnlSol: -0.000001,
+          source: 'solana-chain',
+          confidence: 'exact'
+        },
+        {
+          walletAddress: 'wallet-1',
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          openedAt: '2026-04-22T13:07:07.000Z',
+          closedAt: '2026-04-22T14:40:00.000Z',
+          depositSol: 0.077416045,
+          depositTokenAmount: 0,
+          withdrawSol: 0.077400999,
+          withdrawTokenAmount: 0,
+          withdrawTokenValueSol: 0,
+          feeSol: 0,
+          feeTokenAmount: 0,
+          feeTokenValueSol: 0,
+          pnlSol: -0.000015046,
+          source: 'wallet-delta',
+          confidence: 'exact'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-earth',
+      investedSol: 0.077416045,
+      pnlSol: -0.000015046,
+      profitTrust: 'trusted'
+    });
+  });
+
   it('ignores invalid chain snapshots with zero deposit or reversed time', () => {
     const result = buildHistoricalActivity({
       fills: [],

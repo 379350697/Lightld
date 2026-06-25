@@ -27,7 +27,7 @@ import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type LiveCycleResult, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
-import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode } from './state-types.ts';
+import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode, TargetOpenCooldownSnapshot } from './state-types.ts';
 import { classifyAction, isExposureReducingAction } from './action-semantics.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
@@ -60,6 +60,7 @@ type LiveDaemonBuildCycleContext = {
   accountState?: LiveAccountState;
   selectionMode?: 'default' | 'maintenance-only' | 'new-open-only';
   skipMints?: string[];
+  openCooldowns?: TargetOpenCooldownSnapshot[];
 };
 
 type LiveDaemonOptions = {
@@ -107,6 +108,8 @@ const DEFAULT_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS = 30 * 60_000;
 const DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL = 0.1;
 const LP_ENTRY_EVIDENCE_COOLDOWN_MS = 10 * 60_000;
+const BAD_EXIT_REOPEN_COOLDOWN_MS = 60 * 60_000;
+const RECENT_CLOSE_RECONCILE_COOLDOWN_MS = 2 * 60_000;
 
 type TrustedLpEntryMetadata = {
   entrySol?: number;
@@ -375,28 +378,54 @@ async function suppressCooldownResidualWalletTokens(input: {
   suppressAllEligibleResidualTokens: boolean;
   nowIso: string;
 }) {
-  if (!input.accountState?.walletTokens?.length) {
+  if (!input.accountState?.walletTokens?.length && !input.accountState?.journalTokens?.length) {
     return {
       accountState: input.accountState,
       suppressedMints: [] as string[]
     };
   }
 
-  const filteredTokens = [];
   const suppressedMints: string[] = [];
-  for (const token of input.accountState.walletTokens) {
+  type WalletToken = NonNullable<LiveAccountState['walletTokens']>[number];
+  const shouldSuppressToken = async (token: WalletToken) => {
     const eligibleResidualToken = isNonStableMint(token.mint) &&
       typeof token.currentValueSol === 'number' &&
       token.currentValueSol >= input.residualTokenSweepMinValueSol;
+    const uneconomicResidualToken = isNonStableMint(token.mint) &&
+      typeof token.currentValueSol === 'number' &&
+      token.currentValueSol < input.residualTokenSweepMinValueSol;
     const cooldown = eligibleResidualToken
       ? await input.residualTokenSweepStore.readActive(token.mint, input.nowIso)
       : null;
-    if (eligibleResidualToken && (input.suppressAllEligibleResidualTokens || cooldown)) {
+
+    if (uneconomicResidualToken || (eligibleResidualToken && (input.suppressAllEligibleResidualTokens || cooldown))) {
       suppressedMints.push(token.mint);
-      continue;
+      return true;
     }
 
-    filteredTokens.push(token);
+    return false;
+  };
+
+  const filterTokens = async (tokens: WalletToken[]) => {
+    const filteredTokens = [];
+    for (const token of tokens) {
+      if (await shouldSuppressToken(token)) {
+        continue;
+      }
+      filteredTokens.push(token);
+    }
+    return filteredTokens;
+  };
+
+  const walletTokens = await filterTokens(input.accountState?.walletTokens ?? []);
+  const journalTokens = await filterTokens(input.accountState?.journalTokens ?? []);
+
+  if (walletTokens.length === (input.accountState?.walletTokens ?? []).length &&
+    journalTokens.length === (input.accountState?.journalTokens ?? []).length) {
+    return {
+      accountState: input.accountState,
+      suppressedMints
+    };
   }
 
   if (suppressedMints.length === 0) {
@@ -409,7 +438,8 @@ async function suppressCooldownResidualWalletTokens(input: {
   return {
     accountState: {
       ...input.accountState,
-      walletTokens: filteredTokens
+      walletTokens,
+      journalTokens
     },
     suppressedMints
   };
@@ -596,11 +626,21 @@ function countActiveLpExposures(accountState?: LiveAccountState) {
   return keys.size;
 }
 
-function hasNonStableTokenInventory(accountState?: LiveAccountState) {
+function hasNonStableTokenInventory(input: {
+  accountState?: LiveAccountState;
+  minValueSol: number;
+}) {
   return [
-    ...(accountState?.walletTokens ?? []),
-    ...(accountState?.journalTokens ?? [])
-  ].some((token) => isNonStableMint(token.mint) && hasActionableTokenAmount(token));
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ].some((token) =>
+    isNonStableMint(token.mint) &&
+    hasActionableTokenAmount(token) &&
+    (
+      typeof token.currentValueSol !== 'number' ||
+      token.currentValueSol >= input.minValueSol
+    )
+  );
 }
 
 function buildNewOpenExecutionAccountState(accountState?: LiveAccountState): LiveAccountState | undefined {
@@ -658,6 +698,7 @@ function resolveNewOpenPassSkipReason(input: {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
   maxActivePositions: number;
+  residualTokenSweepMinValueSol: number;
 }) {
   if (!input.enabled) {
     return 'disabled';
@@ -683,7 +724,10 @@ function resolveNewOpenPassSkipReason(input: {
     return `runtime-mode:${input.runtimeMode}`;
   }
 
-  if (hasNonStableTokenInventory(input.accountState)) {
+  if (hasNonStableTokenInventory({
+    accountState: input.accountState,
+    minValueSol: input.residualTokenSweepMinValueSol
+  })) {
     return 'inventory-exit-pending';
   }
 
@@ -771,12 +815,20 @@ async function updateEvolutionWatchlistBestEffort(input: {
 
 function isTransientAutoHealableCircuitReason(reason: string) {
   const normalized = reason.trim().toLowerCase();
-  return normalized === 'fetch failed' || normalized === 'timeout';
+  return normalized === 'fetch failed'
+    || normalized === 'timeout'
+    || normalized === 'rate-limited'
+    || normalized === 'http-400'
+    || /^http-5\d\d$/.test(normalized);
+}
+
+function isLegacyFetchFailureCircuitReason(reason: string) {
+  return reason.trim().toLowerCase() === 'fetch failed';
 }
 
 function isTransientAutoHealableError(error: unknown) {
   if (error instanceof ExecutionRequestError) {
-    return error.operation === 'account' && error.reason === 'timeout';
+    return error.operation === 'account' && isTransientAutoHealableCircuitReason(error.reason);
   }
 
   return error instanceof Error && isTransientAutoHealableCircuitReason(error.message);
@@ -811,12 +863,12 @@ function shouldBootstrapTransientAutoHealEligibility(input: {
     return true;
   }
 
-  if (input.runtimeState.circuitReason === 'fetch failed') {
+  if (isLegacyFetchFailureCircuitReason(input.runtimeState.circuitReason)) {
     return true;
   }
 
-  return input.runtimeState.circuitReason === 'timeout'
-    && input.dependencyHealth.account.lastFailureReason === 'timeout'
+  return isTransientAutoHealableCircuitReason(input.runtimeState.circuitReason)
+    && isTransientAutoHealableCircuitReason(input.dependencyHealth.account.lastFailureReason)
     && input.dependencyHealth.account.consecutiveFailures > 0;
 }
 
@@ -1058,7 +1110,9 @@ async function runResidualTokenSweepIfDue(input: {
     input.runtimeMode === 'healthy'
     || input.runtimeMode === 'degraded'
     || input.runtimeMode === 'flatten_only'
-    || (input.runtimeMode === 'circuit_open' && input.runtimeReason === 'fetch failed');
+    || (input.runtimeMode === 'recovering' && input.runtimeReason === 'reconcile-degraded')
+    || (input.runtimeMode === 'recovering' && isTransientAutoHealableCircuitReason(input.runtimeReason ?? ''))
+    || (input.runtimeMode === 'circuit_open' && isTransientAutoHealableCircuitReason(input.runtimeReason ?? ''));
 
   if (
     !runtimeAllowsMaintenance
@@ -1248,6 +1302,79 @@ function isOpenPathFetchFailure(input: {
   }
 
   return input.reason === 'fetch failed' || input.reason === 'rate-limited' || /429|rate-limit/i.test(input.reason ?? '');
+}
+
+function isBadExitReopenCooldownReason(reason: string) {
+  return reason.includes('lp-stop-loss') ||
+    reason.includes('lp-sol-nearly-depleted') ||
+    reason.includes('lp-out-of-range') ||
+    reason.includes('solDepletedBins=') ||
+    reason.includes('sol-depleted');
+}
+
+function resolveExitReopenCooldownMs(input: {
+  action: string;
+  liveOrderSubmitted: boolean;
+  resultReason: string;
+  auditReason: string;
+}) {
+  if (input.action !== 'withdraw-lp') {
+    return 0;
+  }
+
+  const combinedReason = `${input.resultReason} ${input.auditReason}`;
+  if (isBadExitReopenCooldownReason(combinedReason)) {
+    return BAD_EXIT_REOPEN_COOLDOWN_MS;
+  }
+
+  if (
+    input.liveOrderSubmitted ||
+    input.resultReason.includes('position-already-closed') ||
+    input.auditReason.includes('lp-take-profit')
+  ) {
+    return RECENT_CLOSE_RECONCILE_COOLDOWN_MS;
+  }
+
+  return 0;
+}
+
+async function readActiveTargetOpenCooldowns(input: {
+  store: TargetOpenCooldownStore;
+  now: string;
+}) {
+  const rows = await input.store.readAll();
+  return rows.filter((row) => row.cooldownUntil > input.now);
+}
+
+async function recordExitTargetOpenCooldown(input: {
+  store: TargetOpenCooldownStore;
+  poolAddress: string;
+  tokenMint: string;
+  result: LiveCycleResult;
+  now: string;
+}) {
+  if (!input.poolAddress || !input.tokenMint) {
+    return;
+  }
+
+  const cooldownMs = resolveExitReopenCooldownMs({
+    action: input.result.action,
+    liveOrderSubmitted: input.result.liveOrderSubmitted,
+    resultReason: input.result.reason,
+    auditReason: input.result.audit.reason
+  });
+  if (cooldownMs <= 0) {
+    return;
+  }
+
+  await input.store.upsert({
+    poolAddress: input.poolAddress,
+    tokenMint: input.tokenMint,
+    reason: input.result.audit.reason || input.result.reason,
+    cooldownUntil: new Date(Date.parse(input.now) + cooldownMs).toISOString(),
+    lastFailedAt: input.now,
+    updatedAt: input.now
+  });
 }
 
 async function warmAccountProvider(accountProvider?: LiveAccountStateProvider) {
@@ -1719,6 +1846,10 @@ export function resolveLifecycleStateForPersist(input: {
     return 'open';
   }
 
+  if (input.nextLifecycleState === 'inventory_exit_ready' && hasMatchingPosition) {
+    return 'open';
+  }
+
   if (input.nextLifecycleState) {
     return input.nextLifecycleState;
   }
@@ -2109,14 +2240,27 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         const shouldStartMaintenancePass = Boolean(
           options.openAfterMaintenanceHold &&
-          positionState?.lifecycleState === 'open' &&
-          positionState.activeMint
+          positionState?.activeMint &&
+          (
+            positionState.lifecycleState === 'open' ||
+            hasMatchingLpPosition({
+              accountState: effectiveAccountState,
+              chainPositionAddress: positionState.chainPositionAddress,
+              activeMint: positionState.activeMint,
+              activePoolAddress: positionState.activePoolAddress
+            })
+          )
         );
+        const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
+          store: targetOpenCooldownStore,
+          now: nowIso()
+        });
         cycleInput = await buildCycleInput(tickCount, {
           tickCount,
           positionState,
           accountState: effectiveAccountState,
-          selectionMode: shouldStartMaintenancePass ? 'maintenance-only' : 'default'
+          selectionMode: shouldStartMaintenancePass ? 'maintenance-only' : 'default',
+          openCooldowns: activeOpenCooldowns
         });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
         const residualSuppression = await suppressCooldownResidualWalletTokens({
@@ -2184,7 +2328,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             pendingSubmission: pendingAfterMaintenance !== null,
             accountState: effectiveAccountState,
             positionState,
-            maxActivePositions: options.maxActivePositions ?? 5
+            maxActivePositions: options.maxActivePositions ?? 5,
+            residualTokenSweepMinValueSol
           });
 
           if (newOpenSkipReason) {
@@ -2200,7 +2345,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               positionState,
               accountState: effectiveAccountState,
               selectionMode: 'new-open-only',
-              skipMints
+              skipMints,
+              openCooldowns: activeOpenCooldowns
             });
             let newOpenAccountState = await resolveEffectiveAccountState(newOpenCycleInput, effectiveAccountState);
             const newOpenResidualSuppression = await suppressCooldownResidualWalletTokens({
@@ -2570,6 +2716,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             updatedAt: cooldownNow
           });
         }
+        await recordExitTargetOpenCooldown({
+          store: targetOpenCooldownStore,
+          poolAddress: persistedPoolAddress || resultContextPoolAddress || positionState?.activePoolAddress || '',
+          tokenMint: persistedActiveMint || resultContextMint || positionState?.activeMint || '',
+          result,
+          now: nowIso()
+        });
 
         const persistedIdentity = resolvePersistedLpIdentity({
           lifecycleState: persistedLifecycleState,

@@ -222,6 +222,18 @@ export class SqliteMirrorWriter {
           AND closed_at = ?
           AND token_mint <> ?
       `);
+      const deleteOverlappingLowerPriority = database.prepare(`
+        DELETE FROM closed_position_snapshots
+        WHERE wallet_address = ?
+          AND token_mint = ?
+          AND position_address = ?
+          AND closed_at <> ?
+          AND ABS((julianday(closed_at) - julianday(?)) * 86400.0) <= 180
+          AND (
+            ? = 'wallet-delta'
+            OR (? <> 'wallet-delta' AND source <> 'wallet-delta')
+          )
+      `);
 
       for (const row of rows) {
         if (row.positionAddress.length > 0) {
@@ -230,6 +242,15 @@ export class SqliteMirrorWriter {
             row.positionAddress,
             row.closedAt,
             row.tokenMint
+          );
+          deleteOverlappingLowerPriority.run(
+            row.walletAddress,
+            row.tokenMint,
+            row.positionAddress,
+            row.closedAt,
+            row.closedAt,
+            row.source,
+            row.source
           );
         }
 
