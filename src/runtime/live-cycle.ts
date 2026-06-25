@@ -1388,36 +1388,33 @@ function computeTrustedLpNetPnlPct(input: {
   entrySol?: number;
   currentValueSol?: number;
   lpTotalValueSol?: number;
-  exitQuoteValueSol?: number;
   liquidityValueSol?: number;
   unclaimedFeeValueSol?: number;
   claimedFeeValueSol?: number;
   recoverableRentSol?: number;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
 }) {
-  const lpTradingValueSol = resolveLpTradingValueSol({
+  const lpExitValueSol = resolveLpTotalValueSol({
     currentValueSol: input.currentValueSol,
     lpTotalValueSol: input.lpTotalValueSol,
     liquidityValueSol: input.liquidityValueSol,
-    exitQuoteValueSol: input.exitQuoteValueSol,
     unclaimedFeeValueSol: input.unclaimedFeeValueSol,
     claimedFeeValueSol: input.claimedFeeValueSol,
     recoverableRentSol: input.recoverableRentSol
   });
-  const entryTradingSol = resolveLpEntryTradingSol({
-    entrySol: input.entrySol,
-    recoverableRentSol: input.recoverableRentSol
-  });
+  const entrySol = typeof input.entrySol === 'number' && Number.isFinite(input.entrySol)
+    ? input.entrySol
+    : undefined;
 
   if (
-    typeof entryTradingSol !== 'number'
-    || entryTradingSol <= 0
-    || typeof lpTradingValueSol !== 'number'
+    typeof entrySol !== 'number'
+    || entrySol <= 0
+    || typeof lpExitValueSol !== 'number'
   ) {
     return undefined;
   }
 
-  return evaluateLpPnl(entryTradingSol, lpTradingValueSol, 0, {
+  return evaluateLpPnl(entrySol, lpExitValueSol, 0, {
     stopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct ?? 20,
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
@@ -1525,7 +1522,6 @@ function evaluateActiveLpPositions(input: {
         entrySol: trustedEntry?.entrySol,
         currentValueSol,
         lpTotalValueSol,
-        exitQuoteValueSol,
         liquidityValueSol,
         unclaimedFeeValueSol,
         claimedFeeValueSol: resolvedClaimedFeeValueSol,

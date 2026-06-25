@@ -1392,10 +1392,10 @@ describe('runLiveCycle', () => {
     expect(result.context.trader.lpTotalValueSol).toBeCloseTo(0.137414438, 9);
     expect(result.context.trader.lpTradingValueSol).toBeCloseTo(0.079998393, 9);
     expect(result.context.trader.lpEntryTradingSol).toBeCloseTo(0.079999999, 9);
-    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-0.0020075, 6);
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-0.0011687, 6);
   });
 
-  it('does not let recoverable LP rent dilute PnL stop loss thresholds', async () => {
+  it('does not let recoverable LP rent amplify PnL stop loss thresholds', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -1464,11 +1464,11 @@ describe('runLiveCycle', () => {
       }
     });
 
-    expect(result.action).toBe('withdraw-lp');
-    expect(result.audit.reason).toContain('lp-stop-loss');
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toContain('lp-stop-loss');
     expect(result.context.trader.lpTradingValueSol).toBeCloseTo(0.0789, 9);
     expect(result.context.trader.lpEntryTradingSol).toBeCloseTo(0.100009965, 9);
-    expect(result.context.trader.lpNetPnlPct).toBeLessThan(-20);
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-13.4103, 5);
   });
 
   it('does not trust wallet-delta sourced LP open fills without explicit fill evidence', async () => {
