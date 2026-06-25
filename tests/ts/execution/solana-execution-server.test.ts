@@ -1622,6 +1622,88 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('does not downgrade LP exit valuation when only withdraw token market value is dust', async () => {
+    const keypair = Keypair.generate();
+    const quoteTokenToSol = vi.fn(async () => ({
+      valueSol: 0.00000000058,
+      source: 'jupiter-price-v3',
+      trust: 'market_price'
+    }));
+    const getPositionSnapshots = vi.fn(async () => [{
+      poolAddress: 'pool-lp-1',
+      positionAddress: 'position-lp-1',
+      mint: 'earthcoin-mint',
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 130,
+      binCount: 69,
+      fundedBinCount: 2,
+      solSide: 'tokenX' as const,
+      solDepletedBins: 30,
+      withdrawSolAmount: 0.08,
+      withdrawTokenAmountLamports: 61,
+      withdrawTokenAmountRaw: '61',
+      withdrawTokenMint: 'earthcoin-mint',
+      unclaimedFeeSol: 0.000000009,
+      unclaimedFeeSolAmount: 0.000000009,
+      unclaimedFeeTokenAmountLamports: 0,
+      unclaimedFeeTokenAmountRaw: '0',
+      recoverableRentSol: 0.057416045,
+      positionStatus: 'active' as const,
+      hasLiquidity: true,
+      hasClaimableFees: true,
+      valuationStatus: 'unavailable' as const,
+      valuationReason: 'withdraw-token-quote-required',
+      valuationSource: 'meteora-withdraw-simulation'
+    }]);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000,
+        getTokenAccountsByOwner: async () => []
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote: vi.fn(),
+      } as any,
+      dlmmClient: { getPositionSnapshots } as any,
+      valuationProviderChain: { quoteTokenToSol } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(server.origin + '/account-state', {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.walletLpPositions).toEqual([
+      expect.objectContaining({
+        liquidityValueSol: 0.08000000058000001,
+        unclaimedFeeValueSol: 0.000000009,
+        lpTotalValueSol: 0.13741605458,
+        exitQuoteValueSol: 0.13741605458,
+        displayValueSol: 0.13741605458,
+        valuationTrust: 'exit_quote',
+        valuationStatus: 'ready',
+        valuationReason: '',
+        valuationCompleteness: 'complete',
+        valuationSource: 'meteora-withdraw-simulation+token-dust-jupiter-price-v3+position-account-rent'
+      })
+    ]);
+    expect(quoteTokenToSol).toHaveBeenCalledTimes(1);
+
+    await server.stop();
+  });
+
   it('does not downgrade LP exit valuation when only fee token market value is dust', async () => {
     const keypair = Keypair.generate();
     const quoteTokenToSol = vi.fn(async ({ amountLamports }: { amountLamports: string }) => {

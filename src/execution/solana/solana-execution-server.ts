@@ -366,13 +366,13 @@ function mergeValuationTrust(current: ValuationTrust, next: ValuationTrust): Val
   return 'exit_quote';
 }
 
-const LP_VALUATION_FEE_DUST_VALUE_SOL = 0.000001;
+const LP_VALUATION_DUST_VALUE_SOL = 0.000001;
 
-function isDustFeeValueSol(valueSol: unknown) {
+function isDustValuationValueSol(valueSol: unknown) {
   return typeof valueSol === 'number'
     && Number.isFinite(valueSol)
     && valueSol >= 0
-    && valueSol <= LP_VALUATION_FEE_DUST_VALUE_SOL;
+    && valueSol <= LP_VALUATION_DUST_VALUE_SOL;
 }
 
 function markPoolPriceFallbackUntrusted(position: MeteoraLpPositionSnapshot, reason: string): AccountStateLpPosition {
@@ -466,9 +466,12 @@ async function enrichLpExitValues(input: {
         }
 
         withdrawTokenValueSol = quotedWithdrawTokenValueSol.valueSol;
-        valuationTrust = mergeValuationTrust(valuationTrust, quotedWithdrawTokenValueSol.trust);
-        hasMarketValuation ||= quotedWithdrawTokenValueSol.trust === 'market_price';
-        valuationSources.push(quotedWithdrawTokenValueSol.source);
+        const withdrawTokenQuoteIsDust = isDustValuationValueSol(quotedWithdrawTokenValueSol.valueSol);
+        if (quotedWithdrawTokenValueSol.trust === 'exit_quote' || !withdrawTokenQuoteIsDust) {
+          valuationTrust = mergeValuationTrust(valuationTrust, quotedWithdrawTokenValueSol.trust);
+          hasMarketValuation ||= quotedWithdrawTokenValueSol.trust === 'market_price';
+        }
+        valuationSources.push((withdrawTokenQuoteIsDust ? 'token-dust-' : '') + quotedWithdrawTokenValueSol.source);
       }
 
       if (!isZeroLamportsAmount(unclaimedFeeTokenAmountRaw)) {
@@ -491,7 +494,7 @@ async function enrichLpExitValues(input: {
         }
 
         unclaimedFeeTokenValueSol = quotedFeeTokenValueSol.valueSol;
-        const feeTokenQuoteIsDust = isDustFeeValueSol(quotedFeeTokenValueSol.valueSol);
+        const feeTokenQuoteIsDust = isDustValuationValueSol(quotedFeeTokenValueSol.valueSol);
         if (quotedFeeTokenValueSol.trust === 'exit_quote' || !feeTokenQuoteIsDust) {
           valuationTrust = mergeValuationTrust(valuationTrust, quotedFeeTokenValueSol.trust);
           hasMarketValuation ||= quotedFeeTokenValueSol.trust === 'market_price';
