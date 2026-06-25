@@ -1106,7 +1106,7 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
-  it('records withdraw-lp as partial when residual liquidation quote fails after close tx is visible', async () => {
+  it('keeps withdraw-lp submitted when residual liquidation quote fails after close tx is visible', async () => {
     const keypair = Keypair.generate();
     const sendRawTransaction = vi.fn(async () => 'sig-close');
     const getTokenAccountsByOwner = vi.fn(async () => [
@@ -1182,7 +1182,10 @@ describe('createSolanaExecutionServer', () => {
       status: 'submitted',
       submissionId: 'sig-close',
       submissionIds: ['sig-close'],
-      batchStatus: 'partial'
+      batchStatus: 'complete',
+      mainExecutionStatus: 'confirmed',
+      residualSweepStatus: 'incomplete',
+      residualUnsoldMints: ['earthcoin-mint']
     });
     expect(firstPayload.reason).toContain('residual quote unavailable');
     expect(replayResponse.status).toBe(200);
@@ -1268,6 +1271,7 @@ describe('createSolanaExecutionServer', () => {
       status: 'submitted',
       submissionId: 'sig-close',
       submissionIds: ['sig-close'],
+      mainExecutionStatus: 'confirmed',
       batchStatus: 'complete',
       residualSweepStatus: 'dust_ignored',
       residualIgnoredMints: ['dust-mint']
@@ -1280,7 +1284,7 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
-  it('records withdraw-lp as partial when residual sweep leaves a non-SOL token unsold', async () => {
+  it('keeps withdraw-lp submitted when residual sweep leaves a non-SOL token unsold', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const keypair = Keypair.generate();
     const sent: string[] = [];
@@ -1386,7 +1390,10 @@ describe('createSolanaExecutionServer', () => {
       status: 'submitted',
       submissionId: 'sig-2',
       submissionIds: ['sig-1', 'sig-2'],
-      batchStatus: 'partial'
+      batchStatus: 'complete',
+      mainExecutionStatus: 'confirmed',
+      residualSweepStatus: 'incomplete',
+      residualUnsoldMints: ['stale-mint']
     });
     expect(payload.reason).toContain('residual token sweep incomplete: stale-mint');
     expect(payload.reason).toContain('stale quote unavailable');

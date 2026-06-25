@@ -10,17 +10,93 @@ import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { KillSwitch } from '../../../src/runtime/kill-switch';
 import { liveIncidentDedupeStore } from '../../../src/runtime/incident-dedupe';
-import { runLiveCycle } from '../../../src/runtime/live-cycle';
+import { runLiveCycle, validateLpWithdrawTriggerEligibility } from '../../../src/runtime/live-cycle';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 
 const TEST_JOURNAL_DIR = 'tmp/tests/runtime-live-cycle';
 const TEST_STATE_DIR = 'tmp/tests/runtime-live-cycle-state';
+
+const baseNewTokenConfig = {
+  poolClass: 'new-token',
+  live: {
+    enabled: true,
+    maxLivePositionSol: 1,
+    autoFlattenRequired: false,
+    maxHoldHours: 8,
+    requireMintAuthorityRevoked: false
+  },
+  lpConfig: {
+    enabled: true,
+    singleSideMint: 'SOL',
+    strategyType: 'bid-ask',
+    stopLossNetPnlPct: 20,
+    takeProfitNetPnlPct: 30,
+    solDepletionExitBins: 60,
+    downsideCoveragePct: 66,
+    minBinStep: 80,
+    minVolume24hUsd: 1000,
+    minFeeTvlRatio24h: 0,
+    rebalanceOnOutOfRange: false
+  }
+} as any;
 
 describe('runLiveCycle', () => {
   beforeEach(async () => {
     liveIncidentDedupeStore.reset();
     await rm(TEST_JOURNAL_DIR, { recursive: true, force: true });
     await rm(TEST_STATE_DIR, { recursive: true, force: true });
+  });
+
+  it('rejects withdraw-lp when the claimed take-profit trigger is not eligible', () => {
+    const result = validateLpWithdrawTriggerEligibility({
+      action: 'withdraw-lp',
+      reason: 'lp-take-profit',
+      config: baseNewTokenConfig,
+      snapshot: {
+        hasLpPosition: true,
+        lpNetPnlPct: 12,
+        holdTimeMs: 10 * 60 * 1000,
+        pendingConfirmationStatus: 'confirmed',
+        valuationStatus: 'ready'
+      }
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      reason: 'lp-exit-trigger-not-eligible:expected=hold:lp-position-maintain:actual=withdraw-lp:lp-take-profit'
+    });
+  });
+
+  it('rejects withdraw-lp when the claimed stop-loss trigger lacks ready valuation', () => {
+    const result = validateLpWithdrawTriggerEligibility({
+      action: 'withdraw-lp',
+      reason: 'lp-stop-loss',
+      config: baseNewTokenConfig,
+      snapshot: {
+        hasLpPosition: true,
+        lpNetPnlPct: -25,
+        valuationStatus: 'unavailable'
+      }
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      reason: 'lp-exit-trigger-not-eligible:expected=hold:lp-position-maintain:actual=withdraw-lp:lp-stop-loss'
+    });
+  });
+
+  it('keeps lp-sol-nearly-depleted eligible when SOL exposure is explicitly depleted', () => {
+    const result = validateLpWithdrawTriggerEligibility({
+      action: 'withdraw-lp',
+      reason: 'lp-sol-nearly-depleted',
+      config: baseNewTokenConfig,
+      snapshot: {
+        hasLpPosition: true,
+        lpSolExposureStatus: 'sol-depleted'
+      }
+    });
+
+    expect(result).toEqual({ allowed: true });
   });
 
   it('submits a live order for actionable new-token input and writes journals', async () => {
@@ -138,6 +214,122 @@ describe('runLiveCycle', () => {
       finality: 'unknown',
       orderAction: 'withdraw-lp',
       reason: 'pending-submission-partial-failure'
+    });
+  });
+
+  it('does not block a confirmed withdraw-lp when residual cleanup is incomplete', async () => {
+    const events: MirrorEvent[] = [];
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        walletLpPositions: []
+      },
+      accountProvider: {
+        readState: vi.fn(async () => ({
+          walletSol: 1.035,
+          journalSol: 1.035,
+          walletTokens: [],
+          walletLpPositions: []
+        }))
+      },
+      mirrorSink: {
+        enqueue(event) {
+          events.push(event);
+        }
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted',
+          submissionId: 'sub-close',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'sig-close',
+          submissionIds: ['sub-close'],
+          confirmationSignatures: ['sig-close'],
+          batchStatus: 'complete',
+          mainExecutionStatus: 'confirmed',
+          residualSweepStatus: 'incomplete',
+          residualUnsoldMints: ['mint-safe'],
+          residualFailureReasons: ['no route'],
+          residualEstimatedValueSol: 0.012,
+          reason: 'residual token sweep incomplete: mint-safe (no route)'
+        })
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+    const decisionJournal = await readJsonLines<Record<string, unknown>>(
+      result.journalPaths.decisionAuditPath
+    );
+    const incidentJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveIncidentPath);
+    const pendingSubmission = await new PendingSubmissionStore(TEST_STATE_DIR).read();
+    const orderMirror = events.find((event) => event.type === 'order');
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.reason).toBe('live-order-submitted');
+    expect(result.confirmationStatus).toBe('confirmed');
+    expect(result.broadcastResult).toMatchObject({
+      batchStatus: 'complete',
+      mainExecutionStatus: 'confirmed',
+      residualSweepStatus: 'incomplete'
+    });
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      broadcastStatus: 'submitted',
+      confirmationStatus: 'confirmed',
+      finality: 'confirmed',
+      exitTriggerReason: 'lp-sol-nearly-depleted',
+      executionFailureReason: 'residual token sweep incomplete: mint-safe (no route)',
+      residualCleanupStatus: 'residual_cleanup_pending',
+      residualCleanupValueSol: 0.012
+    });
+    expect(fillJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      fillAmountSource: 'wallet-delta',
+      hasFillEvidence: true,
+      actualWalletDeltaSol: 0.035
+    });
+    expect(decisionJournal[0]).toMatchObject({
+      stage: 'broadcast',
+      mode: 'LIVE',
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      confirmationStatus: 'confirmed'
+    });
+    expect(incidentJournal).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'broadcast',
+        severity: 'warning',
+        reason: expect.stringContaining('residual_cleanup_pending')
+      })
+    ]));
+    expect(incidentJournal).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'error',
+        reason: expect.stringContaining('pending-submission-partial-failure')
+      })
+    ]));
+    expect(pendingSubmission).toBeNull();
+    expect(orderMirror?.payload).toMatchObject({
+      action: 'withdraw-lp',
+      confirmationStatus: 'confirmed',
+      exitTriggerReason: 'lp-sol-nearly-depleted',
+      executionFailureReason: 'residual token sweep incomplete: mint-safe (no route)',
+      residualCleanupStatus: 'residual_cleanup_pending',
+      residualCleanupValueSol: 0.012
     });
   });
   it('marks claim-fee intents for residual SOL liquidation', async () => {

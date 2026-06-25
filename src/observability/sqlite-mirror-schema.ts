@@ -41,6 +41,10 @@ export const SQLITE_MIRROR_SCHEMA = [
       broadcast_status TEXT NOT NULL,
       confirmation_status TEXT NOT NULL,
       finality TEXT NOT NULL,
+      exit_trigger_reason TEXT NOT NULL DEFAULT '',
+      execution_failure_reason TEXT NOT NULL DEFAULT '',
+      residual_cleanup_status TEXT NOT NULL DEFAULT '',
+      residual_cleanup_value_sol REAL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )

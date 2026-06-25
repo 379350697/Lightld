@@ -327,7 +327,11 @@ export class SqliteMirrorWriter {
     this.ensureTableColumns(database, 'orders', [
       ['open_intent_id', "TEXT NOT NULL DEFAULT ''"],
       ['position_id', "TEXT NOT NULL DEFAULT ''"],
-      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"]
+      ['chain_position_address', "TEXT NOT NULL DEFAULT ''"],
+      ['exit_trigger_reason', "TEXT NOT NULL DEFAULT ''"],
+      ['execution_failure_reason', "TEXT NOT NULL DEFAULT ''"],
+      ['residual_cleanup_status', "TEXT NOT NULL DEFAULT ''"],
+      ['residual_cleanup_value_sol', 'REAL']
     ]);
   }
 
@@ -666,9 +670,13 @@ export class SqliteMirrorWriter {
         broadcast_status,
         confirmation_status,
         finality,
+        exit_trigger_reason,
+        execution_failure_reason,
+        residual_cleanup_status,
+        residual_cleanup_value_sol,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(idempotency_key) DO UPDATE SET
         cycle_id=excluded.cycle_id,
         strategy_id=excluded.strategy_id,
@@ -686,6 +694,10 @@ export class SqliteMirrorWriter {
         broadcast_status=excluded.broadcast_status,
         confirmation_status=excluded.confirmation_status,
         finality=excluded.finality,
+        exit_trigger_reason=excluded.exit_trigger_reason,
+        execution_failure_reason=excluded.execution_failure_reason,
+        residual_cleanup_status=excluded.residual_cleanup_status,
+        residual_cleanup_value_sol=excluded.residual_cleanup_value_sol,
         updated_at=excluded.updated_at
     `).run(
       payload.idempotencyKey,
@@ -706,6 +718,10 @@ export class SqliteMirrorWriter {
       payload.broadcastStatus,
       payload.confirmationStatus,
       payload.finality,
+      payload.exitTriggerReason ?? '',
+      payload.executionFailureReason ?? '',
+      payload.residualCleanupStatus ?? '',
+      payload.residualCleanupValueSol ?? null,
       payload.createdAt,
       payload.updatedAt
     );

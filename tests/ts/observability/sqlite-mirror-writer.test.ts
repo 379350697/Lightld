@@ -186,7 +186,11 @@ describe('SqliteMirrorWriter', () => {
     expect(orderColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'open_intent_id',
       'position_id',
-      'chain_position_address'
+      'chain_position_address',
+      'exit_trigger_reason',
+      'execution_failure_reason',
+      'residual_cleanup_status',
+      'residual_cleanup_value_sol'
     ]));
     expect(fillColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'open_intent_id',
@@ -224,6 +228,10 @@ describe('SqliteMirrorWriter', () => {
           broadcastStatus: 'submitted',
           confirmationStatus: 'submitted',
           finality: 'unknown',
+          exitTriggerReason: 'lp-sol-nearly-depleted',
+          executionFailureReason: 'residual token sweep incomplete: mint-1',
+          residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupValueSol: 0.012,
           createdAt: '2026-04-18T08:00:00.000Z',
           updatedAt: '2026-04-18T08:00:01.000Z'
         }
@@ -252,13 +260,24 @@ describe('SqliteMirrorWriter', () => {
 
     const db = new DatabaseSync(path, { readOnly: true });
     const order = db.prepare(`
-      SELECT open_intent_id, position_id, chain_position_address
+      SELECT
+        open_intent_id,
+        position_id,
+        chain_position_address,
+        exit_trigger_reason,
+        execution_failure_reason,
+        residual_cleanup_status,
+        residual_cleanup_value_sol
       FROM orders
       WHERE idempotency_key = 'order-1'
     `).get() as {
       open_intent_id: string;
       position_id: string;
       chain_position_address: string;
+      exit_trigger_reason: string;
+      execution_failure_reason: string;
+      residual_cleanup_status: string;
+      residual_cleanup_value_sol: number;
     };
     const fill = db.prepare(`
       SELECT open_intent_id, position_id, chain_position_address
@@ -274,7 +293,11 @@ describe('SqliteMirrorWriter', () => {
     expect(order).toEqual({
       open_intent_id: 'intent-1',
       position_id: 'position-1',
-      chain_position_address: 'chain-pos-1'
+      chain_position_address: 'chain-pos-1',
+      exit_trigger_reason: 'lp-sol-nearly-depleted',
+      execution_failure_reason: 'residual token sweep incomplete: mint-1',
+      residual_cleanup_status: 'residual_cleanup_pending',
+      residual_cleanup_value_sol: 0.012
     });
     expect(fill).toEqual({
       open_intent_id: 'intent-1',

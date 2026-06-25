@@ -1,3 +1,5 @@
+import { buildLpExitPolicyDecision } from '../lp-exit-policy.ts';
+
 type NewTokenSnapshot = {
   inSession: boolean;
   hasInventory: boolean;
@@ -69,74 +71,26 @@ export function buildNewTokenDecision(
     return { action: 'dca-out', reason: 'inventory-exit-ready' };
   }
 
+  if (snapshot.hasLpPosition) {
+    const lpDecision = buildLpExitPolicyDecision(snapshot, config);
+    if (lpDecision.action !== 'hold' || config.lpEnabled) {
+      return lpDecision;
+    }
+  }
+
   // ===== 18-Hour Force Exit =====
   const maxHoldMs = (config.maxHoldHours ?? 18) * 60 * 60 * 1000;
-  if (typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs) {
-    if (snapshot.hasLpPosition) {
-      return { action: 'withdraw-lp', reason: 'max-hold-with-lp-position' };
-    }
-    if (snapshot.hasInventory) {
-      return { action: 'dca-out', reason: 'max-hold-with-inventory' };
-    }
+  if (
+    !snapshot.hasLpPosition &&
+    snapshot.hasInventory &&
+    typeof snapshot.holdTimeMs === 'number' &&
+    snapshot.holdTimeMs >= maxHoldMs
+  ) {
+    return { action: 'dca-out', reason: 'max-hold-with-inventory' };
   }
 
   // ===== LP mode (bid-ask single-sided SOL) =====
   if (config.lpEnabled) {
-    if (snapshot.hasLpPosition) {
-      const pnlValuationReady = !snapshot.valuationStatus || snapshot.valuationStatus === 'ready';
-
-      if (pnlValuationReady && typeof snapshot.lpNetPnlPct === 'number') {
-        const stopLoss = config.lpStopLossNetPnlPct ?? 20;
-        const takeProfit = config.lpTakeProfitNetPnlPct ?? 30;
-        const minHoldMsBeforeTakeProfit = (config.lpMinHoldMinutesBeforeTakeProfit ?? 5) * 60 * 1000;
-        const canTakeProfit = snapshot.pendingConfirmationStatus === 'confirmed'
-          && typeof snapshot.holdTimeMs === 'number'
-          && snapshot.holdTimeMs >= minHoldMsBeforeTakeProfit;
-
-        if (snapshot.lpNetPnlPct <= -stopLoss) {
-          return { action: 'withdraw-lp', reason: 'lp-stop-loss' };
-        }
-
-        if (snapshot.lpNetPnlPct >= takeProfit && canTakeProfit) {
-          return { action: 'withdraw-lp', reason: 'lp-take-profit' };
-        }
-      }
-
-      if (
-        typeof config.lpMaxImpermanentLossPct === 'number' &&
-        typeof snapshot.lpImpermanentLossPct === 'number' &&
-        snapshot.lpImpermanentLossPct >= config.lpMaxImpermanentLossPct
-      ) {
-        return { action: 'withdraw-lp', reason: 'lp-max-impermanent-loss' };
-      }
-
-      if (
-        typeof config.lpSolDepletionExitBins === 'number' &&
-        typeof snapshot.lpSolDepletedBins === 'number' &&
-        snapshot.lpSolDepletedBins >= config.lpSolDepletionExitBins
-      ) {
-        return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
-      }
-
-      if (snapshot.lpSolExposureStatus === 'sol-depleted') {
-        return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
-      }
-
-      if (
-        typeof config.lpClaimFeeThresholdUsd === 'number' &&
-        typeof snapshot.lpUnclaimedFeeUsd === 'number' &&
-        snapshot.lpUnclaimedFeeUsd >= config.lpClaimFeeThresholdUsd
-      ) {
-        return { action: 'claim-fee', reason: 'lp-claim-fee-threshold' };
-      }
-
-      if (config.lpRebalanceOnOutOfRange && snapshot.lpActiveBinStatus === 'out-of-range') {
-        return { action: 'rebalance-lp', reason: 'lp-out-of-range' };
-      }
-
-      return { action: 'hold', reason: 'lp-position-maintain' };
-    }
-
     // LP opens are gated upstream by LP pool eligibility checks. Once a candidate
     // reaches this stage without an existing LP position, open the LP directly.
     return { action: 'add-lp', reason: 'lp-open-approved' };

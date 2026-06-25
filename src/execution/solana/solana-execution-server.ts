@@ -85,10 +85,12 @@ const BroadcastResultSchema = z.object({
   confirmationSignatures: z.array(z.string()).optional(),
   batchStatus: z.enum(['complete', 'partial']).optional(),
   reason: z.string().optional(),
+  mainExecutionStatus: z.enum(['submitted', 'confirmed']).optional(),
   residualSweepStatus: z.enum(['complete', 'incomplete', 'dust_ignored']).optional(),
   residualUnsoldMints: z.array(z.string()).optional(),
   residualIgnoredMints: z.array(z.string()).optional(),
-  residualFailureReasons: z.array(z.string()).optional()
+  residualFailureReasons: z.array(z.string()).optional(),
+  residualEstimatedValueSol: z.number().finite().nonnegative().optional()
 });
 
 const SubmissionEntrySchema = z.object({
@@ -866,10 +868,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     signatures: string[];
     batchStatus?: 'complete' | 'partial';
     reason?: string;
+    mainExecutionStatus?: 'submitted' | 'confirmed';
     residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
     residualUnsoldMints?: string[];
     residualIgnoredMints?: string[];
     residualFailureReasons?: string[];
+    residualEstimatedValueSol?: number;
   }): LiveBroadcastResult => ({
     status: 'submitted',
     submissionId: input.signatures[input.signatures.length - 1] ?? '',
@@ -879,10 +883,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     confirmationSignatures: input.signatures,
     batchStatus: input.batchStatus ?? 'complete',
     reason: input.reason,
+    mainExecutionStatus: input.mainExecutionStatus,
     residualSweepStatus: input.residualSweepStatus,
     residualUnsoldMints: input.residualUnsoldMints,
     residualIgnoredMints: input.residualIgnoredMints,
-    residualFailureReasons: input.residualFailureReasons
+    residualFailureReasons: input.residualFailureReasons,
+    residualEstimatedValueSol: input.residualEstimatedValueSol
   });
   const buildFailedBroadcastResult = (input: {
     idempotencyKey: string;
@@ -1370,7 +1376,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     poolAddress: intent.poolAddress,
                     tokenMint: intent.tokenMint,
                     outputSol: intent.outputSol,
-                    result: 'partial',
+                    result: 'submitted',
                     acceptedSignatureCount: txSignatures.length,
                     buildMs,
                     quoteMs,
@@ -1385,8 +1391,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
-                    batchStatus: 'partial',
+                    batchStatus: 'complete',
                     reason,
+                    mainExecutionStatus: 'confirmed',
                     residualSweepStatus: 'incomplete',
                     residualUnsoldMints: residualSweep.unsoldMints,
                     residualIgnoredMints: residualSweep.ignoredMints,
@@ -1416,6 +1423,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
+                    mainExecutionStatus: 'confirmed',
                     reason,
                     residualSweepStatus: 'dust_ignored',
                     residualIgnoredMints: residualSweep.ignoredMints,

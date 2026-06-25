@@ -45,6 +45,10 @@ export type OrderMirrorPayload = {
   broadcastStatus: OrderBroadcastStatus;
   confirmationStatus: ConfirmationStatus;
   finality: PendingFinality | 'unknown';
+  exitTriggerReason?: string;
+  executionFailureReason?: string;
+  residualCleanupStatus?: string;
+  residualCleanupValueSol?: number;
   createdAt: string;
   updatedAt: string;
 };

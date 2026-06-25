@@ -158,6 +158,10 @@ export function buildOrderMirrorPayload(input: {
   broadcastStatus: OrderBroadcastStatus;
   confirmationStatus: ConfirmationStatus;
   finality?: PendingFinality | 'unknown';
+  exitTriggerReason?: string;
+  executionFailureReason?: string;
+  residualCleanupStatus?: string;
+  residualCleanupValueSol?: number;
   createdAt: string;
   updatedAt: string;
 }): OrderMirrorPayload {
@@ -188,6 +192,10 @@ export function buildOrderMirrorPayload(input: {
     broadcastStatus: input.broadcastStatus,
     confirmationStatus: input.confirmationStatus,
     finality: input.finality ?? 'unknown',
+    exitTriggerReason: input.exitTriggerReason,
+    executionFailureReason: input.executionFailureReason,
+    residualCleanupStatus: input.residualCleanupStatus,
+    residualCleanupValueSol: input.residualCleanupValueSol,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt
   };

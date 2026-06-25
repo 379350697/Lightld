@@ -45,6 +45,7 @@ import { evaluateLpPnl } from '../risk/lp-pnl.ts';
 import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { SpendingLimitsStore } from '../risk/spending-limits.ts';
 import { runEngineCycle } from '../strategy/engine-runner.ts';
+import { buildLpExitPolicyDecision } from '../strategy/lp-exit-policy.ts';
 import { buildDecisionContext, type DecisionContextInput } from './build-decision-context.ts';
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
@@ -1447,6 +1448,71 @@ function computeTrustedLpNetPnlPct(input: {
     takeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct ?? 30
   }).unrealizedPct;
 }
+
+export function validateLpWithdrawTriggerEligibility(input: {
+  action: LiveAction;
+  reason?: string;
+  snapshot: Record<string, unknown>;
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+}): { allowed: true } | { allowed: false; reason: string } {
+  if (input.action !== 'withdraw-lp') {
+    return { allowed: true };
+  }
+
+  if (input.config.poolClass !== 'new-token' || input.config.lpConfig?.enabled !== true) {
+    return { allowed: false, reason: 'lp-exit-trigger-not-eligible:lp-disabled' };
+  }
+
+  const expected = buildLpExitPolicyDecision({
+    hasLpPosition: input.snapshot.hasLpPosition === true,
+    lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
+    lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
+    lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
+    lpSolExposureStatus: input.snapshot.lpSolExposureStatus === 'sol-heavy'
+      || input.snapshot.lpSolExposureStatus === 'mixed'
+      || input.snapshot.lpSolExposureStatus === 'token-heavy'
+      || input.snapshot.lpSolExposureStatus === 'sol-depleted'
+      ? input.snapshot.lpSolExposureStatus
+      : undefined,
+    lpActiveBinStatus: input.snapshot.lpActiveBinStatus === 'in-range'
+      || input.snapshot.lpActiveBinStatus === 'out-of-range'
+      ? input.snapshot.lpActiveBinStatus
+      : undefined,
+    lpImpermanentLossPct: typeof input.snapshot.lpImpermanentLossPct === 'number' ? input.snapshot.lpImpermanentLossPct : undefined,
+    valuationStatus: input.snapshot.valuationStatus === 'ready'
+      || input.snapshot.valuationStatus === 'unavailable'
+      || input.snapshot.valuationStatus === 'stale'
+      || input.snapshot.valuationStatus === 'invalid'
+      ? input.snapshot.valuationStatus
+      : undefined,
+    holdTimeMs: typeof input.snapshot.holdTimeMs === 'number' ? input.snapshot.holdTimeMs : undefined,
+    pendingConfirmationStatus: input.snapshot.pendingConfirmationStatus === 'submitted'
+      || input.snapshot.pendingConfirmationStatus === 'confirmed'
+      || input.snapshot.pendingConfirmationStatus === 'failed'
+      || input.snapshot.pendingConfirmationStatus === 'unknown'
+      ? input.snapshot.pendingConfirmationStatus
+      : undefined
+  }, {
+    maxHoldHours: input.config.live.maxHoldHours ?? 18,
+    lpStopLossNetPnlPct: input.config.lpConfig.stopLossNetPnlPct,
+    lpTakeProfitNetPnlPct: input.config.lpConfig.takeProfitNetPnlPct,
+    lpMinHoldMinutesBeforeTakeProfit: 5,
+    lpSolDepletionExitBins: input.config.lpConfig.solDepletionExitBins,
+    lpClaimFeeThresholdUsd: input.config.lpConfig.claimFeeThresholdUsd,
+    lpRebalanceOnOutOfRange: input.config.lpConfig.rebalanceOnOutOfRange ?? false,
+    lpMaxImpermanentLossPct: input.config.lpConfig.maxImpermanentLossPct
+  });
+
+  if (expected.action === 'withdraw-lp' && expected.reason === input.reason) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `lp-exit-trigger-not-eligible:expected=${expected.action}:${expected.reason}:actual=withdraw-lp:${input.reason || 'missing'}`
+  };
+}
+
 type ActiveLpPosition = NonNullable<LiveAccountState['walletLpPositions']>[number];
 
 type EvaluatedLpPosition = {
@@ -2383,6 +2449,46 @@ async function appendIncident(
   });
 }
 
+function resolveResidualCleanupStatus(result: LiveBroadcastResult | undefined) {
+  if (!result || result.status !== 'submitted') {
+    return undefined;
+  }
+
+  if (result.residualSweepStatus === 'incomplete') {
+    return 'residual_cleanup_pending';
+  }
+
+  if (result.residualSweepStatus === 'dust_ignored') {
+    return 'residual_dust_ignored';
+  }
+
+  if (result.residualSweepStatus === 'complete') {
+    return 'residual_cleanup_complete';
+  }
+
+  return undefined;
+}
+
+function resolveResidualExecutionReason(result: LiveBroadcastResult | undefined) {
+  if (!result || result.status !== 'submitted') {
+    return undefined;
+  }
+
+  if (result.residualSweepStatus === 'incomplete') {
+    return result.reason ?? 'residual token sweep incomplete';
+  }
+
+  if (result.residualSweepStatus === 'dust_ignored') {
+    return result.reason ?? 'residual dust ignored';
+  }
+
+  return undefined;
+}
+
+function isResidualCleanupIncomplete(result: LiveBroadcastResult | undefined) {
+  return result?.status === 'submitted' && result.residualSweepStatus === 'incomplete';
+}
+
 export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResult> {
   let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'closed';
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
@@ -3035,6 +3141,24 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const actionableAction = runtimeAction.action;
   const actionableTokenMint = activeMint || logContext.tokenMint;
 
+  const lpWithdrawTriggerEligibility = validateLpWithdrawTriggerEligibility({
+    action: actionableAction,
+    reason: engineResult.audit.reason,
+    snapshot: updatedSnapshot,
+    config
+  });
+  if (!lpWithdrawTriggerEligibility.allowed) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: lpWithdrawTriggerEligibility.reason,
+      audit: { reason: lpWithdrawTriggerEligibility.reason },
+      severity: 'error',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
+
   if (
     actionableAction === 'dca-out' &&
     hasPositiveWalletTokenBalance({
@@ -3263,6 +3387,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     broadcastStatus: OrderBroadcastStatus;
     confirmationStatus: ConfirmationStatus;
     finality?: PendingFinality | 'unknown';
+    exitTriggerReason?: string;
+    executionFailureReason?: string;
+    residualCleanupStatus?: string;
+    residualCleanupValueSol?: number;
     updatedAt: string;
   }) => {
     await journals.orders.append({
@@ -3279,6 +3407,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       broadcastStatus: entry.broadcastStatus,
       confirmationStatus: entry.confirmationStatus,
       finality: entry.finality ?? 'unknown',
+      exitTriggerReason: entry.exitTriggerReason,
+      executionFailureReason: entry.executionFailureReason,
+      residualCleanupStatus: entry.residualCleanupStatus,
+      residualCleanupValueSol: entry.residualCleanupValueSol,
       updatedAt: entry.updatedAt
     });
     emitMirrorEvent(mirrorSink, () => {
@@ -3301,6 +3433,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         broadcastStatus: entry.broadcastStatus,
         confirmationStatus: entry.confirmationStatus,
         finality: entry.finality ?? 'unknown',
+        exitTriggerReason: entry.exitTriggerReason,
+        executionFailureReason: entry.executionFailureReason,
+        residualCleanupStatus: entry.residualCleanupStatus,
+        residualCleanupValueSol: entry.residualCleanupValueSol,
         createdAt: logContext.startedAt,
         updatedAt: entry.updatedAt
       })));
@@ -3321,6 +3457,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       broadcastStatus: 'not_submitted',
       confirmationStatus: 'unknown',
       finality: 'unknown',
+      exitTriggerReason: engineResult.audit.reason,
+      executionFailureReason: reason,
       updatedAt
     });
 
@@ -3367,6 +3505,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         broadcastStatus: 'unknown',
         confirmationStatus: 'unknown',
         finality: 'unknown',
+        exitTriggerReason: engineResult.audit.reason,
+        executionFailureReason: error.reason,
         updatedAt
       });
 
@@ -3397,6 +3537,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       broadcastStatus: 'not_submitted',
       confirmationStatus: 'unknown',
       finality: 'unknown',
+      exitTriggerReason: engineResult.audit.reason,
+      executionFailureReason: reason,
       updatedAt
     });
 
@@ -3437,6 +3579,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       broadcastStatus: 'not_submitted',
       confirmationStatus: confirmation.status,
       finality: 'unknown',
+      exitTriggerReason: engineResult.audit.reason,
+      executionFailureReason: normalizedFailureReason,
       updatedAt: new Date().toISOString()
     });
 
@@ -3479,6 +3623,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmation = aggregateConfirmation.confirmation;
     confirmationFinality = aggregateConfirmation.finality;
     confirmationCheckedAt = aggregateConfirmation.checkedAt;
+  }
+
+  if (
+    broadcastResult.mainExecutionStatus === 'confirmed'
+    && broadcastResult.batchStatus !== 'partial'
+    && confirmation.status !== 'failed'
+  ) {
+    confirmation = {
+      status: 'confirmed',
+      submissionId: trackedBroadcastSubmissions[trackedBroadcastSubmissions.length - 1]?.submissionId ?? broadcastResult.submissionId
+    };
+    confirmationFinality = confirmationFinality === 'finalized' ? 'finalized' : 'confirmed';
   }
 
   if (broadcastResult.batchStatus === 'partial') {
@@ -3527,14 +3683,31 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   ) {
     await spendingLimitsStore.reserveSpend(orderIntent.idempotencyKey, requestedPositionSol);
   }
+  const residualCleanupStatus = resolveResidualCleanupStatus(broadcastResult);
+  const residualExecutionReason = resolveResidualExecutionReason(broadcastResult);
   await appendOrderLifecycleState({
     submissionId: broadcastResult.submissionId,
     confirmationSignature: broadcastResult.confirmationSignature,
     broadcastStatus: 'submitted',
     confirmationStatus: confirmation.status,
     finality: confirmationFinality,
+    exitTriggerReason: engineResult.audit.reason,
+    executionFailureReason: residualExecutionReason,
+    residualCleanupStatus,
+    residualCleanupValueSol: broadcastResult.residualEstimatedValueSol,
     updatedAt: confirmationCheckedAt
   });
+
+  if (isResidualCleanupIncomplete(broadcastResult)) {
+    await appendIncident(journals, logContext, mirrorSink, {
+      stage: 'broadcast',
+      reason: `residual_cleanup_pending: ${broadcastResult.reason ?? 'residual token sweep incomplete'}`,
+      severity: 'warning',
+      requestedPositionSol,
+      quote,
+      submissionId: broadcastResult.submissionId
+    });
+  }
 
   if (broadcastResult.batchStatus === 'partial') {
     const partialReason = broadcastResult.reason

@@ -56,6 +56,7 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const recentOpenedAt = new Date(Date.now() - 30 * 60_000).toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -253,6 +254,7 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const recentOpenedAt = new Date(Date.now() - 30 * 60_000).toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -267,7 +269,7 @@ describe('runLiveDaemon', () => {
       entrySol: 0.137416044,
       entrySolSource: 'actual_fill',
       entryFillSubmissionId: 'sub-world-open',
-      openedAt: '2026-06-24T14:40:02.959Z',
+      openedAt: recentOpenedAt,
       updatedAt: '2026-06-24T14:53:31.571Z'
     });
 
@@ -307,7 +309,7 @@ describe('runLiveDaemon', () => {
         actualWalletDeltaSol: 0.137416044,
         fillAmountSource: 'wallet-delta' as const,
         hasFillEvidence: true,
-        recordedAt: '2026-06-24T14:40:02.959Z'
+        recordedAt: recentOpenedAt
       }]
     };
 
