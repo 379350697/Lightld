@@ -50,22 +50,18 @@ export function matchesPositionStateLifecycle(
     return false;
   }
 
-  if (
-    typeof positionState.chainPositionAddress === 'string'
-    && positionState.chainPositionAddress.length > 0
-    && positionState.chainPositionAddress === position.positionAddress
-  ) {
-    return true;
+  if (typeof positionState.chainPositionAddress === 'string' && positionState.chainPositionAddress.length > 0) {
+    return positionState.chainPositionAddress === position.positionAddress;
   }
 
   if (
     typeof positionState.positionId === 'string'
     && positionState.positionId.length > 0
+    && !isPoolMintPositionId(positionState.positionId)
     && typeof position.positionId === 'string'
     && position.positionId.length > 0
-    && positionState.positionId === position.positionId
   ) {
-    return true;
+    return positionState.positionId === position.positionId;
   }
 
   return positionState.activePoolAddress === position.poolAddress
@@ -169,10 +165,11 @@ export function resolveTrustedLpEntry(input: {
   openFill?: LpEntryFillCandidate;
   lifecycleBound?: boolean;
 }): TrustedLpEntryResolution | undefined {
-  return resolveTrustedEntryFromPositionState({
+  return resolveTrustedEntryFromOpenFill({ openFill: input.openFill })
+    ?? resolveTrustedEntryFromPositionState({
     positionState: input.positionState,
     lifecycleBound: input.lifecycleBound
-  }) ?? resolveTrustedEntryFromOpenFill({ openFill: input.openFill });
+  });
 }
 
 export function resolveTrustedEntryFromFills(input: {
@@ -186,14 +183,6 @@ export function resolveTrustedEntryFromFills(input: {
     || !positionState.activeMint
   ) {
     return undefined;
-  }
-
-  const persisted = resolveTrustedEntryFromPositionState({
-    positionState,
-    lifecycleBound: true
-  });
-  if (persisted) {
-    return persisted;
   }
 
   const strongCandidates = (input.fills ?? [])
@@ -216,11 +205,14 @@ export function resolveTrustedEntryFromFills(input: {
     ?? (strictWindowCandidates.length === 1 ? strictWindowCandidates[0] : undefined)
     ?? (uniquePoolCandidates.length === 1 ? uniquePoolCandidates[0] : undefined);
   if (!selected) {
-    return undefined;
+    return resolveTrustedEntryFromPositionState({
+      positionState,
+      lifecycleBound: true
+    });
   }
 
   return {
     ...resolveTrustedEntryFromOpenFill({ openFill: selected })!,
-    openedAt: positionState.openedAt ?? selected.recordedAt
+    openedAt: selected.recordedAt
   };
 }

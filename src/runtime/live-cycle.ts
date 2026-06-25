@@ -89,6 +89,7 @@ import {
   classifyLpEntryFillBinding,
   isTrustedFillAmountSource,
   isTrustedEntrySolSource,
+  isTrustedLpOpenFill,
   matchesPositionStateLifecycle,
   resolveTrustedLpEntry
 } from './lp-entry-resolver.ts';
@@ -360,6 +361,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
       quote: input.quote
     });
     const entrySol = resolveOutcomeEntrySol({
+      snapshot: input.snapshot,
       positionState: input.positionState,
       confirmedFill: input.confirmedFill
     });
@@ -444,9 +446,14 @@ function resolveOutcomeOpenedAt(input: {
 }
 
 function resolveOutcomeEntrySol(input: {
+  snapshot?: Record<string, unknown>;
   positionState?: PositionStateSnapshot;
   confirmedFill?: LiveCycleConfirmedFill;
 }) {
+  if (typeof input.snapshot?.entrySol === 'number' && input.snapshot.entrySol > 0) {
+    return input.snapshot.entrySol;
+  }
+
   if (
     isTrustedEntrySolSource(input.positionState?.entrySolSource)
     && typeof input.positionState?.entrySol === 'number'
@@ -986,12 +993,30 @@ function resolveLifecycleOpenFill(input: {
     return undefined;
   }
 
-  return entryFills
+  const boundByPositionState = entryFills
     .filter((fill) => classifyLpEntryFillBinding({
       fill,
       positionState: input.positionState!
     }) !== 'none')
-    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt))[0];
+    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
+
+  if (boundByPositionState[0]) {
+    return boundByPositionState[0];
+  }
+
+  const uniquePoolMintCandidates = entryFills
+    .filter((fill) =>
+      isTrustedLpOpenFill(fill)
+      && fill.mint === input.position.mint
+      && input.position.poolAddress
+      && (
+        fill.positionId === `${input.position.poolAddress}:${input.position.mint}`
+        || fill.positionId?.startsWith(`${input.position.poolAddress}:`) === true
+      )
+    )
+    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
+
+  return uniquePoolMintCandidates.length === 1 ? uniquePoolMintCandidates[0] : undefined;
 }
 
 function resolvePositionStateOpenFill(input: {
@@ -2811,6 +2836,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     (updatedSnapshot as any).pendingConfirmationStatus = typeof multiLpExit?.snapshot.pendingConfirmationStatus === 'string'
       ? multiLpExit.snapshot.pendingConfirmationStatus
       : (snapshot as any).pendingConfirmationStatus;
+    if (typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0) {
+      (updatedSnapshot as any).entrySol = multiLpExit.snapshot.entrySol;
+    }
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
     (updatedSnapshot as any).valuationSource = firstString(context.trader.valuationSource, context.trader.lpValuationSource);

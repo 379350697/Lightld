@@ -1233,6 +1233,82 @@ describe('runLiveCycle', () => {
     expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-48.33112, 5);
   });
 
+  it('uses the unique trusted pool-mint open fill instead of stale LP entry state for stop-loss gating', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.08,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-stale-entry',
+        activePoolAddress: 'pool-stale-entry',
+        positionId: 'stale-position',
+        lifecycleState: 'open',
+        openedAt,
+        updatedAt: openedAt,
+        entrySol: 0.137416044,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'stale-open'
+      } as any,
+      context: {
+        pool: { address: 'pool-stale-entry', liquidityUsd: 10_000 },
+        token: { mint: 'mint-stale-entry', inSession: true, hasSolRoute: true, symbol: 'STALE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-stale-entry',
+          positionAddress: 'current-chain-position',
+          mint: 'mint-stale-entry',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 2,
+          currentValueSol: 0.07740664,
+          liquidityValueSol: 0.019999289,
+          unclaimedFeeValueSol: 0.000001271,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0.05740608,
+          unclaimedFeeSol: 0.000001271,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationReason: '',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote+position-account-rent'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'real-open',
+          mint: 'mint-stale-entry',
+          side: 'add-lp',
+          amount: 0.077416045,
+          actualFilledSol: 0.077416045,
+          actualWalletDeltaSol: -0.077416045,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          positionId: 'pool-stale-entry:mint-stale-entry',
+          recordedAt: new Date(Date.parse(openedAt) - 7 * 60 * 1000).toISOString()
+        }]
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toContain('lp-stop-loss');
+    expect(result.context.trader.lpEntryTradingSol).toBeCloseTo(0.020009965, 9);
+    expect(result.context.trader.lpTradingValueSol).toBeCloseTo(0.02000056, 9);
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(-0.047, 3);
+  });
+
   it('does not trigger false take profit when actual LP fill is below threshold profit', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
     const result = await runLiveCycle({
