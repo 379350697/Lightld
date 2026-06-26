@@ -57,7 +57,7 @@ function toOrderBroadcastStatus(value: string): OrderMirrorEvent['payload']['bro
   return 'pending';
 }
 
-function isLocalExitIntentOnly(input: {
+function isLocalIntentOnly(input: {
   action: string;
   submissionId: string;
   confirmationSignature: string;
@@ -65,7 +65,8 @@ function isLocalExitIntentOnly(input: {
   confirmationStatus: OrderMirrorEvent['payload']['confirmationStatus'];
 }) {
   return (
-    (input.action === 'withdraw-lp' || input.action === 'dca-out' || input.action === 'claim-fee' || input.action === 'rebalance-lp')
+    input.action !== 'hold'
+    && input.action !== 'unknown'
     && input.submissionId.length === 0
     && input.confirmationSignature.length === 0
     && input.broadcastStatus === 'pending'
@@ -295,7 +296,7 @@ function toOrderCatchupEvent(
   const confirmationSignature = readString(value, ['confirmationSignature']);
   const confirmationStatus = toConfirmationStatus(readString(value, ['confirmationStatus', 'status']));
   const rawBroadcastStatus = toOrderBroadcastStatus(readString(value, ['broadcastStatus', 'status']));
-  const broadcastStatus = isLocalExitIntentOnly({
+  const broadcastStatus = isLocalIntentOnly({
     action: normalizedAction,
     submissionId,
     confirmationSignature,

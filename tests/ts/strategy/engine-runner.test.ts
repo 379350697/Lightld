@@ -64,6 +64,29 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('lp-stop-loss');
   });
 
+  it('passes configured maxHoldHours through to LP exit policy', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        hasLpPosition: true,
+        hasSolRoute: false,
+        liquidityUsd: 0,
+        holdTimeMs: 9 * 60 * 60 * 1000
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        lpEnabled: true,
+        maxHoldHours: 8
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('max-hold-with-lp-position');
+  });
+
   it('returns hold when hard gates reject the snapshot', () => {
     const result = runEngineCycle({
       engine: 'large-pool',

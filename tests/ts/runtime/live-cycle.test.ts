@@ -217,6 +217,66 @@ describe('runLiveCycle', () => {
     });
   });
 
+  it('returns LIVE for a confirmed full-exit partial batch despite residual sweep failure', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        walletLpPositions: []
+      },
+      accountProvider: {
+        readState: vi.fn(async () => ({
+          walletSol: 1.035,
+          journalSol: 1.035,
+          walletTokens: [],
+          walletLpPositions: []
+        }))
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted',
+          submissionId: 'sub-close',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'sig-close',
+          submissionIds: ['sub-close'],
+          confirmationSignatures: ['sig-close'],
+          batchStatus: 'partial',
+          mainExecutionStatus: 'confirmed',
+          residualSweepStatus: 'incomplete',
+          residualUnsoldMints: ['mint-safe'],
+          residualFailureReasons: ['no route'],
+          residualEstimatedValueSol: 0.012,
+          reason: 'residual token sweep incomplete: mint-safe (no route)'
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: '2026-03-22T00:00:02.000Z'
+        })
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.reason).toContain('pending-submission-partial-failure');
+  });
+
   it('does not block a confirmed withdraw-lp when residual cleanup is incomplete', async () => {
     const events: MirrorEvent[] = [];
     const result = await runLiveCycle({
@@ -333,11 +393,17 @@ describe('runLiveCycle', () => {
     });
   });
   it('marks claim-fee intents for residual SOL liquidation', async () => {
+    const outcomes: LiveCycleOutcomeRecord[] = [];
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      evolutionSink: {
+        appendOutcome: async (record) => {
+          outcomes.push(record);
+        }
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -366,6 +432,7 @@ describe('runLiveCycle', () => {
       fullPositionExit: false,
       liquidateResidualTokenToSol: true
     });
+    expect(outcomes).toEqual([]);
   });
 
   it('does not write confirmed LP fills without trusted fill evidence', async () => {
@@ -836,6 +903,53 @@ describe('runLiveCycle', () => {
     expect(blockedOpen.reason).toBe('runtime-flatten-only');
     expect(allowedExit.mode).toBe('LIVE');
     expect(allowedExit.action).toBe('withdraw-lp');
+  });
+
+  it('uses configured maxHoldHours for LP full exits', async () => {
+    const openedAt = new Date(Date.now() - (9 * 60 * 60 * 1000)).toISOString();
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt,
+        updatedAt: openedAt
+      } as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpNetPnlPct: 5,
+          lpCurrentValueSol: 0.105,
+          lpLiquidityValueSol: 0.105,
+          lpUnclaimedFeeValueSol: 0,
+          lpClaimedFeeValueSol: 0,
+          lpTotalValueSol: 0.105,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('max-hold-with-lp-position');
   });
 
   it('does not force a dca-out for unsellable token dust below the raw amount floor', async () => {

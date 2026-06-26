@@ -28,7 +28,7 @@ import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type LiveCycleResult, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode, TargetOpenCooldownSnapshot } from './state-types.ts';
-import { classifyAction, isExposureReducingAction } from './action-semantics.ts';
+import { classifyAction, isExposureReducingAction, isFullExitAction, type LiveAction } from './action-semantics.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
 import type { AlertSink } from './alert-sink.ts';
@@ -1666,9 +1666,9 @@ function resolveBoundLpPosition(input: {
       return exact;
     }
 
-    if (positions.length === 1) {
-      return positions[0];
-    }
+    // chainPositionAddress is lost from account → LP was exited.
+    // Never fall back to arbitrary other LP positions.
+    return undefined;
   }
 
   return positions.find((position) => {
@@ -1711,12 +1711,16 @@ function resolvePersistedActiveTarget(input: {
     ? (input.positionState?.activePoolAddress ?? input.resultContextPoolAddress)
     : (input.resultContextPoolAddress || input.positionState?.activePoolAddress || '');
 
-  const boundPosition = resolveBoundLpPosition({
-    accountState: input.accountState,
-    chainPositionAddress: input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress,
-    activeMint,
-    activePoolAddress
-  });
+  const fullExitSucceeded = isFullExitAction(input.action as LiveAction) && input.liveOrderSubmitted;
+
+  const boundPosition = fullExitSucceeded
+    ? undefined
+    : resolveBoundLpPosition({
+        accountState: input.accountState,
+        chainPositionAddress: input.positionState?.chainPositionAddress || input.pendingSubmission?.chainPositionAddress,
+        activeMint,
+        activePoolAddress
+      });
 
   if (boundPosition) {
     const actionOpenedNewPosition = isOpeningActionName(input.action) && input.liveOrderSubmitted;
@@ -1839,6 +1843,9 @@ export function resolveLifecycleStateForPersist(input: {
   }
 
   if (input.nextLifecycleState === 'closed' && hasInventory) {
+    if (isFullExitAction(input.lastAction as LiveAction) && !hasMatchingPosition) {
+      return 'closed';
+    }
     return 'open';
   }
 
@@ -2651,16 +2658,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ? result.reason.slice('failed-open-cooldown:'.length)
           : '';
         const positionClosed = persistedLifecycleState === 'closed';
+        const fullExitSucceeded = isFullExitAction(result.action as LiveAction) && result.liveOrderSubmitted;
+        const activeLpStillInAccount = fullExitSucceeded && hasMatchingLpPosition({
+          accountState: effectiveAccountState,
+          chainPositionAddress: positionState?.chainPositionAddress,
+          activeMint: persistedActiveMint,
+          activePoolAddress: persistedPoolAddress
+        });
         const shouldRecordClosedMint = (
           positionClosed &&
           (isExposureReducingAction(result.action) || Boolean(positionState?.activeMint))
-        ) || failedOpenCooldownMint.length > 0;
+        ) || (fullExitSucceeded && !activeLpStillInAccount) || failedOpenCooldownMint.length > 0;
         const closedMint = shouldRecordClosedMint
           ? (failedOpenCooldownMint || persistedActiveMint)
           : (positionState?.lastClosedMint ?? '');
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
-        const persistedActiveMintForState = persistedLifecycleState === 'closed' ? undefined : persistedActiveMint;
-        const persistedActivePoolAddressForState = persistedLifecycleState === 'closed' ? undefined : persistedPoolAddress;
+        const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
+        const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedPoolAddress;
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
           ? resolveConfirmedOpenFillEntry({
               resultFill: result.confirmedFill,

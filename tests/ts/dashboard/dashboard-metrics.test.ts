@@ -174,6 +174,39 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]?.dprPct).toBeCloseTo(-17.7148748);
   });
 
+  it('does not treat claim-fee as a closed historical position', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-fee',
+          tokenSymbol: 'FEE',
+          side: 'claim-fee',
+          submissionId: 'sub-fee',
+          filledSol: 0.01,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-fee',
+          tokenSymbol: 'FEE',
+          action: 'claim-fee',
+          submissionId: 'sub-fee',
+          idempotencyKey: 'order-fee',
+          requestedPositionSol: 0.01,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T14:39:40.000Z',
+          updatedAt: '2026-04-22T14:39:45.000Z'
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(0);
+  });
+
   it('prefers wallet-delta closed snapshots over overlapping solana-chain snapshots for the same position', () => {
     const result = buildHistoricalActivity({
       fills: [],

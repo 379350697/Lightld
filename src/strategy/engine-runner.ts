@@ -69,6 +69,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
         {
           takeProfitPct: typeof input.config.takeProfitPct === 'number' ? input.config.takeProfitPct : undefined,
           stopLossPct: typeof input.config.stopLossPct === 'number' ? input.config.stopLossPct : undefined,
+          maxHoldHours: typeof input.config.maxHoldHours === 'number' ? input.config.maxHoldHours : undefined,
           lpEnabled: Boolean(input.config.lpEnabled),
           lpStopLossNetPnlPct: typeof input.config.lpStopLossNetPnlPct === 'number' ? input.config.lpStopLossNetPnlPct : undefined,
           lpTakeProfitNetPnlPct: typeof input.config.lpTakeProfitNetPnlPct === 'number' ? input.config.lpTakeProfitNetPnlPct : undefined,

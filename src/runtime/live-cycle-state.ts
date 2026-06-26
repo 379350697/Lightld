@@ -2,6 +2,7 @@ import type { ConfirmationFinality } from '../execution/live-confirmation-provid
 import { buildOrderIntent } from '../execution/order-intent-builder.ts';
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import type { LiveAction } from './action-semantics.ts';
+import { isFullExitAction } from './action-semantics.ts';
 import type { PositionLifecycleState } from './state-types.ts';
 
 const PENDING_SUBMISSION_TIMEOUT_MS = 2 * 60_000;
@@ -36,7 +37,7 @@ export function resolveOrderIntentSide(action: LiveAction): OrderIntentSide {
 }
 
 export function isFullPositionExitAction(action: LiveAction) {
-  return action === 'dca-out' || action === 'withdraw-lp';
+  return isFullExitAction(action);
 }
 
 export function resolveNextLifecycleState(

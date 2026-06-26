@@ -52,7 +52,7 @@ export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
   }
 
   if (
-    actionClass === 'open_risk'
+    actionClass !== 'reduce_risk'
     && (input.sessionPhase === 'flatten-only' || input.sessionPhase === 'closed')
   ) {
     return {

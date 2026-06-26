@@ -306,6 +306,61 @@ describe('SqliteMirrorWriter', () => {
     });
   });
 
+  it('normalizes unsubmitted maintenance intents as not submitted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-local-intent-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+
+    await writer.open();
+    await writer.writeBatch([
+      {
+        type: 'order',
+        priority: 'high',
+        payload: {
+          idempotencyKey: 'order-maintenance-local',
+          cycleId: 'cycle-maintenance-local',
+          strategyId: 'new-token-v1',
+          submissionId: '',
+          openIntentId: 'intent-1',
+          positionId: 'position-1',
+          chainPositionAddress: 'chain-pos-1',
+          confirmationSignature: '',
+          poolAddress: 'pool-1',
+          tokenMint: 'mint-1',
+          tokenSymbol: 'SAFE',
+          action: 'claim-fee',
+          requestedPositionSol: 0.01,
+          quotedOutputSol: 0.01,
+          broadcastStatus: 'pending',
+          confirmationStatus: 'unknown',
+          finality: 'unknown',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:00.000Z'
+        }
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const row = db.prepare(`
+      SELECT action, broadcast_status, confirmation_status
+      FROM orders
+      WHERE idempotency_key = 'order-maintenance-local'
+    `).get() as {
+      action: string;
+      broadcast_status: string;
+      confirmation_status: string;
+    };
+    db.close();
+
+    expect(row).toEqual({
+      action: 'claim-fee',
+      broadcast_status: 'not_submitted',
+      confirmation_status: 'unknown'
+    });
+  });
+
   it('creates and upserts closed position snapshot rows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-closed-snapshots-'));
     directories.push(root);

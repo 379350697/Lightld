@@ -1,6 +1,7 @@
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import type { PendingFinality } from './state-types.ts';
 import type { PendingRecoveryReason } from './live-cycle-preflight.ts';
+import { isFullExitAction, LIVE_ACTIONS, type LiveAction } from './action-semantics.ts';
 
 export type ExecutionLifecycleStatus = 'confirmed' | 'unresolved' | 'missing-chain' | 'missing-local' | 'local-intent';
 
@@ -8,8 +9,18 @@ function hasText(value: string | undefined) {
   return Boolean(value && value.length > 0);
 }
 
-function isExitIntentAction(action: string | undefined) {
-  return action === 'withdraw-lp' || action === 'dca-out' || action === 'claim-fee' || action === 'rebalance-lp';
+function toLiveAction(action: string | undefined): LiveAction | undefined {
+  return LIVE_ACTIONS.includes(action as LiveAction) ? action as LiveAction : undefined;
+}
+
+function isLocalIntentEligibleAction(action: string | undefined) {
+  const liveAction = toLiveAction(action);
+  return Boolean(liveAction) && liveAction !== 'hold';
+}
+
+function isFullExitIntentAction(action: string | undefined) {
+  const liveAction = toLiveAction(action);
+  return liveAction ? isFullExitAction(liveAction) : false;
 }
 
 export function isLocalIntentOnlyOrder(input: {
@@ -19,7 +30,7 @@ export function isLocalIntentOnlyOrder(input: {
   submissionId?: string;
   confirmationSignature?: string;
 }) {
-  if (!isExitIntentAction(input.action)) {
+  if (!isLocalIntentEligibleAction(input.action)) {
     return false;
   }
 
@@ -35,6 +46,16 @@ export function isLocalIntentOnlyOrder(input: {
     (input.broadcastStatus === undefined || input.broadcastStatus === '' || input.broadcastStatus === 'pending')
     && (input.confirmationStatus === undefined || input.confirmationStatus === '' || input.confirmationStatus === 'unknown')
   );
+}
+
+export function isLocalFullExitIntentOnlyOrder(input: {
+  action?: string;
+  broadcastStatus?: string;
+  confirmationStatus?: string;
+  submissionId?: string;
+  confirmationSignature?: string;
+}) {
+  return isFullExitIntentAction(input.action) && isLocalIntentOnlyOrder(input);
 }
 
 export function toExecutionLifecycleStatus(input: {

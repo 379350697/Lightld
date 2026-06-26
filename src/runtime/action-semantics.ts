@@ -11,26 +11,42 @@ export const LIVE_ACTIONS = [
 export type LiveAction = typeof LIVE_ACTIONS[number];
 export type LiveActionClass = 'open_risk' | 'reduce_risk' | 'maintain_position' | 'no_op';
 
+export function isOpenRiskAction(action: LiveAction) {
+  return action === 'deploy' || action === 'add-lp';
+}
+
+export function isFullExitAction(action: LiveAction) {
+  return action === 'dca-out' || action === 'withdraw-lp';
+}
+
+export function isRiskReducingAction(action: LiveAction) {
+  return isFullExitAction(action);
+}
+
+export function isLpMaintenanceAction(action: LiveAction) {
+  return action === 'claim-fee' || action === 'rebalance-lp';
+}
+
 export function classifyAction(action: LiveAction): LiveActionClass {
-  switch (action) {
-    case 'deploy':
-    case 'add-lp':
-      return 'open_risk';
-    case 'dca-out':
-    case 'withdraw-lp':
-      return 'reduce_risk';
-    case 'claim-fee':
-    case 'rebalance-lp':
-      return 'maintain_position';
-    case 'hold':
-      return 'no_op';
+  if (isOpenRiskAction(action)) {
+    return 'open_risk';
   }
+
+  if (isRiskReducingAction(action)) {
+    return 'reduce_risk';
+  }
+
+  if (isLpMaintenanceAction(action)) {
+    return 'maintain_position';
+  }
+
+  return 'no_op';
 }
 
 export function isExposureIncreasingAction(action: LiveAction) {
-  return classifyAction(action) === 'open_risk';
+  return isOpenRiskAction(action);
 }
 
 export function isExposureReducingAction(action: LiveAction) {
-  return classifyAction(action) === 'reduce_risk';
+  return isRiskReducingAction(action);
 }

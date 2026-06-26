@@ -102,8 +102,8 @@ describe('applyCatchupWindow', () => {
     expect(Object.values(cursor.offsets).every((value) => value > 0)).toBe(true);
   });
 
-  it('classifies unsubmitted exit intent journals as not submitted during catch-up', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-local-exit-'));
+  it('classifies unsubmitted local intent journals as not submitted during catch-up', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-catchup-local-intent-'));
     directories.push(root);
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -123,6 +123,25 @@ describe('applyCatchupWindow', () => {
       broadcastStatus: 'pending',
       confirmationStatus: 'unknown',
       createdAt: '2026-03-22T00:00:00.000Z'
+    }, {
+      rotateDaily: true,
+      now: new Date()
+    });
+
+    await appendJsonLine(join(journalRootDir, 'new-token-v1-live-orders.jsonl'), {
+      cycleId: 'cycle-local-maintenance',
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-local-maintenance',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      side: 'claim-fee',
+      outputSol: 0.01,
+      requestedPositionSol: 0.01,
+      quotedOutputSol: 0.01,
+      broadcastStatus: 'pending',
+      confirmationStatus: 'unknown',
+      createdAt: '2026-03-22T00:00:01.000Z'
     }, {
       rotateDaily: true,
       now: new Date()
@@ -156,12 +175,23 @@ describe('applyCatchupWindow', () => {
       }
     });
 
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({
       type: 'order',
       priority: 'low',
       payload: {
         action: 'withdraw-lp',
+        submissionId: '',
+        confirmationSignature: '',
+        broadcastStatus: 'not_submitted',
+        confirmationStatus: 'unknown'
+      }
+    });
+    expect(events[1]).toMatchObject({
+      type: 'order',
+      priority: 'low',
+      payload: {
+        action: 'claim-fee',
         submissionId: '',
         confirmationSignature: '',
         broadcastStatus: 'not_submitted',

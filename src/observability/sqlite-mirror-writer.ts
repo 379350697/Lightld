@@ -150,6 +150,7 @@ export class SqliteMirrorWriter {
       for (const event of events) {
         this.writeEvent(event);
       }
+      this.normalizeLocalIntentOnlyOrders(database);
       database.exec('COMMIT');
     } catch (error) {
       try {
@@ -415,7 +416,7 @@ export class SqliteMirrorWriter {
       UPDATE orders
       SET broadcast_status = 'not_submitted',
           updated_at = CASE WHEN updated_at = '' THEN created_at ELSE updated_at END
-      WHERE action IN ('withdraw-lp', 'dca-out', 'claim-fee', 'rebalance-lp')
+      WHERE action IN ('deploy', 'dca-out', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp')
         AND submission_id = ''
         AND confirmation_signature = ''
         AND broadcast_status = 'pending'

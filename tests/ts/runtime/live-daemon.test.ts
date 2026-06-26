@@ -1037,14 +1037,19 @@ describe('runLiveDaemon', () => {
         accountState: {
           walletSol: 1.25,
           journalSol: 1.25,
-          walletTokens: [],
+          walletTokens: [{
+            mint: 'mint-safe',
+            symbol: 'SAFE',
+            amount: 10,
+            amountLamports: 10_000_000
+          }],
           journalTokens: [],
           fills: []
         },
         context: {
           pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
           token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
-          trader: { hasInventory: false, hasLpPosition: false },
+          trader: { hasInventory: true, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
         }
       })
@@ -1053,7 +1058,7 @@ describe('runLiveDaemon', () => {
     expect(outcomes).toEqual([
       expect.objectContaining({
         tokenMint: 'mint-safe',
-        actualExitReason: 'lp-open-approved'
+        actualExitReason: 'inventory-exit-ready'
       })
     ]);
   });
@@ -3508,6 +3513,107 @@ describe('runLiveDaemon', () => {
       entrySol: 0.1,
       openedAt
     });
+  });
+
+  it('records closed mint and clears active target when a confirmed withdraw-lp leaves no matching LP in the account', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-full-exit-closed-mint-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date(Date.now() - 19 * 60 * 60 * 1000).toISOString();
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      lastReason: 'lp-open-approved',
+      activeMint: 'mint-closing',
+      activePoolAddress: 'pool-closing',
+      chainPositionAddress: 'pos-closing',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-open',
+      openedAt,
+      updatedAt: openedAt
+    });
+
+    const accountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-other',
+        positionAddress: 'pos-other',
+        mint: 'mint-other',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 165,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 0,
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        reconciliationStatus: 'matched' as const,
+        requestedPositionSol: 0.1,
+        accountState,
+        accountProvider: {
+          readState: async () => accountState
+        },
+        context: {
+          pool: { address: 'pool-closing', liquidityUsd: 10_000 },
+          token: { mint: 'mint-closing', inSession: true, hasSolRoute: true, symbol: 'CLOSE' },
+          trader: { hasInventory: false, hasLpPosition: true, lpSolDepletedBins: 61 },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent: any) => ({
+            intent,
+            signerId: 'test-signer',
+            signedAt: '2026-03-22T00:00:01.000Z',
+            signature: 'sig'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent: any) => ({
+            status: 'submitted' as const,
+            submissionId: 'sub-close',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'tx-close'
+          })
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }: any) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: '2026-03-22T00:00:02.000Z'
+          })
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+
+    expect(positionState).toMatchObject({
+      lastAction: 'withdraw-lp',
+      lastClosedMint: 'mint-closing',
+      activeMint: undefined,
+      activePoolAddress: undefined
+    });
+    expect(positionState?.lastClosedAt).toBeTruthy();
   });
 
   it('runs maintenance sell sweeps from runtime wallet inventory and records mint cooldown', async () => {

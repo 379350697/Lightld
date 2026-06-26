@@ -431,7 +431,7 @@ async function handlePositions(): Promise<PositionResponse> {
       created_at,
       updated_at
     FROM orders
-    WHERE action IN ('add-lp', 'deploy', 'rebalance-lp')
+    WHERE action IN ('add-lp', 'deploy')
     ORDER BY COALESCE(updated_at, created_at) DESC
     LIMIT 500
   `);
@@ -939,7 +939,7 @@ async function readHistoryDecisionFallback() {
   return entries
     .filter((entry) => {
       const action = String(entry.action ?? '');
-      return action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp';
+      return action === 'withdraw-lp';
     })
     .map((entry) => {
       const parsed = parseDecisionMetrics(String(entry.engineReason ?? entry.reason ?? ''));

@@ -46,6 +46,38 @@ describe('applyRuntimeActionPolicy', () => {
       action: 'hold',
       blockedReason: 'runtime-circuit-open'
     });
+
+    expect(
+      applyRuntimeActionPolicy({
+        mode: 'circuit_open',
+        action: 'claim-fee'
+      })
+    ).toEqual({
+      action: 'hold',
+      blockedReason: 'runtime-circuit-open'
+    });
+  });
+
+  it('allows only full exits in recovering mode', () => {
+    expect(
+      applyRuntimeActionPolicy({
+        mode: 'recovering',
+        action: 'withdraw-lp'
+      })
+    ).toEqual({
+      action: 'withdraw-lp',
+      blockedReason: ''
+    });
+
+    expect(
+      applyRuntimeActionPolicy({
+        mode: 'recovering',
+        action: 'rebalance-lp'
+      })
+    ).toEqual({
+      action: 'hold',
+      blockedReason: 'runtime-recovering'
+    });
   });
 
   it('allows exits while blocking LP opens and maintenance in flatten_only mode', () => {
@@ -73,6 +105,16 @@ describe('applyRuntimeActionPolicy', () => {
       applyRuntimeActionPolicy({
         mode: 'flatten_only',
         action: 'claim-fee'
+      })
+    ).toEqual({
+      action: 'hold',
+      blockedReason: 'runtime-flatten-only'
+    });
+
+    expect(
+      applyRuntimeActionPolicy({
+        mode: 'flatten_only',
+        action: 'rebalance-lp'
       })
     ).toEqual({
       action: 'hold',

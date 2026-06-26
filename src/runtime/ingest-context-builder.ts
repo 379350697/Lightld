@@ -776,6 +776,7 @@ function resolveActiveLpMaintenanceCandidate(input: {
 
   const statePool = input.positionState?.activePoolAddress ?? '';
   const stateMint = input.positionState?.activeMint ?? '';
+
   if (statePool) {
     const poolMatch = activeCandidates.find((candidate) => candidate.address === statePool);
     if (poolMatch) {
@@ -790,28 +791,11 @@ function resolveActiveLpMaintenanceCandidate(input: {
     }
   }
 
-  const lpPositions = [
-    ...(input.accountState?.walletLpPositions ?? []),
-    ...(input.accountState?.journalLpPositions ?? [])
-  ].filter((position) => (position.hasLiquidity ?? true));
-
-  for (const position of lpPositions) {
-    const exactMatch = activeCandidates.find((candidate) =>
-      candidate.mint === position.mint && candidate.address === position.poolAddress
-    );
-    if (exactMatch) {
-      return exactMatch;
-    }
+  if (!stateMint && !statePool) {
+    return null;
   }
 
-  for (const position of lpPositions) {
-    const mintMatch = activeCandidates.find((candidate) => candidate.mint === position.mint);
-    if (mintMatch) {
-      return mintMatch;
-    }
-  }
-
-  return activeCandidates[0] ?? null;
+  return null;
 }
 
 function buildLpSignalTraderFields(lpPositionSignal: ReturnType<typeof resolveLpPositionSignal>) {
@@ -1064,13 +1048,6 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
   }
 
   const state = input.positionState;
-  const hasManagedEvidence = (position: (typeof positions)[number]) =>
-    typeof position.currentValueSol === 'number'
-    || typeof position.withdrawSolAmount === 'number'
-    || typeof position.valuationStatus === 'string'
-    || typeof position.lastValuationAt === 'string'
-    || Boolean(position.positionId)
-    || Boolean(position.chainPositionAddress);
   const byChain = state?.chainPositionAddress
     ? positions.find((position) => position.positionAddress === state.chainPositionAddress)
     : undefined;
@@ -1080,7 +1057,12 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
   const byMint = state?.activeMint
     ? positions.find((position) => position.mint === state.activeMint)
     : undefined;
-  const position = byChain ?? byPool ?? byMint ?? positions.find(hasManagedEvidence);
+
+  if (!state?.activeMint && !state?.activePoolAddress && !state?.chainPositionAddress) {
+    return null;
+  }
+
+  const position = byChain ?? byPool ?? byMint;
   if (!position) {
     return null;
   }

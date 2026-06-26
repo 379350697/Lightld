@@ -1,6 +1,6 @@
 import type { ClosedPositionSnapshot } from '../history/solana-closed-position-reconstructor.ts';
 import { buildExecutionLifecycleKey, listExecutionIdentityKeys } from '../runtime/execution-lifecycle-key.ts';
-import { isLocalIntentOnlyOrder, toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
+import { isLocalFullExitIntentOnlyOrder, toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
 
 type CashflowFill = {
   side: string;
@@ -167,7 +167,7 @@ function isOpenEntryAction(action: string | undefined) {
 }
 
 function isCloseExitAction(action: string | undefined) {
-  return action === 'sell' || action === 'withdraw-lp' || action === 'claim-fee';
+  return action === 'sell' || action === 'withdraw-lp';
 }
 
 function resolveTrustedHistoricalEntrySol(action: ReconciledHistoricalAction | undefined) {
@@ -331,7 +331,7 @@ function toHistoricalLifecycleKey(input: {
 }
 
 function isHistoricalOpenAction(action: string) {
-  return action === 'add-lp' || action === 'deploy' || action === 'rebalance-lp';
+  return action === 'add-lp' || action === 'deploy';
 }
 
 function isHistoricalCloseAction(action: string) {
@@ -612,7 +612,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   if (
     openAction
     && !closeAction
-    && (openAction.status === 'ok' || openAction.status === 'unresolved')
+    && (openAction.status === 'ok' || openAction.status === 'unresolved' || openAction.status === 'local-intent')
   ) {
     return null;
   }
@@ -918,11 +918,10 @@ export function buildHistoricalActivity(input: {
     .filter((order) =>
       (order.action === 'add-lp'
         || order.action === 'deploy'
-        || order.action === 'withdraw-lp'
-        || order.action === 'rebalance-lp')
+        || order.action === 'withdraw-lp')
       && Number.isFinite(order.requestedPositionSol)
       && order.requestedPositionSol > 0
-      && !isLocalIntentOnlyOrder(order)
+      && !isLocalFullExitIntentOnlyOrder(order)
     );
   const decisions = input.decisionFallback ?? [];
   const tokenSymbolMap = buildHistoricalTokenSymbolMap({

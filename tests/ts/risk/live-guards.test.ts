@@ -123,4 +123,42 @@ describe('evaluateLiveGuards', () => {
       reason: 'allowed'
     });
   });
+
+  it('allows only full exits during flatten-only session phase', () => {
+    expect(evaluateLiveGuards({
+      action: 'dca-out',
+      symbol: 'SAFE',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: false,
+      sessionPhase: 'flatten-only'
+    })).toEqual({
+      allowed: true,
+      reason: 'allowed'
+    });
+
+    expect(evaluateLiveGuards({
+      action: 'claim-fee',
+      symbol: 'SAFE',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: false,
+      sessionPhase: 'flatten-only'
+    })).toEqual({
+      allowed: false,
+      reason: 'flatten-only'
+    });
+
+    expect(evaluateLiveGuards({
+      action: 'rebalance-lp',
+      symbol: 'SAFE',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: false,
+      sessionPhase: 'closed'
+    })).toEqual({
+      allowed: false,
+      reason: 'flatten-only'
+    });
+  });
 });

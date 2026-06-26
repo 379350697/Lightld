@@ -45,7 +45,7 @@ import { evaluateLpPnl } from '../risk/lp-pnl.ts';
 import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { SpendingLimitsStore } from '../risk/spending-limits.ts';
 import { runEngineCycle } from '../strategy/engine-runner.ts';
-import { buildLpExitPolicyDecision } from '../strategy/lp-exit-policy.ts';
+import { buildLpExitPolicyDecision, type LpExitPolicyConfig } from '../strategy/lp-exit-policy.ts';
 import { buildDecisionContext, type DecisionContextInput } from './build-decision-context.ts';
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
@@ -55,6 +55,7 @@ import { RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS } from './ingest-candidate-sele
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
 import {
   classifyAction,
+  isFullExitAction,
   type LiveAction
 } from './action-semantics.ts';
 import { createOpenIntentId, createPositionId } from './lp-position-record.ts';
@@ -301,6 +302,21 @@ function buildEvolutionParameterSnapshot(config: Awaited<ReturnType<typeof loadS
     lpMinVolume24hUsd: config.lpConfig?.minVolume24hUsd,
     lpMinFeeTvlRatio24h: config.lpConfig?.minFeeTvlRatio24h,
     maxHoldHours: config.live.maxHoldHours ?? 18
+  };
+}
+
+function buildStrategyLpExitPolicyConfig(
+  config: Awaited<ReturnType<typeof loadStrategyConfig>>
+): LpExitPolicyConfig {
+  return {
+    maxHoldHours: config.live.maxHoldHours ?? 18,
+    lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
+    lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
+    lpMinHoldMinutesBeforeTakeProfit: 5,
+    lpSolDepletionExitBins: config.lpConfig?.solDepletionExitBins,
+    lpClaimFeeThresholdUsd: config.lpConfig?.claimFeeThresholdUsd,
+    lpRebalanceOnOutOfRange: config.lpConfig?.rebalanceOnOutOfRange ?? false,
+    lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
   };
 }
 
@@ -736,7 +752,7 @@ function resolveActualExitMetricValue(
   }
 
   if (
-    (actualExitReason.includes('stop-loss') || action === 'withdraw-lp' || action === 'claim-fee' || action === 'rebalance-lp')
+    (actualExitReason.includes('stop-loss') || action === 'withdraw-lp')
     && typeof exitMetrics.lpNetPnlPct === 'number'
   ) {
     return exitMetrics.lpNetPnlPct;
@@ -1492,16 +1508,7 @@ export function validateLpWithdrawTriggerEligibility(input: {
       || input.snapshot.pendingConfirmationStatus === 'unknown'
       ? input.snapshot.pendingConfirmationStatus
       : undefined
-  }, {
-    maxHoldHours: input.config.live.maxHoldHours ?? 18,
-    lpStopLossNetPnlPct: input.config.lpConfig.stopLossNetPnlPct,
-    lpTakeProfitNetPnlPct: input.config.lpConfig.takeProfitNetPnlPct,
-    lpMinHoldMinutesBeforeTakeProfit: 5,
-    lpSolDepletionExitBins: input.config.lpConfig.solDepletionExitBins,
-    lpClaimFeeThresholdUsd: input.config.lpConfig.claimFeeThresholdUsd,
-    lpRebalanceOnOutOfRange: input.config.lpConfig.rebalanceOnOutOfRange ?? false,
-    lpMaxImpermanentLossPct: input.config.lpConfig.maxImpermanentLossPct
-  });
+  }, buildStrategyLpExitPolicyConfig(input.config));
 
   if (expected.action === 'withdraw-lp' && expected.reason === input.reason) {
     return { allowed: true };
@@ -1651,17 +1658,10 @@ function evaluateActiveLpPositions(input: {
       engine: 'new-token',
       snapshot,
       config: {
-        maxHoldHours: input.config.live.maxHoldHours ?? 18,
+        ...buildStrategyLpExitPolicyConfig(input.config),
         requireSolRoute: true,
         minLiquidityUsd: 0,
         lpEnabled: input.config.lpConfig?.enabled ?? false,
-        lpStopLossNetPnlPct: input.config.lpConfig?.stopLossNetPnlPct,
-        lpTakeProfitNetPnlPct: input.config.lpConfig?.takeProfitNetPnlPct,
-        lpMinHoldMinutesBeforeTakeProfit: 5,
-        lpSolDepletionExitBins: input.config.lpConfig?.solDepletionExitBins,
-        lpClaimFeeThresholdUsd: input.config.lpConfig?.claimFeeThresholdUsd,
-        lpRebalanceOnOutOfRange: input.config.lpConfig?.rebalanceOnOutOfRange ?? false,
-        lpMaxImpermanentLossPct: input.config.lpConfig?.maxImpermanentLossPct
       }
     });
 
@@ -2970,7 +2970,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     engine: config.poolClass,
     snapshot: updatedSnapshot,
     config: {
-      maxHoldHours: config.live.maxHoldHours ?? 18,
+      ...buildStrategyLpExitPolicyConfig(config),
       requireSolRoute: config.hardGates.requireSolRoute,
       minLiquidityUsd: config.hardGates.minLiquidityUsd,
       minPoolAgeMinutes: config.hardGates.minPoolAgeMinutes,
@@ -2978,13 +2978,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       takeProfitPct: config.riskThresholds.takeProfitPct,
       stopLossPct: config.riskThresholds.stopLossPct,
       lpEnabled: config.lpConfig?.enabled ?? false,
-      lpStopLossNetPnlPct: config.lpConfig?.stopLossNetPnlPct,
-      lpTakeProfitNetPnlPct: config.lpConfig?.takeProfitNetPnlPct,
-      lpMinHoldMinutesBeforeTakeProfit: 5,
-      lpSolDepletionExitBins: config.lpConfig?.solDepletionExitBins,
-      lpClaimFeeThresholdUsd: config.lpConfig?.claimFeeThresholdUsd,
-      lpRebalanceOnOutOfRange: config.lpConfig?.rebalanceOnOutOfRange ?? false,
-      lpMaxImpermanentLossPct: config.lpConfig?.maxImpermanentLossPct
     }
   });
   const lpEnabled = config.lpConfig?.enabled ?? false;
@@ -3637,7 +3630,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationFinality = confirmationFinality === 'finalized' ? 'finalized' : 'confirmed';
   }
 
-  if (broadcastResult.batchStatus === 'partial') {
+  if (broadcastResult.batchStatus === 'partial' && !isConfirmedConfirmation(confirmation.status, confirmationFinality)) {
     confirmation = {
       status: 'unknown',
       submissionId: trackedBroadcastSubmissions[trackedBroadcastSubmissions.length - 1]?.submissionId ?? broadcastResult.submissionId,
@@ -3733,6 +3726,24 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       quote,
       submissionId: broadcastResult.submissionId
     });
+
+    if (isFullExitAction(actionableAction) && isConfirmedConfirmation(confirmation.status, confirmationFinality)) {
+      return finalize({
+        ...buildLiveSubmittedResult({
+          action: actionableAction,
+          reason: partialReason,
+          audit: engineResult.audit,
+          context,
+          quote,
+          executionPlan,
+          orderIntent,
+          broadcastResult,
+          confirmationStatus: confirmation.status,
+          journalPaths: journals.paths,
+          killSwitchState
+        })
+      }, true);
+    }
 
     return finalize({
       ...buildBlockedCycleResult({
@@ -3857,7 +3868,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  if (!fillEvidenceMissing) {
+  if (!fillEvidenceMissing && isFullExitAction(actionableAction)) {
     await appendEvolutionOutcomeBestEffort({
       sink: input.evolutionSink,
       logContext,

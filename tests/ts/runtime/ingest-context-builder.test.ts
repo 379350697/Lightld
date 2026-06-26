@@ -533,6 +533,20 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        lastReason: 'lp-open-approved',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-safe',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.123,
+        entrySolSource: 'actual_fill',
+        openedAt: '2026-03-22T09:58:00.000Z',
+        updatedAt: '2026-03-22T09:58:00.000Z'
+      } as any,
       accountState: {
         walletSol: 1.25,
         journalSol: 1.25,
@@ -625,6 +639,56 @@ describe('buildLiveCycleInputFromIngest', () => {
       lpValuationCompleteness: 'complete',
       lpValuationTrust: 'exit_quote',
       lpValuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote'
+    });
+  });
+
+  it('does not select an unrelated LP position when positionState activeMint is missing from the account', async () => {
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      traderWallet: 'wallet-1',
+      requestedPositionSol: 0.1,
+      now: new Date('2026-03-22T10:00:00'),
+      selectionMode: 'maintenance-only',
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        lastReason: 'lp-open-approved',
+        activeMint: 'mint-active',
+        activePoolAddress: 'pool-active',
+        chainPositionAddress: 'pos-active',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        openedAt: '2026-03-22T09:58:00.000Z',
+        updatedAt: '2026-03-22T09:58:00.000Z'
+      } as any,
+      accountState: {
+        walletSol: 1.25,
+        journalSol: 1.25,
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-stale',
+            positionAddress: 'pos-stale',
+            mint: 'mint-stale',
+            currentValueSol: 0.05,
+            hasLiquidity: true,
+            valuationStatus: 'ready',
+            lastValuationAt: '2026-03-22T09:00:00.000Z'
+          }
+        ],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      },
+      fetchMeteoraPoolsImpl: async () => [],
+      fetchPumpTradesImpl: async () => [],
+      fetchTokenSafetyBatchImpl: async () => []
+    });
+
+    expect(result.context.pool).toMatchObject({
+      blockReason: 'no-active-lp-maintenance-target'
     });
   });
 
