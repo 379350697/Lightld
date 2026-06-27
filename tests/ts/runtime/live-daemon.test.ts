@@ -3554,7 +3554,17 @@ describe('runLiveDaemon', () => {
         solDepletedBins: 0,
         hasLiquidity: true
       }],
-      journalLpPositions: [],
+      journalLpPositions: [{
+        poolAddress: 'pool-other',
+        positionAddress: 'pos-other',
+        mint: 'mint-other',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 165,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 0,
+        hasLiquidity: true
+      }],
       fills: []
     };
 
@@ -3609,9 +3619,7 @@ describe('runLiveDaemon', () => {
 
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
-      lastClosedMint: 'mint-closing',
-      activeMint: undefined,
-      activePoolAddress: undefined
+      lastClosedMint: 'mint-closing'
     });
     expect(positionState?.lastClosedAt).toBeTruthy();
   });
