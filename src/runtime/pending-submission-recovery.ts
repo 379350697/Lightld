@@ -2,6 +2,7 @@ import type { LiveConfirmationProvider } from '../execution/live-confirmation-pr
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot } from './state-types.ts';
 import { classifyAction } from './action-semantics.ts';
+import { isSolanaTransactionSignature } from '../shared/solana-signature.ts';
 import {
   hasAnyWalletEvidenceForPendingSubmission,
   hasFullyFundedWalletLpEvidence,
@@ -241,7 +242,12 @@ export async function recoverPendingSubmission(
 
   if (input.confirmationProvider && trackedSubmissions.length > 0) {
     const confirmations = await Promise.all(
-      trackedSubmissions.map((trackedSubmission) => input.confirmationProvider!.poll(trackedSubmission))
+      trackedSubmissions.map((trackedSubmission) => {
+        if (!isSolanaTransactionSignature(trackedSubmission.confirmationSignature)) {
+          return { submissionId: trackedSubmission.submissionId, confirmationSignature: trackedSubmission.confirmationSignature, status: 'unknown' as const, finality: 'unknown' as const, checkedAt: checkedAt };
+        }
+        return input.confirmationProvider!.poll(trackedSubmission);
+      })
     );
 
     const allConfirmed = confirmations.every((confirmation) =>

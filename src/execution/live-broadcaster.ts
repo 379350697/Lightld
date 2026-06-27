@@ -50,7 +50,7 @@ export class TestLiveBroadcaster implements LiveBroadcaster {
 
     return {
       status: 'submitted',
-      submissionId: `${intent.signerId}:${intent.intent.idempotencyKey}`,
+      submissionId: intent.intent.idempotencyKey,
       idempotencyKey: intent.intent.idempotencyKey
     };
   }

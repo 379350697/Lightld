@@ -26,6 +26,7 @@ import {
   type LiveBroadcaster,
   type LiveBroadcastResult
 } from '../execution/live-broadcaster.ts';
+import { isSolanaTransactionSignature } from '../shared/solana-signature.ts';
 import { trackConfirmation, type ConfirmationStatus } from '../execution/confirmation-tracker.ts';
 import {
   StaticLiveQuoteProvider,
@@ -2173,8 +2174,14 @@ function getBroadcastTrackedSubmissions(result: LiveBroadcastResult | undefined)
 
   return [{
     submissionId: result.submissionId,
-    confirmationSignature: result.confirmationSignature
+    confirmationSignature: isSolanaTransactionSignature(result.confirmationSignature)
+      ? result.confirmationSignature
+      : undefined
   }];
+}
+
+function solanaSignatureOrUndefined(value: string | undefined): string | undefined {
+  return isSolanaTransactionSignature(value) ? value : undefined;
 }
 
 function buildMirrorLifecycleKey(input: {
@@ -3649,8 +3656,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     submissionIds: trackedBroadcastSubmissions.map((trackedSubmission) => trackedSubmission.submissionId),
     confirmationSignature: broadcastResult.confirmationSignature,
     confirmationSignatures: trackedBroadcastSubmissions.map((trackedSubmission) =>
-      trackedSubmission.confirmationSignature ?? trackedSubmission.submissionId
-    ),
+      solanaSignatureOrUndefined(trackedSubmission.confirmationSignature)
+    ).filter((sig): sig is string => sig !== undefined),
     confirmationStatus: confirmation.status,
     finality: confirmationFinality,
     createdAt: logContext.startedAt,

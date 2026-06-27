@@ -22,7 +22,7 @@ describe('TestLiveBroadcaster', () => {
     if (result.status !== 'submitted') {
       throw new Error('expected a submitted result');
     }
-    expect(result.submissionId).toContain('test-signer');
+    expect(result.submissionId).toBe(intent.idempotencyKey);
     expect(result.idempotencyKey).toBe(intent.idempotencyKey);
   });
 

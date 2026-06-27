@@ -76,7 +76,7 @@ describe('runLiveCycle production adapters', () => {
               status: 'submitted',
               submissionId: 'sub-1',
               idempotencyKey: 'k',
-              confirmationSignature: 'tx-sig-1'
+              confirmationSignature: '4x3i8gm3UnPDkrtwSM4XckYmfZ6U1JDpoMscWV7VV7aXKWpDKEyHf9quovnRhxidwvNpEdFHuVyzx3wzgc3mdupm'
             }),
             { status: 200 }
           )
@@ -87,7 +87,7 @@ describe('runLiveCycle production adapters', () => {
           new Response(
             JSON.stringify({
               submissionId: 'sub-1',
-              confirmationSignature: 'tx-sig-1',
+              confirmationSignature: '4x3i8gm3UnPDkrtwSM4XckYmfZ6U1JDpoMscWV7VV7aXKWpDKEyHf9quovnRhxidwvNpEdFHuVyzx3wzgc3mdupm',
               status: 'confirmed',
               finality: 'finalized',
               checkedAt: '2026-03-21T00:00:02.000Z'
@@ -299,7 +299,7 @@ describe('runLiveCycle production adapters', () => {
       strategyId: 'new-token-v1',
       idempotencyKey: 'k-old',
       submissionId: 'sub-old',
-      confirmationSignature: 'tx-old',
+      confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
       confirmationStatus: 'submitted',
       finality: 'processed',
       createdAt: '2026-03-22T00:00:00.000Z',
@@ -326,7 +326,7 @@ describe('runLiveCycle production adapters', () => {
           new Response(
             JSON.stringify({
               submissionId: 'sub-old',
-              confirmationSignature: 'tx-old',
+              confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
               status: 'confirmed',
               finality: 'finalized',
               checkedAt: '2026-03-22T00:01:00.000Z'
@@ -342,7 +342,7 @@ describe('runLiveCycle production adapters', () => {
               status: 'submitted',
               submissionId: 'sub-new',
               idempotencyKey: 'k-new',
-              confirmationSignature: 'tx-new'
+              confirmationSignature: '5KcyrPXoh77aWuwnD7FP8bf9UT1313jajkZ3kBkwZgPAzEbNKGiXpo5Qf59JhZ1C1uSa12TFk2WYbmS1pnYjYioz'
             }),
             { status: 200 }
           )
@@ -372,7 +372,7 @@ describe('runLiveCycle production adapters', () => {
       strategyId: 'new-token-v1',
       idempotencyKey: 'k-old',
       submissionId: 'sub-old',
-      confirmationSignature: 'tx-old',
+      confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
       confirmationStatus: 'submitted',
       finality: 'processed',
       createdAt: '2026-03-22T00:00:00.000Z',
@@ -399,7 +399,7 @@ describe('runLiveCycle production adapters', () => {
           new Response(
             JSON.stringify({
               submissionId: 'sub-old',
-              confirmationSignature: 'tx-old',
+              confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
               status: 'confirmed',
               finality: 'finalized',
               checkedAt: '2026-03-22T00:01:00.000Z'
@@ -429,7 +429,7 @@ describe('runLiveCycle production adapters', () => {
       strategyId: 'new-token-v1',
       idempotencyKey: 'k-old',
       submissionId: 'sub-old',
-      confirmationSignature: 'tx-old',
+      confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
       confirmationStatus: 'submitted',
       finality: 'processed',
       createdAt: '2026-03-22T00:00:00.000Z',
@@ -456,7 +456,7 @@ describe('runLiveCycle production adapters', () => {
           new Response(
             JSON.stringify({
               submissionId: 'sub-old',
-              confirmationSignature: 'tx-old',
+              confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
               status: 'submitted',
               finality: 'processed',
               checkedAt: '2026-03-22T00:01:00.000Z'
