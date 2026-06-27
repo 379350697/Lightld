@@ -1101,6 +1101,59 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
   };
 }
 
+function resolveUntrackedAccountLpCandidate(input: IngestContextBuilderInput, now: Date): IngestCandidate | null {
+  const state = input.positionState;
+  // Only intervene when positionState has no tracked activeMint
+  // AND the account still has LP positions. This catches the
+  // "default pass fell through to candidate pool" gap.
+  if (state?.activeMint || state?.activePoolAddress || state?.chainPositionAddress) {
+    return null;
+  }
+
+  const positions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => position.mint !== SOL_MINT && (position.hasLiquidity ?? true));
+
+  if (positions.length === 0) {
+    return null;
+  }
+
+  const position = positions[0];
+  const token = [
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ].find((item) => item.mint === position.mint);
+  const fill = [...(input.accountState?.fills ?? [])]
+    .reverse()
+    .find((item) => item.mint === position.mint && item.symbol);
+  const symbol = token?.symbol ?? fill?.symbol ?? position.mint.slice(0, 6);
+  const valueSol = typeof position.currentValueSol === 'number'
+    ? position.currentValueSol
+    : typeof position.withdrawSolAmount === 'number'
+      ? position.withdrawSolAmount
+      : 0;
+
+  return {
+    ...EMPTY_AUXILIARY_SIGNAL_FIELDS,
+    address: position.poolAddress,
+    mint: position.mint,
+    symbol,
+    chain: 'solana',
+    quoteMint: SOL_MINT,
+    liquidityUsd: Math.max(1, valueSol * 200),
+    hasSolRoute: true,
+    capturedAt: position.lastValuationAt ?? now.toISOString(),
+    holders: 0,
+    hasInventory: true,
+    hasLpPosition: true,
+    binStep: 0,
+    baseFeePct: 0,
+    volume24h: 0,
+    feeTvlRatio24h: 0
+  };
+}
+
 async function buildCandidatePoolBackedCycleInput(
   input: IngestContextBuilderInput,
   contextInput: {
@@ -1491,6 +1544,26 @@ export async function buildLiveCycleInputFromIngest(
         blockDetails: 'maintenance-only pass found no active LP position'
       }
     );
+  }
+
+  // In default mode with candidate pool, before falling through
+  // to select a new openable candidate, check if the account has
+  // ANY untracked LP positions that need to be exited first.
+  if (selectionMode === 'default' && input.candidatePoolReadEnabled) {
+    const untrackedLp = resolveUntrackedAccountLpCandidate(input, now);
+    if (untrackedLp) {
+      console.log(
+        `[Ingest] default-pass account-backed untracked LP context selected; skipping new-candidate ingest mint=${untrackedLp.mint} pool=${untrackedLp.address}`
+      );
+      return buildActiveLpMaintenanceContext(
+        input,
+        input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
+        sessionActive,
+        config.solRouteLimits.maxSlippageBps,
+        null,
+        untrackedLp
+      );
+    }
   }
 
   if (input.candidatePoolReadEnabled) {
