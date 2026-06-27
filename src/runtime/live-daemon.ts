@@ -2059,6 +2059,44 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
         }
 
+        // Auto-advance: when the tracked LP is gone but the account still
+        // holds other LP positions, bind to the next one and continue
+        // exiting before allowing any new opens.
+        if (
+          positionState?.lifecycleState === 'closed'
+          && !positionState.activeMint
+          && pendingSubmission === null
+          && effectiveAccountState
+        ) {
+          const nextLp = resolveBoundLpPosition({
+            accountState: effectiveAccountState,
+            activeMint: positionState.activeMint,
+            activePoolAddress: positionState.activePoolAddress
+          });
+          if (nextLp) {
+            const token = [...(effectiveAccountState.walletTokens ?? []),
+              ...(effectiveAccountState.journalTokens ?? [])
+            ].find((t) => t.mint === nextLp.mint);
+            const fill = [...(effectiveAccountState.fills ?? [])]
+              .reverse()
+              .find((f) => f.mint === nextLp.mint && f.symbol);
+            positionState = {
+              ...positionState,
+              allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
+              flattenOnly: runtimeState.mode === 'flatten_only',
+              lastReason: 'next-lp-advance',
+              activeMint: nextLp.mint,
+              activePoolAddress: nextLp.poolAddress,
+              chainPositionAddress: nextLp.positionAddress,
+              lifecycleState: 'open',
+              valuationStatus: nextLp.valuationStatus,
+              lastValuationAt: nextLp.lastValuationAt,
+              updatedAt: nowIso()
+            };
+            await runtimeStateStore.writePositionState(positionState);
+          }
+        }
+
         if (positionState?.lifecycleState === 'open') {
           const boundPosition = resolveBoundLpPosition({
             accountState: effectiveAccountState,
@@ -2258,6 +2296,21 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             })
           )
         );
+        // Suppress new-open pass while there are still active LP positions
+        // in the account that need to be exited first. This ensures
+        // all existing positions are cleared before new capital is deployed.
+        // Keep the gate open when the only remaining LP is the one the
+        // daemon is currently tracking (maintenance-only pass).
+        const activeLpCount = effectiveAccountState ? countActiveLpExposures(effectiveAccountState) : 0;
+        const onlyTrackedLpRemains = activeLpCount <= 1
+          && positionState?.activeMint
+          && hasMatchingLpPosition({
+            accountState: effectiveAccountState,
+            chainPositionAddress: positionState.chainPositionAddress,
+            activeMint: positionState.activeMint,
+            activePoolAddress: positionState.activePoolAddress
+          });
+        const allowNewOpens = activeLpCount === 0 || Boolean(onlyTrackedLpRemains);
         const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
           store: targetOpenCooldownStore,
           now: nowIso()
@@ -2341,6 +2394,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
           if (newOpenSkipReason) {
             console.log(`[LiveDaemon] new-open-pass skipped reason=${newOpenSkipReason}`);
+          } else if (!allowNewOpens) {
+            console.log(`[LiveDaemon] new-open-pass blocked active-lp-count=${activeLpCount}`);
           } else {
             const skipMints = collectActiveExposureMints({
               accountState: effectiveAccountState,
