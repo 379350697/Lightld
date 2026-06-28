@@ -140,17 +140,17 @@ describe('ingest candidate helpers', () => {
     expect(result.map((candidate) => candidate.address)).toEqual(['inventory-pool', 'good-pool']);
   });
 
-  it('ranks candidates for safety by existing exposure, fee/tvl, volume, then liquidity', () => {
+  it('ranks candidates for safety by existing exposure, fee/tvl, liquidity, pool age, then volume', () => {
     const result = rankCandidatesForSafety([
-      makeCandidate({ address: 'low-fee', feeTvlRatio24h: 0.05, volume24h: 5_000_000, liquidityUsd: 90_000 }),
+      makeCandidate({ address: 'low-fee', feeTvlRatio24h: 0.05, volume24h: 5_000_000, liquidityUsd: 90_000, capturedAt: '2026-03-20T00:00:00Z' }),
       makeCandidate({ address: 'inventory', hasInventory: true, feeTvlRatio24h: 0.01 }),
-      makeCandidate({ address: 'high-fee', feeTvlRatio24h: 0.2, volume24h: 1_000_000, liquidityUsd: 20_000 }),
-      makeCandidate({ address: 'same-fee-higher-volume', feeTvlRatio24h: 0.2, volume24h: 2_000_000, liquidityUsd: 10_000 })
+      makeCandidate({ address: 'high-fee', feeTvlRatio24h: 0.2, volume24h: 1_000_000, liquidityUsd: 20_000, capturedAt: '2026-03-19T00:00:00Z' }),
+      makeCandidate({ address: 'same-fee-higher-liquidity', feeTvlRatio24h: 0.2, volume24h: 2_000_000, liquidityUsd: 50_000, capturedAt: '2026-03-20T00:00:00Z' })
     ]);
 
     expect(result.map((candidate) => candidate.address)).toEqual([
       'inventory',
-      'same-fee-higher-volume',
+      'same-fee-higher-liquidity',
       'high-fee',
       'low-fee'
     ]);

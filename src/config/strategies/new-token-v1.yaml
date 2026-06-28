@@ -11,7 +11,7 @@ lpConfig:
   solDepletionExitBins: 60
   minBinStep: 80
   minVolume24hUsd: 100000
-  minFeeTvlRatio24h: 0
+  minFeeTvlRatio24h: 0.02
   claimFeeThresholdUsd: 25
   rebalanceOnOutOfRange: false
 auxiliarySignals:
@@ -41,6 +41,7 @@ auxiliarySignals:
 hardGates:
   requireSolRoute: true
   minLiquidityUsd: 1000
+  minPoolAgeMinutes: 120
 filters:
   minLiquidityUsd: 1000
 riskThresholds:

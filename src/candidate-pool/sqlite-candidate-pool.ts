@@ -520,7 +520,8 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
         updatedAt,
         candidate: {
           ...candidate,
-          safetyScore: readNumber(candidateRow, 'score')
+          safetyScore: readNumber(candidateRow, 'score'),
+          poolFeeYieldScore: readNumber(candidateRow, 'score')
         }
       };
     }

@@ -213,6 +213,16 @@ export function rankCandidatesForSafety(candidates: IngestCandidate[]) {
       return right.feeTvlRatio24h - left.feeTvlRatio24h;
     }
 
+    if (right.liquidityUsd !== left.liquidityUsd) {
+      return right.liquidityUsd - left.liquidityUsd;
+    }
+
+    const rightAge = Date.parse(right.capturedAt) || 0;
+    const leftAge = Date.parse(left.capturedAt) || 0;
+    if (rightAge !== leftAge) {
+      return leftAge - rightAge;
+    }
+
     if (right.volume24h !== left.volume24h) {
       return right.volume24h - left.volume24h;
     }

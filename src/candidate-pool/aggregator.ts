@@ -153,7 +153,8 @@ export function deriveCandidatePoolEntry(input: {
     REQUIRED_HARD_SOURCES.includes(observation.source)
   );
   const score = input.observations.reduce((total, observation) => total + Math.max(0, observation.score), 0)
-    + feeTvlScore(input.candidate);
+    + feeTvlScore(input.candidate)
+    + (input.candidate.poolFeeYieldScore ?? 0);
   const fallbackFreshness = new Date(input.now.getTime()).toISOString();
   const freshnessExpiresAt = hardObservations.length > 0
     ? minIso(hardObservations.map((observation) => observation.expiresAt), fallbackFreshness)
