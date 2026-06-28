@@ -1048,6 +1048,35 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
   }
 
   const state = input.positionState;
+
+  // When there are multiple active LP positions, the maintenance pass
+  // must process ALL of them — not just the one currently tracked in
+  // positionState.  This avoids a deadlock where a tracked "hold" LP
+  // blocks untracked LPs from ever being evaluated for exit.
+  //
+  // Strategy: first pick any LP that is NOT matched by positionState
+  // (untracked), so it gets evaluated by runLiveCycle's full
+  // evaluateActiveLpPositions machinery.  Once it triggers an exit (or
+  // is otherwise resolved), it falls out of the wallet and the
+  // positionState is updated; the next tick naturally moves on to the
+  // next LP.  Only when every active LP matches positionState do we
+  // stay in normal single-LP maintenance mode.
+  if (state?.activeMint || state?.activePoolAddress || state?.chainPositionAddress) {
+    const untracked = positions.find((position) => {
+      if (state.chainPositionAddress) {
+        return position.positionAddress !== state.chainPositionAddress
+          && position.chainPositionAddress !== state.chainPositionAddress;
+      }
+      if (state.activePoolAddress) {
+        return position.poolAddress !== state.activePoolAddress;
+      }
+      return position.mint !== state.activeMint;
+    });
+    if (untracked) {
+      return buildLpCandidate(untracked, input.accountState, now);
+    }
+  }
+
   const byChain = state?.chainPositionAddress
     ? positions.find((position) => position.positionAddress === state.chainPositionAddress)
     : undefined;
@@ -1067,11 +1096,19 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
     return null;
   }
 
+  return buildLpCandidate(position, input.accountState, now);
+}
+
+function buildLpCandidate(
+  position: NonNullable<LiveAccountState['walletLpPositions']>[number],
+  accountState: LiveAccountState | undefined,
+  now: Date
+): IngestCandidate {
   const token = [
-    ...(input.accountState?.walletTokens ?? []),
-    ...(input.accountState?.journalTokens ?? [])
+    ...(accountState?.walletTokens ?? []),
+    ...(accountState?.journalTokens ?? [])
   ].find((item) => item.mint === position.mint);
-  const fill = [...(input.accountState?.fills ?? [])]
+  const fill = [...(accountState?.fills ?? [])]
     .reverse()
     .find((item) => item.mint === position.mint && item.symbol);
   const symbol = token?.symbol ?? fill?.symbol ?? position.mint.slice(0, 6);
@@ -1103,12 +1140,6 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
 
 function resolveUntrackedAccountLpCandidate(input: IngestContextBuilderInput, now: Date): IngestCandidate | null {
   const state = input.positionState;
-  // Only intervene when positionState has no tracked activeMint
-  // AND the account still has LP positions. This catches the
-  // "default pass fell through to candidate pool" gap.
-  if (state?.activeMint || state?.activePoolAddress || state?.chainPositionAddress) {
-    return null;
-  }
 
   const positions = [
     ...(input.accountState?.walletLpPositions ?? []),
@@ -1119,39 +1150,27 @@ function resolveUntrackedAccountLpCandidate(input: IngestContextBuilderInput, no
     return null;
   }
 
-  const position = positions[0];
-  const token = [
-    ...(input.accountState?.walletTokens ?? []),
-    ...(input.accountState?.journalTokens ?? [])
-  ].find((item) => item.mint === position.mint);
-  const fill = [...(input.accountState?.fills ?? [])]
-    .reverse()
-    .find((item) => item.mint === position.mint && item.symbol);
-  const symbol = token?.symbol ?? fill?.symbol ?? position.mint.slice(0, 6);
-  const valueSol = typeof position.currentValueSol === 'number'
-    ? position.currentValueSol
-    : typeof position.withdrawSolAmount === 'number'
-      ? position.withdrawSolAmount
-      : 0;
+  // Pick the first active LP that is NOT tracked by positionState.
+  // This allows the default pass to flush untracked LPs even when a
+  // tracked LP is holding (max-hold not yet triggered, PnL in range).
+  const position = (state?.activeMint || state?.activePoolAddress || state?.chainPositionAddress)
+    ? positions.find((pos) => {
+        if (state.chainPositionAddress) {
+          return pos.positionAddress !== state.chainPositionAddress
+            && pos.chainPositionAddress !== state.chainPositionAddress;
+        }
+        if (state.activePoolAddress) {
+          return pos.poolAddress !== state.activePoolAddress;
+        }
+        return pos.mint !== state.activeMint;
+      }) ?? null
+    : positions[0];
 
-  return {
-    ...EMPTY_AUXILIARY_SIGNAL_FIELDS,
-    address: position.poolAddress,
-    mint: position.mint,
-    symbol,
-    chain: 'solana',
-    quoteMint: SOL_MINT,
-    liquidityUsd: Math.max(1, valueSol * 200),
-    hasSolRoute: true,
-    capturedAt: position.lastValuationAt ?? now.toISOString(),
-    holders: 0,
-    hasInventory: true,
-    hasLpPosition: true,
-    binStep: 0,
-    baseFeePct: 0,
-    volume24h: 0,
-    feeTvlRatio24h: 0
-  };
+  if (!position) {
+    return null;
+  }
+
+  return buildLpCandidate(position, input.accountState, now);
 }
 
 async function buildCandidatePoolBackedCycleInput(

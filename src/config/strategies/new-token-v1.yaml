@@ -57,3 +57,4 @@ live:
   maxLivePositionSol: 0.15
   autoFlattenRequired: true
   maxHoldHours: 8
+  minCloseToOpenIntervalSeconds: 120

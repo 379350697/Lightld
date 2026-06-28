@@ -12,7 +12,12 @@ export const LiveConfigSchema = z.object({
   maxLivePositionSol: z.number().positive(),
   autoFlattenRequired: z.boolean(),
   maxHoldHours: z.number().positive().default(18),
-  
+
+  // A3: minimum seconds a position must remain closed before a new
+  // open can be initiated.  Acts as a cooling-off guard against
+  // rapid reopen loops.
+  minCloseToOpenIntervalSeconds: z.number().int().nonnegative().default(60),
+
   // Strict Rug Guards
   requireMintAuthorityRevoked: z.boolean().default(false),
   requireLpBurnedPct: z.number().nonnegative().max(100).optional(),

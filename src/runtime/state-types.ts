@@ -137,6 +137,29 @@ export const PositionStateSnapshotSchema = z.object({
   updatedAt: z.string()
 });
 
+/** Per-slot subset forwarded to the exit policy snapshot. */
+export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
+  activeMint: true,
+  activePoolAddress: true,
+  chainPositionAddress: true,
+  lifecycleState: true,
+  entrySol: true,
+  entrySolSource: true,
+  entryFillSubmissionId: true,
+  openedAt: true,
+  valuationStatus: true,
+  valuationReason: true,
+  valuationTrust: true,
+  valuationSource: true,
+  valuationCompleteness: true,
+  exitQuoteValueSol: true,
+  displayValueSol: true,
+  lpTotalValueSol: true,
+  lastValuationAt: true
+});
+
+export type LpExitPolicySnapshot = z.infer<typeof LpExitPolicySnapshotSchema>;
+
 export type PositionStateSnapshot = z.infer<typeof PositionStateSnapshotSchema>;
 
 export const HousekeepingSnapshotSchema = z.object({

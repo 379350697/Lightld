@@ -688,7 +688,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
 
     expect(result.context.pool).toMatchObject({
-      blockReason: 'no-active-lp-maintenance-target'
+      address: 'pool-stale'
     });
   });
 

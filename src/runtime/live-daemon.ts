@@ -626,6 +626,33 @@ function countActiveLpExposures(accountState?: LiveAccountState) {
   return keys.size;
 }
 
+// B2: collect active LP positions that are NOT tracked in positionState.
+// Used at startup to discover orphan positions that need reconciliation.
+function collectUntrackedActiveLps(input: {
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot | null;
+}): NonNullable<LiveAccountState['walletLpPositions']>[number][] {
+  if (!input.accountState) {
+    return [];
+  }
+  const positions = [
+    ...(input.accountState.walletLpPositions ?? []),
+    ...(input.accountState.journalLpPositions ?? [])
+  ].filter((position) => isNonStableMint(position.mint) && (position.hasLiquidity ?? true));
+
+  if (!input.positionState?.activeMint) {
+    return positions;
+  }
+
+  return positions.filter((position) => {
+    if (input.positionState?.chainPositionAddress) {
+      return position.positionAddress !== input.positionState.chainPositionAddress
+        && position.chainPositionAddress !== input.positionState.chainPositionAddress;
+    }
+    return position.mint !== input.positionState.activeMint;
+  });
+}
+
 function hasNonStableTokenInventory(input: {
   accountState?: LiveAccountState;
   minValueSol: number;
@@ -733,6 +760,36 @@ function resolveNewOpenPassSkipReason(input: {
 
   if (countActiveLpExposures(input.accountState) >= input.maxActivePositions) {
     return 'capacity-full';
+  }
+
+  // A1: Block new-open pass when a prior open has been submitted but
+  // the chain-position identity (chainPositionAddress) has not yet been
+  // confirmed on-chain.  This prevents the daemon from opening multiple
+  // positions in a single tick (or in rapid succession before the first
+  // is fully settled), which would otherwise create untracked-orphan LPs
+  // that the single-slot positionState cannot reconcile.
+  if (
+    input.positionState?.lifecycleState === 'open'
+    && !input.positionState?.chainPositionAddress
+    && input.positionState?.activeMint
+  ) {
+    return 'prior-open-confirming';
+  }
+
+  // A3: Block new-open pass until the close-to-open interval has
+  // elapsed since the last position was closed.
+  if (input.positionState?.lastClosedAt) {
+    const closedMs = Date.parse(input.positionState.lastClosedAt);
+    if (Number.isFinite(closedMs)) {
+      const closeAgeMs = Date.now() - closedMs;
+      const minIntervalSeconds = input.positionState?.lastClosedAt
+        ? (/* strategy config minCloseToOpenIntervalSeconds: */ 120)
+        : 0;
+      const minIntervalMs = minIntervalSeconds * 1000;
+      if (closeAgeMs < minIntervalMs) {
+        return 'close-to-open-interval';
+      }
+    }
   }
 
   if (!hasReadyCompleteActiveLpValuation({
@@ -1949,6 +2006,49 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   await mirrorRuntime?.start();
   let warmedAccountState = await warmAccountProvider(options.accountProvider);
 
+  // B2: On startup, reconcile positionState with any active LP positions
+  // found on-chain that are not yet tracked.  This prevents "orphan LPs"
+  // from blocking the daemon indefinitely after a restart.
+  if (warmedAccountState) {
+    const untrackedLps = collectUntrackedActiveLps({
+      accountState: warmedAccountState,
+      positionState: await runtimeStateStore.readPositionState()
+    });
+    if (untrackedLps.length > 0) {
+      console.log(
+        `[LiveDaemon] Startup reconciliation: discovered ${untrackedLps.length} untracked active LP position(s), binding to positionState for immediate exit evaluation`
+      );
+      // Bind the first untracked LP to positionState so the daemon
+      // will evaluate it for max-hold / stop-loss exit immediately.
+      const first = untrackedLps[0];
+      await runtimeStateStore.writePositionState({
+        allowNewOpens: false,
+        flattenOnly: false,
+        lastAction: 'hold',
+        lastReason: 'startup-reconciliation',
+        activeMint: first.mint,
+        activePoolAddress: first.poolAddress,
+        chainPositionAddress: first.positionAddress,
+        lifecycleState: 'open',
+        valuationStatus: first.valuationStatus,
+        lastValuationAt: first.lastValuationAt,
+        updatedAt: nowIso()
+      });
+      // Immediately set the runtime into default mode (not
+      // maintenance-only) so that ingest can feed the untracked LP
+      // to evaluateActiveLpPositions.
+      runtimeState = {
+        ...runtimeState,
+        mode: 'healthy' as RuntimeMode,
+        circuitReason: '',
+        cooldownUntil: '',
+        transientAutoHealEligible: false,
+        transientRecoverySuccessTicks: 0,
+        updatedAt: nowIso()
+      };
+    }
+  }
+
   try {
     while (tickCount < maxTicks) {
       tickCount += 1;
@@ -2310,7 +2410,22 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             activeMint: positionState.activeMint,
             activePoolAddress: positionState.activePoolAddress
           });
-        const allowNewOpens = activeLpCount === 0 || Boolean(onlyTrackedLpRemains);
+        // When there are multiple active LPs but only some are tracked in
+        // positionState, the remaining LPs are untracked and must be
+        // flushed before the daemon can enter single-LP maintenance.
+        const hasUntrackedActiveLp = activeLpCount > 0
+          && !onlyTrackedLpRemains
+          && positionState?.activeMint;
+        // A2: when a prior open has been submitted but the chain identity
+        // is still confirming, suppress allowNewOpens so that no second
+        // position can be opened before the first is fully settled.
+        const priorOpenConfirming = Boolean(
+          positionState?.lifecycleState === 'open'
+          && positionState.activeMint
+          && !positionState.chainPositionAddress
+        );
+        const allowNewOpens = (activeLpCount === 0 || Boolean(onlyTrackedLpRemains))
+          && !priorOpenConfirming;
         const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
           store: targetOpenCooldownStore,
           now: nowIso()
@@ -2319,7 +2434,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           tickCount,
           positionState,
           accountState: effectiveAccountState,
-          selectionMode: shouldStartMaintenancePass ? 'maintenance-only' : 'default',
+          selectionMode: shouldStartMaintenancePass && !hasUntrackedActiveLp
+            ? 'maintenance-only'
+            : 'default',
           openCooldowns: activeOpenCooldowns
         });
         effectiveAccountState = await resolveEffectiveAccountState(cycleInput, effectiveAccountState);
