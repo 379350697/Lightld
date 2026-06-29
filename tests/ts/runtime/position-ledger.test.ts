@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applyLiveCycleResultToLedger,
   importActiveLpPositionsToLedger,
-  migratePositionStateToLedger
+  migratePositionStateToLedger,
+  selectCompatibilityPositionState
 } from '../../../src/runtime/position-ledger';
 import type { LiveAccountState } from '../../../src/runtime/live-account-provider';
 
@@ -239,5 +240,49 @@ describe('position ledger', () => {
       lifecycleState: 'open',
       lastAction: 'add-lp'
     });
+  });
+
+  it('selects a ledger record atomically for compatibility position state', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'dca-out',
+      lastReason: 'residual-cleanup-failed',
+      walletSol: 0.27,
+      now: '2026-06-29T17:48:01.000Z',
+      prior: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'dca-out',
+        activeMint: 'residual-mint',
+        activePoolAddress: 'residual-pool',
+        chainPositionAddress: 'pos-a',
+        lifecycleState: 'open',
+        updatedAt: '2026-06-29T17:47:00.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T17:48:01.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-a',
+          positionId: 'pos-a',
+          chainPositionAddress: 'pos-a',
+          activeMint: 'lp-mint',
+          activePoolAddress: 'lp-pool',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          entrySol: 0.1,
+          updatedAt: '2026-06-29T17:48:01.000Z'
+        }]
+      }
+    });
+
+    expect(state).toMatchObject({
+      chainPositionAddress: 'pos-a',
+      activeMint: 'lp-mint',
+      activePoolAddress: 'lp-pool',
+      entrySol: 0.1
+    });
+    expect(state.activeMint).not.toBe('residual-mint');
   });
 });

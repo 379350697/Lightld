@@ -992,6 +992,59 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(false);
   });
 
+  it('does not attach LP identity to residual dca-out orders', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'lp-mint',
+        activePoolAddress: 'lp-pool',
+        positionId: 'lp-position',
+        chainPositionAddress: 'lp-chain-position',
+        lifecycleState: 'inventory_exit_ready',
+        updatedAt: '2026-06-29T17:00:00.000Z'
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{
+          mint: 'residual-mint',
+          symbol: 'RES',
+          amount: 100,
+          currentValueSol: 0.2
+        }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'residual-pool', liquidityUsd: 10_000 },
+        token: { mint: 'residual-mint', inSession: true, hasSolRoute: true, symbol: 'RES' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('dca-out');
+    expect(result.actionIdentity?.openIntentId).toBeUndefined();
+    expect(result.actionIdentity?.positionId).toBeUndefined();
+    expect(result.actionIdentity?.chainPositionAddress).toBeUndefined();
+    expect(orderJournal[0]).toMatchObject({
+      side: 'sell',
+      tokenMint: 'residual-mint'
+    });
+    expect(orderJournal[0].chainPositionAddress).toBeUndefined();
+  });
+
   it('opens LP positions once LP eligibility passed', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',

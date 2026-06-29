@@ -2062,6 +2062,10 @@ function resolveActionIdentity(input: {
   tokenMint: string;
   chainPositionAddress?: string;
 }) {
+  if (input.action === 'dca-out') {
+    return {};
+  }
+
   const chainPositionAddress = firstString(
     input.chainPositionAddress,
     input.positionState?.chainPositionAddress,
