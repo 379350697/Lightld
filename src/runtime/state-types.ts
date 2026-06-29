@@ -137,6 +137,52 @@ export const PositionStateSnapshotSchema = z.object({
   updatedAt: z.string()
 });
 
+export const PositionLedgerImportStatusSchema = z.enum(['imported', 'entry_unknown', 'import_failed']);
+export type PositionLedgerImportStatus = z.infer<typeof PositionLedgerImportStatusSchema>;
+
+export const PositionLedgerRecordSchema = z.object({
+  positionKey: z.string(),
+  openIntentId: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  positionId: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
+  activeMint: z.string().optional(),
+  activePoolAddress: z.string().optional(),
+  lifecycleState: PositionLifecycleStateSchema,
+  entrySol: z.number().positive().optional(),
+  entrySolSource: PositionEntrySolSourceSchema.optional(),
+  entryFillSubmissionId: z.string().optional(),
+  openedAt: z.string().optional(),
+  importStatus: PositionLedgerImportStatusSchema.optional(),
+  lastAction: z.string(),
+  lastReason: z.string().optional(),
+  lastOrderIdempotencyKey: z.string().optional(),
+  pendingSubmissionId: z.string().optional(),
+  pendingOrderAction: PendingOrderActionSchema.optional(),
+  pendingConfirmationStatus: PendingConfirmationStatusSchema.optional(),
+  pendingFinality: PendingFinalitySchema.optional(),
+  lastSeenOnChainAt: z.string().optional(),
+  missingOnChainSince: z.string().optional(),
+  valuationStatus: LpValuationStatusSchema.optional(),
+  valuationReason: z.string().optional(),
+  valuationTrust: z.enum(['exit_quote', 'market_price', 'fallback_display']).optional(),
+  valuationSource: z.string().optional(),
+  valuationCompleteness: z.enum(['complete', 'incomplete', 'untrusted']).optional(),
+  exitQuoteValueSol: z.number().finite().nonnegative().optional(),
+  marketValueSol: z.number().finite().nonnegative().optional(),
+  displayValueSol: z.number().finite().nonnegative().optional(),
+  lpTotalValueSol: z.number().finite().nonnegative().optional(),
+  lastValuationAt: z.string().optional(),
+  lastClosedAt: z.string().optional(),
+  updatedAt: z.string()
+});
+
+export const PositionLedgerSnapshotSchema = z.object({
+  version: z.literal(1),
+  records: z.array(PositionLedgerRecordSchema),
+  updatedAt: z.string()
+});
+
 /** Per-slot subset forwarded to the exit policy snapshot. */
 export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
   activeMint: true,
@@ -161,6 +207,8 @@ export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
 export type LpExitPolicySnapshot = z.infer<typeof LpExitPolicySnapshotSchema>;
 
 export type PositionStateSnapshot = z.infer<typeof PositionStateSnapshotSchema>;
+export type PositionLedgerRecord = z.infer<typeof PositionLedgerRecordSchema>;
+export type PositionLedgerSnapshot = z.infer<typeof PositionLedgerSnapshotSchema>;
 
 export const HousekeepingSnapshotSchema = z.object({
   lastHousekeepingAt: z.string(),
@@ -175,6 +223,10 @@ export type HousekeepingSnapshot = z.infer<typeof HousekeepingSnapshotSchema>;
 export const HealthReportSchema = z.object({
   mode: RuntimeModeSchema,
   allowNewOpens: z.boolean(),
+  activeLpCount: z.number().int().nonnegative().optional(),
+  managedLpCount: z.number().int().nonnegative().optional(),
+  untrackedLpCount: z.number().int().nonnegative().optional(),
+  importFailedLpCount: z.number().int().nonnegative().optional(),
   flattenOnly: z.boolean(),
   pendingSubmission: z.boolean(),
   circuitReason: z.string(),

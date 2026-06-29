@@ -1,5 +1,5 @@
 import type { LiveAccountState } from './live-account-provider.ts';
-import type { PendingSubmissionSnapshot, PositionStateSnapshot } from './state-types.ts';
+import type { PendingSubmissionSnapshot, PositionLedgerSnapshot, PositionStateSnapshot } from './state-types.ts';
 import type { LiveAction } from './action-semantics.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -16,6 +16,9 @@ export type PositionBusinessSemantics = {
   activeLpPositions: BusinessLpPosition[];
   managedActiveLp?: BusinessLpPosition;
   untrackedActiveLpPositions: BusinessLpPosition[];
+  activeLpCount: number;
+  managedLpCount: number;
+  importFailedLpCount: number;
   hasActiveLp: boolean;
   hasPendingOpen: boolean;
   hasPendingExit: boolean;
@@ -38,6 +41,25 @@ function activeLpKey(position: BusinessLpPosition) {
     || position.positionAddress
     || position.positionId
     || `${position.poolAddress}:${position.mint}`;
+}
+
+function ledgerRecordMatchesPosition(input: {
+  ledger?: PositionLedgerSnapshot | null;
+  position: BusinessLpPosition;
+}) {
+  const records = input.ledger?.records ?? [];
+  const chainPositionAddress = input.position.chainPositionAddress || input.position.positionAddress;
+  return records.some((record) => {
+    if (record.lifecycleState === 'closed') {
+      return false;
+    }
+    if (chainPositionAddress) {
+      return record.chainPositionAddress === chainPositionAddress
+        || record.positionId === chainPositionAddress
+        || record.positionKey === `chain-position:${chainPositionAddress}`;
+    }
+    return record.activeMint === input.position.mint && record.activePoolAddress === input.position.poolAddress;
+  });
 }
 
 function collectActiveLpPositions(accountState?: LiveAccountState): BusinessLpPosition[] {
@@ -153,20 +175,36 @@ function collectDustTokens(input: {
 export function resolvePositionBusinessSemantics(input: {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot | null;
+  positionLedger?: PositionLedgerSnapshot | null;
   pendingSubmission?: PendingSubmissionSnapshot | null;
   residualTokenSweepMinValueSol?: number;
+  maxActivePositions?: number;
 }): PositionBusinessSemantics {
   const residualTokenSweepMinValueSol = input.residualTokenSweepMinValueSol ?? 0.1;
+  const maxActivePositions = input.maxActivePositions ?? 5;
   const activeLpPositions = collectActiveLpPositions(input.accountState);
   const managedActiveLp = activeLpPositions.find((position) =>
-    matchesBusinessLpTarget({
+    ledgerRecordMatchesPosition({
+      ledger: input.positionLedger,
+      position
+    }) || matchesBusinessLpTarget({
       position,
       positionState: input.positionState
     })
   );
-  const untrackedActiveLpPositions = managedActiveLp
-    ? activeLpPositions.filter((position) => activeLpKey(position) !== activeLpKey(managedActiveLp))
-    : activeLpPositions;
+  const untrackedActiveLpPositions = activeLpPositions.filter((position) =>
+    !ledgerRecordMatchesPosition({
+      ledger: input.positionLedger,
+      position
+    }) && !matchesBusinessLpTarget({
+      position,
+      positionState: input.positionState
+    })
+  );
+  const activeLedgerRecords = (input.positionLedger?.records ?? []).filter((record) => record.lifecycleState !== 'closed');
+  const activeLpCount = Math.max(activeLpPositions.length, activeLedgerRecords.length);
+  const managedLpCount = activeLedgerRecords.filter((record) => record.importStatus !== 'import_failed').length;
+  const importFailedLpCount = activeLedgerRecords.filter((record) => record.importStatus === 'import_failed').length;
   const hasPendingOpen = isPendingOpen(input.pendingSubmission);
   const hasPendingExit = isPendingExit(input.pendingSubmission);
   const hasPendingMaintenance = isPendingMaintenance(input.pendingSubmission);
@@ -185,7 +223,10 @@ export function resolvePositionBusinessSemantics(input: {
       activeLpPositions,
       managedActiveLp,
       untrackedActiveLpPositions,
-      hasActiveLp: activeLpPositions.length > 0,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
+      hasActiveLp: activeLpCount > 0,
       hasPendingOpen,
       hasPendingExit,
       hasPendingMaintenance,
@@ -201,7 +242,10 @@ export function resolvePositionBusinessSemantics(input: {
       activeLpPositions,
       managedActiveLp,
       untrackedActiveLpPositions,
-      hasActiveLp: activeLpPositions.length > 0,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
+      hasActiveLp: activeLpCount > 0,
       hasPendingOpen,
       hasPendingExit,
       hasPendingMaintenance,
@@ -217,7 +261,10 @@ export function resolvePositionBusinessSemantics(input: {
       activeLpPositions,
       managedActiveLp,
       untrackedActiveLpPositions,
-      hasActiveLp: activeLpPositions.length > 0,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
+      hasActiveLp: activeLpCount > 0,
       hasPendingOpen,
       hasPendingExit,
       hasPendingMaintenance,
@@ -228,35 +275,22 @@ export function resolvePositionBusinessSemantics(input: {
     };
   }
 
-  if (untrackedActiveLpPositions.length > 0) {
+  if (importFailedLpCount > 0) {
     return {
       activeLpPositions,
       managedActiveLp,
       untrackedActiveLpPositions,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
       hasActiveLp: true,
       hasPendingOpen,
       hasPendingExit,
       hasPendingMaintenance,
       residualDustState,
       dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'active-untracked-lp' },
-      nextAction: 'exit'
-    };
-  }
-
-  if (managedActiveLp) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      hasActiveLp: true,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'active-managed-lp' },
-      nextAction: 'maintain'
+      canOpenNewPosition: { allowed: false, reason: 'position-ledger-import-failed' },
+      nextAction: 'hold'
     };
   }
 
@@ -265,7 +299,10 @@ export function resolvePositionBusinessSemantics(input: {
       activeLpPositions,
       managedActiveLp,
       untrackedActiveLpPositions,
-      hasActiveLp: false,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
+      hasActiveLp: activeLpCount > 0,
       hasPendingOpen,
       hasPendingExit,
       hasPendingMaintenance,
@@ -276,18 +313,45 @@ export function resolvePositionBusinessSemantics(input: {
     };
   }
 
+  if (activeLpCount >= maxActivePositions) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      activeLpCount,
+      managedLpCount,
+      importFailedLpCount,
+      hasActiveLp: activeLpCount > 0,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'position-capacity-full' },
+      nextAction: activeLpCount > 0 ? 'maintain' : 'hold'
+    };
+  }
+
   return {
     activeLpPositions,
     managedActiveLp,
     untrackedActiveLpPositions,
-    hasActiveLp: false,
+    activeLpCount,
+    managedLpCount,
+    importFailedLpCount,
+    hasActiveLp: activeLpCount > 0,
     hasPendingOpen,
     hasPendingExit,
     hasPendingMaintenance,
     residualDustState,
     dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-    canOpenNewPosition: { allowed: true, reason: residualDustState === 'dust_ignored' ? 'flat-dust-ignored' : 'flat' },
-    nextAction: 'open'
+    canOpenNewPosition: {
+      allowed: true,
+      reason: activeLpCount > 0
+        ? 'capacity-available'
+        : residualDustState === 'dust_ignored' ? 'flat-dust-ignored' : 'flat'
+    },
+    nextAction: activeLpCount > 0 ? 'maintain' : 'open'
   };
 }
 

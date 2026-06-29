@@ -5,6 +5,10 @@ import {
   type DependencyHealthSnapshot,
   HealthReportSchema,
   type HealthReport,
+  PositionLedgerRecordSchema,
+  PositionLedgerSnapshotSchema,
+  type PositionLedgerRecord,
+  type PositionLedgerSnapshot,
   PositionStateSnapshotSchema,
   type PositionStateSnapshot,
   RuntimeStateSnapshotSchema,
@@ -50,6 +54,33 @@ export class RuntimeStateStore {
 
   async readPositionState(): Promise<PositionStateSnapshot | null> {
     return readJsonIfExists(join(this.rootDir, 'position-state.json'), PositionStateSnapshotSchema);
+  }
+
+  async writePositionLedger(snapshot: PositionLedgerSnapshot) {
+    await writeJsonAtomically(
+      join(this.rootDir, 'position-ledger.json'),
+      PositionLedgerSnapshotSchema.parse(snapshot)
+    );
+  }
+
+  async readPositionLedger(): Promise<PositionLedgerSnapshot | null> {
+    return readJsonIfExists(join(this.rootDir, 'position-ledger.json'), PositionLedgerSnapshotSchema);
+  }
+
+  async upsertPositionRecord(record: PositionLedgerRecord) {
+    const current = await this.readPositionLedger();
+    const parsedRecord = PositionLedgerRecordSchema.parse(record);
+    const records = current?.records ?? [];
+    const index = records.findIndex((item) => item.positionKey === parsedRecord.positionKey);
+    const nextRecords = index >= 0
+      ? records.map((item, itemIndex) => itemIndex === index ? parsedRecord : item)
+      : [...records, parsedRecord];
+
+    await this.writePositionLedger({
+      version: 1,
+      records: nextRecords,
+      updatedAt: parsedRecord.updatedAt
+    });
   }
 
   async writeHealthReport(snapshot: HealthReport) {

@@ -14,6 +14,10 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
   const lines = [
     `mode=${report.mode}`,
     `allowNewOpens=${report.allowNewOpens}`,
+    `activeLpCount=${report.activeLpCount ?? 0}`,
+    `managedLpCount=${report.managedLpCount ?? 0}`,
+    `untrackedLpCount=${report.untrackedLpCount ?? 0}`,
+    `importFailedLpCount=${report.importFailedLpCount ?? 0}`,
     `flattenOnly=${report.flattenOnly}`,
     `pendingSubmission=${report.pendingSubmission}`,
     `circuitReason=${report.circuitReason}`,

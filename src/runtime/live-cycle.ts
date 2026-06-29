@@ -99,6 +99,7 @@ import {
 import type {
   RuntimeMode,
   PositionStateSnapshot,
+  PositionLedgerSnapshot,
   PositionLifecycleState,
   PendingSubmissionSnapshot,
   PendingFinality
@@ -154,6 +155,7 @@ export type LiveCycleInput = {
   accountProvider?: LiveAccountStateProvider;
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
   residualTokenSweepMinValueSol?: number;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
@@ -181,6 +183,11 @@ export type LiveCycleResult = {
   executionPlan?: ExecutionPlan;
   liveOrderSubmitted: boolean;
   orderIntent?: LiveOrderIntent;
+  actionIdentity?: {
+    openIntentId?: string;
+    positionId?: string;
+    chainPositionAddress?: string;
+  };
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
   confirmedFill?: LiveCycleConfirmedFill;
@@ -2650,6 +2657,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
     return { ...result, nextLifecycleState };
   };
+  let currentActionIdentity: LiveCycleResult['actionIdentity'];
   const blockCycle = async (entry: {
     stage: 'live-config' | 'reconciliation' | 'guards' | 'signer' | 'broadcast' | 'recovery' | 'runtime-policy';
     action: LiveAction;
@@ -2659,6 +2667,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     quote?: SolExitQuote;
     executionPlan?: ExecutionPlan;
     orderIntent?: LiveOrderIntent;
+    actionIdentity?: LiveCycleResult['actionIdentity'];
     broadcastResult?: LiveBroadcastResult;
     confirmationStatus?: ConfirmationStatus;
     failureKind?: ExecutionFailureKind;
@@ -2693,7 +2702,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       });
     }
 
-    return finalize(buildBlockedCycleResult({
+    return finalize({
+      ...buildBlockedCycleResult({
       action: entry.action,
       reason: entry.reason,
       audit: entry.audit,
@@ -2708,7 +2718,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       failureSource: entry.failureSource,
       journalPaths: journals.paths,
       killSwitchState
-    }));
+      }),
+      actionIdentity: entry.actionIdentity ?? currentActionIdentity
+    });
   };
   let pendingSubmission = await pendingSubmissionStore.read();
   if (config.poolClass === 'new-token') {
@@ -3391,6 +3403,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     tokenMint: logContext.tokenMint,
     chainPositionAddress: multiLpExit?.position.positionAddress
   });
+  currentActionIdentity = actionIdentity;
   const orderLifecycleKey = buildMirrorLifecycleKey({
     tokenMint: logContext.tokenMint,
     openIntentId: actionIdentity.openIntentId,
@@ -3764,7 +3777,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
           confirmationStatus: confirmation.status,
           journalPaths: journals.paths,
           killSwitchState
-        })
+        }),
+        actionIdentity
       }, true);
     }
 
@@ -3925,6 +3939,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       journalPaths: journals.paths,
       killSwitchState
     }),
+    actionIdentity,
     confirmedFill
   }, lifecycleSynchronouslyResolved);
 }

@@ -20,8 +20,23 @@ function baseAccount(overrides: Partial<LiveAccountState> = {}): LiveAccountStat
 }
 
 describe('position business semantics', () => {
-  it('blocks new opens while a managed LP is active', () => {
+  it('allows new opens while active LP capacity remains available', () => {
     const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 2,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
       positionState: {
         allowNewOpens: true,
         flattenOnly: false,
@@ -44,19 +59,27 @@ describe('position business semantics', () => {
 
     expect(result.nextAction).toBe('maintain');
     expect(result.canOpenNewPosition).toEqual({
-      allowed: false,
-      reason: 'active-managed-lp'
+      allowed: true,
+      reason: 'capacity-available'
     });
   });
 
-  it('blocks new opens and selects exit semantics while an untracked LP is active', () => {
+  it('blocks new opens only when active LP capacity is full', () => {
     const result = resolvePositionBusinessSemantics({
-      positionState: {
-        allowNewOpens: true,
-        flattenOnly: false,
-        lastAction: 'hold',
-        lifecycleState: 'closed',
-        updatedAt: '2026-06-29T00:00:00.000Z'
+      maxActivePositions: 1,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-orphan',
+          positionId: 'pos-orphan',
+          chainPositionAddress: 'pos-orphan',
+          activeMint: 'mint-orphan',
+          activePoolAddress: 'pool-orphan',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
       },
       accountState: baseAccount({
         walletLpPositions: [{
@@ -68,11 +91,10 @@ describe('position business semantics', () => {
       })
     });
 
-    expect(result.nextAction).toBe('exit');
-    expect(result.untrackedActiveLpPositions).toHaveLength(1);
+    expect(result.nextAction).toBe('maintain');
     expect(result.canOpenNewPosition).toEqual({
       allowed: false,
-      reason: 'active-untracked-lp'
+      reason: 'position-capacity-full'
     });
   });
 

@@ -68,4 +68,56 @@ describe('RuntimeStateStore', () => {
       lastValuationAt: '2026-04-19T00:01:00.000Z'
     });
   });
+
+  it('persists and reloads multiple LP position ledger records', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lightld-runtime-position-ledger-'));
+    const store = new RuntimeStateStore(directory);
+
+    await store.writePositionLedger({
+      version: 1,
+      updatedAt: '2026-06-29T00:00:00.000Z',
+      records: [
+        {
+          positionKey: 'chain-position:pos-a',
+          positionId: 'pos-a',
+          chainPositionAddress: 'pos-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'open',
+          entrySol: 0.1,
+          entrySolSource: 'actual_fill',
+          openedAt: '2026-06-29T00:00:00.000Z',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        },
+        {
+          positionKey: 'chain-position:pos-b',
+          positionId: 'pos-b',
+          chainPositionAddress: 'pos-b',
+          activeMint: 'mint-b',
+          activePoolAddress: 'pool-b',
+          lifecycleState: 'open',
+          importStatus: 'entry_unknown',
+          lastAction: 'hold',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }
+      ]
+    });
+
+    await expect(store.readPositionLedger()).resolves.toMatchObject({
+      version: 1,
+      records: [
+        {
+          chainPositionAddress: 'pos-a',
+          activeMint: 'mint-a',
+          lifecycleState: 'open'
+        },
+        {
+          chainPositionAddress: 'pos-b',
+          activeMint: 'mint-b',
+          importStatus: 'entry_unknown'
+        }
+      ]
+    });
+  });
 });

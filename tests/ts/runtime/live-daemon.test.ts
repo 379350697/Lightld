@@ -3589,10 +3589,10 @@ describe('runLiveDaemon', () => {
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
       lastClosedMint: 'mint-closing',
-      allowNewOpens: false
+      allowNewOpens: true
     });
     expect(health).toMatchObject({
-      allowNewOpens: false
+      allowNewOpens: true
     });
     expect(positionState?.lastClosedAt).toBeTruthy();
   });

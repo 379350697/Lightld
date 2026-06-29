@@ -58,6 +58,13 @@ import {
   resolvePositionBusinessSemantics,
   type PositionBusinessSemantics
 } from './position-business-semantics.ts';
+import {
+  applyLiveCycleResultToLedger,
+  collectActiveLpPositions,
+  importActiveLpPositionsToLedger,
+  selectCompatibilityPositionState,
+  summarizePositionLedger
+} from './position-ledger.ts';
 
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
@@ -621,14 +628,8 @@ function collectActiveExposureMints(input: {
 
 function countActiveLpExposures(accountState?: LiveAccountState) {
   const keys = new Set<string>();
-  for (const position of [
-    ...(accountState?.walletLpPositions ?? []),
-    ...(accountState?.journalLpPositions ?? [])
-  ]) {
-    if (!isNonStableMint(position.mint) || !(position.hasLiquidity ?? true)) {
-      continue;
-    }
-    keys.add(`${position.poolAddress}:${position.mint}`);
+  for (const position of collectActiveLpPositions(accountState)) {
+    keys.add(position.chainPositionAddress || position.positionAddress || position.positionId || `${position.poolAddress}:${position.mint}`);
   }
   return keys.size;
 }
@@ -2030,37 +2031,32 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   await mirrorRuntime?.start();
   let warmedAccountState = await warmAccountProvider(options.accountProvider);
 
-  // B2: On startup, reconcile positionState with any active LP positions
-  // found on-chain that are not yet tracked.  This prevents "orphan LPs"
-  // from blocking the daemon indefinitely after a restart.
+  // On startup, reconcile all active chain LP positions into the multi-LP
+  // ledger.  The legacy position-state remains a compatibility summary only.
   if (warmedAccountState) {
-    const untrackedLps = collectUntrackedActiveLps({
+    const startupPositionState = await runtimeStateStore.readPositionState();
+    const startupLedger = importActiveLpPositionsToLedger({
+      ledger: await runtimeStateStore.readPositionLedger(),
+      positionState: startupPositionState,
       accountState: warmedAccountState,
-      positionState: await runtimeStateStore.readPositionState()
+      now: nowIso()
     });
-    if (untrackedLps.length > 0) {
+    await runtimeStateStore.writePositionLedger(startupLedger);
+    const startupSummary = summarizePositionLedger(startupLedger);
+    if (startupSummary.activeLpCount > 0) {
       console.log(
-        `[LiveDaemon] Startup reconciliation: discovered ${untrackedLps.length} untracked active LP position(s), binding to positionState for immediate exit evaluation`
+        `[LiveDaemon] Startup reconciliation: imported ${startupSummary.activeLpCount} active LP position(s) into position-ledger`
       );
-      // Bind the first untracked LP to positionState so the daemon
-      // will evaluate it for max-hold / stop-loss exit immediately.
-      const first = untrackedLps[0];
-      await runtimeStateStore.writePositionState({
+      await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
+        ledger: startupLedger,
+        prior: startupPositionState,
         allowNewOpens: false,
         flattenOnly: false,
         lastAction: 'hold',
-        lastReason: 'startup-reconciliation',
-        activeMint: first.mint,
-        activePoolAddress: first.poolAddress,
-        chainPositionAddress: first.positionAddress,
-        lifecycleState: 'open',
-        valuationStatus: first.valuationStatus,
-        lastValuationAt: first.lastValuationAt,
-        updatedAt: nowIso()
-      });
-      // Immediately set the runtime into default mode (not
-      // maintenance-only) so that ingest can feed the untracked LP
-      // to evaluateActiveLpPositions.
+        lastReason: 'startup-ledger-reconciliation',
+        walletSol: warmedAccountState.walletSol,
+        now: nowIso()
+      }));
       runtimeState = {
         ...runtimeState,
         mode: 'healthy' as RuntimeMode,
@@ -2083,6 +2079,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let pendingSubmission = await pendingSubmissionStore.read();
       let pendingSubmissionBeforeCycle = pendingSubmission;
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
+      let positionLedger = await runtimeStateStore.readPositionLedger() ?? undefined;
       let previousMode = runtimeState.mode;
       const tickStartRuntimeState = {
         ...runtimeState,
@@ -2104,6 +2101,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         pendingSubmission = preRecovery.pendingSubmission;
         effectiveAccountState = preRecovery.effectiveAccountState;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
+        positionLedger = await runtimeStateStore.readPositionLedger() ?? undefined;
         if (
           pendingSubmission === null &&
           effectiveAccountState &&
@@ -2146,6 +2144,15 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (!effectiveAccountState && options.accountProvider) {
           effectiveAccountState = await options.accountProvider.readState();
         }
+
+        positionLedger = importActiveLpPositionsToLedger({
+          ledger: positionLedger,
+          positionState,
+          accountState: effectiveAccountState,
+          pendingSubmission,
+          now: nowIso()
+        });
+        await runtimeStateStore.writePositionLedger(positionLedger);
 
         if (options.signer && options.broadcaster) {
           const preIngestResidualSweepResult = await runResidualTokenSweepIfDue({
@@ -2410,8 +2417,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const preCycleBusinessSemantics = resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
           positionState,
+          positionLedger,
           pendingSubmission,
-          residualTokenSweepMinValueSol
+          residualTokenSweepMinValueSol,
+          maxActivePositions: options.maxActivePositions ?? 5
         });
         const shouldStartMaintenancePass = Boolean(
           options.openAfterMaintenanceHold &&
@@ -2420,7 +2429,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         // Suppress new-open pass while there are still active LP positions
         // in the account that need to be exited first. This ensures
         // all existing positions are cleared before new capital is deployed.
-        const activeLpCount = preCycleBusinessSemantics.activeLpPositions.length;
+        const activeLpCount = preCycleBusinessSemantics.activeLpCount;
         // A2: when a prior open has been submitted but the chain identity
         // is still confirming, suppress allowNewOpens so that no second
         // position can be opened before the first is fully settled.
@@ -2477,11 +2486,20 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         pendingSubmission = await pendingSubmissionStore.read();
         pendingSubmissionBeforeCycle = pendingSubmission;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
+        positionLedger = importActiveLpPositionsToLedger({
+          ledger: await runtimeStateStore.readPositionLedger(),
+          positionState,
+          accountState: effectiveAccountState,
+          now: nowIso()
+        });
+        await runtimeStateStore.writePositionLedger(positionLedger);
         const postSuppressionBusinessSemantics = resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
           positionState,
+          positionLedger,
           pendingSubmission,
-          residualTokenSweepMinValueSol
+          residualTokenSweepMinValueSol,
+          maxActivePositions: options.maxActivePositions ?? 5
         });
         let runtimeStateExplicitlySet = false;
         const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
@@ -2497,6 +2515,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ...cycleInput,
           evolutionSink,
           accountState: effectiveAccountState,
+          positionLedger,
           residualTokenSweepMinValueSol
         });
 
@@ -2862,6 +2881,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
         const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
         const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedPoolAddress;
+        positionLedger = applyLiveCycleResultToLedger({
+          ledger: positionLedger,
+          positionState,
+          accountState: effectiveAccountState,
+          pendingSubmissionBeforeCycle,
+          persistedPendingSubmission,
+          actionIdentity: result.actionIdentity,
+          orderIntent: result.orderIntent,
+          action: result.action,
+          reason: result.reason,
+          liveOrderSubmitted: result.liveOrderSubmitted,
+          confirmationStatus: result.confirmationStatus,
+          confirmedFill: result.confirmedFill,
+          now: nowIso()
+        });
+        await runtimeStateStore.writePositionLedger(positionLedger);
+        const positionLedgerSummary = summarizePositionLedger(positionLedger);
         const businessAllowNewOpens = runtimeAllowsNewOpens && resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
           positionState: {
@@ -2875,10 +2911,16 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             activePoolAddress: persistedActivePoolAddressForState,
             lifecycleState: persistedLifecycleState
           },
+          positionLedger,
           pendingSubmission: persistedPendingSubmission,
-          residualTokenSweepMinValueSol
+          residualTokenSweepMinValueSol,
+          maxActivePositions: options.maxActivePositions ?? 5
         }).canOpenNewPosition.allowed;
         report.allowNewOpens = businessAllowNewOpens;
+        report.activeLpCount = positionLedgerSummary.activeLpCount;
+        report.managedLpCount = positionLedgerSummary.managedLpCount;
+        report.untrackedLpCount = Math.max(0, countActiveLpExposures(effectiveAccountState) - positionLedgerSummary.managedLpCount);
+        report.importFailedLpCount = positionLedgerSummary.importFailedLpCount;
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
           ? resolveConfirmedOpenFillEntry({
               resultFill: result.confirmedFill,
@@ -3015,6 +3057,18 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           walletSol: effectiveAccountState?.walletSol,
           updatedAt: nowIso()
         });
+        if (positionLedgerSummary.activeLpCount > 0 || persistedLifecycleState === 'closed') {
+          await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
+            ledger: positionLedger,
+            prior: positionState,
+            allowNewOpens: businessAllowNewOpens,
+            flattenOnly: runtimeState.mode === 'flatten_only',
+            lastAction: result.action,
+            lastReason: result.reason,
+            walletSol: effectiveAccountState?.walletSol,
+            now: nowIso()
+          }));
+        }
         enqueueResolvedOpenOrderMirror({
           mirrorRuntime,
           idempotencyKey: result.orderIntent?.idempotencyKey ?? positionState?.lastOrderIdempotencyKey,

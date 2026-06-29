@@ -1535,10 +1535,11 @@ export async function buildLiveCycleInputFromIngest(
   const selectionMode = input.selectionMode ?? 'default';
   const businessSemantics = resolvePositionBusinessSemantics({
     accountState: input.accountState,
-    positionState: input.positionState
+    positionState: input.positionState,
+    maxActivePositions: input.maxActivePositions
   });
 
-  if (selectionMode === 'new-open-only' && businessSemantics.hasActiveLp) {
+  if (selectionMode === 'new-open-only' && !businessSemantics.canOpenNewPosition.allowed) {
     return buildFallbackContext(
       input,
       input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
@@ -1547,7 +1548,7 @@ export async function buildLiveCycleInputFromIngest(
       null,
       {
         blockReason: businessSemantics.canOpenNewPosition.reason,
-        blockDetails: 'strict single-LP semantics block new candidate selection while any active LP exists'
+        blockDetails: 'position capacity or pending runtime state blocks new candidate selection'
       }
     );
   }

@@ -8,6 +8,10 @@ import type {
 export function buildHealthReport(input: {
   mode: RuntimeMode;
   allowNewOpens: boolean;
+  activeLpCount?: number;
+  managedLpCount?: number;
+  untrackedLpCount?: number;
+  importFailedLpCount?: number;
   flattenOnly: boolean;
   pendingSubmission: boolean;
   circuitReason: string;
@@ -23,6 +27,10 @@ export function buildHealthReport(input: {
   return {
     mode: input.mode,
     allowNewOpens: input.allowNewOpens,
+    activeLpCount: input.activeLpCount,
+    managedLpCount: input.managedLpCount,
+    untrackedLpCount: input.untrackedLpCount,
+    importFailedLpCount: input.importFailedLpCount,
     flattenOnly: input.flattenOnly,
     pendingSubmission: input.pendingSubmission,
     circuitReason: input.circuitReason,
