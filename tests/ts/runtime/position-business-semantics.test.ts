@@ -62,6 +62,152 @@ describe('position business semantics', () => {
       allowed: true,
       reason: 'capacity-available'
     });
+    expect(result.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
+  });
+
+  it('allows new opens after an unsubmitted residual dca-out failure when LP capacity remains', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      maintenanceOutcome: {
+        action: 'dca-out',
+        liveOrderSubmitted: false,
+        reason: 'swap-provider-chain-execute-failed: route-not-found'
+      },
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount({
+        walletLpPositions: [{
+          poolAddress: 'pool-active',
+          positionAddress: 'pos-active',
+          mint: 'mint-active',
+          hasLiquidity: true
+        }]
+      })
+    });
+
+    expect(result.maintenanceIntent).toBe('residual-cleanup');
+    expect(result.canOpenNewPosition).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
+    expect(result.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
+  });
+
+  it('blocks new opens after a submitted maintenance order', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      maintenanceOutcome: {
+        action: 'withdraw-lp',
+        liveOrderSubmitted: true,
+        reason: 'live-order-submitted'
+      },
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount({
+        walletLpPositions: [{
+          poolAddress: 'pool-active',
+          positionAddress: 'pos-active',
+          mint: 'mint-active',
+          hasLiquidity: true
+        }]
+      })
+    });
+
+    expect(result.maintenanceIntent).toBe('lp-exit');
+    expect(result.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: false,
+      reason: 'maintenance-order-submitted'
+    });
+  });
+
+  it('blocks new opens after an unsubmitted LP exit while allowing residual cleanup failures to stay non-blocking', () => {
+    const commonInput = {
+      maxActivePositions: 5,
+      positionLedger: {
+        version: 1 as const,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open' as const,
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount({
+        walletLpPositions: [{
+          poolAddress: 'pool-active',
+          positionAddress: 'pos-active',
+          mint: 'mint-active',
+          hasLiquidity: true
+        }]
+      })
+    };
+
+    const lpExitFailure = resolvePositionBusinessSemantics({
+      ...commonInput,
+      maintenanceOutcome: {
+        action: 'withdraw-lp',
+        liveOrderSubmitted: false,
+        reason: 'withdraw-target-valuation-unavailable',
+        failureKind: 'hard'
+      }
+    });
+    const residualFailure = resolvePositionBusinessSemantics({
+      ...commonInput,
+      maintenanceOutcome: {
+        action: 'dca-out',
+        liveOrderSubmitted: false,
+        reason: 'swap-provider-chain-execute-failed: route-not-found',
+        failureKind: 'transient'
+      }
+    });
+
+    expect(lpExitFailure.canOpenNewPosition).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
+    expect(lpExitFailure.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: false,
+      reason: 'maintenance-lp-exit-not-submitted:withdraw-target-valuation-unavailable'
+    });
+    expect(residualFailure.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
   });
 
   it('blocks new opens only when active LP capacity is full', () => {

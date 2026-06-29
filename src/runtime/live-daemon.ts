@@ -459,13 +459,21 @@ async function suppressCooldownResidualWalletTokens(input: {
   };
 }
 
-async function recordResidualCooldownForSubmittedSell(input: {
+async function recordResidualCooldownForSellAttempt(input: {
   result: Awaited<ReturnType<typeof runLiveCycle>>;
   residualTokenSweepStore: ResidualTokenSweepStore;
   residualTokenSweepCooldownMs: number;
   now: Date;
 }) {
-  if (!input.result.liveOrderSubmitted || input.result.action !== 'dca-out') {
+  if (input.result.action !== 'dca-out') {
+    return;
+  }
+
+  const attemptedResidualCleanup = input.result.liveOrderSubmitted
+    || input.result.failureSource === 'quote'
+    || input.result.failureSource === 'signer'
+    || input.result.failureSource === 'broadcast';
+  if (!attemptedResidualCleanup) {
     return;
   }
 
@@ -726,31 +734,19 @@ function shouldUseNewOpenPassResult(result: LiveCycleResult) {
   return result.action === 'add-lp' && result.liveOrderSubmitted;
 }
 
-function resolveNewOpenPassSkipReason(input: {
+export function resolveNewOpenPassSkipReason(input: {
   enabled: boolean;
   maintenanceResult: LiveCycleResult;
   runtimeMode: RuntimeMode;
   pendingSubmission: boolean;
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
-  businessSemantics?: PositionBusinessSemantics;
+  businessSemantics: PositionBusinessSemantics;
   maxActivePositions: number;
   residualTokenSweepMinValueSol: number;
 }) {
   if (!input.enabled) {
     return 'disabled';
-  }
-
-  if (input.maintenanceResult.action !== 'hold') {
-    return `maintenance-action-not-hold:${input.maintenanceResult.action}`;
-  }
-
-  if (input.maintenanceResult.liveOrderSubmitted) {
-    return 'maintenance-order-submitted';
-  }
-
-  if (input.maintenanceResult.failureKind) {
-    return `maintenance-failure:${input.maintenanceResult.failureKind}`;
   }
 
   if (input.pendingSubmission) {
@@ -761,59 +757,9 @@ function resolveNewOpenPassSkipReason(input: {
     return `runtime-mode:${input.runtimeMode}`;
   }
 
-  if (input.businessSemantics && !input.businessSemantics.canOpenNewPosition.allowed) {
-    return input.businessSemantics.canOpenNewPosition.reason;
-  }
-
-  if (hasNonStableTokenInventory({
-    accountState: input.accountState,
-    minValueSol: input.residualTokenSweepMinValueSol
-  })) {
-    return 'inventory-exit-pending';
-  }
-
-  if (countActiveLpExposures(input.accountState) >= input.maxActivePositions) {
-    return 'capacity-full';
-  }
-
-  // A1: Block new-open pass when a prior open has been submitted but
-  // the chain-position identity (chainPositionAddress) has not yet been
-  // confirmed on-chain.  This prevents the daemon from opening multiple
-  // positions in a single tick (or in rapid succession before the first
-  // is fully settled), which would otherwise create untracked-orphan LPs
-  // that the single-slot positionState cannot reconcile.
-  if (
-    input.positionState?.lifecycleState === 'open'
-    && !input.positionState?.chainPositionAddress
-    && input.positionState?.activeMint
-  ) {
-    return 'prior-open-confirming';
-  }
-
-  // A3: Block new-open pass until the close-to-open interval has
-  // elapsed since the last position was closed.
-  if (input.positionState?.lastClosedAt) {
-    const closedMs = Date.parse(input.positionState.lastClosedAt);
-    if (Number.isFinite(closedMs)) {
-      const closeAgeMs = Date.now() - closedMs;
-      const minIntervalSeconds = input.positionState?.lastClosedAt
-        ? (/* strategy config minCloseToOpenIntervalSeconds: */ 120)
-        : 0;
-      const minIntervalMs = minIntervalSeconds * 1000;
-      if (closeAgeMs < minIntervalMs) {
-        return 'close-to-open-interval';
-      }
-    }
-  }
-
-  if (!hasReadyCompleteActiveLpValuation({
-    accountState: input.accountState,
-    positionState: input.positionState
-  })) {
-    return 'active-lp-valuation-unavailable';
-  }
-
-  return '';
+  return input.businessSemantics.canRunNewOpenAfterMaintenance.allowed
+    ? undefined
+    : input.businessSemantics.canRunNewOpenAfterMaintenance.reason;
 }
 
 async function updateEvolutionWatchlistBestEffort(input: {
@@ -2426,9 +2372,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           options.openAfterMaintenanceHold &&
           preCycleBusinessSemantics.hasActiveLp
         );
-        // Suppress new-open pass while there are still active LP positions
-        // in the account that need to be exited first. This ensures
-        // all existing positions are cleared before new capital is deployed.
+        // Gate the new-open pass only through the unified business semantics:
+        // existing LPs are maintained independently, and capacity controls
+        // whether more LP records may be opened.
         const activeLpCount = preCycleBusinessSemantics.activeLpCount;
         // A2: when a prior open has been submitted but the chain identity
         // is still confirming, suppress allowNewOpens so that no second
@@ -2529,6 +2475,20 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
         if (shouldStartMaintenancePass) {
           const pendingAfterMaintenance = await pendingSubmissionStore.read();
+          const postMaintenanceBusinessSemantics = resolvePositionBusinessSemantics({
+            accountState: effectiveAccountState,
+            positionState,
+            positionLedger,
+            pendingSubmission: pendingAfterMaintenance,
+            maintenanceOutcome: {
+              action: result.action,
+              reason: result.reason,
+              liveOrderSubmitted: result.liveOrderSubmitted,
+              failureKind: result.failureKind
+            },
+            residualTokenSweepMinValueSol,
+            maxActivePositions: options.maxActivePositions ?? 5
+          });
           const newOpenSkipReason = resolveNewOpenPassSkipReason({
             enabled: true,
             maintenanceResult: result,
@@ -2536,7 +2496,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             pendingSubmission: pendingAfterMaintenance !== null,
             accountState: effectiveAccountState,
             positionState,
-            businessSemantics: postSuppressionBusinessSemantics,
+            businessSemantics: postMaintenanceBusinessSemantics,
             maxActivePositions: options.maxActivePositions ?? 5,
             residualTokenSweepMinValueSol
           });
@@ -2713,15 +2673,26 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (result.liveOrderSubmitted) {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'signer', nowIso());
           dependencyHealth = markDependencySuccess(dependencyHealth, 'broadcaster', nowIso());
-          await recordResidualCooldownForSubmittedSell({
+          if (result.action === 'dca-out') {
+            await recordResidualCooldownForSellAttempt({
+              result,
+              residualTokenSweepStore,
+              residualTokenSweepCooldownMs,
+              now: new Date()
+            });
+          }
+        }
+
+        if (!result.liveOrderSubmitted && result.action === 'dca-out') {
+          await recordResidualCooldownForSellAttempt({
             result,
             residualTokenSweepStore,
             residualTokenSweepCooldownMs,
             now: new Date()
           });
-          if (result.action === 'dca-out') {
-            nextResidualTokenSweepAt = new Date(Date.now() + residualTokenSweepIntervalMs).toISOString();
-          }
+        }
+        if (result.action === 'dca-out') {
+          nextResidualTokenSweepAt = new Date(Date.now() + residualTokenSweepIntervalMs).toISOString();
         }
 
         if (confirmationProvider && result.confirmationStatus && result.confirmationStatus !== 'unknown') {

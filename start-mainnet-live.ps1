@@ -28,7 +28,28 @@ Set-Location -LiteralPath $RootLiteral
 New-Item -ItemType Directory -Force -Path (Join-Path (Get-Location) 'logs') | Out-Null
 $Body
 "@
-    Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot
+    Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot -PassThru
+}
+
+function Wait-HttpHealth {
+    param(
+        [string]$Url,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $Deadline) {
+        try {
+            $Response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3
+            if ($Response.StatusCode -ge 200 -and $Response.StatusCode -lt 300) {
+                return
+            }
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    throw "Health check failed: $Url"
 }
 
 Write-Host "========================================"
@@ -43,13 +64,21 @@ $GmgnPort = $env:GMGN_SAFETY_PORT
 if (-not $GmgnPort) { $GmgnPort = "8898" }
 
 Write-Host "`n[1/5] Starting GMGN safety sidecar (port $GmgnPort)..."
-Start-LightldWindow "Lightld GMGN Safety" @"
+$GmgnProcess = Start-LightldWindow "Lightld GMGN Safety" @"
 `$PythonBin = `$env:GMGN_PYTHON_BIN
 if (-not `$PythonBin) { `$PythonBin = 'python' }
 & `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
 "@
 
 Start-Sleep -Seconds 2
+try {
+    Wait-HttpHealth "http://127.0.0.1:$GmgnPort/health"
+} catch {
+    if ($GmgnProcess -and -not $GmgnProcess.HasExited) {
+        Stop-Process -Id $GmgnProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    throw
+}
 
 Write-Host "[2/5] Starting Signer Service (port $SignerPort)..."
 Start-LightldWindow "Lightld Signer" @"

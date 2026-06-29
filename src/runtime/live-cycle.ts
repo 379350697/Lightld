@@ -3163,6 +3163,51 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const actionableAction = runtimeAction.action;
   const actionableTokenMint = activeMint || logContext.tokenMint;
+  const actionableChainPositionAddress = firstString(
+    multiLpExit?.position.positionAddress,
+    input.positionState?.chainPositionAddress
+  );
+  const hasActiveLpForActionTarget = Boolean(
+    observedLpPosition && matchesLpExitTarget({
+      position: observedLpPosition.position,
+      tokenMint: actionableTokenMint,
+      poolAddress,
+      chainPositionAddress: actionableChainPositionAddress
+    })
+  ) || (input.positionLedger?.records ?? []).some((record) => {
+    if (record.lifecycleState !== 'open') {
+      return false;
+    }
+
+    const recordChainPositionAddress = firstString(record.chainPositionAddress, record.positionId);
+    if (actionableChainPositionAddress && recordChainPositionAddress) {
+      return recordChainPositionAddress === actionableChainPositionAddress;
+    }
+
+    return Boolean(
+      actionableTokenMint &&
+      poolAddress &&
+      record.activeMint === actionableTokenMint &&
+      record.activePoolAddress === poolAddress
+    );
+  });
+
+  if (
+    config.poolClass === 'new-token' &&
+    actionableAction === 'dca-out' &&
+    currentLifecycleState === 'open' &&
+    hasActiveLpForActionTarget
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: `residual-dca-out-deferred-to-sweep:${actionableTokenMint || 'unknown'}`,
+      audit: { reason: `residual-dca-out-deferred-to-sweep:${actionableTokenMint || 'unknown'}` },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
 
   const lpWithdrawTriggerEligibility = validateLpWithdrawTriggerEligibility({
     action: actionableAction,

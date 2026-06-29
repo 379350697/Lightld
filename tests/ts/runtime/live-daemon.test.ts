@@ -10,14 +10,72 @@ import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
-import { resolveLifecycleStateForPersist, runLiveDaemon } from '../../../src/runtime/live-daemon';
+import { resolveLifecycleStateForPersist, resolveNewOpenPassSkipReason, runLiveDaemon } from '../../../src/runtime/live-daemon';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
+import { resolvePositionBusinessSemantics } from '../../../src/runtime/position-business-semantics';
 import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
 import { RuntimeStateStore } from '../../../src/runtime/runtime-state-store';
 import { TargetOpenCooldownStore } from '../../../src/runtime/target-open-cooldown-store';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 
 describe('runLiveDaemon', () => {
+  it('does not skip new-open after an unsubmitted residual dca-out when business semantics allow it', () => {
+    const accountState = {
+      walletSol: 1,
+      journalSol: 1,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'pos-active',
+        mint: 'mint-active',
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+    const businessSemantics = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      residualTokenSweepMinValueSol: 0.1,
+      accountState,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      maintenanceOutcome: {
+        action: 'dca-out',
+        liveOrderSubmitted: false,
+        reason: 'swap-provider-chain-execute-failed: route-not-found'
+      }
+    });
+    const skipReason = resolveNewOpenPassSkipReason({
+      enabled: true,
+      maintenanceResult: {
+        action: 'dca-out',
+        liveOrderSubmitted: false,
+        reason: 'swap-provider-chain-execute-failed: route-not-found'
+      } as any,
+      runtimeMode: 'healthy',
+      pendingSubmission: false,
+      accountState,
+      businessSemantics,
+      maxActivePositions: 5,
+      residualTokenSweepMinValueSol: 0.1
+    });
+
+    expect(skipReason).toBeUndefined();
+  });
+
   it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
     expect(resolveLifecycleStateForPersist({
       nextLifecycleState: 'open',

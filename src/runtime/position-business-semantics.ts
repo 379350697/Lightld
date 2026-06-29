@@ -11,6 +11,15 @@ export type BusinessLpPosition = NonNullable<LiveAccountState['walletLpPositions
 
 export type PositionBusinessAction = 'maintain' | 'exit' | 'cleanup-dust' | 'hold' | 'open';
 export type ResidualDustState = 'none' | 'dust_ignored' | 'dust_cleanup_pending';
+export type PositionPendingState = 'none' | 'open' | 'exit' | 'maintenance';
+export type BusinessActionIntent = 'lp-maintenance' | 'lp-exit' | 'residual-cleanup' | 'new-open' | 'hold';
+
+export type MaintenanceOutcome = {
+  action?: string;
+  reason?: string;
+  liveOrderSubmitted?: boolean;
+  failureKind?: string;
+};
 
 export type PositionBusinessSemantics = {
   activeLpPositions: BusinessLpPosition[];
@@ -23,9 +32,20 @@ export type PositionBusinessSemantics = {
   hasPendingOpen: boolean;
   hasPendingExit: boolean;
   hasPendingMaintenance: boolean;
+  pendingState: PositionPendingState;
   residualDustState: ResidualDustState;
+  residualState: {
+    status: ResidualDustState;
+    cleanupMints: string[];
+    ignoredMints: string[];
+  };
   dustTokenMints: string[];
+  maintenanceIntent: BusinessActionIntent;
   canOpenNewPosition: {
+    allowed: boolean;
+    reason: string;
+  };
+  canRunNewOpenAfterMaintenance: {
     allowed: boolean;
     reason: string;
   };
@@ -172,11 +192,76 @@ function collectDustTokens(input: {
   return { cleanupMints, ignoredMints };
 }
 
+function classifyActionIntent(action?: string): BusinessActionIntent | undefined {
+  if (!action || action === 'hold') {
+    return action === 'hold' ? 'hold' : undefined;
+  }
+
+  if (action === 'withdraw-lp') {
+    return 'lp-exit';
+  }
+
+  if (action === 'claim-fee' || action === 'rebalance-lp') {
+    return 'lp-maintenance';
+  }
+
+  if (action === 'dca-out') {
+    return 'residual-cleanup';
+  }
+
+  if (action === 'deploy' || action === 'add-lp') {
+    return 'new-open';
+  }
+
+  return 'hold';
+}
+
+function resolveDefaultMaintenanceIntent(input: {
+  maintenanceOutcome?: MaintenanceOutcome;
+  activeLpCount: number;
+  residualDustState: ResidualDustState;
+}): BusinessActionIntent {
+  const outcomeIntent = classifyActionIntent(input.maintenanceOutcome?.action);
+  if (outcomeIntent) {
+    return outcomeIntent;
+  }
+
+  if (input.activeLpCount > 0) {
+    return 'lp-maintenance';
+  }
+
+  if (input.residualDustState === 'dust_cleanup_pending') {
+    return 'residual-cleanup';
+  }
+
+  return 'hold';
+}
+
+function resolveCanRunNewOpenAfterMaintenance(input: {
+  canOpenNewPosition: PositionBusinessSemantics['canOpenNewPosition'];
+  maintenanceOutcome?: MaintenanceOutcome;
+}) {
+  if (input.maintenanceOutcome?.liveOrderSubmitted) {
+    return { allowed: false, reason: 'maintenance-order-submitted' };
+  }
+
+  const maintenanceIntent = classifyActionIntent(input.maintenanceOutcome?.action);
+  if (maintenanceIntent === 'lp-exit') {
+    const reason = input.maintenanceOutcome?.reason
+      || input.maintenanceOutcome?.failureKind
+      || 'not-submitted';
+    return { allowed: false, reason: `maintenance-lp-exit-not-submitted:${reason}` };
+  }
+
+  return input.canOpenNewPosition;
+}
+
 export function resolvePositionBusinessSemantics(input: {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot | null;
   positionLedger?: PositionLedgerSnapshot | null;
   pendingSubmission?: PendingSubmissionSnapshot | null;
+  maintenanceOutcome?: MaintenanceOutcome;
   residualTokenSweepMinValueSol?: number;
   maxActivePositions?: number;
 }): PositionBusinessSemantics {
@@ -217,134 +302,102 @@ export function resolvePositionBusinessSemantics(input: {
     : dustTokens.ignoredMints.length > 0
       ? 'dust_ignored'
       : 'none';
-
-  if (hasPendingExit) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: activeLpCount > 0,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'pending-exit' },
-      nextAction: 'hold'
-    };
-  }
-
-  if (hasPendingOpen) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: activeLpCount > 0,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'pending-open' },
-      nextAction: 'hold'
-    };
-  }
-
-  if (hasPendingMaintenance) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: activeLpCount > 0,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'pending-maintenance' },
-      nextAction: 'hold'
-    };
-  }
-
-  if (importFailedLpCount > 0) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: true,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'position-ledger-import-failed' },
-      nextAction: 'hold'
-    };
-  }
-
-  if (residualDustState === 'dust_cleanup_pending') {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: activeLpCount > 0,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'residual-dust-cleanup-pending' },
-      nextAction: 'cleanup-dust'
-    };
-  }
-
-  if (activeLpCount >= maxActivePositions) {
-    return {
-      activeLpPositions,
-      managedActiveLp,
-      untrackedActiveLpPositions,
-      activeLpCount,
-      managedLpCount,
-      importFailedLpCount,
-      hasActiveLp: activeLpCount > 0,
-      hasPendingOpen,
-      hasPendingExit,
-      hasPendingMaintenance,
-      residualDustState,
-      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
-      canOpenNewPosition: { allowed: false, reason: 'position-capacity-full' },
-      nextAction: activeLpCount > 0 ? 'maintain' : 'hold'
-    };
-  }
-
-  return {
+  const dustTokenMints = [...dustTokens.cleanupMints, ...dustTokens.ignoredMints];
+  const pendingState: PositionPendingState = hasPendingExit
+    ? 'exit'
+    : hasPendingOpen
+      ? 'open'
+      : hasPendingMaintenance
+        ? 'maintenance'
+        : 'none';
+  const residualState = {
+    status: residualDustState,
+    cleanupMints: dustTokens.cleanupMints,
+    ignoredMints: dustTokens.ignoredMints
+  };
+  const maintenanceIntent = resolveDefaultMaintenanceIntent({
+    maintenanceOutcome: input.maintenanceOutcome,
+    activeLpCount,
+    residualDustState
+  });
+  const buildResult = (overrides: {
+    hasActiveLp: boolean;
+    canOpenNewPosition: PositionBusinessSemantics['canOpenNewPosition'];
+    nextAction: PositionBusinessAction;
+  }): PositionBusinessSemantics => ({
     activeLpPositions,
     managedActiveLp,
     untrackedActiveLpPositions,
     activeLpCount,
     managedLpCount,
     importFailedLpCount,
-    hasActiveLp: activeLpCount > 0,
+    hasActiveLp: overrides.hasActiveLp,
     hasPendingOpen,
     hasPendingExit,
     hasPendingMaintenance,
+    pendingState,
     residualDustState,
-    dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+    residualState,
+    dustTokenMints,
+    maintenanceIntent,
+    canOpenNewPosition: overrides.canOpenNewPosition,
+    canRunNewOpenAfterMaintenance: resolveCanRunNewOpenAfterMaintenance({
+      canOpenNewPosition: overrides.canOpenNewPosition,
+      maintenanceOutcome: input.maintenanceOutcome
+    }),
+    nextAction: overrides.nextAction
+  });
+
+  if (hasPendingExit) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'pending-exit' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (hasPendingOpen) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'pending-open' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (hasPendingMaintenance) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'pending-maintenance' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (importFailedLpCount > 0) {
+    return buildResult({
+      hasActiveLp: true,
+      canOpenNewPosition: { allowed: false, reason: 'position-ledger-import-failed' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (residualDustState === 'dust_cleanup_pending') {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'residual-dust-cleanup-pending' },
+      nextAction: 'cleanup-dust'
+    });
+  }
+
+  if (activeLpCount >= maxActivePositions) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'position-capacity-full' },
+      nextAction: activeLpCount > 0 ? 'maintain' : 'hold'
+    });
+  }
+
+  return buildResult({
+    hasActiveLp: activeLpCount > 0,
     canOpenNewPosition: {
       allowed: true,
       reason: activeLpCount > 0
@@ -352,7 +405,7 @@ export function resolvePositionBusinessSemantics(input: {
         : residualDustState === 'dust_ignored' ? 'flat-dust-ignored' : 'flat'
     },
     nextAction: activeLpCount > 0 ? 'maintain' : 'open'
-  };
+  });
 }
 
 export function isPositionAlreadyClosedTerminal(input: {

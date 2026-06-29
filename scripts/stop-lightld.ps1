@@ -39,13 +39,25 @@ if ($env:DASHBOARD_PORT) {
     $RolePorts.dashboard += @([int]$env:DASHBOARD_PORT)
 }
 
+$ProtectedPids = [System.Collections.Generic.HashSet[int]]::new()
+$CurrentProtectedPid = [int]$PID
+while ($CurrentProtectedPid -gt 0 -and -not $ProtectedPids.Contains($CurrentProtectedPid)) {
+    [void]$ProtectedPids.Add($CurrentProtectedPid)
+    try {
+        $CurrentProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $CurrentProtectedPid" -ErrorAction Stop
+        $CurrentProtectedPid = [int]$CurrentProcess.ParentProcessId
+    } catch {
+        break
+    }
+}
+
 function Add-UniqueProcessId {
     param(
         [System.Collections.Generic.HashSet[int]]$Set,
         [int]$ProcessId
     )
 
-    if ($ProcessId -gt 0 -and $ProcessId -ne $PID) {
+    if ($ProcessId -gt 0 -and -not $ProtectedPids.Contains($ProcessId)) {
         [void]$Set.Add($ProcessId)
     }
 }
