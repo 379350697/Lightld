@@ -22,8 +22,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SCRIPT_PATH = resolve(__dirname, '../../../scripts/gmgn-token-safety.py');
-const PROJECT_VENV_PYTHON = resolve(__dirname, '../../../.venv/bin/python');
+const PROJECT_VENV_PYTHON = process.platform === 'win32'
+  ? resolve(__dirname, '../../../.venv/Scripts/python.exe')
+  : resolve(__dirname, '../../../.venv/bin/python');
 const PYTHON_BIN = process.env.GMGN_PYTHON_BIN ?? (existsSync(PROJECT_VENV_PYTHON) ? PROJECT_VENV_PYTHON : 'python');
+const GMGN_SAFETY_URL = process.env.GMGN_SAFETY_URL;
 const MAX_SCRIPT_TIMEOUT_MS = 6 * 60_000;
 const BASE_SCRIPT_TIMEOUT_MS = 30_000;
 const PER_MINT_SCRIPT_TIMEOUT_MS = 45_000;
@@ -210,12 +213,13 @@ export function primeTokenSafetyCacheForTests(
  */
 export async function fetchTokenSafetyBatch(
   mints: string[],
-  options: { timeoutMs?: number; pythonBin?: string; maxBatchSize?: number } = {}
+  options: { timeoutMs?: number; pythonBin?: string; maxBatchSize?: number; safetyUrl?: string } = {}
 ): Promise<TokenSafetyResult[]> {
   if (mints.length === 0) return [];
 
   const configuredTimeoutMs = options.timeoutMs;
   const pythonBin = options.pythonBin ?? PYTHON_BIN;
+  const safetyUrl = options.safetyUrl ?? GMGN_SAFETY_URL;
   const maxBatchSize = options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
 
   const finalResults: TokenSafetyResult[] = [];
@@ -273,6 +277,53 @@ export async function fetchTokenSafetyBatch(
 
   console.log(`[GmgnSafety] Requesting ${mintsToFetch.length} new mints from GMGN (${uncachedMints.length - mintsToFetch.length} omitted this cycle to avoid rate limits).`);
 
+  if (safetyUrl) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      timeout.unref?.();
+
+      const response = await fetch(safetyUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mints: mintsToFetch }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        throw new Error(`http ${response.status}`);
+      }
+
+      const results = await response.json() as TokenSafetyResult[];
+      for (const res of results) {
+        if (!res.error || res.error === "empty_page") {
+          safetyCache.set(res.mint, { result: res, cachedAt: Date.now() });
+        }
+        finalResults.push(res);
+      }
+
+      return [
+        ...finalResults,
+        ...buildDeferredResults()
+      ];
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[GmgnSafety] HTTP service error: ${reason}`);
+      return [
+        ...finalResults,
+        ...mintsToFetch.map((mint) => ({
+          mint,
+          safe: false,
+          safetyScore: 0,
+          maxScore: 120,
+          error: `service_error: ${reason}`
+        })),
+        ...buildDeferredResults()
+      ];
+    }
+  }
+
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -282,13 +333,14 @@ export async function fetchTokenSafetyBatch(
     let sigkillTimer: NodeJS.Timeout | undefined;
     let timeoutTimer: NodeJS.Timeout;
 
-    const terminateProcessGroup = (signal: NodeJS.Signals) => {
+    const useDetachedChild = process.platform !== "win32";
+    const terminateProcess = (signal: NodeJS.Signals) => {
       if (typeof childPid !== "number") {
         return;
       }
 
       try {
-        process.kill(-childPid, signal);
+        process.kill(useDetachedChild ? -childPid : childPid, signal);
       } catch {
         try {
           process.kill(childPid, signal);
@@ -369,7 +421,7 @@ export async function fetchTokenSafetyBatch(
       if (streamName === "stdout") {
         stdout += String(chunk);
         if (Buffer.byteLength(stdout) > maxBufferBytes) {
-          terminateProcessGroup("SIGTERM");
+          terminateProcess("SIGTERM");
           finish(new Error("stdout maxBuffer exceeded"));
         }
         return;
@@ -377,15 +429,15 @@ export async function fetchTokenSafetyBatch(
 
       stderr += String(chunk);
       if (Buffer.byteLength(stderr) > maxBufferBytes) {
-        terminateProcessGroup("SIGTERM");
+          terminateProcess("SIGTERM");
         finish(new Error("stderr maxBuffer exceeded"));
       }
     };
 
     timeoutTimer = setTimeout(() => {
       timedOut = true;
-      terminateProcessGroup("SIGTERM");
-      sigkillTimer = setTimeout(() => terminateProcessGroup("SIGKILL"), 2_000);
+      terminateProcess("SIGTERM");
+      sigkillTimer = setTimeout(() => terminateProcess("SIGKILL"), 2_000);
       sigkillTimer.unref?.();
     }, timeoutMs);
     timeoutTimer.unref?.();
@@ -394,7 +446,7 @@ export async function fetchTokenSafetyBatch(
       pythonBin,
       [SCRIPT_PATH, "--stdin"],
       {
-        detached: true,
+        detached: useDetachedChild,
         env: {
           ...process.env,
           PYTHONUNBUFFERED: "1",

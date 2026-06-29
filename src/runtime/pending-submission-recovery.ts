@@ -267,7 +267,10 @@ export async function recoverPendingSubmission(
     const latestCheckedAt = confirmations.reduce((latest, confirmation) =>
       confirmation.checkedAt > latest ? confirmation.checkedAt : latest, checkedAt
     );
-    const latestReason = confirmations.find((confirmation) => confirmation.reason)?.reason;
+    const latestReason = confirmations.find(
+      (confirmation): confirmation is typeof confirmation & { reason: string } =>
+        'reason' in confirmation && typeof confirmation.reason === 'string'
+    )?.reason;
 
     nextPendingSubmission = {
       ...nextPendingSubmission,

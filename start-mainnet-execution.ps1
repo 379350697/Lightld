@@ -1,11 +1,30 @@
 $ErrorActionPreference = "Stop"
 
-# ── Proxy configuration (bypass GFW for Jupiter / Meteora API) ──
+. (Join-Path $PSScriptRoot "scripts/load-env.ps1") -Root $PSScriptRoot
+Set-Location -LiteralPath $PSScriptRoot
+& (Join-Path $PSScriptRoot "scripts/stop-lightld.ps1") -Root $PSScriptRoot -Role execution
+
 $ProxyUrl = $env:HTTP_PROXY
-if (-not $ProxyUrl) { $ProxyUrl = "http://127.0.0.1:7897" }
-$ProxyEnv = "`$env:HTTP_PROXY='$ProxyUrl'; `$env:HTTPS_PROXY='$ProxyUrl'; "
+if (-not $ProxyUrl) { $ProxyUrl = "<none>" }
+
+function Quote-PSString {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+$RootLiteral = Quote-PSString $PSScriptRoot
+$LoaderLiteral = Quote-PSString (Join-Path $PSScriptRoot "scripts/load-env.ps1")
+
+$Command = @"
+`$host.UI.RawUI.WindowTitle = 'Solana Mainnet Execution'
+. $LoaderLiteral -Root $RootLiteral
+Set-Location -LiteralPath $RootLiteral
+if (-not `$env:SOLANA_EXECUTION_PORT) { `$env:SOLANA_EXECUTION_PORT = '8791' }
+npm.cmd run run:solana-execution
+"@
 
 Write-Host "Starting Solana Mainnet Execution Service... (proxy: $ProxyUrl)"
-Start-Process powershell -ArgumentList "-Title `"Solana Mainnet Execution`" -NoExit -Command `"${ProxyEnv}`$env:SOLANA_KEYPAIR_PATH='D:\codex\Lightld\secrets\burner.json'; `$env:SOLANA_EXECUTION_PORT='8791'; `$env:SOLANA_EXECUTION_AUTH_TOKEN='replace-me'; npm run run:solana-execution`"" -WorkingDirectory 'D:\codex\Lightld'
-
-Write-Host "Service started on port 8791."
+Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot
+$ExecutionPort = $env:SOLANA_EXECUTION_PORT
+if (-not $ExecutionPort) { $ExecutionPort = "8791" }
+Write-Host "Service started on port $ExecutionPort."

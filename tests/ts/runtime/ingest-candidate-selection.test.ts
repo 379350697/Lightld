@@ -87,6 +87,7 @@ function makeConfig(): StrategyConfig {
       maxLivePositionSol: 0.15,
       autoFlattenRequired: true,
       maxHoldHours: 10,
+      minCloseToOpenIntervalSeconds: 0,
       requireMintAuthorityRevoked: false
     }
   };

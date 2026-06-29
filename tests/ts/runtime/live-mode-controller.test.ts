@@ -20,6 +20,7 @@ describe('LiveModeController', () => {
           maxLivePositionSol: 0.25,
           autoFlattenRequired: true,
           maxHoldHours: 10,
+          minCloseToOpenIntervalSeconds: 0,
           requireMintAuthorityRevoked: false
         }
       })
@@ -43,6 +44,7 @@ describe('LiveModeController', () => {
           maxLivePositionSol: 0.25,
           autoFlattenRequired: true,
           maxHoldHours: 10,
+          minCloseToOpenIntervalSeconds: 0,
           requireMintAuthorityRevoked: false
         }
       })

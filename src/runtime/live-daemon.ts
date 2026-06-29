@@ -645,13 +645,14 @@ function collectUntrackedActiveLps(input: {
   if (!input.positionState?.activeMint) {
     return positions;
   }
+  const positionState = input.positionState;
 
   return positions.filter((position) => {
-    if (input.positionState?.chainPositionAddress) {
-      return position.positionAddress !== input.positionState.chainPositionAddress
-        && position.chainPositionAddress !== input.positionState.chainPositionAddress;
+    if (positionState.chainPositionAddress) {
+      return position.positionAddress !== positionState.chainPositionAddress
+        && position.chainPositionAddress !== positionState.chainPositionAddress;
     }
-    return position.mint !== input.positionState.activeMint;
+    return position.mint !== positionState.activeMint;
   });
 }
 

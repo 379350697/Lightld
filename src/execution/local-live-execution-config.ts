@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { resolveEnvPath } from '../shared/env-path.ts';
+
 const LocalLiveExecutionConfigSchema = z.object({
   host: z.string().min(1).default('127.0.0.1'),
   port: z.number().int().min(1).max(65535).default(8790),
@@ -17,8 +19,8 @@ export function loadLocalLiveExecutionConfig(env: Record<string, string | undefi
   return LocalLiveExecutionConfigSchema.parse({
     host: env.LIVE_LOCAL_EXECUTION_HOST ?? '127.0.0.1',
     port: env.LIVE_LOCAL_EXECUTION_PORT ? Number(env.LIVE_LOCAL_EXECUTION_PORT) : 8790,
-    stateRootDir: env.LIVE_LOCAL_EXECUTION_STATE_DIR ?? 'state/local-execution',
-    accountStatePath: env.LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH,
+    stateRootDir: resolveEnvPath(env.LIVE_LOCAL_EXECUTION_STATE_DIR ?? 'state/local-execution'),
+    accountStatePath: resolveEnvPath(env.LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH),
     authToken: env.LIVE_LOCAL_EXECUTION_AUTH_TOKEN ?? env.LIVE_AUTH_TOKEN,
     expectedSignerPublicKeys: (env.LIVE_LOCAL_EXECUTION_EXPECTED_SIGNERS ?? '')
       .split(',')

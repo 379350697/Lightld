@@ -1,51 +1,109 @@
 $ErrorActionPreference = "Stop"
 
-# ── 代理配置 ──
+. (Join-Path $PSScriptRoot "scripts/load-env.ps1") -Root $PSScriptRoot
+Set-Location -LiteralPath $PSScriptRoot
+& (Join-Path $PSScriptRoot "scripts/stop-lightld.ps1") -Root $PSScriptRoot -Role all
+
 $ProxyUrl = $env:HTTP_PROXY
-if (-not $ProxyUrl) { $ProxyUrl = "http://127.0.0.1:7897" }
-$ProxyEnv = "`$env:HTTP_PROXY='$ProxyUrl'; `$env:HTTPS_PROXY='$ProxyUrl'; "
+if (-not $ProxyUrl) { $ProxyUrl = "<none>" }
+
+function Quote-PSString {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Start-LightldWindow {
+    param(
+        [string]$Title,
+        [string]$Body
+    )
+
+    $RootLiteral = Quote-PSString $PSScriptRoot
+    $LoaderLiteral = Quote-PSString (Join-Path $PSScriptRoot "scripts/load-env.ps1")
+    $TitleLiteral = Quote-PSString $Title
+    $Command = @"
+`$host.UI.RawUI.WindowTitle = $TitleLiteral
+. $LoaderLiteral -Root $RootLiteral
+Set-Location -LiteralPath $RootLiteral
+$Body
+"@
+    Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot
+}
 
 Write-Host "========================================"
 Write-Host "  Lightld Mainnet Live Trading"
 Write-Host "  Proxy: $ProxyUrl"
 Write-Host "========================================"
+$SignerPort = $env:LIVE_LOCAL_SIGNER_PORT
+if (-not $SignerPort) { $SignerPort = "8787" }
+$ExecutionPort = $env:SOLANA_EXECUTION_PORT
+if (-not $ExecutionPort) { $ExecutionPort = "8791" }
+$GmgnPort = $env:GMGN_SAFETY_PORT
+if (-not $GmgnPort) { $GmgnPort = "8898" }
 
-# ── Step 1: Signer (8787) ──
-Write-Host "`n[1/3] Starting Signer Service (port 8787)..."
-Start-Process powershell -ArgumentList "-NoExit -Command `"${ProxyEnv}`$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH='D:\codex\Lightld\secrets\burner.json'; `$env:LIVE_LOCAL_SIGNER_PORT='8787'; npm run run:signer`"" -WorkingDirectory 'D:\codex\Lightld'
+Write-Host "`n[1/5] Starting GMGN safety sidecar (port $GmgnPort)..."
+Start-LightldWindow "Lightld GMGN Safety" @"
+`$PythonBin = `$env:GMGN_PYTHON_BIN
+if (-not `$PythonBin) { `$PythonBin = 'python' }
+& `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py')
+"@
+
+Start-Sleep -Seconds 2
+
+Write-Host "[2/5] Starting Signer Service (port $SignerPort)..."
+Start-LightldWindow "Lightld Signer" @"
+if (-not `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH -and `$env:SOLANA_KEYPAIR_PATH) { `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH = `$env:SOLANA_KEYPAIR_PATH }
+if (-not `$env:LIVE_LOCAL_SIGNER_PORT) { `$env:LIVE_LOCAL_SIGNER_PORT = '8787' }
+npm.cmd run run:signer
+"@
 
 Start-Sleep -Seconds 3
 
-# ── Step 2: Solana Execution (8791) ──
-Write-Host "[2/3] Starting Solana Execution Service (port 8791)..."
-Start-Process powershell -ArgumentList "-NoExit -Command `"${ProxyEnv}`$env:SOLANA_KEYPAIR_PATH='D:\codex\Lightld\secrets\burner.json'; `$env:SOLANA_EXECUTION_PORT='8791'; `$env:SOLANA_EXECUTION_AUTH_TOKEN='replace-me'; `$env:SOLANA_MAX_OUTPUT_SOL='0.05'; `$env:JITO_TIP_LAMPORTS='25000'; `$env:SOLANA_DEFAULT_SLIPPAGE_BPS='100'; npm run run:solana-execution`"" -WorkingDirectory 'D:\codex\Lightld'
+Write-Host "[3/5] Starting Solana Execution Service (port $ExecutionPort)..."
+Start-LightldWindow "Solana Mainnet Execution" @"
+if (-not `$env:SOLANA_EXECUTION_PORT) { `$env:SOLANA_EXECUTION_PORT = '8791' }
+if (-not `$env:SOLANA_MAX_OUTPUT_SOL) { `$env:SOLANA_MAX_OUTPUT_SOL = '0.05' }
+if (-not `$env:JITO_TIP_LAMPORTS) { `$env:JITO_TIP_LAMPORTS = '25000' }
+if (-not `$env:SOLANA_DEFAULT_SLIPPAGE_BPS) { `$env:SOLANA_DEFAULT_SLIPPAGE_BPS = '100' }
+npm.cmd run run:solana-execution
+"@
 
 Start-Sleep -Seconds 5
 
-# ── Step 3: Daemon (auto strategy) ──
-Write-Host "[3/3] Starting Daemon (strategy auto-cycle)..."
-$DaemonCmd = "${ProxyEnv}" +
-    "`$env:LIVE_EXECUTION_MODE='http'; " +
-    "`$env:LIVE_AUTH_TOKEN='replace-me'; " +
-    "`$env:LIVE_SIGN_URL='http://127.0.0.1:8787/sign'; " +
-    "`$env:LIVE_QUOTE_URL='http://127.0.0.1:8791/quote'; " +
-    "`$env:LIVE_BROADCAST_URL='http://127.0.0.1:8791/broadcast'; " +
-    "`$env:LIVE_CONFIRMATION_URL='http://127.0.0.1:8791/confirmation'; " +
-    "`$env:LIVE_ACCOUNT_STATE_URL='http://127.0.0.1:8791/account-state'; " +
-    "`$env:LIVE_REQUESTED_POSITION_SOL='0.01'; " +
-    "`$env:LIVE_MAX_SINGLE_ORDER_SOL='0.05'; " +
-    "`$env:LIVE_MAX_DAILY_SPEND_SOL='0.2'; " +
-    "`$env:LIVE_METEORA_SORT_BY='fee_tvl_ratio_24h:desc'; " +
-    "`$env:LIVE_METEORA_FILTER_BY='tvl>=10000 && is_blacklisted=false'; " +
-    "`$env:LIVE_METEORA_PAGE_SIZE='50'; " +
-    "npm run run:daemon -- --strategy new-token-v1"
+Write-Host "[4/5] Starting Candidate Worker (strategy new-token-v1)..."
+Start-LightldWindow "Lightld Candidate Worker" @"
+npm.cmd run run:candidate-worker -- --strategy new-token-v1
+"@
 
-Start-Process powershell -ArgumentList "-NoExit -Command `"$DaemonCmd`"" -WorkingDirectory 'D:\codex\Lightld'
+Start-Sleep -Seconds 3
+
+Write-Host "[5/5] Starting Daemon (strategy auto-cycle)..."
+Start-LightldWindow "Lightld Daemon" @"
+if (-not `$env:LIVE_EXECUTION_MODE) { `$env:LIVE_EXECUTION_MODE = 'http' }
+`$SignerPort = `$env:LIVE_LOCAL_SIGNER_PORT
+if (-not `$SignerPort) { `$SignerPort = '8787' }
+`$ExecutionPort = `$env:SOLANA_EXECUTION_PORT
+if (-not `$ExecutionPort) { `$ExecutionPort = '8791' }
+if (-not `$env:LIVE_SIGN_URL) { `$env:LIVE_SIGN_URL = "http://127.0.0.1:`$SignerPort/sign" }
+if (-not `$env:LIVE_QUOTE_URL) { `$env:LIVE_QUOTE_URL = "http://127.0.0.1:`$ExecutionPort/quote" }
+if (-not `$env:LIVE_BROADCAST_URL) { `$env:LIVE_BROADCAST_URL = "http://127.0.0.1:`$ExecutionPort/broadcast" }
+if (-not `$env:LIVE_CONFIRMATION_URL) { `$env:LIVE_CONFIRMATION_URL = "http://127.0.0.1:`$ExecutionPort/confirmation" }
+if (-not `$env:LIVE_ACCOUNT_STATE_URL) { `$env:LIVE_ACCOUNT_STATE_URL = "http://127.0.0.1:`$ExecutionPort/account-state" }
+if (-not `$env:LIVE_REQUESTED_POSITION_SOL) { `$env:LIVE_REQUESTED_POSITION_SOL = '0.01' }
+if (-not `$env:LIVE_MAX_SINGLE_ORDER_SOL) { `$env:LIVE_MAX_SINGLE_ORDER_SOL = '0.05' }
+if (-not `$env:LIVE_MAX_DAILY_SPEND_SOL) { `$env:LIVE_MAX_DAILY_SPEND_SOL = '0.2' }
+if (-not `$env:LIVE_METEORA_SORT_BY) { `$env:LIVE_METEORA_SORT_BY = 'fee_tvl_ratio_24h:desc' }
+if (-not `$env:LIVE_METEORA_FILTER_BY) { `$env:LIVE_METEORA_FILTER_BY = 'tvl>=10000 && is_blacklisted=false' }
+if (-not `$env:LIVE_METEORA_PAGE_SIZE) { `$env:LIVE_METEORA_PAGE_SIZE = '50' }
+npm.cmd run run:daemon -- --strategy new-token-v1
+"@
 
 Write-Host "`n========================================"
 Write-Host "  All services started!"
-Write-Host "  Signer:    http://127.0.0.1:8787"
-Write-Host "  Execution: http://127.0.0.1:8791"
+Write-Host "  Signer:    http://127.0.0.1:$SignerPort"
+Write-Host "  Execution: http://127.0.0.1:$ExecutionPort"
+Write-Host "  GMGN:      http://127.0.0.1:$GmgnPort/health"
+Write-Host "  Candidate: new-token-v1"
 Write-Host "  Daemon:    auto strategy loop"
 Write-Host "========================================"
-Write-Host "  Limits: 0.05 SOL/order, 0.2 SOL/day"
+Write-Host "  Limits default to 0.05 SOL/order, 0.2 SOL/day unless overridden by env"

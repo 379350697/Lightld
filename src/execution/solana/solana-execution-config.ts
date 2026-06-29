@@ -2,6 +2,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
+import { resolveEnvPath } from '../../shared/env-path.ts';
 import { resolveRpcEndpointPolicy } from './rpc-endpoint-policy.ts';
 
 const SolanaExecutionConfigSchema = z.object({
@@ -116,8 +117,9 @@ export function loadSolanaExecutionConfig(
     jupiterMinQuoteAmountLamports: env.JUPITER_MIN_QUOTE_LAMPORTS
       ? Number(env.JUPITER_MIN_QUOTE_LAMPORTS)
       : 1_000,
-    jupiterRateLimitStatePath: env.JUPITER_RATE_LIMIT_STATE_PATH
-      ?? join(env.LIVE_STATE_DIR ?? 'state', 'jupiter-rate-limit.json'),
+    jupiterRateLimitStatePath: resolveEnvPath(
+      env.JUPITER_RATE_LIMIT_STATE_PATH ?? join(env.LIVE_STATE_DIR ?? 'state', 'jupiter-rate-limit.json')
+    ),
     rpc429CooldownMs: env.RPC_429_COOLDOWN_MS
       ? Number(env.RPC_429_COOLDOWN_MS)
       : 120_000,
@@ -133,9 +135,9 @@ export function loadSolanaExecutionConfig(
     rpcEndpointMinIntervalMs: env.RPC_ENDPOINT_MIN_INTERVAL_MS
       ? Number(env.RPC_ENDPOINT_MIN_INTERVAL_MS)
       : 500,
-    keypairPath: env.SOLANA_KEYPAIR_PATH,
+    keypairPath: resolveEnvPath(env.SOLANA_KEYPAIR_PATH),
     expectedPublicKey: env.SOLANA_EXPECTED_PUBLIC_KEY,
-    stateRootDir: env.SOLANA_EXECUTION_STATE_DIR ?? 'state/solana-execution',
+    stateRootDir: resolveEnvPath(env.SOLANA_EXECUTION_STATE_DIR ?? 'state/solana-execution'),
     expectedSignerPublicKeys: splitCsv(
       env.SOLANA_EXPECTED_SIGNER_PUBLIC_KEYS ?? env.SOLANA_EXPECTED_SIGNERS
     ),
