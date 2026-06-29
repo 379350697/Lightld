@@ -242,6 +242,74 @@ describe('position ledger', () => {
     });
   });
 
+  it('does not mutate LP ledger records from residual dca-out outcomes', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-a',
+          positionId: 'pos-a',
+          chainPositionAddress: 'pos-a',
+          activeMint: 'lp-mint',
+          activePoolAddress: 'lp-pool',
+          lifecycleState: 'open',
+          entrySol: 0.1,
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{
+          mint: 'residual-mint',
+          amount: 10,
+          currentValueSol: 0.2
+        }],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'lp-pool',
+          positionAddress: 'pos-a',
+          mint: 'lp-mint',
+          hasLiquidity: true,
+          currentValueSol: 0.11
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'lp-mint',
+        activePoolAddress: 'lp-pool',
+        chainPositionAddress: 'pos-a',
+        lifecycleState: 'open',
+        updatedAt: '2026-06-29T00:00:00.000Z'
+      },
+      orderIntent: {
+        idempotencyKey: 'residual-sell',
+        poolAddress: '',
+        tokenMint: 'residual-mint'
+      },
+      action: 'dca-out',
+      reason: 'http-400',
+      liveOrderSubmitted: false,
+      now: '2026-06-29T00:03:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0]).toMatchObject({
+      positionKey: 'chain-position:pos-a',
+      chainPositionAddress: 'pos-a',
+      activeMint: 'lp-mint',
+      activePoolAddress: 'lp-pool',
+      lifecycleState: 'open',
+      lastAction: 'add-lp'
+    });
+  });
+
   it('selects a ledger record atomically for compatibility position state', () => {
     const state = selectCompatibilityPositionState({
       allowNewOpens: true,

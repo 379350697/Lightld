@@ -78,10 +78,7 @@ Start-Sleep -Seconds 2
 try {
     Wait-HttpHealth "http://127.0.0.1:$GmgnPort/health"
 } catch {
-    if ($GmgnProcess -and -not $GmgnProcess.HasExited) {
-        Stop-Process -Id $GmgnProcess.Id -Force -ErrorAction SilentlyContinue
-    }
-    throw
+    Write-Warning "GMGN safety sidecar health check failed; continuing because GMGN is a soft candidate-safety source: $($_.Exception.Message)"
 }
 
 Write-Host "[2/5] Starting Signer Service (port $SignerPort)..."

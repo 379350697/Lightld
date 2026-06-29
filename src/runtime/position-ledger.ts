@@ -414,6 +414,11 @@ export function applyLiveCycleResultToLedger(input: {
     pendingSubmission: input.persistedPendingSubmission ?? input.pendingSubmissionBeforeCycle,
     now: input.now
   });
+
+  if (input.action === 'dca-out') {
+    return imported;
+  }
+
   const target = {
     chainPositionAddress: input.actionIdentity?.chainPositionAddress
       ?? input.persistedPendingSubmission?.chainPositionAddress
