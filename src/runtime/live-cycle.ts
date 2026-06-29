@@ -3286,9 +3286,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     ...quote
   });
 
+  const executionPoolAddress = actionableAction === 'dca-out' ? '' : poolAddress;
   const executionPlan = {
     strategyId: input.strategy,
-    poolAddress,
+    poolAddress: executionPoolAddress,
     exitMint: 'SOL',
     maxSlippageBps: 100,
     maxImpactBps: 200,

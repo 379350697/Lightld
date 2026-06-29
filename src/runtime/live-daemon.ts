@@ -400,15 +400,22 @@ async function suppressCooldownResidualWalletTokens(input: {
   const suppressedMints: string[] = [];
   type WalletToken = NonNullable<LiveAccountState['walletTokens']>[number];
   const shouldSuppressToken = async (token: WalletToken) => {
-    const eligibleResidualToken = isNonStableMint(token.mint) &&
-      typeof token.currentValueSol === 'number' &&
-      token.currentValueSol >= input.residualTokenSweepMinValueSol;
-    const uneconomicResidualToken = isNonStableMint(token.mint) &&
-      typeof token.currentValueSol === 'number' &&
-      token.currentValueSol < input.residualTokenSweepMinValueSol;
-    const cooldown = eligibleResidualToken
-      ? await input.residualTokenSweepStore.readActive(token.mint, input.nowIso)
-      : null;
+    const nonStableResidualToken = isNonStableMint(token.mint) && hasActionableTokenAmount(token);
+    if (!nonStableResidualToken) {
+      return false;
+    }
+
+    const hasValuation = typeof token.currentValueSol === 'number' && Number.isFinite(token.currentValueSol);
+    const eligibleResidualToken = hasValuation && token.currentValueSol! >= input.residualTokenSweepMinValueSol;
+    const uneconomicResidualToken = hasValuation && token.currentValueSol! < input.residualTokenSweepMinValueSol;
+    const cooldown = await input.residualTokenSweepStore.readActive(token.mint, input.nowIso);
+
+    if (cooldown) {
+      if (eligibleResidualToken) {
+        suppressedMints.push(token.mint);
+      }
+      return true;
+    }
 
     if (uneconomicResidualToken) {
       // Dust tokens below the sweep threshold are silently filtered from
@@ -417,7 +424,8 @@ async function suppressCooldownResidualWalletTokens(input: {
       // reason that prevents both LP exits and new-opens.
       return true;
     }
-    if (eligibleResidualToken && cooldown) {
+
+    if (eligibleResidualToken && input.suppressAllEligibleResidualTokens) {
       suppressedMints.push(token.mint);
       return true;
     }

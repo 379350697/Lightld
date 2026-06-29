@@ -67,7 +67,11 @@ Write-Host "`n[1/5] Starting GMGN safety sidecar (port $GmgnPort)..."
 $GmgnProcess = Start-LightldWindow "Lightld GMGN Safety" @"
 `$PythonBin = `$env:GMGN_PYTHON_BIN
 if (-not `$PythonBin) { `$PythonBin = 'python' }
-& `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
+while (`$true) {
+    & `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
+    Write-Host "GMGN safety sidecar exited; restarting in 5s..."
+    Start-Sleep -Seconds 5
+}
 "@
 
 Start-Sleep -Seconds 2

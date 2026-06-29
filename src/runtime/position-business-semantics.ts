@@ -11,7 +11,7 @@ export type BusinessLpPosition = NonNullable<LiveAccountState['walletLpPositions
 
 export type PositionBusinessAction = 'maintain' | 'exit' | 'cleanup-dust' | 'hold' | 'open';
 export type ResidualDustState = 'none' | 'dust_ignored' | 'dust_cleanup_pending';
-export type PositionPendingState = 'none' | 'open' | 'exit' | 'maintenance';
+export type PositionPendingState = 'none' | 'open' | 'exit' | 'maintenance' | 'residual-cleanup';
 export type BusinessActionIntent = 'lp-maintenance' | 'lp-exit' | 'residual-cleanup' | 'new-open' | 'hold';
 
 export type MaintenanceOutcome = {
@@ -32,6 +32,7 @@ export type PositionBusinessSemantics = {
   hasPendingOpen: boolean;
   hasPendingExit: boolean;
   hasPendingMaintenance: boolean;
+  hasPendingResidualCleanup: boolean;
   pendingState: PositionPendingState;
   residualDustState: ResidualDustState;
   residualState: {
@@ -148,8 +149,7 @@ function isPendingExit(pendingSubmission?: PendingSubmissionSnapshot | null) {
     return false;
   }
 
-  return pendingSubmission.orderAction === 'withdraw-lp'
-    || pendingSubmission.orderAction === 'dca-out';
+  return pendingSubmission.orderAction === 'withdraw-lp';
 }
 
 function isPendingMaintenance(pendingSubmission?: PendingSubmissionSnapshot | null) {
@@ -159,6 +159,14 @@ function isPendingMaintenance(pendingSubmission?: PendingSubmissionSnapshot | nu
 
   return pendingSubmission.orderAction === 'claim-fee'
     || pendingSubmission.orderAction === 'rebalance-lp';
+}
+
+function isPendingResidualCleanup(pendingSubmission?: PendingSubmissionSnapshot | null) {
+  if (!pendingSubmission || pendingSubmission.confirmationStatus === 'failed') {
+    return false;
+  }
+
+  return pendingSubmission.orderAction === 'dca-out';
 }
 
 function collectDustTokens(input: {
@@ -293,6 +301,7 @@ export function resolvePositionBusinessSemantics(input: {
   const hasPendingOpen = isPendingOpen(input.pendingSubmission);
   const hasPendingExit = isPendingExit(input.pendingSubmission);
   const hasPendingMaintenance = isPendingMaintenance(input.pendingSubmission);
+  const hasPendingResidualCleanup = isPendingResidualCleanup(input.pendingSubmission);
   const dustTokens = collectDustTokens({
     accountState: input.accountState,
     residualTokenSweepMinValueSol
@@ -307,9 +316,11 @@ export function resolvePositionBusinessSemantics(input: {
     ? 'exit'
     : hasPendingOpen
       ? 'open'
-      : hasPendingMaintenance
-        ? 'maintenance'
-        : 'none';
+      : hasPendingResidualCleanup
+        ? 'residual-cleanup'
+        : hasPendingMaintenance
+          ? 'maintenance'
+          : 'none';
   const residualState = {
     status: residualDustState,
     cleanupMints: dustTokens.cleanupMints,
@@ -335,6 +346,7 @@ export function resolvePositionBusinessSemantics(input: {
     hasPendingOpen,
     hasPendingExit,
     hasPendingMaintenance,
+    hasPendingResidualCleanup,
     pendingState,
     residualDustState,
     residualState,
@@ -360,6 +372,14 @@ export function resolvePositionBusinessSemantics(input: {
     return buildResult({
       hasActiveLp: activeLpCount > 0,
       canOpenNewPosition: { allowed: false, reason: 'pending-open' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (hasPendingResidualCleanup) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'pending-residual-cleanup' },
       nextAction: 'hold'
     });
   }

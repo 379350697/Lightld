@@ -1042,6 +1042,8 @@ describe('runLiveCycle', () => {
       side: 'sell',
       tokenMint: 'residual-mint'
     });
+    expect(result.orderIntent?.poolAddress).toBe('');
+    expect(orderJournal[0].poolAddress ?? '').toBe('');
     expect(orderJournal[0].chainPositionAddress).toBeUndefined();
   });
 

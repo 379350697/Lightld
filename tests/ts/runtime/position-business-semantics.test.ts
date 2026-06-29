@@ -327,6 +327,33 @@ describe('position business semantics', () => {
     });
   });
 
+  it('treats pending dca-out as residual cleanup instead of LP exit', () => {
+    const result = resolvePositionBusinessSemantics({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'dca-out-1',
+        submissionId: 'sub-dca-out',
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-06-29T00:00:00.000Z',
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        tokenMint: 'mint-residual',
+        tokenSymbol: 'RES',
+        poolAddress: '',
+        orderAction: 'dca-out',
+        reason: 'residual-cleanup'
+      }
+    });
+
+    expect(result.hasPendingExit).toBe(false);
+    expect(result.hasPendingResidualCleanup).toBe(true);
+    expect(result.pendingState).toBe('residual-cleanup');
+    expect(result.canOpenNewPosition).toEqual({
+      allowed: false,
+      reason: 'pending-residual-cleanup'
+    });
+  });
+
   it('treats position-already-closed as terminal only when the matching LP is gone', () => {
     const positionState = {
       allowNewOpens: true,

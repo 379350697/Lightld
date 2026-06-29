@@ -3801,6 +3801,71 @@ describe('runLiveDaemon', () => {
     }
   });
 
+  it('suppresses cooldown residual tokens before the maintenance cycle can sell them again', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-residual-cooldown-suppress-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
+    const now = '2026-04-27T00:00:00.000Z';
+    let signCount = 0;
+
+    await residualTokenSweepStore.upsert({
+      mint: 'mint-maint-cooldown',
+      lastAttemptAt: now,
+      cooldownUntil: '2099-01-01T00:00:00.000Z',
+      updatedAt: now
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      residualTokenSweepIntervalMs: 1,
+      residualTokenSweepCooldownMs: 60_000,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [
+            { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, currentValueSol: 0.4 }
+          ],
+          journalTokens: [],
+          fills: []
+        },
+        context: {
+          pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+          token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+        },
+        signer: {
+          sign: async (intent) => {
+            signCount += 1;
+            return {
+              intent,
+              signerId: 'maintenance-signer',
+              signedAt: now,
+              signature: 'maintenance-signature'
+            };
+          }
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => ({
+            status: 'submitted' as const,
+            submissionId: 'maintenance-1',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'maintenance-tx-1'
+          })
+        }
+      })
+    });
+
+    expect(signCount).toBe(0);
+  });
+
   it('runs maintenance sweep before ingest when runtime is circuit_open from fetch failed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-pre-ingest-maintenance-sweep-'));
     const stateRootDir = join(root, 'state');
