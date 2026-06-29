@@ -398,7 +398,14 @@ async function suppressCooldownResidualWalletTokens(input: {
       ? await input.residualTokenSweepStore.readActive(token.mint, input.nowIso)
       : null;
 
-    if (uneconomicResidualToken || (eligibleResidualToken && (input.suppressAllEligibleResidualTokens || cooldown))) {
+    if (uneconomicResidualToken) {
+      // Dust tokens below the sweep threshold are silently filtered from
+      // accountState but MUST NOT land in suppressedMints, otherwise the
+      // daemon would continuously set a blocking residual-sweep-cooldown
+      // reason that prevents both LP exits and new-opens.
+      return true;
+    }
+    if (eligibleResidualToken && cooldown) {
       suppressedMints.push(token.mint);
       return true;
     }
@@ -420,15 +427,10 @@ async function suppressCooldownResidualWalletTokens(input: {
   const walletTokens = await filterTokens(input.accountState?.walletTokens ?? []);
   const journalTokens = await filterTokens(input.accountState?.journalTokens ?? []);
 
-  if (walletTokens.length === (input.accountState?.walletTokens ?? []).length &&
-    journalTokens.length === (input.accountState?.journalTokens ?? []).length) {
-    return {
-      accountState: input.accountState,
-      suppressedMints
-    };
-  }
+  const tokensUnchanged = walletTokens.length === (input.accountState?.walletTokens ?? []).length
+    && journalTokens.length === (input.accountState?.journalTokens ?? []).length;
 
-  if (suppressedMints.length === 0) {
+  if (tokensUnchanged) {
     return {
       accountState: input.accountState,
       suppressedMints
