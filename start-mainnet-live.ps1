@@ -25,6 +25,7 @@ function Start-LightldWindow {
 `$host.UI.RawUI.WindowTitle = $TitleLiteral
 . $LoaderLiteral -Root $RootLiteral
 Set-Location -LiteralPath $RootLiteral
+New-Item -ItemType Directory -Force -Path (Join-Path (Get-Location) 'logs') | Out-Null
 $Body
 "@
     Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot
@@ -45,7 +46,7 @@ Write-Host "`n[1/5] Starting GMGN safety sidecar (port $GmgnPort)..."
 Start-LightldWindow "Lightld GMGN Safety" @"
 `$PythonBin = `$env:GMGN_PYTHON_BIN
 if (-not `$PythonBin) { `$PythonBin = 'python' }
-& `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py')
+& `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
 "@
 
 Start-Sleep -Seconds 2
@@ -54,7 +55,7 @@ Write-Host "[2/5] Starting Signer Service (port $SignerPort)..."
 Start-LightldWindow "Lightld Signer" @"
 if (-not `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH -and `$env:SOLANA_KEYPAIR_PATH) { `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH = `$env:SOLANA_KEYPAIR_PATH }
 if (-not `$env:LIVE_LOCAL_SIGNER_PORT) { `$env:LIVE_LOCAL_SIGNER_PORT = '8787' }
-npm.cmd run run:signer
+npm.cmd run run:signer 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/signer.log') -Append
 "@
 
 Start-Sleep -Seconds 3
@@ -65,14 +66,14 @@ if (-not `$env:SOLANA_EXECUTION_PORT) { `$env:SOLANA_EXECUTION_PORT = '8791' }
 if (-not `$env:SOLANA_MAX_OUTPUT_SOL) { `$env:SOLANA_MAX_OUTPUT_SOL = '0.05' }
 if (-not `$env:JITO_TIP_LAMPORTS) { `$env:JITO_TIP_LAMPORTS = '25000' }
 if (-not `$env:SOLANA_DEFAULT_SLIPPAGE_BPS) { `$env:SOLANA_DEFAULT_SLIPPAGE_BPS = '100' }
-npm.cmd run run:solana-execution
+npm.cmd run run:solana-execution 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/solana-execution.log') -Append
 "@
 
 Start-Sleep -Seconds 5
 
 Write-Host "[4/5] Starting Candidate Worker (strategy new-token-v1)..."
 Start-LightldWindow "Lightld Candidate Worker" @"
-npm.cmd run run:candidate-worker -- --strategy new-token-v1
+npm.cmd run run:candidate-worker -- --strategy new-token-v1 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/candidate-worker.log') -Append
 "@
 
 Start-Sleep -Seconds 3
@@ -95,7 +96,7 @@ if (-not `$env:LIVE_MAX_DAILY_SPEND_SOL) { `$env:LIVE_MAX_DAILY_SPEND_SOL = '0.2
 if (-not `$env:LIVE_METEORA_SORT_BY) { `$env:LIVE_METEORA_SORT_BY = 'fee_tvl_ratio_24h:desc' }
 if (-not `$env:LIVE_METEORA_FILTER_BY) { `$env:LIVE_METEORA_FILTER_BY = 'tvl>=10000 && is_blacklisted=false' }
 if (-not `$env:LIVE_METEORA_PAGE_SIZE) { `$env:LIVE_METEORA_PAGE_SIZE = '50' }
-npm.cmd run run:daemon -- --strategy new-token-v1
+npm.cmd run run:daemon -- --strategy new-token-v1 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/daemon.log') -Append
 "@
 
 Write-Host "`n========================================"

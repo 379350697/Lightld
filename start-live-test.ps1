@@ -25,6 +25,7 @@ function Start-LightldWindow {
 `$host.UI.RawUI.WindowTitle = $TitleLiteral
 . $LoaderLiteral -Root $RootLiteral
 Set-Location -LiteralPath $RootLiteral
+New-Item -ItemType Directory -Force -Path (Join-Path (Get-Location) 'logs') | Out-Null
 $Body
 "@
     Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $Command) -WorkingDirectory $PSScriptRoot
@@ -41,7 +42,7 @@ Write-Host "Starting Signer Service..."
 Start-LightldWindow "Lightld Signer" @"
 if (-not `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH -and `$env:SOLANA_KEYPAIR_PATH) { `$env:LIVE_LOCAL_SIGNER_KEYPAIR_PATH = `$env:SOLANA_KEYPAIR_PATH }
 if (-not `$env:LIVE_LOCAL_SIGNER_PORT) { `$env:LIVE_LOCAL_SIGNER_PORT = '8787' }
-npm.cmd run run:signer
+npm.cmd run run:signer 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/signer.log') -Append
 "@
 
 Start-Sleep -Seconds 2
@@ -51,7 +52,7 @@ Start-LightldWindow "Lightld Execution" @"
 if (-not `$env:LIVE_LOCAL_EXECUTION_STATE_DIR) { `$env:LIVE_LOCAL_EXECUTION_STATE_DIR = 'state/local-execution' }
 if (-not `$env:LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH) { `$env:LIVE_LOCAL_EXECUTION_ACCOUNT_STATE_PATH = 'state/account-state.json' }
 if (-not `$env:LIVE_LOCAL_EXECUTION_PORT) { `$env:LIVE_LOCAL_EXECUTION_PORT = '8790' }
-npm.cmd run run:execution
+npm.cmd run run:execution 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/local-execution.log') -Append
 "@
 
 Start-Sleep -Seconds 3
@@ -67,7 +68,7 @@ if (-not `$env:LIVE_BROADCAST_URL) { `$env:LIVE_BROADCAST_URL = "http://127.0.0.
 if (-not `$env:LIVE_CONFIRMATION_URL) { `$env:LIVE_CONFIRMATION_URL = "http://127.0.0.1:`$ExecutionPort/confirmation" }
 if (-not `$env:LIVE_ACCOUNT_STATE_URL) { `$env:LIVE_ACCOUNT_STATE_URL = "http://127.0.0.1:`$ExecutionPort/account-state" }
 if (-not `$env:LIVE_REQUESTED_POSITION_SOL) { `$env:LIVE_REQUESTED_POSITION_SOL = '0.01' }
-npm.cmd run run:daemon -- --strategy new-token-v1
+npm.cmd run run:daemon -- --strategy new-token-v1 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/daemon.log') -Append
 "@
 
 Write-Host "All services started in new windows! (proxy: $ProxyUrl)"

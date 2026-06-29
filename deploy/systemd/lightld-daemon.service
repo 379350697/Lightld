@@ -1,0 +1,15 @@
+[Unit]
+Description=Lightld live daemon
+After=network-online.target lightld-signer.service lightld-execution.service lightld-gmgn.service lightld-candidate-worker.service
+Wants=network-online.target lightld-signer.service lightld-execution.service lightld-gmgn.service lightld-candidate-worker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lightld
+Environment=LIGHTLD_ROOT=/opt/lightld
+ExecStart=/usr/bin/bash /opt/lightld/start-daemon.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Lightld candidate worker
+After=network-online.target lightld-gmgn.service
+Wants=network-online.target lightld-gmgn.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lightld
+Environment=LIGHTLD_ROOT=/opt/lightld
+ExecStart=/usr/bin/bash /opt/lightld/start-candidate-worker.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

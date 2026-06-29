@@ -1,0 +1,15 @@
+[Unit]
+Description=Lightld GMGN safety sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lightld
+Environment=LIGHTLD_ROOT=/opt/lightld
+ExecStart=/usr/bin/bash /opt/lightld/start-gmgn-safety.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

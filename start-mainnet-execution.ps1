@@ -19,8 +19,9 @@ $Command = @"
 `$host.UI.RawUI.WindowTitle = 'Solana Mainnet Execution'
 . $LoaderLiteral -Root $RootLiteral
 Set-Location -LiteralPath $RootLiteral
+New-Item -ItemType Directory -Force -Path (Join-Path (Get-Location) 'logs') | Out-Null
 if (-not `$env:SOLANA_EXECUTION_PORT) { `$env:SOLANA_EXECUTION_PORT = '8791' }
-npm.cmd run run:solana-execution
+npm.cmd run run:solana-execution 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/solana-execution.log') -Append
 "@
 
 Write-Host "Starting Solana Mainnet Execution Service... (proxy: $ProxyUrl)"
