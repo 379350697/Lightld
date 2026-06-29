@@ -124,9 +124,13 @@ describe('runLiveDaemon', () => {
     expect(positionStateSeenByBuild?.activePoolAddress).toBeUndefined();
 
     const positionState = await runtimeStateStore.readPositionState();
+    const health = await runtimeStateStore.readHealthReport();
     expect(positionState).toMatchObject({
       allowNewOpens: true,
       lifecycleState: 'closed'
+    });
+    expect(health).toMatchObject({
+      allowNewOpens: true
     });
     expect(positionState?.activeMint).toBeUndefined();
     expect(positionState?.activePoolAddress).toBeUndefined();
@@ -399,7 +403,7 @@ describe('runLiveDaemon', () => {
     expect(health.housekeeping?.mirrorPruneDeletedRows).toBe(3);
   });
 
-  it('runs a new-open pass after safe LP maintenance hold when capacity remains', async () => {
+  it('skips the new-open pass after safe LP maintenance hold while a managed LP remains active', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -458,16 +462,7 @@ describe('runLiveDaemon', () => {
         modes.push(context?.selectionMode);
         skipMints.push(context?.skipMints ?? []);
         if (context?.selectionMode === 'new-open-only') {
-          return {
-            requestedPositionSol: 0.1,
-            accountState: context?.accountState ?? accountState,
-            context: {
-              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
-              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
-              trader: { hasInventory: false, hasLpPosition: false },
-              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-            }
-          };
+          throw new Error('new-open pass should be skipped while a managed LP remains active');
         }
 
         return {
@@ -496,15 +491,15 @@ describe('runLiveDaemon', () => {
     });
 
     const nextPositionState = await runtimeStateStore.readPositionState();
-    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
-    expect(skipMints[1]).toContain('mint-active');
+    expect(modes).toEqual(['maintenance-only']);
+    expect(skipMints).toEqual([[]]);
     expect(nextPositionState).toMatchObject({
-      lastAction: 'add-lp',
-      activeMint: 'mint-next',
-      activePoolAddress: 'pool-next',
-      positionId: 'pool-next:mint-next'
+      lastAction: 'hold',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active',
+      positionId: 'position-active'
     });
-    expect(nextPositionState?.chainPositionAddress).toBeUndefined();
+    expect(nextPositionState?.chainPositionAddress).toBe('position-active');
   });
 
   it('rebounds inventory-exit-ready to open when the bound LP is still active before new-open pass', async () => {
@@ -564,16 +559,7 @@ describe('runLiveDaemon', () => {
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
         if (context?.selectionMode === 'new-open-only') {
-          return {
-            requestedPositionSol: 0.1,
-            accountState: context?.accountState ?? accountState,
-            context: {
-              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
-              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
-              trader: { hasInventory: false, hasLpPosition: false },
-              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-            }
-          };
+          throw new Error('new-open pass should be skipped while the bound LP remains active');
         }
 
         return {
@@ -603,11 +589,11 @@ describe('runLiveDaemon', () => {
     });
 
     const nextPositionState = await runtimeStateStore.readPositionState();
-    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(modes).toEqual(['maintenance-only']);
     expect(nextPositionState).toMatchObject({
-      lastAction: 'add-lp',
-      activeMint: 'mint-next',
-      activePoolAddress: 'pool-next'
+      lastAction: 'hold',
+      activeMint: 'mint-active',
+      activePoolAddress: 'pool-active'
     });
   });
 
@@ -691,7 +677,7 @@ describe('runLiveDaemon', () => {
     expect(modes).toEqual(['maintenance-only']);
   });
 
-  it('does not let a failed new-open pass overwrite the safe maintenance hold result', async () => {
+  it('does not start a new-open pass that could overwrite the safe maintenance hold result', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-fail-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -745,25 +731,7 @@ describe('runLiveDaemon', () => {
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
         if (context?.selectionMode === 'new-open-only') {
-          return {
-            requestedPositionSol: 0.1,
-            accountState,
-            signer: {
-              sign: async () => {
-                throw new ExecutionRequestError('signer', {
-                  kind: 'hard',
-                  reason: 'new-open-signer-down',
-                  retryable: false
-                });
-              }
-            },
-            context: {
-              pool: { address: 'pool-next', liquidityUsd: 20_000, score: 90 },
-              token: { mint: 'mint-next', inSession: true, hasSolRoute: true, symbol: 'NEXT', score: 90 },
-              trader: { hasInventory: false, hasLpPosition: false },
-              route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
-            }
-          };
+          throw new Error('new-open pass should be skipped while a managed LP remains active');
         }
 
         return {
@@ -795,7 +763,7 @@ describe('runLiveDaemon', () => {
     const health = JSON.parse(await readFile(join(stateRootDir, 'health.json'), 'utf8')) as {
       mode: string;
     };
-    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(modes).toEqual(['maintenance-only']);
     expect(nextPositionState).toMatchObject({
       lastAction: 'hold',
       activeMint: 'mint-active',
@@ -3616,10 +3584,15 @@ describe('runLiveDaemon', () => {
     });
 
     const positionState = await runtimeStateStore.readPositionState();
+    const health = await runtimeStateStore.readHealthReport();
 
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
-      lastClosedMint: 'mint-closing'
+      lastClosedMint: 'mint-closing',
+      allowNewOpens: false
+    });
+    expect(health).toMatchObject({
+      allowNewOpens: false
     });
     expect(positionState?.lastClosedAt).toBeTruthy();
   });

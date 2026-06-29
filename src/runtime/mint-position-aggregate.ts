@@ -7,6 +7,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
+const DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL = 0.1;
 
 type JsonLike = Record<string, unknown>;
 
@@ -42,20 +43,61 @@ function isExitSide(side: unknown) {
   return side === 'withdraw-lp' || side === 'dca-out' || side === 'sell';
 }
 
-function hasNonStableBalance(accountState: LiveAccountState | undefined, mint: string) {
+function hasActionableResidualBalance(input: {
+  accountState?: LiveAccountState;
+  mint: string;
+  residualTokenSweepMinValueSol: number;
+}) {
   return Boolean(
-    accountState?.walletTokens?.some(
-      (token) => token.mint === mint && token.amount > 0 && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)
+    [
+      ...(input.accountState?.walletTokens ?? []),
+      ...(input.accountState?.journalTokens ?? [])
+    ].some(
+      (token) => token.mint === input.mint
+        && token.amount > 0
+        && token.mint !== SOL_MINT
+        && !STABLE_MINTS.has(token.mint)
+        && typeof token.currentValueSol === 'number'
+        && Number.isFinite(token.currentValueSol)
+        && token.currentValueSol >= input.residualTokenSweepMinValueSol
     )
   );
 }
 
-function hasAnyBalance(accountState: LiveAccountState | undefined, mint: string) {
+function hasActionableBalance(input: {
+  accountState?: LiveAccountState;
+  mint: string;
+  residualTokenSweepMinValueSol: number;
+}) {
   return Boolean(
-    accountState?.walletTokens?.some((token) => token.mint === mint && token.amount > 0) ||
-    accountState?.journalTokens?.some((token) => token.mint === mint && token.amount > 0) ||
-    accountState?.walletLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true)) ||
-    accountState?.journalLpPositions?.some((position) => position.mint === mint && (position.hasLiquidity ?? true))
+    input.accountState?.walletTokens?.some((token) =>
+      token.mint === input.mint
+      && token.amount > 0
+      && (
+        token.mint === SOL_MINT
+        || STABLE_MINTS.has(token.mint)
+        || (
+          typeof token.currentValueSol === 'number'
+          && Number.isFinite(token.currentValueSol)
+          && token.currentValueSol >= input.residualTokenSweepMinValueSol
+        )
+      )
+    ) ||
+    input.accountState?.journalTokens?.some((token) =>
+      token.mint === input.mint
+      && token.amount > 0
+      && (
+        token.mint === SOL_MINT
+        || STABLE_MINTS.has(token.mint)
+        || (
+          typeof token.currentValueSol === 'number'
+          && Number.isFinite(token.currentValueSol)
+          && token.currentValueSol >= input.residualTokenSweepMinValueSol
+        )
+      )
+    ) ||
+    input.accountState?.walletLpPositions?.some((position) => position.mint === input.mint && (position.hasLiquidity ?? true)) ||
+    input.accountState?.journalLpPositions?.some((position) => position.mint === input.mint && (position.hasLiquidity ?? true))
   );
 }
 
@@ -66,8 +108,11 @@ export async function resolveMintPositionAggregate(input: {
   lifecycleState: PositionLifecycleState;
   orders: LiveOrderJournal<JsonLike>;
   fills: LiveFillJournal<JsonLike>;
+  residualTokenSweepMinValueSol?: number;
 }): Promise<MintPositionAggregate> {
   const mint = input.mint;
+  const residualTokenSweepMinValueSol = input.residualTokenSweepMinValueSol
+    ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL;
   if (!mint) {
     return {
       mint,
@@ -98,8 +143,16 @@ export async function resolveMintPositionAggregate(input: {
   const hasEntryFill = mintFills.some((entry) => isEntrySide(entry?.side));
   const hasConfirmedEntryFill = mintFills.some((entry) => isEntrySide(entry?.side) && entry?.confirmationStatus === 'confirmed');
   const hasExitFill = mintFills.some((entry) => isExitSide(entry?.side));
-  const hasInventory = hasAnyBalance(input.accountState, mint);
-  const hasDustInventory = hasNonStableBalance(input.accountState, mint);
+  const hasInventory = hasActionableBalance({
+    accountState: input.accountState,
+    mint,
+    residualTokenSweepMinValueSol
+  });
+  const hasDustInventory = hasActionableResidualBalance({
+    accountState: input.accountState,
+    mint,
+    residualTokenSweepMinValueSol
+  });
 
   let state: MintAggregateState = 'idle';
   let reason = 'no-evidence';

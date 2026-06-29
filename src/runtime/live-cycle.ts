@@ -154,6 +154,7 @@ export type LiveCycleInput = {
   accountProvider?: LiveAccountStateProvider;
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
+  residualTokenSweepMinValueSol?: number;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
   evolutionSink?: {
@@ -493,8 +494,17 @@ function resolveOutcomeEntrySol(input: {
 
 function resolveActiveLpExitPositionSol(input: {
   action: LiveAction;
+  activeLpExitEntrySol?: number;
   positionState?: PositionStateSnapshot;
 }) {
+  if (
+    input.action === 'withdraw-lp'
+    && typeof input.activeLpExitEntrySol === 'number'
+    && input.activeLpExitEntrySol > 0
+  ) {
+    return input.activeLpExitEntrySol;
+  }
+
   if (
     input.action === 'withdraw-lp'
     && typeof input.positionState?.entrySol === 'number'
@@ -522,7 +532,7 @@ function isExitPositionAlreadyClosedFailure(input: {
   action: LiveAction;
   reason?: string;
 }) {
-  return (input.action === 'withdraw-lp' || input.action === 'claim-fee')
+  return input.action === 'withdraw-lp'
     && isPositionAlreadyClosedReason(input.reason);
 }
 
@@ -2912,7 +2922,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     accountState,
     lifecycleState: currentLifecycleState,
     orders: journals.orders,
-    fills: journals.fills
+    fills: journals.fills,
+    residualTokenSweepMinValueSol: input.residualTokenSweepMinValueSol
   });
 
   if (preEngineMintAggregate.mustCleanupDust) {
@@ -3179,6 +3190,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const activeLpExitPositionSol = resolveActiveLpExitPositionSol({
     action: actionableAction,
+    activeLpExitEntrySol: typeof multiLpExit?.entrySol === 'number' && multiLpExit.entrySol > 0
+      ? multiLpExit.entrySol
+      : typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0
+        ? multiLpExit.snapshot.entrySol
+        : undefined,
     positionState: input.positionState
   });
   const quotedPositionSol = firstNumber(

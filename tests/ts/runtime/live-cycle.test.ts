@@ -2287,6 +2287,25 @@ describe('runLiveCycle', () => {
         now: new Date(newRecordedAt)
       });
 
+      await appendJsonLine(baseFillPath, {
+        submissionId: 'new-open-bound',
+        mint: 'mint-new',
+        side: 'add-lp',
+        amount: 0.2,
+        filledSol: 0.2,
+        actualFilledSol: 0.2,
+        actualWalletDeltaSol: 0.2,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true,
+        positionId: 'pos-new',
+        chainPositionAddress: 'pos-new',
+        poolAddress: 'pool-new',
+        recordedAt: newRecordedAt
+      }, {
+        rotateDaily: true,
+        now: new Date(newRecordedAt)
+      });
+
       const result = await runLiveCycle({
         strategy: 'new-token-v1',
         journalRootDir: TEST_JOURNAL_DIR,
@@ -2389,7 +2408,22 @@ describe('runLiveCycle', () => {
       expect(result.action).toBe('withdraw-lp');
       expect(result.audit.reason).toBe('lp-sol-nearly-depleted');
       expect(result.orderIntent?.poolAddress).toBe('pool-new');
+      expect(result.orderIntent).toMatchObject({
+        poolAddress: 'pool-new',
+        tokenMint: 'mint-new',
+        outputSol: 0.2,
+        fullPositionExit: true
+      });
       expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+      const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+      expect(orderJournal[0]).toMatchObject({
+        side: 'withdraw-lp',
+        poolAddress: 'pool-new',
+        tokenMint: 'mint-new',
+        chainPositionAddress: 'pos-new',
+        requestedPositionSol: 0.2,
+        outputSol: 0.2
+      });
     });
 
   it('keeps residual LP positions eligible for bin-based exits even when funded bins are zero', async () => {

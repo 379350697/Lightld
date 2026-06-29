@@ -37,6 +37,7 @@ import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PositionStateSnapshot, TargetOpenCooldownSnapshot } from './state-types.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
+import { resolvePositionBusinessSemantics } from './position-business-semantics.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STRATEGY_CONFIGS = {
@@ -1088,7 +1089,7 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
     : undefined;
 
   if (!state?.activeMint && !state?.activePoolAddress && !state?.chainPositionAddress) {
-    return null;
+    return buildLpCandidate(positions[0], input.accountState, now);
   }
 
   const position = byChain ?? byPool ?? byMint;
@@ -1532,6 +1533,25 @@ export async function buildLiveCycleInputFromIngest(
   const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
   const sessionActive = isWithinSessionWindows(config.sessionWindows, now);
   const selectionMode = input.selectionMode ?? 'default';
+  const businessSemantics = resolvePositionBusinessSemantics({
+    accountState: input.accountState,
+    positionState: input.positionState
+  });
+
+  if (selectionMode === 'new-open-only' && businessSemantics.hasActiveLp) {
+    return buildFallbackContext(
+      input,
+      input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol),
+      sessionActive,
+      config.solRouteLimits.maxSlippageBps,
+      null,
+      {
+        blockReason: businessSemantics.canOpenNewPosition.reason,
+        blockDetails: 'strict single-LP semantics block new candidate selection while any active LP exists'
+      }
+    );
+  }
+
   const accountBackedActiveLpCandidate = selectionMode === 'new-open-only'
     ? null
     : resolveAccountBackedActiveLpCandidate(input, now);

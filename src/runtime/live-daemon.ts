@@ -53,6 +53,11 @@ import type { LpEntryEvidenceProvider } from './lp-entry-evidence-provider.ts';
 import { SpendingLimitsStore } from '../risk/spending-limits.ts';
 import { classifyIncidentReason } from './incident-taxonomy.ts';
 import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
+import {
+  isPositionAlreadyClosedTerminal,
+  resolvePositionBusinessSemantics,
+  type PositionBusinessSemantics
+} from './position-business-semantics.ts';
 
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
@@ -727,6 +732,7 @@ function resolveNewOpenPassSkipReason(input: {
   pendingSubmission: boolean;
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
+  businessSemantics?: PositionBusinessSemantics;
   maxActivePositions: number;
   residualTokenSweepMinValueSol: number;
 }) {
@@ -752,6 +758,10 @@ function resolveNewOpenPassSkipReason(input: {
 
   if (input.runtimeMode !== 'healthy' && input.runtimeMode !== 'degraded') {
     return `runtime-mode:${input.runtimeMode}`;
+  }
+
+  if (input.businessSemantics && !input.businessSemantics.canOpenNewPosition.allowed) {
+    return input.businessSemantics.canOpenNewPosition.reason;
   }
 
   if (hasNonStableTokenInventory({
@@ -1898,6 +1908,17 @@ export function resolveLifecycleStateForPersist(input: {
   });
   const accountIsFlat = !input.pendingSubmission && !hasInventory && !hasMatchingPosition;
 
+  if (isPositionAlreadyClosedTerminal({
+    action: input.lastAction,
+    reason: input.lastReason,
+    accountState: input.accountState,
+    chainPositionAddress: input.chainPositionAddress,
+    activeMint: input.activeMint,
+    activePoolAddress: input.activePoolAddress
+  })) {
+    return 'closed';
+  }
+
   if (accountIsFlat && !isOpeningActionName(input.lastAction)) {
     return 'closed';
   }
@@ -2386,39 +2407,20 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
         }
 
+        const preCycleBusinessSemantics = resolvePositionBusinessSemantics({
+          accountState: effectiveAccountState,
+          positionState,
+          pendingSubmission,
+          residualTokenSweepMinValueSol
+        });
         const shouldStartMaintenancePass = Boolean(
           options.openAfterMaintenanceHold &&
-          positionState?.activeMint &&
-          (
-            positionState.lifecycleState === 'open' ||
-            hasMatchingLpPosition({
-              accountState: effectiveAccountState,
-              chainPositionAddress: positionState.chainPositionAddress,
-              activeMint: positionState.activeMint,
-              activePoolAddress: positionState.activePoolAddress
-            })
-          )
+          preCycleBusinessSemantics.hasActiveLp
         );
         // Suppress new-open pass while there are still active LP positions
         // in the account that need to be exited first. This ensures
         // all existing positions are cleared before new capital is deployed.
-        // Keep the gate open when the only remaining LP is the one the
-        // daemon is currently tracking (maintenance-only pass).
-        const activeLpCount = effectiveAccountState ? countActiveLpExposures(effectiveAccountState) : 0;
-        const onlyTrackedLpRemains = activeLpCount <= 1
-          && positionState?.activeMint
-          && hasMatchingLpPosition({
-            accountState: effectiveAccountState,
-            chainPositionAddress: positionState.chainPositionAddress,
-            activeMint: positionState.activeMint,
-            activePoolAddress: positionState.activePoolAddress
-          });
-        // When there are multiple active LPs but only some are tracked in
-        // positionState, the remaining LPs are untracked and must be
-        // flushed before the daemon can enter single-LP maintenance.
-        const hasUntrackedActiveLp = activeLpCount > 0
-          && !onlyTrackedLpRemains
-          && positionState?.activeMint;
+        const activeLpCount = preCycleBusinessSemantics.activeLpPositions.length;
         // A2: when a prior open has been submitted but the chain identity
         // is still confirming, suppress allowNewOpens so that no second
         // position can be opened before the first is fully settled.
@@ -2427,7 +2429,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           && positionState.activeMint
           && !positionState.chainPositionAddress
         );
-        const allowNewOpens = (activeLpCount === 0 || Boolean(onlyTrackedLpRemains))
+        const allowNewOpens = preCycleBusinessSemantics.canOpenNewPosition.allowed
           && !priorOpenConfirming;
         const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
           store: targetOpenCooldownStore,
@@ -2437,7 +2439,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           tickCount,
           positionState,
           accountState: effectiveAccountState,
-          selectionMode: shouldStartMaintenancePass && !hasUntrackedActiveLp
+          selectionMode: shouldStartMaintenancePass
             ? 'maintenance-only'
             : 'default',
           openCooldowns: activeOpenCooldowns
@@ -2475,6 +2477,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         pendingSubmission = await pendingSubmissionStore.read();
         pendingSubmissionBeforeCycle = pendingSubmission;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
+        const postSuppressionBusinessSemantics = resolvePositionBusinessSemantics({
+          accountState: effectiveAccountState,
+          positionState,
+          pendingSubmission,
+          residualTokenSweepMinValueSol
+        });
         let runtimeStateExplicitlySet = false;
         const confirmationProvider = cycleInput.confirmationProvider ?? options.confirmationProvider;
         const evolutionSink = cycleInput.evolutionSink ?? evolutionOutcomeStore;
@@ -2488,7 +2496,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           positionState,
           ...cycleInput,
           evolutionSink,
-          accountState: effectiveAccountState
+          accountState: effectiveAccountState,
+          residualTokenSweepMinValueSol
         });
 
         await updateEvolutionWatchlistBestEffort({
@@ -2508,6 +2517,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             pendingSubmission: pendingAfterMaintenance !== null,
             accountState: effectiveAccountState,
             positionState,
+            businessSemantics: postSuppressionBusinessSemantics,
             maxActivePositions: options.maxActivePositions ?? 5,
             residualTokenSweepMinValueSol
           });
@@ -2570,7 +2580,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               ...newOpenCycleInput,
               evolutionSink,
               accountState: buildNewOpenExecutionAccountState(newOpenAccountState),
-              positionState: undefined
+              positionState: undefined,
+              residualTokenSweepMinValueSol
             });
 
             await updateEvolutionWatchlistBestEffort({
@@ -2780,11 +2791,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const housekeeping = housekeepingRunner
           ? await housekeepingRunner.runIfDue()
           : undefined;
+        const runtimeAllowsNewOpens = runtimeState.mode === 'healthy'
+          || runtimeState.mode === 'degraded';
 
         const report = buildHealthReport({
           mode: runtimeState.mode,
-          allowNewOpens:
-            runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
+          allowNewOpens: false,
           flattenOnly: runtimeState.mode === 'flatten_only',
           pendingSubmission: (await pendingSubmissionStore.read()) !== null,
           circuitReason: runtimeState.circuitReason,
@@ -2850,6 +2862,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
         const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
         const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedPoolAddress;
+        const businessAllowNewOpens = runtimeAllowsNewOpens && resolvePositionBusinessSemantics({
+          accountState: effectiveAccountState,
+          positionState: {
+            ...(positionState ?? {
+              allowNewOpens: false,
+              flattenOnly: runtimeState.mode === 'flatten_only',
+              lastAction: result.action,
+              updatedAt: nowIso()
+            }),
+            activeMint: persistedActiveMintForState,
+            activePoolAddress: persistedActivePoolAddressForState,
+            lifecycleState: persistedLifecycleState
+          },
+          pendingSubmission: persistedPendingSubmission,
+          residualTokenSweepMinValueSol
+        }).canOpenNewPosition.allowed;
+        report.allowNewOpens = businessAllowNewOpens;
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
           ? resolveConfirmedOpenFillEntry({
               resultFill: result.confirmedFill,
@@ -2956,7 +2985,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             })
           : null;
         await runtimeStateStore.writePositionState({
-          allowNewOpens: runtimeState.mode === 'healthy' || runtimeState.mode === 'degraded',
+          allowNewOpens: businessAllowNewOpens,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
           lastReason: result.reason,

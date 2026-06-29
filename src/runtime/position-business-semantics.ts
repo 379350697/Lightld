@@ -1,0 +1,321 @@
+import type { LiveAccountState } from './live-account-provider.ts';
+import type { PendingSubmissionSnapshot, PositionStateSnapshot } from './state-types.ts';
+import type { LiveAction } from './action-semantics.ts';
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
+
+export type BusinessLpPosition = NonNullable<LiveAccountState['walletLpPositions']>[number];
+
+export type PositionBusinessAction = 'maintain' | 'exit' | 'cleanup-dust' | 'hold' | 'open';
+export type ResidualDustState = 'none' | 'dust_ignored' | 'dust_cleanup_pending';
+
+export type PositionBusinessSemantics = {
+  activeLpPositions: BusinessLpPosition[];
+  managedActiveLp?: BusinessLpPosition;
+  untrackedActiveLpPositions: BusinessLpPosition[];
+  hasActiveLp: boolean;
+  hasPendingOpen: boolean;
+  hasPendingExit: boolean;
+  hasPendingMaintenance: boolean;
+  residualDustState: ResidualDustState;
+  dustTokenMints: string[];
+  canOpenNewPosition: {
+    allowed: boolean;
+    reason: string;
+  };
+  nextAction: PositionBusinessAction;
+};
+
+function isNonStableMint(mint: string) {
+  return mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
+}
+
+function activeLpKey(position: BusinessLpPosition) {
+  return position.chainPositionAddress
+    || position.positionAddress
+    || position.positionId
+    || `${position.poolAddress}:${position.mint}`;
+}
+
+function collectActiveLpPositions(accountState?: LiveAccountState): BusinessLpPosition[] {
+  const positions: BusinessLpPosition[] = [];
+  const seen = new Set<string>();
+
+  for (const position of [
+    ...(accountState?.walletLpPositions ?? []),
+    ...(accountState?.journalLpPositions ?? [])
+  ]) {
+    if (!isNonStableMint(position.mint) || !(position.hasLiquidity ?? true)) {
+      continue;
+    }
+
+    const key = activeLpKey(position);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    positions.push(position);
+  }
+
+  return positions;
+}
+
+export function matchesBusinessLpTarget(input: {
+  position: BusinessLpPosition;
+  positionState?: PositionStateSnapshot | null;
+  chainPositionAddress?: string;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  const chainPositionAddress = input.chainPositionAddress ?? input.positionState?.chainPositionAddress;
+  const activePoolAddress = input.activePoolAddress ?? input.positionState?.activePoolAddress;
+  const activeMint = input.activeMint ?? input.positionState?.activeMint;
+
+  if (chainPositionAddress) {
+    return input.position.positionAddress === chainPositionAddress
+      || input.position.chainPositionAddress === chainPositionAddress
+      || input.position.positionId === chainPositionAddress;
+  }
+
+  if (activePoolAddress) {
+    return input.position.poolAddress === activePoolAddress;
+  }
+
+  if (activeMint) {
+    return input.position.mint === activeMint;
+  }
+
+  return false;
+}
+
+function isPendingOpen(pendingSubmission?: PendingSubmissionSnapshot | null) {
+  if (!pendingSubmission || pendingSubmission.confirmationStatus === 'failed') {
+    return false;
+  }
+
+  return pendingSubmission.orderAction === 'add-lp'
+    || pendingSubmission.orderAction === 'deploy';
+}
+
+function isPendingExit(pendingSubmission?: PendingSubmissionSnapshot | null) {
+  if (!pendingSubmission || pendingSubmission.confirmationStatus === 'failed') {
+    return false;
+  }
+
+  return pendingSubmission.orderAction === 'withdraw-lp'
+    || pendingSubmission.orderAction === 'dca-out';
+}
+
+function isPendingMaintenance(pendingSubmission?: PendingSubmissionSnapshot | null) {
+  if (!pendingSubmission || pendingSubmission.confirmationStatus === 'failed') {
+    return false;
+  }
+
+  return pendingSubmission.orderAction === 'claim-fee'
+    || pendingSubmission.orderAction === 'rebalance-lp';
+}
+
+function collectDustTokens(input: {
+  accountState?: LiveAccountState;
+  residualTokenSweepMinValueSol: number;
+}) {
+  const cleanupMints: string[] = [];
+  const ignoredMints: string[] = [];
+
+  for (const token of [
+    ...(input.accountState?.walletTokens ?? []),
+    ...(input.accountState?.journalTokens ?? [])
+  ]) {
+    if (!isNonStableMint(token.mint) || token.amount <= 0) {
+      continue;
+    }
+
+    if (typeof token.currentValueSol !== 'number' || !Number.isFinite(token.currentValueSol)) {
+      ignoredMints.push(token.mint);
+      continue;
+    }
+
+    if (token.currentValueSol < input.residualTokenSweepMinValueSol) {
+      ignoredMints.push(token.mint);
+      continue;
+    }
+
+    cleanupMints.push(token.mint);
+  }
+
+  return { cleanupMints, ignoredMints };
+}
+
+export function resolvePositionBusinessSemantics(input: {
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot | null;
+  pendingSubmission?: PendingSubmissionSnapshot | null;
+  residualTokenSweepMinValueSol?: number;
+}): PositionBusinessSemantics {
+  const residualTokenSweepMinValueSol = input.residualTokenSweepMinValueSol ?? 0.1;
+  const activeLpPositions = collectActiveLpPositions(input.accountState);
+  const managedActiveLp = activeLpPositions.find((position) =>
+    matchesBusinessLpTarget({
+      position,
+      positionState: input.positionState
+    })
+  );
+  const untrackedActiveLpPositions = managedActiveLp
+    ? activeLpPositions.filter((position) => activeLpKey(position) !== activeLpKey(managedActiveLp))
+    : activeLpPositions;
+  const hasPendingOpen = isPendingOpen(input.pendingSubmission);
+  const hasPendingExit = isPendingExit(input.pendingSubmission);
+  const hasPendingMaintenance = isPendingMaintenance(input.pendingSubmission);
+  const dustTokens = collectDustTokens({
+    accountState: input.accountState,
+    residualTokenSweepMinValueSol
+  });
+  const residualDustState: ResidualDustState = dustTokens.cleanupMints.length > 0
+    ? 'dust_cleanup_pending'
+    : dustTokens.ignoredMints.length > 0
+      ? 'dust_ignored'
+      : 'none';
+
+  if (hasPendingExit) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: activeLpPositions.length > 0,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'pending-exit' },
+      nextAction: 'hold'
+    };
+  }
+
+  if (hasPendingOpen) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: activeLpPositions.length > 0,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'pending-open' },
+      nextAction: 'hold'
+    };
+  }
+
+  if (hasPendingMaintenance) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: activeLpPositions.length > 0,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'pending-maintenance' },
+      nextAction: 'hold'
+    };
+  }
+
+  if (untrackedActiveLpPositions.length > 0) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: true,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'active-untracked-lp' },
+      nextAction: 'exit'
+    };
+  }
+
+  if (managedActiveLp) {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: true,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'active-managed-lp' },
+      nextAction: 'maintain'
+    };
+  }
+
+  if (residualDustState === 'dust_cleanup_pending') {
+    return {
+      activeLpPositions,
+      managedActiveLp,
+      untrackedActiveLpPositions,
+      hasActiveLp: false,
+      hasPendingOpen,
+      hasPendingExit,
+      hasPendingMaintenance,
+      residualDustState,
+      dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+      canOpenNewPosition: { allowed: false, reason: 'residual-dust-cleanup-pending' },
+      nextAction: 'cleanup-dust'
+    };
+  }
+
+  return {
+    activeLpPositions,
+    managedActiveLp,
+    untrackedActiveLpPositions,
+    hasActiveLp: false,
+    hasPendingOpen,
+    hasPendingExit,
+    hasPendingMaintenance,
+    residualDustState,
+    dustTokenMints: [...dustTokens.cleanupMints, ...dustTokens.ignoredMints],
+    canOpenNewPosition: { allowed: true, reason: residualDustState === 'dust_ignored' ? 'flat-dust-ignored' : 'flat' },
+    nextAction: 'open'
+  };
+}
+
+export function isPositionAlreadyClosedTerminal(input: {
+  action?: string;
+  reason?: string;
+  accountState?: LiveAccountState;
+  positionState?: PositionStateSnapshot | null;
+  chainPositionAddress?: string;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  const action = input.action as LiveAction | undefined;
+  if (action !== 'withdraw-lp') {
+    return false;
+  }
+
+  if (!input.reason?.includes('position-already-closed')) {
+    return false;
+  }
+
+  return !collectActiveLpPositions(input.accountState).some((position) =>
+    matchesBusinessLpTarget({
+      position,
+      positionState: input.positionState,
+      chainPositionAddress: input.chainPositionAddress,
+      activeMint: input.activeMint,
+      activePoolAddress: input.activePoolAddress
+    })
+  );
+}
