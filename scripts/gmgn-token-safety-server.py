@@ -8,9 +8,10 @@ localhost instead of spawning Python for every batch.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -20,16 +21,32 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = ROOT / "scripts" / "gmgn-token-safety.py"
 
 
-def _load_checker():
-    spec = importlib.util.spec_from_file_location("gmgn_token_safety", CHECKER_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load {CHECKER_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _run_checker(mints: list[str]) -> list[dict[str, Any]]:
+    python_bin = os.environ.get("GMGN_CHECKER_PYTHON_BIN") or sys.executable
+    timeout_sec = float(os.environ.get("GMGN_SAFETY_SUBPROCESS_TIMEOUT_SEC", "90"))
+    completed = subprocess.run(
+        [python_bin, str(CHECKER_PATH), "--stdin"],
+        input=json.dumps(mints),
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        timeout=timeout_sec,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        detail = stderr or stdout or f"checker exited with code {completed.returncode}"
+        raise RuntimeError(detail)
 
+    try:
+        payload = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"checker returned invalid JSON: {error}") from error
 
-CHECKER = _load_checker()
+    if not isinstance(payload, list):
+        raise RuntimeError("checker returned non-list JSON")
+
+    return payload
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -63,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write_json(400, {"error": "mints must be a string array"})
                 return
 
-            results = CHECKER.fetch_token_safety_batch(mints)
+            results = _run_checker(mints)
             self._write_json(200, results)
         except Exception as error:
             self._write_json(500, {"error": str(error)})
