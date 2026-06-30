@@ -333,6 +333,9 @@ export function importActiveLpPositionsToLedger(input: {
     if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
       return {
         ...record,
+        lifecycleState: input.closeMissingActive === true
+          ? 'closed' as const
+          : record.lifecycleState,
         importStatus: input.closeMissingActive === true
           ? 'archived_missing_without_exit_evidence' as const
           : record.importStatus,
@@ -340,6 +343,9 @@ export function importActiveLpPositionsToLedger(input: {
           ? 'chain-position-missing-without-exit-evidence'
           : record.lastReason,
         missingOnChainSince: record.missingOnChainSince ?? input.now,
+        lastClosedAt: input.closeMissingActive === true
+          ? record.lastClosedAt ?? input.now
+          : record.lastClosedAt,
         updatedAt: input.now
       };
     }

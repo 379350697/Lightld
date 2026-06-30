@@ -3410,13 +3410,20 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
+  const activeLpExitSnapshotEntrySol = firstNumber(
+    typeof multiLpExit?.entrySol === 'number' && multiLpExit.entrySol > 0
+      ? multiLpExit.entrySol
+      : undefined,
+    typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0
+      ? multiLpExit.snapshot.entrySol
+      : undefined,
+    actionableAction === 'withdraw-lp' && config.poolClass === 'new-token' && typeof (updatedSnapshot as any).entrySol === 'number' && (updatedSnapshot as any).entrySol > 0
+      ? (updatedSnapshot as any).entrySol
+      : undefined
+  );
   const activeLpExitPositionSol = resolveActiveLpExitPositionSol({
     action: actionableAction,
-    activeLpExitEntrySol: typeof multiLpExit?.entrySol === 'number' && multiLpExit.entrySol > 0
-      ? multiLpExit.entrySol
-      : typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0
-        ? multiLpExit.snapshot.entrySol
-        : undefined,
+    activeLpExitEntrySol: activeLpExitSnapshotEntrySol,
     positionState: input.positionState,
     allowPositionStateFallback: !multiLpExit
       && !firstString(
@@ -3425,8 +3432,40 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         observedLpPosition?.position.positionId
       )
   });
+  const activeLpExitTargetSol = actionableAction === 'withdraw-lp' && config.poolClass === 'new-token'
+    ? firstNumber(
+      activeLpExitPositionSol,
+      typeof (updatedSnapshot as any).entrySol === 'number' && (updatedSnapshot as any).entrySol > 0
+        ? (updatedSnapshot as any).entrySol
+        : undefined,
+      typeof (updatedSnapshot as any).exitQuoteValueSol === 'number' && (updatedSnapshot as any).exitQuoteValueSol > 0
+        ? (updatedSnapshot as any).exitQuoteValueSol
+        : undefined,
+      typeof (updatedSnapshot as any).lpTotalValueSol === 'number' && (updatedSnapshot as any).lpTotalValueSol > 0
+        ? (updatedSnapshot as any).lpTotalValueSol
+        : undefined,
+      typeof (updatedSnapshot as any).lpCurrentValueSol === 'number' && (updatedSnapshot as any).lpCurrentValueSol > 0
+        ? (updatedSnapshot as any).lpCurrentValueSol
+        : undefined
+    )
+    : activeLpExitPositionSol;
+  if (
+    actionableAction === 'withdraw-lp'
+    && config.poolClass === 'new-token'
+    && typeof activeLpExitTargetSol !== 'number'
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: 'lp-exit-target-sol-unavailable',
+      audit: { reason: 'lp-exit-target-sol-unavailable' },
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
   const quotedPositionSol = firstNumber(
-    activeLpExitPositionSol,
+    activeLpExitTargetSol,
     context.route.expectedOutSol,
     context.token.expectedOutSol,
     context.pool.expectedOutSol,
@@ -3439,7 +3478,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
 
   const requestedPositionSol = resolveRequestedPositionSol({
-    activeLpExitPositionSol,
+    activeLpExitPositionSol: activeLpExitTargetSol,
     requestedPositionSol: input.requestedPositionSol,
     quoteOutputSol: quote.outputSol
   });
