@@ -1993,6 +1993,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       ledger: await runtimeStateStore.readPositionLedger(),
       positionState: startupPositionState,
       accountState: warmedAccountState,
+      pendingSubmission: await pendingSubmissionStore.read(),
+      closeMissingActive: true,
       now: nowIso()
     });
     await runtimeStateStore.writePositionLedger(startupLedger);
@@ -2444,6 +2446,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ledger: await runtimeStateStore.readPositionLedger(),
           positionState,
           accountState: effectiveAccountState,
+          pendingSubmission,
+          closeMissingActive: true,
           now: nowIso()
         });
         await runtimeStateStore.writePositionLedger(positionLedger);
@@ -2855,7 +2859,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           (isExposureReducingAction(result.action) || Boolean(positionState?.activeMint))
         ) || (fullExitSucceeded && !activeLpStillInAccount) || failedOpenCooldownMint.length > 0;
         const closedMint = shouldRecordClosedMint
-          ? (failedOpenCooldownMint || persistedActiveMint)
+          ? (failedOpenCooldownMint || persistedActiveMint || positionState?.activeMint || resultContextMint)
           : (positionState?.lastClosedMint ?? '');
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
         const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
@@ -3005,7 +3009,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               lastValuationAt: persistedIdentity.lastValuationAt
             })
           : null;
-        await runtimeStateStore.writePositionState({
+        const nextPositionState = {
           allowNewOpens: businessAllowNewOpens,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,
@@ -3035,11 +3039,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lastClosedAt: closedAt,
           walletSol: effectiveAccountState?.walletSol,
           updatedAt: nowIso()
-        });
+        };
+        await runtimeStateStore.writePositionState(nextPositionState);
         if (positionLedgerSummary.activeLpCount > 0 || persistedLifecycleState === 'closed') {
           await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
             ledger: positionLedger,
-            prior: positionState,
+            prior: nextPositionState,
             allowNewOpens: businessAllowNewOpens,
             flattenOnly: runtimeState.mode === 'flatten_only',
             lastAction: result.action,

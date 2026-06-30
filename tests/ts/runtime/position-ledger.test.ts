@@ -141,6 +141,55 @@ describe('position ledger', () => {
     expect(ledger.records.every((record) => record.entrySol === undefined)).toBe(true);
   });
 
+  it('merges a synthetic open record into the discovered chain LP record for the same pool and mint', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-a:mint-a',
+          positionId: 'pool-a:mint-a',
+          openIntentId: 'intent-a',
+          idempotencyKey: 'open-pool-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'open',
+          entrySol: 0.1,
+          entrySolSource: 'actual_fill',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-a',
+          positionAddress: 'pos-a',
+          mint: 'mint-a',
+          hasLiquidity: true,
+          currentValueSol: 0.11
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      now: '2026-06-29T00:02:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0]).toMatchObject({
+      positionKey: 'chain-position:pos-a',
+      positionId: 'pos-a',
+      chainPositionAddress: 'pos-a',
+      activePoolAddress: 'pool-a',
+      activeMint: 'mint-a',
+      entrySol: 0.1,
+      lastAction: 'add-lp'
+    });
+  });
+
   it('does not close a ledger record only because the current account snapshot is missing it', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
@@ -172,6 +221,81 @@ describe('position ledger', () => {
     expect(ledger.records[0]).toMatchObject({
       lifecycleState: 'open',
       missingOnChainSince: '2026-06-29T00:02:00.000Z'
+    });
+  });
+
+  it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-exited',
+            positionId: 'pos-exited',
+            chainPositionAddress: 'pos-exited',
+            activeMint: 'mint-exited',
+            activePoolAddress: 'pool-exited',
+            lifecycleState: 'open',
+            lastAction: 'withdraw-lp',
+            lastReason: 'live-order-submitted',
+            lastOrderIdempotencyKey: 'exit-pos-exited',
+            missingOnChainSince: '2026-06-29T00:02:00.000Z',
+            updatedAt: '2026-06-29T00:02:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-active',
+            positionId: 'pos-active',
+            chainPositionAddress: 'pos-active',
+            activeMint: 'mint-active',
+            activePoolAddress: 'pool-active',
+            lifecycleState: 'open',
+            lastAction: 'add-lp',
+            updatedAt: '2026-06-29T00:00:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-missing-without-exit',
+            positionId: 'pos-missing-without-exit',
+            chainPositionAddress: 'pos-missing-without-exit',
+            activeMint: 'mint-missing-without-exit',
+            activePoolAddress: 'pool-missing-without-exit',
+            lifecycleState: 'open',
+            lastAction: 'add-lp',
+            updatedAt: '2026-06-29T00:00:00.000Z'
+          }
+        ]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-active',
+          positionAddress: 'pos-active',
+          mint: 'mint-active',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-06-29T00:03:00.000Z'
+    });
+
+    expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-exited')).toMatchObject({
+      lifecycleState: 'closed',
+      lastAction: 'withdraw-lp',
+      lastReason: 'live-order-submitted',
+      lastClosedAt: '2026-06-29T00:03:00.000Z'
+    });
+    expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-active')).toMatchObject({
+      lifecycleState: 'open',
+      missingOnChainSince: undefined
+    });
+    expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-missing-without-exit')).toMatchObject({
+      lifecycleState: 'open',
+      missingOnChainSince: '2026-06-29T00:03:00.000Z'
     });
   });
 

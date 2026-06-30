@@ -98,6 +98,16 @@ function findMatchingRecord(records: PositionLedgerRecord[], position: AccountLp
     if (pendingOpenMatches.length === 1) {
       return pendingOpenMatches[0];
     }
+
+    const syntheticOpenMatches = records.filter((record) =>
+      record.lifecycleState !== 'closed' &&
+      !record.chainPositionAddress &&
+      record.activeMint === position.mint &&
+      record.activePoolAddress === position.poolAddress
+    );
+    if (syntheticOpenMatches.length === 1) {
+      return syntheticOpenMatches[0];
+    }
   }
 
   if (position.positionId) {
@@ -286,8 +296,13 @@ export function importActiveLpPositionsToLedger(input: {
   }
 
   const shouldCloseMissing = input.closeMissingActive === true && !input.pendingSubmission;
+  const isTerminalExitRecord = (record: PositionLedgerRecord) =>
+    record.lastAction === 'withdraw-lp' ||
+    record.pendingOrderAction === 'withdraw-lp' ||
+    record.lifecycleState === 'lp_exit_pending' ||
+    record.lifecycleState === 'inventory_exit_ready';
   const nextRecords = records.map((record) => {
-    if (record.lifecycleState === 'closed' || !record.chainPositionAddress) {
+    if (record.lifecycleState === 'closed') {
       return record;
     }
 
@@ -298,11 +313,11 @@ export function importActiveLpPositionsToLedger(input: {
       mint: record.activeMint
     });
 
-    if (activeKeys.has(recordKey)) {
+    if (record.chainPositionAddress && activeKeys.has(recordKey)) {
       return record;
     }
 
-    if (!shouldCloseMissing) {
+    if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
       return {
         ...record,
         missingOnChainSince: record.missingOnChainSince ?? input.now,

@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,26 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = ROOT / "scripts" / "gmgn-token-safety.py"
+LOG_PATH = Path(os.environ.get("GMGN_SAFETY_LOG_PATH", ROOT / "logs" / "gmgn-safety.log"))
+
+
+def _log(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    line = f"[{timestamp}] {message}"
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        pass
+    print(line, flush=True)
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 def _run_checker(mints: list[str]) -> list[dict[str, Any]]:
@@ -31,24 +53,58 @@ def _run_checker(mints: list[str]) -> list[dict[str, Any]]:
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-    completed = subprocess.run(
-        [python_bin, str(CHECKER_PATH), "--stdin"],
-        input=json.dumps(mints),
-        capture_output=True,
-        check=False,
-        creationflags=creationflags,
-        encoding="utf-8",
-        startupinfo=startupinfo,
-        timeout=timeout_sec,
+    started_at = time.monotonic()
+    mint_preview = ",".join(mints[:3])
+    if len(mints) > 3:
+        mint_preview += ",..."
+    _log(f"checker starting count={len(mints)} mints={mint_preview}")
+
+    stdout_temp = tempfile.NamedTemporaryFile(prefix="lightld-gmgn-stdout-", suffix=".json", delete=False)
+    stderr_temp = tempfile.NamedTemporaryFile(prefix="lightld-gmgn-stderr-", suffix=".log", delete=False)
+    stdout_temp.close()
+    stderr_temp.close()
+    stdout_path = Path(stdout_temp.name)
+    stderr_path = Path(stderr_temp.name)
+    try:
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
+            completed = subprocess.run(
+                [python_bin, str(CHECKER_PATH), "--stdin"],
+                input=json.dumps(mints),
+                stdout=stdout_file,
+                stderr=stderr_file,
+                check=False,
+                creationflags=creationflags,
+                encoding="utf-8",
+                startupinfo=startupinfo,
+                timeout=timeout_sec,
+            )
+    except subprocess.TimeoutExpired as error:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        _log(f"checker timeout elapsedMs={elapsed_ms} timeoutSec={timeout_sec} mints={mint_preview}")
+        raise RuntimeError(f"checker timed out after {timeout_sec}s") from error
+
+    stdout = _read_text(stdout_path)
+    stderr = _read_text(stderr_path)
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    stderr_preview = stderr.strip().replace("\n", " ")[:500]
+    _log(
+        f"checker exited code={completed.returncode} elapsedMs={elapsed_ms} "
+        f"stdoutBytes={len(stdout.encode('utf-8'))} stderrBytes={len(stderr.encode('utf-8'))} "
+        f"stderr={stderr_preview}"
     )
+
+    try:
+        stdout_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
     if completed.returncode != 0:
-        stderr = completed.stderr.strip()
-        stdout = completed.stdout.strip()
-        detail = stderr or stdout or f"checker exited with code {completed.returncode}"
+        detail = stderr.strip() or stdout.strip() or f"checker exited with code {completed.returncode}"
         raise RuntimeError(detail)
 
     try:
-        payload = json.loads(completed.stdout or "[]")
+        payload = json.loads(stdout or "[]")
     except json.JSONDecodeError as error:
         raise RuntimeError(f"checker returned invalid JSON: {error}") from error
 
@@ -92,6 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             results = _run_checker(mints)
             self._write_json(200, results)
         except Exception as error:
+            _log(f"request failed error={error}")
             self._write_json(500, {"error": str(error)})
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -107,7 +164,7 @@ def main() -> None:
     host = os.environ.get("GMGN_SAFETY_HOST", "127.0.0.1")
     port = int(os.environ.get("GMGN_SAFETY_PORT", "8898"))
     server = Server((host, port), Handler)
-    print(f"gmgn-token-safety-server listening on http://{host}:{port}", flush=True)
+    _log(f"gmgn-token-safety-server listening on http://{host}:{port}")
     server.serve_forever()
 
 
