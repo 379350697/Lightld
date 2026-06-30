@@ -4,6 +4,30 @@ $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 & (Join-Path $PSScriptRoot "scripts/stop-lightld.ps1") -Root $PSScriptRoot -Role all
 
+function Add-NoProxyEntry {
+    param(
+        [string]$Name,
+        [string[]]$Entries
+    )
+
+    $Existing = [Environment]::GetEnvironmentVariable($Name, "Process")
+    $Parts = @()
+    if ($Existing) {
+        $Parts = $Existing.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() }
+    }
+
+    foreach ($Entry in $Entries) {
+        if (-not ($Parts -contains $Entry)) {
+            $Parts += $Entry
+        }
+    }
+
+    [Environment]::SetEnvironmentVariable($Name, ($Parts -join ","), "Process")
+}
+
+Add-NoProxyEntry -Name "NO_PROXY" -Entries @("localhost", "127.0.0.1", "::1")
+Add-NoProxyEntry -Name "no_proxy" -Entries @("localhost", "127.0.0.1", "::1")
+
 $ProxyUrl = $env:HTTP_PROXY
 if (-not $ProxyUrl) { $ProxyUrl = "<none>" }
 
@@ -39,13 +63,23 @@ function Wait-HttpHealth {
 
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $Deadline) {
+        $OldHttpProxy = $env:HTTP_PROXY
+        $OldHttpsProxy = $env:HTTPS_PROXY
+        $OldAllProxy = $env:ALL_PROXY
         try {
+            $env:HTTP_PROXY = ""
+            $env:HTTPS_PROXY = ""
+            $env:ALL_PROXY = ""
             $Response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3
             if ($Response.StatusCode -ge 200 -and $Response.StatusCode -lt 300) {
                 return
             }
         } catch {
             Start-Sleep -Milliseconds 500
+        } finally {
+            $env:HTTP_PROXY = $OldHttpProxy
+            $env:HTTPS_PROXY = $OldHttpsProxy
+            $env:ALL_PROXY = $OldAllProxy
         }
     }
 
@@ -68,8 +102,11 @@ $GmgnProcess = Start-LightldWindow "Lightld GMGN Safety" @"
 `$PythonBin = `$env:GMGN_PYTHON_BIN
 if (-not `$PythonBin) { `$PythonBin = 'python' }
 while (`$true) {
-    & `$PythonBin (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
-    Write-Host "GMGN safety sidecar exited; restarting in 5s..."
+    & `$PythonBin -u (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
+    `$ExitCode = `$LASTEXITCODE
+    `$Message = "[{0}] GMGN safety sidecar exited code={1}; restarting in 5s..." -f (Get-Date).ToString("o"), `$ExitCode
+    Add-Content -LiteralPath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Value `$Message
+    Write-Host `$Message
     Start-Sleep -Seconds 5
 }
 "@

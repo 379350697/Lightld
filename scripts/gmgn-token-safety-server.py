@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +72,15 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main() -> None:
     host = os.environ.get("GMGN_SAFETY_HOST", "127.0.0.1")
     port = int(os.environ.get("GMGN_SAFETY_PORT", "8898"))
-    server = HTTPServer((host, port), Handler)
+    server = Server((host, port), Handler)
     print(f"gmgn-token-safety-server listening on http://{host}:{port}", flush=True)
     server.serve_forever()
 
