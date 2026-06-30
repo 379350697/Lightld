@@ -101,6 +101,7 @@ import type {
   RuntimeMode,
   PositionStateSnapshot,
   PositionLedgerSnapshot,
+  PositionLedgerRecord,
   LpRiskSentinelSnapshot,
   PositionLifecycleState,
   PendingSubmissionSnapshot,
@@ -505,6 +506,7 @@ function resolveActiveLpExitPositionSol(input: {
   action: LiveAction;
   activeLpExitEntrySol?: number;
   positionState?: PositionStateSnapshot;
+  allowPositionStateFallback?: boolean;
 }) {
   if (
     input.action === 'withdraw-lp'
@@ -516,6 +518,7 @@ function resolveActiveLpExitPositionSol(input: {
 
   if (
     input.action === 'withdraw-lp'
+    && input.allowPositionStateFallback !== false
     && typeof input.positionState?.entrySol === 'number'
     && input.positionState.entrySol > 0
   ) {
@@ -1038,9 +1041,38 @@ function resolveLifecycleOpenFill(input: {
   fills: LiveFillEntry[];
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   positionState?: PositionStateSnapshot;
+  ledgerRecord?: PositionLedgerRecord;
+  samePoolMintActiveCount?: number;
 }) {
   const entryFills = input.fills
     .filter((fill) => (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0);
+
+  const byLedgerOpenIntent = input.ledgerRecord?.openIntentId
+    ? entryFills
+      .filter((fill) =>
+        isTrustedLpOpenFill(fill)
+        && fill.openIntentId === input.ledgerRecord?.openIntentId
+        && fill.mint === input.position.mint
+      )
+      .sort((a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt))[0]
+    : undefined;
+
+  if (byLedgerOpenIntent) {
+    return byLedgerOpenIntent;
+  }
+
+  const byLedgerSubmission = input.ledgerRecord?.entryFillSubmissionId
+    ? entryFills
+      .filter((fill) =>
+        isTrustedLpOpenFill(fill)
+        && fill.submissionId === input.ledgerRecord?.entryFillSubmissionId
+        && fill.mint === input.position.mint
+      )[0]
+    : undefined;
+
+  if (byLedgerSubmission) {
+    return byLedgerSubmission;
+  }
 
   const byChainAddress = entryFills
     .filter((fill) => fill.chainPositionAddress === input.position.positionAddress)
@@ -1076,6 +1108,10 @@ function resolveLifecycleOpenFill(input: {
       )
     )
     .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
+
+  if (input.samePoolMintActiveCount === 1 && uniquePoolMintCandidates.length > 0) {
+    return uniquePoolMintCandidates[uniquePoolMintCandidates.length - 1];
+  }
 
   return uniquePoolMintCandidates.length === 1 ? uniquePoolMintCandidates[0] : undefined;
 }
@@ -1586,6 +1622,7 @@ type EvaluatedLpPosition = {
   position: ActiveLpPosition;
   decision: ReturnType<typeof runEngineCycle>;
   entrySol?: number;
+  ledgerRecord?: PositionLedgerRecord;
   snapshot: Record<string, unknown>;
   holdTimeMs: number;
   priority: number;
@@ -1621,8 +1658,9 @@ function evaluateActiveLpPositions(input: {
   positionLedger?: PositionLedgerSnapshot;
 }): EvaluatedLpPosition[] {
   const evaluated: EvaluatedLpPosition[] = [];
+  const activePositions = dedupeActiveLpPositions(input.accountState);
 
-  for (const rawPosition of dedupeActiveLpPositions(input.accountState)) {
+  for (const rawPosition of activePositions) {
     const mint = rawPosition.mint;
     if (!mint) {
       continue;
@@ -1636,9 +1674,23 @@ function evaluateActiveLpPositions(input: {
     const openFill = resolveLifecycleOpenFill({
       fills: input.fills,
       position: rawPosition,
-      positionState: input.positionState
+      positionState: input.positionState,
+      ledgerRecord,
+      samePoolMintActiveCount: activePositions.filter((position) =>
+        position.poolAddress === rawPosition.poolAddress && position.mint === rawPosition.mint
+      ).length
     });
-    const trustedEntry = resolveTrustedLpEntry({
+    const ledgerEntry = isTrustedEntrySolSource(ledgerRecord?.entrySolSource)
+      && typeof ledgerRecord?.entrySol === 'number'
+      && ledgerRecord.entrySol > 0
+      ? {
+        entrySol: ledgerRecord.entrySol,
+        entrySolSource: ledgerRecord.entrySolSource,
+        entryFillSubmissionId: ledgerRecord.entryFillSubmissionId,
+        openedAt: ledgerRecord.openedAt
+      }
+      : undefined;
+    const trustedEntry = ledgerEntry ?? resolveTrustedLpEntry({
       positionState: input.positionState,
       openFill,
       lifecycleBound
@@ -1755,6 +1807,7 @@ function evaluateActiveLpPositions(input: {
       position,
       decision,
       entrySol,
+      ledgerRecord,
       snapshot,
       holdTimeMs,
       priority: decision.action === 'withdraw-lp' || decision.action === 'claim-fee' || decision.action === 'rebalance-lp'
@@ -1849,6 +1902,12 @@ function applyLpObservationToContext(
   context.trader.lpUnclaimedFeeValueSol = observation.position.unclaimedFeeValueSol;
   context.trader.lpClaimedFeeValueSol = observation.position.claimedFeeValueSol;
   context.trader.lpRecoverableRentSol = observation.position.recoverableRentSol;
+  (context.trader as any).lpChainPositionAddress = firstString(
+    observation.position.chainPositionAddress,
+    observation.position.positionAddress,
+    observation.position.positionId
+  );
+  (context.trader as any).lpEntrySol = observation.entrySol;
   context.trader.lpTradingValueSol = observation.snapshot.lpTradingValueSol;
   context.trader.lpEntryTradingSol = observation.snapshot.lpEntryTradingSol;
   context.trader.lpSolDepletedBins = observation.snapshot.lpSolDepletedBins as number | undefined;
@@ -1943,6 +2002,7 @@ function buildEngineSnapshot(
       lpRecoverableRentSol: typeof context.trader.lpRecoverableRentSol === 'number' ? context.trader.lpRecoverableRentSol : undefined,
       lpTradingValueSol: typeof context.trader.lpTradingValueSol === 'number' ? context.trader.lpTradingValueSol : undefined,
       lpEntryTradingSol: typeof context.trader.lpEntryTradingSol === 'number' ? context.trader.lpEntryTradingSol : undefined,
+      entrySol: typeof (context.trader as any).lpEntrySol === 'number' ? (context.trader as any).lpEntrySol : undefined,
       lpSolDepletedBins: typeof context.trader.lpSolDepletedBins === 'number' ? context.trader.lpSolDepletedBins : undefined,
       lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
@@ -2039,6 +2099,10 @@ function maybePopulateLpNetPnlPct(input: {
   const valuationSource = firstString(input.context.trader.valuationSource, input.context.trader.lpValuationSource);
   const valuationCompleteness = firstString(input.context.trader.valuationCompleteness, input.context.trader.lpValuationCompleteness);
   const valuationTrust = firstString(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust);
+  const observedChainPositionAddress = firstString((input.context.trader as any).lpChainPositionAddress);
+  const positionStateMatchesObservedLp = !observedChainPositionAddress
+    || input.positionState?.chainPositionAddress === observedChainPositionAddress;
+  const positionStateForEntry = positionStateMatchesObservedLp ? input.positionState : undefined;
 
   if (!hasTrustedLpExitValue({
     currentValueSol: lpTotalValueSol ?? currentValueSol,
@@ -2060,15 +2124,17 @@ function maybePopulateLpNetPnlPct(input: {
 
   const openFill = resolvePositionStateOpenFill({
     fills: input.fills,
-    positionState: input.positionState
+    positionState: positionStateForEntry
   });
+  const observedEntrySol = finiteNonnegative((input.context.trader as any).lpEntrySol);
   const trustedEntry = resolveTrustedLpEntry({
-    positionState: input.positionState,
+    positionState: positionStateForEntry,
     openFill,
-    lifecycleBound: input.positionState?.lifecycleState === 'open'
+    lifecycleBound: positionStateForEntry?.lifecycleState === 'open'
   });
+  const entrySol = observedEntrySol ?? trustedEntry?.entrySol;
   const lpEntryTradingSol = resolveLpEntryTradingSol({
-    entrySol: trustedEntry?.entrySol,
+    entrySol,
     recoverableRentSol
   });
   if (typeof lpEntryTradingSol === 'number') {
@@ -2077,7 +2143,7 @@ function maybePopulateLpNetPnlPct(input: {
     delete input.context.trader.lpEntryTradingSol;
   }
   const lpNetPnlPct = computeTrustedLpNetPnlPct({
-    entrySol: trustedEntry?.entrySol,
+    entrySol,
     currentValueSol: lpTotalValueSol ?? currentValueSol,
     lpTotalValueSol,
     exitQuoteValueSol: finiteNonnegative(input.context.trader.exitQuoteValueSol),
@@ -3351,7 +3417,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       : typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0
         ? multiLpExit.snapshot.entrySol
         : undefined,
-    positionState: input.positionState
+    positionState: input.positionState,
+    allowPositionStateFallback: !multiLpExit
+      && !firstString(
+        observedLpPosition?.position.chainPositionAddress,
+        observedLpPosition?.position.positionAddress,
+        observedLpPosition?.position.positionId
+      )
   });
   const quotedPositionSol = firstNumber(
     activeLpExitPositionSol,

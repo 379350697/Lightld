@@ -2481,6 +2481,122 @@ describe('runLiveCycle', () => {
       });
     });
 
+  it('does not reuse stale position-state entry for a new chain LP in the same pool and mint', async () => {
+    const oldRecordedAt = '2026-06-30T07:58:40.362Z';
+    const newRecordedAt = '2026-06-30T14:45:12.942Z';
+    const baseFillPath = resolveActiveJsonlPath(join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl'), {
+      rotateDaily: true,
+      now: new Date(newRecordedAt)
+    });
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'old-open',
+      openIntentId: 'lp-open-intent:old',
+      mint: 'mint-same',
+      side: 'add-lp',
+      amount: 0.109490125,
+      filledSol: 0.109490125,
+      actualFilledSol: 0.109490125,
+      actualWalletDeltaSol: -0.109490125,
+      fillAmountSource: 'wallet-delta',
+      hasFillEvidence: true,
+      positionId: 'pool-same:mint-same',
+      recordedAt: oldRecordedAt
+    }, {
+      rotateDaily: true,
+      now: new Date(oldRecordedAt)
+    });
+
+    await appendJsonLine(baseFillPath, {
+      submissionId: 'new-open',
+      openIntentId: 'lp-open-intent:new',
+      mint: 'mint-same',
+      side: 'add-lp',
+      amount: 0.077416045,
+      filledSol: 0.077416045,
+      actualFilledSol: 0.077416045,
+      actualWalletDeltaSol: -0.077416045,
+      fillAmountSource: 'wallet-delta',
+      hasFillEvidence: true,
+      positionId: 'pool-same:mint-same',
+      recordedAt: newRecordedAt
+    }, {
+      rotateDaily: true,
+      now: new Date(newRecordedAt)
+    });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.02,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'mint-same',
+        activePoolAddress: 'pool-same',
+        chainPositionAddress: 'old-chain-position',
+        lifecycleState: 'open',
+        entrySol: 0.109490125,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'old-open',
+        openedAt: oldRecordedAt,
+        updatedAt: oldRecordedAt
+      },
+      context: {
+        pool: { address: 'pool-same', liquidityUsd: 10_000, hasSolRoute: true },
+        token: { mint: 'mint-same', inSession: true, hasSolRoute: true, symbol: 'SAME' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpNetPnlPct: -29,
+          lpCurrentValueSol: 0.077395153,
+          lpLiquidityValueSol: 0.019999072,
+          lpUnclaimedFeeValueSol: 0,
+          lpRecoverableRentSol: 0.057406080,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote',
+          valuationCompleteness: 'complete'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.02, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-same',
+          positionAddress: 'new-chain-position',
+          mint: 'mint-same',
+          lowerBinId: -489,
+          upperBinId: -421,
+          activeBinId: -421,
+          solSide: 'tokenY',
+          solDepletedBins: 0,
+          binCount: 69,
+          currentValueSol: 0.077395153,
+          exitQuoteValueSol: 0.077395153,
+          liquidityValueSol: 0.019999072,
+          unclaimedFeeValueSol: 0,
+          recoverableRentSol: 0.057406080,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationSource: 'meteora-withdraw-simulation+meteora-dlmm-swap-quote',
+          valuationCompleteness: 'complete'
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toContain('lp-stop-loss');
+    expect(result.context.trader.lpEntryTradingSol).toBeCloseTo(0.020009965, 9);
+    expect(result.context.trader.lpNetPnlPct).toBeGreaterThan(-1);
+  });
+
   it('keeps residual LP positions eligible for bin-based exits even when funded bins are zero', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
