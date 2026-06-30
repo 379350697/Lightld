@@ -24,12 +24,21 @@ CHECKER_PATH = ROOT / "scripts" / "gmgn-token-safety.py"
 def _run_checker(mints: list[str]) -> list[dict[str, Any]]:
     python_bin = os.environ.get("GMGN_CHECKER_PYTHON_BIN") or sys.executable
     timeout_sec = float(os.environ.get("GMGN_SAFETY_SUBPROCESS_TIMEOUT_SEC", "90"))
+    creationflags = 0
+    startupinfo = None
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
     completed = subprocess.run(
         [python_bin, str(CHECKER_PATH), "--stdin"],
         input=json.dumps(mints),
         capture_output=True,
         check=False,
+        creationflags=creationflags,
         encoding="utf-8",
+        startupinfo=startupinfo,
         timeout=timeout_sec,
     )
     if completed.returncode != 0:

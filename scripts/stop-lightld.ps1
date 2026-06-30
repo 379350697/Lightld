@@ -13,7 +13,7 @@ if ($Role -contains "all") {
 $RolePatterns = @{
     signer = @("run:signer", "local-live-signer")
     execution = @("run:execution", "run:solana-execution", "local-live-execution", "solana-execution")
-    gmgn = @("gmgn-token-safety-server.py")
+    gmgn = @("gmgn-token-safety-server.py", "start-gmgn-safety.ps1", "lightld gmgn safety")
     candidate = @("run:candidate-worker", "candidate-worker")
     daemon = @("run:daemon", "live-daemon")
     dashboard = @("run:dashboard", "dashboard-server")
