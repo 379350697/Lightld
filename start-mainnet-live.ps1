@@ -98,17 +98,10 @@ $GmgnPort = $env:GMGN_SAFETY_PORT
 if (-not $GmgnPort) { $GmgnPort = "8898" }
 
 Write-Host "`n[1/5] Starting GMGN safety sidecar (port $GmgnPort)..."
+$GmgnScriptLiteral = Quote-PSString (Join-Path $PSScriptRoot "scripts/start-gmgn-safety.ps1")
+$GmgnRootLiteral = Quote-PSString $PSScriptRoot
 $GmgnProcess = Start-LightldWindow "Lightld GMGN Safety" @"
-`$PythonBin = `$env:GMGN_PYTHON_BIN
-if (-not `$PythonBin) { `$PythonBin = 'python' }
-while (`$true) {
-    & `$PythonBin -u (Join-Path (Get-Location) 'scripts/gmgn-token-safety-server.py') 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Append
-    `$ExitCode = `$LASTEXITCODE
-    `$Message = "[{0}] GMGN safety sidecar exited code={1}; restarting in 5s..." -f (Get-Date).ToString("o"), `$ExitCode
-    Add-Content -LiteralPath (Join-Path (Get-Location) 'logs/gmgn-safety.log') -Value `$Message
-    Write-Host `$Message
-    Start-Sleep -Seconds 5
-}
+& $GmgnScriptLiteral -Root $GmgnRootLiteral
 "@
 
 Start-Sleep -Seconds 2
