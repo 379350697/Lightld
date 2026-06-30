@@ -557,9 +557,13 @@ export function applyLiveCycleResultToLedger(input: {
   };
 }
 
+export function isPositionLedgerRecordBusinessActive(record: PositionLedgerRecord) {
+  return record.lifecycleState !== 'closed' && !record.missingOnChainSince;
+}
+
 export function summarizePositionLedger(ledger?: PositionLedgerSnapshot | null) {
   const records = ledger?.records ?? [];
-  const activeRecords = records.filter((record) => record.lifecycleState !== 'closed');
+  const activeRecords = records.filter((record) => isPositionLedgerRecordBusinessActive(record));
   return {
     activeLpCount: activeRecords.length,
     managedLpCount: activeRecords.filter((record) => record.importStatus !== 'import_failed').length,
@@ -578,7 +582,7 @@ export function selectCompatibilityPositionState(input: {
   now: string;
 }): PositionStateSnapshot {
   const activeRecord = [...(input.ledger?.records ?? [])]
-    .filter((record) => record.lifecycleState !== 'closed')
+    .filter((record) => isPositionLedgerRecordBusinessActive(record))
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
 
   if (!activeRecord) {

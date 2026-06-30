@@ -4,7 +4,8 @@ import {
   applyLiveCycleResultToLedger,
   importActiveLpPositionsToLedger,
   migratePositionStateToLedger,
-  selectCompatibilityPositionState
+  selectCompatibilityPositionState,
+  summarizePositionLedger
 } from '../../../src/runtime/position-ledger';
 import type { LiveAccountState } from '../../../src/runtime/live-account-provider';
 
@@ -308,6 +309,57 @@ describe('position ledger', () => {
       lifecycleState: 'open',
       lastAction: 'add-lp'
     });
+  });
+
+  it('does not count records missing from chain as business-active LPs', () => {
+    const ledger = {
+      version: 1 as const,
+      updatedAt: '2026-06-30T07:30:00.000Z',
+      records: [
+        {
+          positionKey: 'chain-position:pos-missing',
+          positionId: 'pos-missing',
+          chainPositionAddress: 'pos-missing',
+          activeMint: 'mint-missing',
+          activePoolAddress: 'pool-missing',
+          lifecycleState: 'open' as const,
+          importStatus: 'imported' as const,
+          lastAction: 'withdraw-lp',
+          lastReason: 'live-order-submitted',
+          missingOnChainSince: '2026-06-30T07:00:00.000Z',
+          updatedAt: '2026-06-30T07:30:00.000Z'
+        },
+        {
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open' as const,
+          importStatus: 'imported' as const,
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-30T07:30:00.000Z'
+        }
+      ]
+    };
+
+    expect(summarizePositionLedger(ledger)).toEqual({
+      activeLpCount: 1,
+      managedLpCount: 1,
+      importFailedLpCount: 0
+    });
+
+    const state = selectCompatibilityPositionState({
+      ledger,
+      prior: null,
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      now: '2026-06-30T07:30:00.000Z'
+    });
+
+    expect(state.chainPositionAddress).toBe('pos-active');
+    expect(state.activeMint).toBe('mint-active');
   });
 
   it('selects a ledger record atomically for compatibility position state', () => {

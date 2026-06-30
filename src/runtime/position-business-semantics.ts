@@ -1,6 +1,7 @@
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot, PositionLedgerSnapshot, PositionStateSnapshot } from './state-types.ts';
 import type { LiveAction } from './action-semantics.ts';
+import { isPositionLedgerRecordBusinessActive } from './position-ledger.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
@@ -294,7 +295,9 @@ export function resolvePositionBusinessSemantics(input: {
       positionState: input.positionState
     })
   );
-  const activeLedgerRecords = (input.positionLedger?.records ?? []).filter((record) => record.lifecycleState !== 'closed');
+  const activeLedgerRecords = (input.positionLedger?.records ?? []).filter((record) =>
+    isPositionLedgerRecordBusinessActive(record)
+  );
   const activeLpCount = Math.max(activeLpPositions.length, activeLedgerRecords.length);
   const managedLpCount = activeLedgerRecords.filter((record) => record.importStatus !== 'import_failed').length;
   const importFailedLpCount = activeLedgerRecords.filter((record) => record.importStatus === 'import_failed').length;

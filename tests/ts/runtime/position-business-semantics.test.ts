@@ -244,6 +244,37 @@ describe('position business semantics', () => {
     });
   });
 
+  it('does not let chain-missing ledger records consume active LP capacity', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 1,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-30T07:30:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-missing',
+          positionId: 'pos-missing',
+          chainPositionAddress: 'pos-missing',
+          activeMint: 'mint-missing',
+          activePoolAddress: 'pool-missing',
+          lifecycleState: 'open',
+          importStatus: 'imported',
+          lastAction: 'withdraw-lp',
+          lastReason: 'live-order-submitted',
+          missingOnChainSince: '2026-06-30T07:00:00.000Z',
+          updatedAt: '2026-06-30T07:30:00.000Z'
+        }]
+      },
+      accountState: baseAccount()
+    });
+
+    expect(result.activeLpCount).toBe(0);
+    expect(result.managedLpCount).toBe(0);
+    expect(result.canOpenNewPosition).toEqual({
+      allowed: true,
+      reason: 'flat'
+    });
+  });
+
   it('allows new opens when the account is flat and residual dust is below threshold', () => {
     const result = resolvePositionBusinessSemantics({
       residualTokenSweepMinValueSol: 0.1,
