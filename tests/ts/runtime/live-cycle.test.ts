@@ -2753,4 +2753,80 @@ describe('runLiveCycle', () => {
       })
     ]));
   });
+
+  it('uses LP risk sentinel range exits before waiting for stop-loss PnL', async () => {
+    const openedAt = new Date(Date.now() - (5 * 60 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-range-risk',
+        activePoolAddress: 'pool-range-risk',
+        lifecycleState: 'open',
+        openedAt,
+        updatedAt: '2026-06-30T12:00:00.000Z',
+        entrySol: 0.109490125,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open-range-risk'
+      } as any,
+      context: {
+        pool: { address: 'pool-range-risk', liquidityUsd: 40_000 },
+        token: { mint: 'mint-range-risk', inSession: true, hasSolRoute: true },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-range-risk',
+          positionAddress: 'position-range-risk',
+          chainPositionAddress: 'position-range-risk',
+          mint: 'mint-range-risk',
+          lowerBinId: -234,
+          upperBinId: -166,
+          activeBinId: -149,
+          solSide: 'tokenX',
+          solDepletedBins: 0,
+          currentValueSol: 0.117723656,
+          liquidityValueSol: 0.054595939,
+          unclaimedFeeValueSol: 0.005721637,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0.05740608,
+          lpTotalValueSol: 0.117723656,
+          unclaimedFeeSol: 0.005721637,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationReason: '',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote+position-account-rent'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'sub-open-range-risk',
+          chainPositionAddress: 'position-range-risk',
+          mint: 'mint-range-risk',
+          side: 'add-lp',
+          amount: 0.109490125,
+          actualFilledSol: 0.109490125,
+          actualWalletDeltaSol: 0.109490125,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: openedAt
+        }]
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toContain('lp-range-exit:active-bin-out-of-range:above:17');
+    expect(result.context.trader.lpRiskIntent).toBe('range-exit');
+    expect(result.context.trader.lpNetPnlPct).toBeGreaterThan(0);
+  });
 });

@@ -1,5 +1,7 @@
 export type LpExitSnapshot = {
   hasLpPosition?: boolean;
+  lpRiskIntent?: 'hold' | 'range-warning' | 'range-exit' | 'liquidity-exit' | 'volatility-exit';
+  lpRiskReason?: string;
   lpNetPnlPct?: number;
   lpUnclaimedFeeUsd?: number;
   lpSolDepletedBins?: number;
@@ -33,6 +35,18 @@ export function buildLpExitPolicyDecision(
 ): LpExitPolicyDecision {
   if (!snapshot.hasLpPosition) {
     return { action: 'hold', reason: 'lp-position-missing' };
+  }
+
+  if (snapshot.lpRiskIntent === 'range-exit') {
+    return { action: 'withdraw-lp', reason: `lp-range-exit:${snapshot.lpRiskReason ?? 'range-risk'}` };
+  }
+
+  if (snapshot.lpRiskIntent === 'liquidity-exit') {
+    return { action: 'withdraw-lp', reason: `lp-liquidity-exit:${snapshot.lpRiskReason ?? 'liquidity-risk'}` };
+  }
+
+  if (snapshot.lpRiskIntent === 'volatility-exit') {
+    return { action: 'withdraw-lp', reason: `lp-volatility-exit:${snapshot.lpRiskReason ?? 'volatility-risk'}` };
   }
 
   const maxHoldMs = (config.maxHoldHours ?? 18) * 60 * 60 * 1000;

@@ -105,6 +105,30 @@ export const PositionEntrySolSourceSchema = z.enum([
 ]);
 export type PositionEntrySolSource = z.infer<typeof PositionEntrySolSourceSchema>;
 
+export const LpRiskSentinelSnapshotSchema = z.object({
+  observedAt: z.string(),
+  riskIntent: z.enum(['hold', 'range-warning', 'range-exit', 'liquidity-exit', 'volatility-exit']),
+  riskReason: z.string(),
+  activeBinId: z.number().finite().optional(),
+  lowerBinId: z.number().finite().optional(),
+  upperBinId: z.number().finite().optional(),
+  activeBinDistanceToLower: z.number().finite().optional(),
+  activeBinDistanceToUpper: z.number().finite().optional(),
+  outOfRangeSide: z.enum(['below', 'above']).optional(),
+  outOfRangeBins: z.number().finite().nonnegative().optional(),
+  solDepletedBins: z.number().finite().nonnegative().optional(),
+  binCount: z.number().finite().nonnegative().optional(),
+  solDepletionExitBins: z.number().finite().nonnegative().optional(),
+  solDepletedRatio: z.number().finite().nonnegative().optional(),
+  currentValueSol: z.number().finite().nonnegative().optional(),
+  liquidityValueSol: z.number().finite().nonnegative().optional(),
+  poolLiquidityUsd: z.number().finite().nonnegative().optional(),
+  tokenMarketCapUsd: z.number().finite().nonnegative().optional(),
+  tokenPriceUsd: z.number().finite().nonnegative().optional(),
+  currentPrice: z.number().finite().nonnegative().optional()
+});
+export type LpRiskSentinelSnapshot = z.infer<typeof LpRiskSentinelSnapshotSchema>;
+
 export const PositionStateSnapshotSchema = z.object({
   allowNewOpens: z.boolean(),
   flattenOnly: z.boolean(),
@@ -131,6 +155,7 @@ export const PositionStateSnapshotSchema = z.object({
   displayValueSol: z.number().finite().nonnegative().optional(),
   lpTotalValueSol: z.number().finite().nonnegative().optional(),
   lastValuationAt: z.string().optional(),
+  lastRiskSentinel: LpRiskSentinelSnapshotSchema.optional(),
   lastClosedMint: z.string().optional(),
   lastClosedAt: z.string().optional(),
   walletSol: z.number().optional(),
@@ -178,6 +203,7 @@ export const PositionLedgerRecordSchema = z.object({
   displayValueSol: z.number().finite().nonnegative().optional(),
   lpTotalValueSol: z.number().finite().nonnegative().optional(),
   lastValuationAt: z.string().optional(),
+  lastRiskSentinel: LpRiskSentinelSnapshotSchema.optional(),
   lastClosedAt: z.string().optional(),
   updatedAt: z.string()
 });
@@ -206,7 +232,8 @@ export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
   exitQuoteValueSol: true,
   displayValueSol: true,
   lpTotalValueSol: true,
-  lastValuationAt: true
+  lastValuationAt: true,
+  lastRiskSentinel: true
 });
 
 export type LpExitPolicySnapshot = z.infer<typeof LpExitPolicySnapshotSchema>;

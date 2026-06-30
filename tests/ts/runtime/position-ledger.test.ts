@@ -94,6 +94,38 @@ describe('position ledger', () => {
     ]));
   });
 
+  it('persists LP risk sentinel snapshots when importing active chain LPs', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-risk',
+          positionAddress: 'pos-risk',
+          mint: 'mint-risk',
+          lowerBinId: -234,
+          upperBinId: -166,
+          activeBinId: -149,
+          hasLiquidity: true,
+          currentValueSol: 0.114030143,
+          liquidityValueSol: 0.056624063
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      now: '2026-06-30T12:00:32.674Z'
+    });
+
+    expect(ledger.records[0]?.lastRiskSentinel).toMatchObject({
+      riskIntent: 'range-exit',
+      riskReason: 'active-bin-out-of-range:above:17',
+      outOfRangeSide: 'above',
+      outOfRangeBins: 17
+    });
+  });
+
   it('keeps same pool and mint LPs as independent records when chain addresses differ', () => {
     const ledger = importActiveLpPositionsToLedger({
       accountState: {

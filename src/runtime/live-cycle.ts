@@ -86,6 +86,7 @@ import { buildIncidentDedupeKey, classifyIncidentReason } from './incident-taxon
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
+import { evaluateLpRiskSentinel } from './lp-risk-sentinel.ts';
 import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
 import { hasActionableTokenAmount } from './token-inventory.ts';
 import {
@@ -100,6 +101,7 @@ import type {
   RuntimeMode,
   PositionStateSnapshot,
   PositionLedgerSnapshot,
+  LpRiskSentinelSnapshot,
   PositionLifecycleState,
   PendingSubmissionSnapshot,
   PendingFinality
@@ -944,6 +946,7 @@ function buildLpExitSnapshotFromPosition(input: {
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   holdTimeMs: number;
   solDepletionExitBins?: number;
+  previousRiskSentinel?: LpRiskSentinelSnapshot;
 }) {
   const observedAt = new Date().toISOString();
   const lpSolDepletedBins = typeof input.position.solDepletedBins === 'number'
@@ -960,6 +963,19 @@ function buildLpExitSnapshotFromPosition(input: {
     solDepletionExitBins: input.solDepletionExitBins,
     withdrawSolAmount: input.position.withdrawSolAmount,
     withdrawTokenValueSol: input.position.withdrawTokenValueSol
+  });
+  const lpRiskSentinel = evaluateLpRiskSentinel({
+    observedAt,
+    activeBinId: input.position.activeBinId,
+    lowerBinId: input.position.lowerBinId,
+    upperBinId: input.position.upperBinId,
+    solDepletedBins: lpSolDepletedBins,
+    binCount: input.position.binCount,
+    solDepletionExitBins: input.solDepletionExitBins,
+    currentValueSol: input.position.currentValueSol,
+    liquidityValueSol: input.position.liquidityValueSol,
+    currentPrice: input.position.currentPrice,
+    previous: input.previousRiskSentinel
   });
   const valuation = typeof input.position.valuationStatus === 'string'
     ? {
@@ -992,6 +1008,16 @@ function buildLpExitSnapshotFromPosition(input: {
     lpRecoverableRentSol: input.position.recoverableRentSol,
     lpSolDepletedBins,
     lpSolExposureStatus,
+    lpRiskSentinel,
+    lpRiskIntent: lpRiskSentinel.riskIntent,
+    lpRiskReason: lpRiskSentinel.riskReason,
+    lpActiveBinId: lpRiskSentinel.activeBinId,
+    lpLowerBinId: lpRiskSentinel.lowerBinId,
+    lpUpperBinId: lpRiskSentinel.upperBinId,
+    lpActiveBinDistanceToLower: lpRiskSentinel.activeBinDistanceToLower,
+    lpActiveBinDistanceToUpper: lpRiskSentinel.activeBinDistanceToUpper,
+    lpOutOfRangeSide: lpRiskSentinel.outOfRangeSide,
+    lpOutOfRangeBins: lpRiskSentinel.outOfRangeBins,
     lpActiveBinStatus: typeof input.position.activeBinId === 'number'
       && typeof input.position.lowerBinId === 'number'
       && typeof input.position.upperBinId === 'number'
@@ -1238,6 +1264,14 @@ function dedupeActiveLpPositions(accountState?: LiveAccountState) {
 
 function getLpExitPriority(action: 'withdraw-lp' | 'claim-fee' | 'rebalance-lp', reason?: string) {
   if (action === 'withdraw-lp') {
+    if (
+      reason?.startsWith('lp-range-exit') ||
+      reason?.startsWith('lp-liquidity-exit') ||
+      reason?.startsWith('lp-volatility-exit')
+    ) {
+      return 700;
+    }
+
     if (reason === 'lp-stop-loss') {
       return 600;
     }
@@ -1499,6 +1533,14 @@ export function validateLpWithdrawTriggerEligibility(input: {
 
   const expected = buildLpExitPolicyDecision({
     hasLpPosition: input.snapshot.hasLpPosition === true,
+    lpRiskIntent: input.snapshot.lpRiskIntent === 'hold'
+      || input.snapshot.lpRiskIntent === 'range-warning'
+      || input.snapshot.lpRiskIntent === 'range-exit'
+      || input.snapshot.lpRiskIntent === 'liquidity-exit'
+      || input.snapshot.lpRiskIntent === 'volatility-exit'
+      ? input.snapshot.lpRiskIntent
+      : undefined,
+    lpRiskReason: typeof input.snapshot.lpRiskReason === 'string' ? input.snapshot.lpRiskReason : undefined,
     lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
     lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
     lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
@@ -1550,12 +1592,33 @@ type EvaluatedLpPosition = {
   lifecycleBound: boolean;
 };
 
+function findLedgerRecordForPosition(input: {
+  ledger?: PositionLedgerSnapshot;
+  position: ActiveLpPosition;
+}) {
+  const chainPositionAddress = firstString(input.position.chainPositionAddress, input.position.positionAddress, input.position.positionId);
+  return (input.ledger?.records ?? []).find((record) => {
+    const recordChainPositionAddress = firstString(record.chainPositionAddress, record.positionId);
+    if (chainPositionAddress && recordChainPositionAddress) {
+      return chainPositionAddress === recordChainPositionAddress;
+    }
+
+    return Boolean(
+      input.position.mint &&
+      input.position.poolAddress &&
+      record.activeMint === input.position.mint &&
+      record.activePoolAddress === input.position.poolAddress
+    );
+  });
+}
+
 function evaluateActiveLpPositions(input: {
   accountState?: LiveAccountState;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
   nowMs: number;
   fills: LiveFillEntry[];
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
 }): EvaluatedLpPosition[] {
   const evaluated: EvaluatedLpPosition[] = [];
 
@@ -1566,6 +1629,10 @@ function evaluateActiveLpPositions(input: {
     }
 
     const lifecycleBound = matchesPositionStateLifecycle(rawPosition, input.positionState);
+    const ledgerRecord = findLedgerRecordForPosition({
+      ledger: input.positionLedger,
+      position: rawPosition
+    });
     const openFill = resolveLifecycleOpenFill({
       fills: input.fills,
       position: rawPosition,
@@ -1657,7 +1724,8 @@ function evaluateActiveLpPositions(input: {
     const snapshot: any = buildLpExitSnapshotFromPosition({
       position,
       holdTimeMs,
-      solDepletionExitBins: input.config.lpConfig?.solDepletionExitBins
+      solDepletionExitBins: input.config.lpConfig?.solDepletionExitBins,
+      previousRiskSentinel: ledgerRecord?.lastRiskSentinel
     });
     if (typeof entrySol === 'number') {
       snapshot.entrySol = entrySol;
@@ -1753,6 +1821,7 @@ function selectTriggeredLpExit(input: {
   nowMs: number;
   fills: LiveFillEntry[];
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
 }) {
   return selectTriggeredLpExitFromEvaluations(evaluateActiveLpPositions(input));
 }
@@ -1783,6 +1852,16 @@ function applyLpObservationToContext(
   context.trader.lpTradingValueSol = observation.snapshot.lpTradingValueSol;
   context.trader.lpEntryTradingSol = observation.snapshot.lpEntryTradingSol;
   context.trader.lpSolDepletedBins = observation.snapshot.lpSolDepletedBins as number | undefined;
+  context.trader.lpRiskSentinel = observation.snapshot.lpRiskSentinel;
+  context.trader.lpRiskIntent = observation.snapshot.lpRiskIntent;
+  context.trader.lpRiskReason = observation.snapshot.lpRiskReason;
+  context.trader.lpActiveBinId = observation.snapshot.lpActiveBinId;
+  context.trader.lpLowerBinId = observation.snapshot.lpLowerBinId;
+  context.trader.lpUpperBinId = observation.snapshot.lpUpperBinId;
+  context.trader.lpActiveBinDistanceToLower = observation.snapshot.lpActiveBinDistanceToLower;
+  context.trader.lpActiveBinDistanceToUpper = observation.snapshot.lpActiveBinDistanceToUpper;
+  context.trader.lpOutOfRangeSide = observation.snapshot.lpOutOfRangeSide;
+  context.trader.lpOutOfRangeBins = observation.snapshot.lpOutOfRangeBins;
   context.trader.lpSolExposureStatus = observation.snapshot.lpSolExposureStatus as
     | 'sol-heavy'
     | 'mixed'
@@ -1868,6 +1947,15 @@ function buildEngineSnapshot(
       lpSolExposureStatus: typeof context.trader.lpSolExposureStatus === 'string' ? context.trader.lpSolExposureStatus : undefined,
       lpImpermanentLossPct: typeof context.trader.lpImpermanentLossPct === 'number' ? context.trader.lpImpermanentLossPct : undefined,
       lpUnclaimedFeeUsd: typeof context.trader.lpUnclaimedFeeUsd === 'number' ? context.trader.lpUnclaimedFeeUsd : undefined,
+      lpRiskIntent: typeof context.trader.lpRiskIntent === 'string' ? context.trader.lpRiskIntent : undefined,
+      lpRiskReason: typeof context.trader.lpRiskReason === 'string' ? context.trader.lpRiskReason : undefined,
+      lpActiveBinId: typeof context.trader.lpActiveBinId === 'number' ? context.trader.lpActiveBinId : undefined,
+      lpLowerBinId: typeof context.trader.lpLowerBinId === 'number' ? context.trader.lpLowerBinId : undefined,
+      lpUpperBinId: typeof context.trader.lpUpperBinId === 'number' ? context.trader.lpUpperBinId : undefined,
+      lpActiveBinDistanceToLower: typeof context.trader.lpActiveBinDistanceToLower === 'number' ? context.trader.lpActiveBinDistanceToLower : undefined,
+      lpActiveBinDistanceToUpper: typeof context.trader.lpActiveBinDistanceToUpper === 'number' ? context.trader.lpActiveBinDistanceToUpper : undefined,
+      lpOutOfRangeSide: typeof context.trader.lpOutOfRangeSide === 'string' ? context.trader.lpOutOfRangeSide : undefined,
+      lpOutOfRangeBins: typeof context.trader.lpOutOfRangeBins === 'number' ? context.trader.lpOutOfRangeBins : undefined,
       lpActiveBinStatus: context.trader.lpActiveBinStatus as any,
       valuationStatus: firstString(context.trader.valuationStatus, context.trader.lpValuationStatus) as any,
       valuationReason: firstString(context.trader.valuationReason, context.trader.lpValuationReason),
@@ -2736,7 +2824,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const lpEvaluations = config.poolClass === 'new-token'
-    ? evaluateActiveLpPositions({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState })
+    ? evaluateActiveLpPositions({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState, positionLedger: input.positionLedger })
     : [];
   const multiLpExit = selectTriggeredLpExitFromEvaluations(lpEvaluations);
   const observedLpPosition = multiLpExit ?? selectObservedLpPositionFromEvaluations(lpEvaluations);
@@ -3027,6 +3115,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpTradingValueSol=${typeof context.trader.lpTradingValueSol === 'number' ? context.trader.lpTradingValueSol.toFixed(9) : 'n/a'}`,
     `lpEntryTradingSol=${typeof context.trader.lpEntryTradingSol === 'number' ? context.trader.lpEntryTradingSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
+    `lpRiskIntent=${typeof (updatedSnapshot as any).lpRiskIntent === 'string' ? (updatedSnapshot as any).lpRiskIntent : 'n/a'}`,
+    `lpRiskReason=${typeof (updatedSnapshot as any).lpRiskReason === 'string' ? (updatedSnapshot as any).lpRiskReason : 'n/a'}`,
+    `lpActiveBinId=${typeof (updatedSnapshot as any).lpActiveBinId === 'number' ? String((updatedSnapshot as any).lpActiveBinId) : 'n/a'}`,
+    `lpLowerBinId=${typeof (updatedSnapshot as any).lpLowerBinId === 'number' ? String((updatedSnapshot as any).lpLowerBinId) : 'n/a'}`,
+    `lpUpperBinId=${typeof (updatedSnapshot as any).lpUpperBinId === 'number' ? String((updatedSnapshot as any).lpUpperBinId) : 'n/a'}`,
+    `lpOutOfRangeSide=${typeof (updatedSnapshot as any).lpOutOfRangeSide === 'string' ? (updatedSnapshot as any).lpOutOfRangeSide : 'n/a'}`,
+    `lpOutOfRangeBins=${typeof (updatedSnapshot as any).lpOutOfRangeBins === 'number' ? String((updatedSnapshot as any).lpOutOfRangeBins) : 'n/a'}`,
     `lpSolExposureStatus=${typeof (updatedSnapshot as any).lpSolExposureStatus === 'string' ? (updatedSnapshot as any).lpSolExposureStatus : 'n/a'}`,
     `valuationStatus=${typeof (updatedSnapshot as any).valuationStatus === 'string' ? (updatedSnapshot as any).valuationStatus : 'n/a'}`,
     `valuationReason=${typeof (updatedSnapshot as any).valuationReason === 'string' ? (updatedSnapshot as any).valuationReason : 'n/a'}`,

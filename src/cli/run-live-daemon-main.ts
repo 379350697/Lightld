@@ -27,6 +27,7 @@ type ParsedArgs = {
   stateRootDir: string;
   journalRootDir: string;
   tickIntervalMs: number;
+  hotTickIntervalMs: number;
   maxTicks?: number;
   requestedPositionSol?: number;
   traderWallet?: string;
@@ -42,6 +43,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     stateRootDir: process.env.LIVE_STATE_DIR ?? 'state',
     journalRootDir: process.env.LIVE_JOURNAL_DIR ?? 'tmp/journals',
     tickIntervalMs: Number(process.env.LIVE_DAEMON_TICK_INTERVAL_MS ?? 30_000),
+    hotTickIntervalMs: Number(process.env.LIVE_DAEMON_HOT_TICK_INTERVAL_MS ?? 3_000),
     requestedPositionSol: process.env.LIVE_REQUESTED_POSITION_SOL
       ? Number(process.env.LIVE_REQUESTED_POSITION_SOL)
       : undefined,
@@ -81,6 +83,12 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (current === '--tick-interval-ms' && next) {
       parsed.tickIntervalMs = Number(next);
+      index += 1;
+      continue;
+    }
+
+    if (current === '--hot-tick-interval-ms' && next) {
+      parsed.hotTickIntervalMs = Number(next);
       index += 1;
       continue;
     }
@@ -291,6 +299,7 @@ async function main() {
     stateRootDir: args.stateRootDir,
     journalRootDir: args.journalRootDir,
     tickIntervalMs: args.tickIntervalMs,
+    hotTickIntervalMs: args.hotTickIntervalMs,
     residualTokenSweepIntervalMs: parsePositiveInteger(
       process.env.LIVE_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS,
       5 * 60_000

@@ -1279,8 +1279,19 @@ function hasHotLpSignal(input: {
     typeof position.solDepletedBins === 'number' &&
     position.solDepletedBins >= DEFAULT_SOL_DEPLETION_EXIT_BINS
   );
+  const hotRangeFromAccount = accountLpPositions.some((position) =>
+    isManageableLpPosition(position) &&
+    typeof position.activeBinId === 'number' &&
+    typeof position.lowerBinId === 'number' &&
+    typeof position.upperBinId === 'number' &&
+    (
+      position.activeBinId < position.lowerBinId ||
+      position.activeBinId > position.upperBinId ||
+      Math.min(position.activeBinId - position.lowerBinId, position.upperBinId - position.activeBinId) <= 3
+    )
+  );
 
-  return hotPnl || hotBinFromContext || hotBinFromAccount;
+  return hotPnl || hotBinFromContext || hotBinFromAccount || hotRangeFromAccount;
 }
 
 function resolveNextTickDelayMs(input: {
@@ -1939,7 +1950,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const stateRootDir = options.stateRootDir ?? 'state';
   const journalRootDir = options.journalRootDir ?? 'tmp/journals';
   const tickIntervalMs = options.tickIntervalMs ?? 30_000;
-  const hotTickIntervalMs = Math.min(options.hotTickIntervalMs ?? 10_000, tickIntervalMs);
+  const hotTickIntervalMs = Math.min(options.hotTickIntervalMs ?? 3_000, tickIntervalMs);
   const rateLimitBackoffIntervalMs = options.rateLimitBackoffIntervalMs ?? Math.max(60_000, tickIntervalMs * 2);
   const residualTokenSweepIntervalMs = options.residualTokenSweepIntervalMs ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS;
   const residualTokenSweepCooldownMs = options.residualTokenSweepCooldownMs ?? DEFAULT_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS;

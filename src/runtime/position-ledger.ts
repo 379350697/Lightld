@@ -1,4 +1,5 @@
 import type { LiveAccountState } from './live-account-provider.ts';
+import { evaluateLpRiskSentinel } from './lp-risk-sentinel.ts';
 import { createPositionId } from './lp-position-record.ts';
 import type {
   PendingSubmissionSnapshot,
@@ -282,6 +283,18 @@ export function importActiveLpPositionsToLedger(input: {
       displayValueSol: position.currentValueSol,
       lpTotalValueSol: position.currentValueSol,
       lastValuationAt: position.lastValuationAt,
+      lastRiskSentinel: evaluateLpRiskSentinel({
+        observedAt: input.now,
+        activeBinId: position.activeBinId,
+        lowerBinId: position.lowerBinId,
+        upperBinId: position.upperBinId,
+        solDepletedBins: position.solDepletedBins,
+        binCount: position.binCount,
+        currentValueSol: position.currentValueSol,
+        liquidityValueSol: position.liquidityValueSol,
+        currentPrice: position.currentPrice,
+        previous: existing?.lastRiskSentinel
+      }),
       lastSeenOnChainAt: input.now,
       missingOnChainSince: undefined,
       updatedAt: input.now
@@ -656,6 +669,7 @@ export function selectCompatibilityPositionState(input: {
     displayValueSol: activeRecord.displayValueSol,
     lpTotalValueSol: activeRecord.lpTotalValueSol,
     lastValuationAt: activeRecord.lastValuationAt,
+    lastRiskSentinel: activeRecord.lastRiskSentinel,
     lastClosedMint: input.prior?.lastClosedMint ?? '',
     lastClosedAt: input.prior?.lastClosedAt ?? activeRecord.lastClosedAt,
     walletSol: input.walletSol,

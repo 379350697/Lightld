@@ -6,6 +6,10 @@ type NewTokenSnapshot = {
   unrealizedPct?: number;
   /** LP mode: whether an LP position already exists */
   hasLpPosition?: boolean;
+  /** LP risk sentinel intent derived without Jupiter route checks */
+  lpRiskIntent?: 'hold' | 'range-warning' | 'range-exit' | 'liquidity-exit' | 'volatility-exit';
+  /** LP risk sentinel reason */
+  lpRiskReason?: string;
   /** LP mode: net PnL percentage (fees + principal change) */
   lpNetPnlPct?: number;
   /** LP mode: current LP value measured in SOL */

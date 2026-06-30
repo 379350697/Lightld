@@ -56,6 +56,8 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           hasInventory: Boolean(input.snapshot.hasInventory),
           unrealizedPct: typeof input.snapshot.unrealizedPct === 'number' ? input.snapshot.unrealizedPct : undefined,
           hasLpPosition: Boolean(input.snapshot.hasLpPosition),
+          lpRiskIntent: typeof input.snapshot.lpRiskIntent === 'string' ? input.snapshot.lpRiskIntent as any : undefined,
+          lpRiskReason: typeof input.snapshot.lpRiskReason === 'string' ? input.snapshot.lpRiskReason : undefined,
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
           lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
           lpSolExposureStatus: typeof input.snapshot.lpSolExposureStatus === 'string' ? input.snapshot.lpSolExposureStatus as any : undefined,
