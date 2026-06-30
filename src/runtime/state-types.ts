@@ -137,7 +137,12 @@ export const PositionStateSnapshotSchema = z.object({
   updatedAt: z.string()
 });
 
-export const PositionLedgerImportStatusSchema = z.enum(['imported', 'entry_unknown', 'import_failed']);
+export const PositionLedgerImportStatusSchema = z.enum([
+  'imported',
+  'entry_unknown',
+  'import_failed',
+  'archived_missing_without_exit_evidence'
+]);
 export type PositionLedgerImportStatus = z.infer<typeof PositionLedgerImportStatusSchema>;
 
 export const PositionLedgerRecordSchema = z.object({

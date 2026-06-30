@@ -295,6 +295,8 @@ describe('position ledger', () => {
     });
     expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-missing-without-exit')).toMatchObject({
       lifecycleState: 'open',
+      importStatus: 'archived_missing_without_exit_evidence',
+      lastReason: 'chain-position-missing-without-exit-evidence',
       missingOnChainSince: '2026-06-29T00:03:00.000Z'
     });
   });
