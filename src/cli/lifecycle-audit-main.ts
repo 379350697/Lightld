@@ -1,8 +1,9 @@
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { copyFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { PendingSubmissionStore } from '../runtime/pending-submission-store.ts';
 import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
-import type { PositionLedgerRecord, PositionLedgerSnapshot } from '../runtime/state-types.ts';
+import type { PendingSubmissionSnapshot, PositionLedgerRecord, PositionLedgerSnapshot } from '../runtime/state-types.ts';
 
 type Args = {
   stateRootDir: string;
@@ -45,8 +46,12 @@ function targetKey(record: PositionLedgerRecord) {
   return `${record.chainPositionAddress ?? ''}|${record.activePoolAddress ?? ''}|${record.activeMint ?? ''}`;
 }
 
-function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null) {
-  const issues: Array<{ field: 'openIntentId' | 'positionId'; value: string; targets: string[] }> = [];
+type CrossTargetIdentityIssue = { kind: 'cross-target-identity'; field: 'openIntentId' | 'positionId'; value: string; targets: string[] };
+type StaleOpenPendingIssue = { kind: 'stale-open-pending'; positionKey: string; poolAddress?: string; tokenMint?: string; reason?: string };
+type LifecycleIssue = CrossTargetIdentityIssue | StaleOpenPendingIssue;
+
+function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null): CrossTargetIdentityIssue[] {
+  const issues: CrossTargetIdentityIssue[] = [];
   const records = ledger?.records ?? [];
 
   for (const field of ['openIntentId', 'positionId'] as const) {
@@ -65,7 +70,7 @@ function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null) {
 
     for (const [value, targets] of grouped.entries()) {
       if (targets.size > 1) {
-        issues.push({ field, value, targets: [...targets].sort() });
+        issues.push({ kind: 'cross-target-identity', field, value, targets: [...targets].sort() });
       }
     }
   }
@@ -73,17 +78,74 @@ function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null) {
   return issues;
 }
 
-function repairLedger(ledger: PositionLedgerSnapshot, now: string) {
-  const issues = findCrossTargetIdentityIssues(ledger);
+function pendingMatchesRecord(pending: PendingSubmissionSnapshot | null, record: PositionLedgerRecord) {
+  return Boolean(
+    pending
+    && pending.orderAction === 'add-lp'
+    && (
+      (pending.openIntentId && pending.openIntentId === record.openIntentId)
+      || (
+        pending.poolAddress === record.activePoolAddress
+        && pending.tokenMint === record.activeMint
+      )
+    )
+  );
+}
+
+function findStaleOpenPendingIssues(
+  ledger: PositionLedgerSnapshot | null,
+  pending: PendingSubmissionSnapshot | null
+): StaleOpenPendingIssue[] {
+  return (ledger?.records ?? [])
+    .filter((record) =>
+      record.lifecycleState === 'open_pending'
+      && !record.chainPositionAddress
+      && !pendingMatchesRecord(pending, record)
+      && (
+        Boolean(record.missingOnChainSince)
+        || record.lastReason === 'http-400'
+        || record.lastReason === 'chain-position-missing-without-exit-evidence'
+      )
+    )
+    .map((record) => ({
+      kind: 'stale-open-pending' as const,
+      positionKey: record.positionKey,
+      poolAddress: record.activePoolAddress,
+      tokenMint: record.activeMint,
+      reason: record.lastReason
+    }));
+}
+
+function findLifecycleIssues(
+  ledger: PositionLedgerSnapshot | null,
+  pending: PendingSubmissionSnapshot | null
+): LifecycleIssue[] {
+  return [
+    ...findCrossTargetIdentityIssues(ledger),
+    ...findStaleOpenPendingIssues(ledger, pending)
+  ];
+}
+
+function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSubmissionSnapshot | null, now: string) {
+  const issues = findLifecycleIssues(ledger, pending);
   if (issues.length === 0) {
     return { ledger, changed: false, issues };
   }
 
   const duplicatedOpenIntentIds = new Set(
-    issues.filter((issue) => issue.field === 'openIntentId').map((issue) => issue.value)
+    issues
+      .filter((issue): issue is CrossTargetIdentityIssue => issue.kind === 'cross-target-identity' && issue.field === 'openIntentId')
+      .map((issue) => issue.value)
   );
   const duplicatedPositionIds = new Set(
-    issues.filter((issue) => issue.field === 'positionId').map((issue) => issue.value)
+    issues
+      .filter((issue): issue is CrossTargetIdentityIssue => issue.kind === 'cross-target-identity' && issue.field === 'positionId')
+      .map((issue) => issue.value)
+  );
+  const staleOpenPendingKeys = new Set(
+    issues
+      .filter((issue): issue is StaleOpenPendingIssue => issue.kind === 'stale-open-pending')
+      .map((issue) => issue.positionKey)
   );
 
   return {
@@ -92,28 +154,42 @@ function repairLedger(ledger: PositionLedgerSnapshot, now: string) {
     ledger: {
       version: 1 as const,
       updatedAt: now,
-      records: ledger.records.map((record) => ({
-        ...record,
-        openIntentId: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
-          ? undefined
-          : record.openIntentId,
-        positionId: record.positionId && duplicatedPositionIds.has(record.positionId) && record.chainPositionAddress
-          ? record.chainPositionAddress
-          : record.positionId,
-        importStatus: record.importStatus === 'imported' && (
-          (record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId))
-          || (record.positionId && duplicatedPositionIds.has(record.positionId))
-        )
-          ? 'entry_unknown' as const
-          : record.importStatus,
-        valuationStatus: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
-          ? 'unavailable' as const
-          : record.valuationStatus,
-        valuationReason: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
-          ? 'lifecycle-identity-cross-target-repaired'
-          : record.valuationReason,
-        updatedAt: now
-      }))
+      records: ledger.records.map((record) => {
+        if (staleOpenPendingKeys.has(record.positionKey)) {
+          return {
+            ...record,
+            lifecycleState: 'closed' as const,
+            importStatus: 'archived_missing_without_exit_evidence' as const,
+            lastReason: 'open-pending-without-chain-evidence-repaired',
+            missingOnChainSince: record.missingOnChainSince ?? now,
+            lastClosedAt: record.lastClosedAt ?? now,
+            updatedAt: now
+          };
+        }
+
+        return {
+          ...record,
+          openIntentId: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
+            ? undefined
+            : record.openIntentId,
+          positionId: record.positionId && duplicatedPositionIds.has(record.positionId) && record.chainPositionAddress
+            ? record.chainPositionAddress
+            : record.positionId,
+          importStatus: record.importStatus === 'imported' && (
+            (record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId))
+            || (record.positionId && duplicatedPositionIds.has(record.positionId))
+          )
+            ? 'entry_unknown' as const
+            : record.importStatus,
+          valuationStatus: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
+            ? 'unavailable' as const
+            : record.valuationStatus,
+          valuationReason: record.openIntentId && duplicatedOpenIntentIds.has(record.openIntentId)
+            ? 'lifecycle-identity-cross-target-repaired'
+            : record.valuationReason,
+          updatedAt: now
+        };
+      })
     }
   };
 }
@@ -130,8 +206,10 @@ async function copyIfExists(source: string, target: string) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const store = new RuntimeStateStore(args.stateRootDir);
+  const pendingStore = new PendingSubmissionStore(args.stateRootDir);
   const ledger = await store.readPositionLedger();
-  const issues = findCrossTargetIdentityIssues(ledger);
+  const pending = await pendingStore.read();
+  const issues = findLifecycleIssues(ledger, pending);
   const report = {
     stateRootDir: args.stateRootDir,
     apply: args.apply,
@@ -146,12 +224,29 @@ async function main() {
 
   await copyIfExists(join(args.stateRootDir, 'position-ledger.json'), join(args.backupDir, 'position-ledger.json'));
   await copyIfExists(join(args.stateRootDir, 'position-state.json'), join(args.backupDir, 'position-state.json'));
-  const repaired = repairLedger(ledger, new Date().toISOString());
+  const repaired = repairLedger(ledger, pending, new Date().toISOString());
   await store.writePositionLedger(repaired.ledger);
-  try {
-    JSON.parse(await readFile(join(args.stateRootDir, 'position-state.json'), 'utf8'));
-  } catch {
-    // Missing compatibility state is repaired by the daemon on next tick.
+  const positionState = await store.readPositionState();
+  const closedActiveRecord = repaired.ledger.records.find((record) =>
+    record.lifecycleState === 'closed'
+    && record.lastReason === 'open-pending-without-chain-evidence-repaired'
+    && positionState?.activePoolAddress === record.activePoolAddress
+    && positionState?.activeMint === record.activeMint
+  );
+  if (positionState && closedActiveRecord) {
+    await store.writePositionState({
+      ...positionState,
+      openIntentId: undefined,
+      positionId: undefined,
+      chainPositionAddress: undefined,
+      activeMint: undefined,
+      activePoolAddress: undefined,
+      lifecycleState: 'closed',
+      lastReason: 'open-pending-without-chain-evidence-repaired',
+      lastClosedMint: positionState.activeMint ?? positionState.lastClosedMint,
+      lastClosedAt: closedActiveRecord.lastClosedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
   }
 
   process.stdout.write(`${JSON.stringify({

@@ -374,6 +374,21 @@ export function importActiveLpPositionsToLedger(input: {
       return record;
     }
 
+    const isPendingOpenRecord = record.lifecycleState === 'open_pending'
+      || record.pendingOrderAction === 'add-lp'
+      || (
+        record.lastAction === 'add-lp'
+        && !record.chainPositionAddress
+        && !record.lastClosedAt
+      );
+    if (isPendingOpenRecord) {
+      return {
+        ...record,
+        missingOnChainSince: undefined,
+        updatedAt: input.now
+      };
+    }
+
     if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
       return {
         ...record,
@@ -573,7 +588,17 @@ export function applyLiveCycleResultToLedger(input: {
 
   const records = [...imported.records];
   let index = records.findIndex((record) => recordMatchesTarget({ record, ...target }));
-  if (index < 0 && (input.action === 'add-lp' || target.poolAddress || target.tokenMint || target.openIntentId || target.idempotencyKey)) {
+  const shouldCreateTargetRecord = Boolean(
+    input.liveOrderSubmitted
+    || input.persistedPendingSubmission
+    || input.pendingSubmissionBeforeCycle
+    || input.actionIdentity
+  );
+  if (
+    index < 0
+    && shouldCreateTargetRecord
+    && (input.action === 'add-lp' || target.poolAddress || target.tokenMint || target.openIntentId || target.idempotencyKey)
+  ) {
     records.push({
       positionKey: positionLedgerKey({
         chainPositionAddress: target.chainPositionAddress,

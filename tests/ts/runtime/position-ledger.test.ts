@@ -256,6 +256,44 @@ describe('position ledger', () => {
     });
   });
 
+  it('keeps pending opens business-active while waiting for chain position evidence', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-pending:mint-pending',
+          positionId: 'pool-pending:mint-pending',
+          openIntentId: 'lp-open-intent:pending',
+          activeMint: 'mint-pending',
+          activePoolAddress: 'pool-pending',
+          lifecycleState: 'open_pending',
+          lastAction: 'add-lp',
+          lastReason: 'live-order-submitted',
+          missingOnChainSince: '2026-06-29T00:01:00.000Z',
+          updatedAt: '2026-06-29T00:01:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-06-29T00:02:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'open_pending',
+      missingOnChainSince: undefined
+    });
+    expect(summarizePositionLedger(ledger).activeLpCount).toBe(1);
+  });
+
   it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
@@ -399,6 +437,36 @@ describe('position ledger', () => {
       lifecycleState: 'open',
       lastAction: 'add-lp'
     });
+  });
+
+  it('does not create phantom open-pending records for failed add-lp attempts', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: []
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      orderIntent: {
+        idempotencyKey: 'failed-open',
+        poolAddress: 'pool-failed',
+        tokenMint: 'mint-failed'
+      },
+      action: 'add-lp',
+      reason: 'http-400',
+      liveOrderSubmitted: false,
+      now: '2026-06-29T00:02:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(0);
   });
 
   it('does not mutate LP ledger records from residual dca-out outcomes', () => {
