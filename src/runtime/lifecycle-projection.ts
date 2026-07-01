@@ -7,6 +7,11 @@ import type {
   PositionLedgerSnapshot
 } from './state-types.ts';
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLE_MINTS = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+]);
+
 export type ProjectedPositionClass =
   | 'closed'
   | 'failed_terminal'
@@ -124,6 +129,10 @@ export function isPositionRecordBusinessActive(
   return classification === 'chain_active' || classification === 'pending_open';
 }
 
+function isNonStableMint(mint?: string) {
+  return typeof mint === 'string' && mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
+}
+
 function collectChainActiveKeys(accountState?: LiveAccountState) {
   const keys = new Set<string>();
 
@@ -131,7 +140,7 @@ function collectChainActiveKeys(accountState?: LiveAccountState) {
     ...(accountState?.walletLpPositions ?? []),
     ...(accountState?.journalLpPositions ?? [])
   ]) {
-    if (!(position.hasLiquidity ?? true)) {
+    if (!isNonStableMint(position.mint) || !(position.hasLiquidity ?? true)) {
       continue;
     }
 

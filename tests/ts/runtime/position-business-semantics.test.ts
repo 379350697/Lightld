@@ -305,6 +305,39 @@ describe('position business semantics', () => {
     });
   });
 
+  it('does not treat failed same-target attempts as managing a later unbound chain LP', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-later:mint-later',
+          positionId: 'pool-later:mint-later',
+          activeMint: 'mint-later',
+          activePoolAddress: 'pool-later',
+          lifecycleState: 'failed_terminal',
+          importStatus: 'archived_missing_without_exit_evidence',
+          lastAction: 'add-lp',
+          lastReason: 'http-400',
+          updatedAt: '2026-07-02T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount({
+        walletLpPositions: [{
+          poolAddress: 'pool-later',
+          positionAddress: '',
+          mint: 'mint-later',
+          hasLiquidity: true
+        }]
+      })
+    });
+
+    expect(result.managedActiveLp).toBeUndefined();
+    expect(result.untrackedActiveLpPositions).toHaveLength(1);
+    expect(result.chainActiveLpCount).toBe(1);
+  });
+
   it('allows new opens when the account is flat and residual dust is below threshold', () => {
     const result = resolvePositionBusinessSemantics({
       residualTokenSweepMinValueSol: 0.1,

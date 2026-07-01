@@ -107,6 +107,9 @@ function findMatchingRecord(records: PositionLedgerRecord[], position: AccountLp
 
     const syntheticOpenMatches = records.filter((record) =>
       record.lifecycleState !== 'closed' &&
+      record.lifecycleState !== 'failed_terminal' &&
+      record.lifecycleState !== 'reconcile_required' &&
+      !record.missingOnChainSince &&
       !record.chainPositionAddress &&
       record.activeMint === position.mint &&
       record.activePoolAddress === position.poolAddress

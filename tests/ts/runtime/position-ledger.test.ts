@@ -222,6 +222,55 @@ describe('position ledger', () => {
     });
   });
 
+  it('does not revive failed terminal open attempts when a later chain LP appears on the same pool and mint', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-a:mint-a',
+          positionId: 'pool-a:mint-a',
+          openIntentId: 'lp-open-intent:failed',
+          idempotencyKey: 'failed-open',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'failed_terminal',
+          importStatus: 'archived_missing_without_exit_evidence',
+          lastAction: 'add-lp',
+          lastReason: 'http-400',
+          updatedAt: '2026-07-02T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-a',
+          positionAddress: 'pos-a',
+          mint: 'mint-a',
+          hasLiquidity: true,
+          currentValueSol: 0.11
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      now: '2026-07-02T00:02:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(2);
+    const failedRecord = ledger.records.find((record) => record.positionKey === 'position:pool-a:mint-a');
+    expect(failedRecord).toMatchObject({
+      lifecycleState: 'failed_terminal'
+    });
+    expect(failedRecord?.chainPositionAddress).toBeUndefined();
+    expect(ledger.records.find((record) => record.positionKey === 'chain-position:pos-a')).toMatchObject({
+      lifecycleState: 'open',
+      chainPositionAddress: 'pos-a'
+    });
+  });
+
   it('does not close a ledger record only because the current account snapshot is missing it', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {

@@ -1,7 +1,7 @@
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot, PositionLedgerSnapshot, PositionStateSnapshot } from './state-types.ts';
 import type { LiveAction } from './action-semantics.ts';
-import { buildLifecycleProjection } from './lifecycle-projection.ts';
+import { buildLifecycleProjection, isPositionRecordBusinessActive } from './lifecycle-projection.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
@@ -75,7 +75,7 @@ function ledgerRecordMatchesPosition(input: {
   const records = input.ledger?.records ?? [];
   const chainPositionAddress = input.position.chainPositionAddress || input.position.positionAddress;
   return records.some((record) => {
-    if (record.lifecycleState === 'closed') {
+    if (!isPositionRecordBusinessActive(record)) {
       return false;
     }
     if (chainPositionAddress) {

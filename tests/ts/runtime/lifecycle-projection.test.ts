@@ -115,4 +115,36 @@ describe('lifecycle projection', () => {
     expect(projection.activeLpCount).toBe(1);
     expect(projection.allowNewOpens).toBe(true);
   });
+
+  it('does not count SOL or stable LP account positions as business-active capacity', () => {
+    const projection = buildLifecycleProjection({
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-sol',
+            positionAddress: 'pos-sol',
+            mint: 'So11111111111111111111111111111111111111112',
+            hasLiquidity: true
+          },
+          {
+            poolAddress: 'pool-usdc',
+            positionAddress: 'pos-usdc',
+            mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [],
+        fills: []
+      },
+      maxActivePositions: 1
+    });
+
+    expect(projection.chainActiveLpCount).toBe(0);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(true);
+  });
 });
