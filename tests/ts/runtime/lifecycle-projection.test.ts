@@ -1,0 +1,118 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  buildLifecycleProjection,
+  isPositionRecordBusinessActive,
+  isSubmittedPendingOpenRecord
+} from '../../../src/runtime/lifecycle-projection';
+import type { PendingSubmissionSnapshot, PositionLedgerSnapshot } from '../../../src/runtime/state-types';
+
+const now = '2026-07-02T00:00:00.000Z';
+
+function pendingOpen(overrides: Partial<PendingSubmissionSnapshot> = {}): PendingSubmissionSnapshot {
+  return {
+    strategyId: 'new-token-v1',
+    idempotencyKey: 'open-1',
+    submissionId: 'submission-1',
+    confirmationStatus: 'submitted',
+    finality: 'processed',
+    createdAt: now,
+    updatedAt: now,
+    tokenMint: 'mint-1',
+    poolAddress: 'pool-1',
+    orderAction: 'add-lp',
+    ...overrides
+  };
+}
+
+describe('lifecycle projection', () => {
+  it('keeps not-submitted add-lp attempts out of business-active positions', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [{
+        positionKey: 'position:pool-1:mint-1',
+        positionId: 'pool-1:mint-1',
+        activeMint: 'mint-1',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open_pending',
+        lastAction: 'add-lp',
+        lastReason: 'http-400',
+        missingOnChainSince: now,
+        updatedAt: now
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(isPositionRecordBusinessActive(ledger.records[0])).toBe(false);
+    expect(projection.chainActiveLpCount).toBe(0);
+    expect(projection.pendingOpenCount).toBe(0);
+    expect(projection.reconcileRequiredCount).toBe(1);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(false);
+  });
+
+  it('counts submitted add-lp as pending capacity reservation without chain-active LP', () => {
+    const pendingSubmission = pendingOpen();
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [{
+        positionKey: 'idempotency:open-1',
+        idempotencyKey: 'open-1',
+        pendingSubmissionId: 'submission-1',
+        pendingOrderAction: 'add-lp',
+        pendingConfirmationStatus: 'submitted',
+        activeMint: 'mint-1',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open_pending',
+        lastAction: 'add-lp',
+        lastReason: 'live-order-submitted',
+        updatedAt: now
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      pendingSubmission,
+      maxActivePositions: 5
+    });
+
+    expect(isSubmittedPendingOpenRecord(ledger.records[0], pendingSubmission)).toBe(true);
+    expect(projection.chainActiveLpCount).toBe(0);
+    expect(projection.pendingOpenCount).toBe(1);
+    expect(projection.reconcileRequiredCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(true);
+  });
+
+  it('counts observed chain positions separately from pending opens', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [{
+        positionKey: 'chain-position:pos-1',
+        positionId: 'pos-1',
+        chainPositionAddress: 'pos-1',
+        activeMint: 'mint-1',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'open',
+        lastAction: 'add-lp',
+        updatedAt: now
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(projection.chainActiveLpCount).toBe(1);
+    expect(projection.pendingOpenCount).toBe(0);
+    expect(projection.activeLpCount).toBe(1);
+    expect(projection.allowNewOpens).toBe(true);
+  });
+});

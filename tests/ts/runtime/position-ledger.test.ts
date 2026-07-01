@@ -256,7 +256,7 @@ describe('position ledger', () => {
     });
   });
 
-  it('keeps pending opens business-active while waiting for chain position evidence', () => {
+  it('does not revive stale pending opens without a submitted pending submission', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
         version: 1,
@@ -288,10 +288,64 @@ describe('position ledger', () => {
     });
 
     expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'failed_terminal',
+      lastReason: 'live-order-submitted',
+      missingOnChainSince: '2026-06-29T00:01:00.000Z'
+    });
+    expect(summarizePositionLedger(ledger).activeLpCount).toBe(0);
+    expect(summarizePositionLedger(ledger).reconcileRequiredCount).toBe(0);
+  });
+
+  it('keeps submitted pending opens as capacity reservations while waiting for chain evidence', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'idempotency:open-pending',
+          idempotencyKey: 'open-pending',
+          activeMint: 'mint-pending',
+          activePoolAddress: 'pool-pending',
+          pendingSubmissionId: 'submission-pending',
+          pendingOrderAction: 'add-lp',
+          pendingConfirmationStatus: 'submitted',
+          lifecycleState: 'open_pending',
+          lastAction: 'add-lp',
+          lastReason: 'live-order-submitted',
+          missingOnChainSince: '2026-06-29T00:01:00.000Z',
+          updatedAt: '2026-06-29T00:01:00.000Z'
+        }]
+      },
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'open-pending',
+        submissionId: 'submission-pending',
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-06-29T00:01:00.000Z',
+        updatedAt: '2026-06-29T00:01:00.000Z',
+        tokenMint: 'mint-pending',
+        poolAddress: 'pool-pending',
+        orderAction: 'add-lp'
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-06-29T00:02:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
       lifecycleState: 'open_pending',
       missingOnChainSince: undefined
     });
-    expect(summarizePositionLedger(ledger).activeLpCount).toBe(1);
+    expect(summarizePositionLedger(ledger).pendingOpenCount).toBe(1);
   });
 
   it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
@@ -620,6 +674,9 @@ describe('position ledger', () => {
 
     expect(summarizePositionLedger(ledger)).toEqual({
       activeLpCount: 1,
+      chainActiveLpCount: 1,
+      pendingOpenCount: 0,
+      reconcileRequiredCount: 1,
       managedLpCount: 1,
       importFailedLpCount: 0
     });

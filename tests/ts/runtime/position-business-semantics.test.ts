@@ -269,6 +269,36 @@ describe('position business semantics', () => {
 
     expect(result.activeLpCount).toBe(0);
     expect(result.managedLpCount).toBe(0);
+    expect(result.reconcileRequiredCount).toBe(1);
+    expect(result.canOpenNewPosition).toEqual({
+      allowed: false,
+      reason: 'lifecycle-reconcile-required'
+    });
+  });
+
+  it('does not let failed unsubmitted add-lp attempts consume active LP capacity', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 1,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-failed:mint-failed',
+          positionId: 'pool-failed:mint-failed',
+          activeMint: 'mint-failed',
+          activePoolAddress: 'pool-failed',
+          lifecycleState: 'failed_terminal',
+          importStatus: 'archived_missing_without_exit_evidence',
+          lastAction: 'add-lp',
+          lastReason: 'http-400',
+          updatedAt: '2026-07-02T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount()
+    });
+
+    expect(result.activeLpCount).toBe(0);
+    expect(result.reconcileRequiredCount).toBe(0);
     expect(result.canOpenNewPosition).toEqual({
       allowed: true,
       reason: 'flat'

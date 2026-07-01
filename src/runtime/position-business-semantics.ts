@@ -1,7 +1,7 @@
 import type { LiveAccountState } from './live-account-provider.ts';
 import type { PendingSubmissionSnapshot, PositionLedgerSnapshot, PositionStateSnapshot } from './state-types.ts';
 import type { LiveAction } from './action-semantics.ts';
-import { isPositionLedgerRecordBusinessActive } from './position-ledger.ts';
+import { buildLifecycleProjection } from './lifecycle-projection.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
@@ -27,6 +27,9 @@ export type PositionBusinessSemantics = {
   managedActiveLp?: BusinessLpPosition;
   untrackedActiveLpPositions: BusinessLpPosition[];
   activeLpCount: number;
+  chainActiveLpCount: number;
+  pendingOpenCount: number;
+  reconcileRequiredCount: number;
   managedLpCount: number;
   importFailedLpCount: number;
   hasActiveLp: boolean;
@@ -295,12 +298,15 @@ export function resolvePositionBusinessSemantics(input: {
       positionState: input.positionState
     })
   );
-  const activeLedgerRecords = (input.positionLedger?.records ?? []).filter((record) =>
-    isPositionLedgerRecordBusinessActive(record)
-  );
-  const activeLpCount = Math.max(activeLpPositions.length, activeLedgerRecords.length);
-  const managedLpCount = activeLedgerRecords.filter((record) => record.importStatus !== 'import_failed').length;
-  const importFailedLpCount = activeLedgerRecords.filter((record) => record.importStatus === 'import_failed').length;
+  const lifecycleProjection = buildLifecycleProjection({
+    ledger: input.positionLedger,
+    pendingSubmission: input.pendingSubmission,
+    accountState: input.accountState,
+    maxActivePositions
+  });
+  const activeLpCount = lifecycleProjection.activeLpCount;
+  const managedLpCount = lifecycleProjection.managedLpCount;
+  const importFailedLpCount = lifecycleProjection.importFailedLpCount;
   const hasPendingOpen = isPendingOpen(input.pendingSubmission);
   const hasPendingExit = isPendingExit(input.pendingSubmission);
   const hasPendingMaintenance = isPendingMaintenance(input.pendingSubmission);
@@ -343,6 +349,9 @@ export function resolvePositionBusinessSemantics(input: {
     managedActiveLp,
     untrackedActiveLpPositions,
     activeLpCount,
+    chainActiveLpCount: lifecycleProjection.chainActiveLpCount,
+    pendingOpenCount: lifecycleProjection.pendingOpenCount,
+    reconcileRequiredCount: lifecycleProjection.reconcileRequiredCount,
     managedLpCount,
     importFailedLpCount,
     hasActiveLp: overrides.hasActiveLp,
@@ -399,6 +408,14 @@ export function resolvePositionBusinessSemantics(input: {
     return buildResult({
       hasActiveLp: true,
       canOpenNewPosition: { allowed: false, reason: 'position-ledger-import-failed' },
+      nextAction: 'hold'
+    });
+  }
+
+  if (lifecycleProjection.reconcileRequiredCount > 0) {
+    return buildResult({
+      hasActiveLp: activeLpCount > 0,
+      canOpenNewPosition: { allowed: false, reason: 'lifecycle-reconcile-required' },
       nextAction: 'hold'
     });
   }

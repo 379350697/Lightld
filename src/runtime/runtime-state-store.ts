@@ -5,6 +5,10 @@ import {
   type DependencyHealthSnapshot,
   HealthReportSchema,
   type HealthReport,
+  OrderAttemptLedgerSnapshotSchema,
+  OrderAttemptRecordSchema,
+  type OrderAttemptLedgerSnapshot,
+  type OrderAttemptRecord,
   PositionLedgerRecordSchema,
   PositionLedgerSnapshotSchema,
   type PositionLedgerRecord,
@@ -77,6 +81,39 @@ export class RuntimeStateStore {
       : [...records, parsedRecord];
 
     await this.writePositionLedger({
+      version: 1,
+      records: nextRecords,
+      updatedAt: parsedRecord.updatedAt
+    });
+  }
+
+  async writeOrderAttemptLedger(snapshot: OrderAttemptLedgerSnapshot) {
+    await writeJsonAtomically(
+      join(this.rootDir, 'order-attempt-ledger.json'),
+      OrderAttemptLedgerSnapshotSchema.parse(snapshot)
+    );
+  }
+
+  async readOrderAttemptLedger(): Promise<OrderAttemptLedgerSnapshot | null> {
+    return readJsonIfExists(join(this.rootDir, 'order-attempt-ledger.json'), OrderAttemptLedgerSnapshotSchema);
+  }
+
+  async upsertOrderAttempt(record: OrderAttemptRecord) {
+    const current = await this.readOrderAttemptLedger();
+    const parsedRecord = OrderAttemptRecordSchema.parse(record);
+    const records = current?.records ?? [];
+    const index = records.findIndex((item) => item.attemptKey === parsedRecord.attemptKey);
+    const nextRecords = index >= 0
+      ? records.map((item, itemIndex) => itemIndex === index
+        ? {
+            ...item,
+            ...parsedRecord,
+            createdAt: item.createdAt
+          }
+        : item)
+      : [...records, parsedRecord];
+
+    await this.writeOrderAttemptLedger({
       version: 1,
       records: nextRecords,
       updatedAt: parsedRecord.updatedAt

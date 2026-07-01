@@ -104,6 +104,9 @@ function findStaleOpenPendingIssues(
       && (
         Boolean(record.missingOnChainSince)
         || record.lastReason === 'http-400'
+        || record.lastReason === 'sign-failed'
+        || record.lastReason === 'not-submitted'
+        || record.lastReason === 'broadcast-not-submitted'
         || record.lastReason === 'chain-position-missing-without-exit-evidence'
       )
     )
@@ -156,13 +159,21 @@ function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSubmission
       updatedAt: now,
       records: ledger.records.map((record) => {
         if (staleOpenPendingKeys.has(record.positionKey)) {
+          const isTerminalFailedAttempt = record.lastReason === 'http-400'
+            || record.lastReason === 'sign-failed'
+            || record.lastReason === 'not-submitted'
+            || record.lastReason === 'broadcast-not-submitted'
+            || record.lastReason === 'chain-position-missing-without-exit-evidence'
+            || Boolean(record.missingOnChainSince);
           return {
             ...record,
-            lifecycleState: 'closed' as const,
+            lifecycleState: isTerminalFailedAttempt ? 'failed_terminal' as const : 'reconcile_required' as const,
             importStatus: 'archived_missing_without_exit_evidence' as const,
-            lastReason: 'open-pending-without-chain-evidence-repaired',
+            lastReason: isTerminalFailedAttempt
+              ? record.lastReason
+              : 'open-pending-without-chain-evidence-repaired',
             missingOnChainSince: record.missingOnChainSince ?? now,
-            lastClosedAt: record.lastClosedAt ?? now,
+            lastClosedAt: isTerminalFailedAttempt ? record.lastClosedAt ?? now : record.lastClosedAt,
             updatedAt: now
           };
         }
@@ -224,12 +235,13 @@ async function main() {
 
   await copyIfExists(join(args.stateRootDir, 'position-ledger.json'), join(args.backupDir, 'position-ledger.json'));
   await copyIfExists(join(args.stateRootDir, 'position-state.json'), join(args.backupDir, 'position-state.json'));
+  await copyIfExists(join(args.stateRootDir, 'order-attempt-ledger.json'), join(args.backupDir, 'order-attempt-ledger.json'));
   const repaired = repairLedger(ledger, pending, new Date().toISOString());
   await store.writePositionLedger(repaired.ledger);
   const positionState = await store.readPositionState();
   const closedActiveRecord = repaired.ledger.records.find((record) =>
-    record.lifecycleState === 'closed'
-    && record.lastReason === 'open-pending-without-chain-evidence-repaired'
+    (record.lifecycleState === 'failed_terminal' || record.lifecycleState === 'reconcile_required')
+    && (record.lastReason === 'open-pending-without-chain-evidence-repaired' || record.lastReason === 'http-400')
     && positionState?.activePoolAddress === record.activePoolAddress
     && positionState?.activeMint === record.activeMint
   );

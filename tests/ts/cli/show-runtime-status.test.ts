@@ -7,6 +7,10 @@ describe('formatRuntimeStatus', () => {
     const output = formatRuntimeStatus({
       mode: 'degraded',
       allowNewOpens: false,
+      activeLpCount: 2,
+      chainActiveLpCount: 1,
+      pendingOpenCount: 1,
+      reconcileRequiredCount: 0,
       flattenOnly: true,
       pendingSubmission: true,
       circuitReason: 'quote-degraded',
@@ -75,6 +79,9 @@ describe('formatRuntimeStatus', () => {
     });
 
     expect(output).toContain('mode=degraded');
+    expect(output).toContain('chainActiveLpCount=1');
+    expect(output).toContain('pendingOpenCount=1');
+    expect(output).toContain('reconcileRequiredCount=0');
     expect(output).toContain('pendingSubmission=true');
     expect(output).toContain('mirrorState=degraded');
     expect(output).toContain('lastHousekeepingAt=2026-03-22T00:00:06.000Z');

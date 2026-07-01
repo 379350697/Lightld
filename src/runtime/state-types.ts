@@ -94,6 +94,8 @@ export const PositionLifecycleStateSchema = z.enum([
   'lp_exit_pending',
   'inventory_exit_pending',
   'inventory_exit_ready',
+  'reconcile_required',
+  'failed_terminal',
   'closed'
 ]);
 
@@ -214,6 +216,57 @@ export const PositionLedgerSnapshotSchema = z.object({
   updatedAt: z.string()
 });
 
+export const LifecycleEventTypeSchema = z.enum([
+  'IntentCreated',
+  'SignFailed',
+  'BroadcastNotSubmitted',
+  'BroadcastSubmitted',
+  'ConfirmationResolved',
+  'FillObserved',
+  'ChainPositionObserved',
+  'ChainMissing',
+  'ReconciledClosed'
+]);
+export type LifecycleEventType = z.infer<typeof LifecycleEventTypeSchema>;
+
+export const OrderAttemptStatusSchema = z.enum([
+  'intent_created',
+  'sign_failed',
+  'broadcast_not_submitted',
+  'broadcast_submitted',
+  'confirmation_resolved',
+  'attempt_failed'
+]);
+export type OrderAttemptStatus = z.infer<typeof OrderAttemptStatusSchema>;
+
+export const OrderAttemptRecordSchema = z.object({
+  attemptKey: z.string(),
+  strategyId: z.string().optional(),
+  openIntentId: z.string().optional(),
+  positionId: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  submissionId: z.string().optional(),
+  poolAddress: z.string().optional(),
+  tokenMint: z.string().optional(),
+  action: z.string(),
+  status: OrderAttemptStatusSchema,
+  eventType: LifecycleEventTypeSchema,
+  broadcastStatus: z.string().optional(),
+  confirmationStatus: z.string().optional(),
+  finality: z.string().optional(),
+  liveOrderSubmitted: z.boolean(),
+  reason: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const OrderAttemptLedgerSnapshotSchema = z.object({
+  version: z.literal(1),
+  records: z.array(OrderAttemptRecordSchema),
+  updatedAt: z.string()
+});
+
 /** Per-slot subset forwarded to the exit policy snapshot. */
 export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
   activeMint: true,
@@ -241,6 +294,8 @@ export type LpExitPolicySnapshot = z.infer<typeof LpExitPolicySnapshotSchema>;
 export type PositionStateSnapshot = z.infer<typeof PositionStateSnapshotSchema>;
 export type PositionLedgerRecord = z.infer<typeof PositionLedgerRecordSchema>;
 export type PositionLedgerSnapshot = z.infer<typeof PositionLedgerSnapshotSchema>;
+export type OrderAttemptRecord = z.infer<typeof OrderAttemptRecordSchema>;
+export type OrderAttemptLedgerSnapshot = z.infer<typeof OrderAttemptLedgerSnapshotSchema>;
 
 export const HousekeepingSnapshotSchema = z.object({
   lastHousekeepingAt: z.string(),
@@ -256,6 +311,9 @@ export const HealthReportSchema = z.object({
   mode: RuntimeModeSchema,
   allowNewOpens: z.boolean(),
   activeLpCount: z.number().int().nonnegative().optional(),
+  chainActiveLpCount: z.number().int().nonnegative().optional(),
+  pendingOpenCount: z.number().int().nonnegative().optional(),
+  reconcileRequiredCount: z.number().int().nonnegative().optional(),
   managedLpCount: z.number().int().nonnegative().optional(),
   untrackedLpCount: z.number().int().nonnegative().optional(),
   importFailedLpCount: z.number().int().nonnegative().optional(),

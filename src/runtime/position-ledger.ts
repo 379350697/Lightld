@@ -7,6 +7,11 @@ import type {
   PositionLedgerSnapshot,
   PositionStateSnapshot
 } from './state-types.ts';
+import {
+  buildLifecycleProjection,
+  isPositionRecordBusinessActive,
+  isSubmittedPendingOpenRecord
+} from './lifecycle-projection.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
@@ -374,17 +379,47 @@ export function importActiveLpPositionsToLedger(input: {
       return record;
     }
 
-    const isPendingOpenRecord = record.lifecycleState === 'open_pending'
-      || record.pendingOrderAction === 'add-lp'
-      || (
-        record.lastAction === 'add-lp'
-        && !record.chainPositionAddress
-        && !record.lastClosedAt
-      );
-    if (isPendingOpenRecord) {
+    if (isSubmittedPendingOpenRecord(record, input.pendingSubmission)) {
       return {
         ...record,
         missingOnChainSince: undefined,
+        updatedAt: input.now
+      };
+    }
+
+    const isUnprovenPendingOpenRecord = record.lifecycleState === 'open_pending'
+      && !record.chainPositionAddress;
+    if (isUnprovenPendingOpenRecord) {
+      const isTerminalFailedAttempt = record.lastReason === 'http-400'
+        || record.lastReason === 'sign-failed'
+        || record.lastReason === 'not-submitted'
+        || record.lastReason === 'broadcast-not-submitted'
+        || record.lastReason === 'chain-position-missing-without-exit-evidence'
+        || Boolean(record.missingOnChainSince);
+      return {
+        ...record,
+        lifecycleState: isTerminalFailedAttempt ? 'failed_terminal' as const : 'reconcile_required' as const,
+        importStatus: 'archived_missing_without_exit_evidence' as const,
+        lastReason: isTerminalFailedAttempt
+          ? record.lastReason
+          : 'open-pending-without-chain-evidence',
+        missingOnChainSince: record.missingOnChainSince ?? input.now,
+        lastClosedAt: isTerminalFailedAttempt ? record.lastClosedAt ?? input.now : record.lastClosedAt,
+        updatedAt: input.now
+      };
+    }
+
+    const isUnprovenSyntheticOpenRecord = record.lifecycleState === 'open'
+      && !record.chainPositionAddress
+      && !record.entrySol;
+    if (isUnprovenSyntheticOpenRecord) {
+      return {
+        ...record,
+        lifecycleState: 'failed_terminal' as const,
+        importStatus: 'archived_missing_without_exit_evidence' as const,
+        lastReason: record.lastReason ?? 'synthetic-open-without-chain-evidence',
+        missingOnChainSince: record.missingOnChainSince ?? input.now,
+        lastClosedAt: record.lastClosedAt ?? input.now,
         updatedAt: input.now
       };
     }
@@ -580,8 +615,10 @@ export function applyLiveCycleResultToLedger(input: {
     !input.liveOrderSubmitted &&
     !input.persistedPendingSubmission &&
     !input.pendingSubmissionBeforeCycle &&
-    !input.actionIdentity &&
-    !input.orderIntent
+    (
+      input.action === 'add-lp' ||
+      (!input.actionIdentity && !input.orderIntent)
+    )
   ) {
     return imported;
   }
@@ -703,21 +740,28 @@ export function applyLiveCycleResultToLedger(input: {
 }
 
 export function isPositionLedgerRecordBusinessActive(record: PositionLedgerRecord) {
-  return record.lifecycleState !== 'closed' && !record.missingOnChainSince;
+  return isPositionRecordBusinessActive(record);
 }
 
 export function summarizePositionLedger(ledger?: PositionLedgerSnapshot | null) {
-  const records = ledger?.records ?? [];
-  const activeRecords = records.filter((record) => isPositionLedgerRecordBusinessActive(record));
+  const projection = buildLifecycleProjection({
+    ledger,
+    blockNewOpensOnReconcileRequired: false
+  });
+  const activeRecords = projection.businessActiveRecords;
   return {
-    activeLpCount: activeRecords.length,
-    managedLpCount: activeRecords.filter((record) => record.importStatus !== 'import_failed').length,
-    importFailedLpCount: activeRecords.filter((record) => record.importStatus === 'import_failed').length
+    activeLpCount: projection.activeLpCount,
+    chainActiveLpCount: projection.chainActiveLpCount,
+    pendingOpenCount: projection.pendingOpenCount,
+    reconcileRequiredCount: projection.reconcileRequiredCount,
+    managedLpCount: projection.managedLpCount,
+    importFailedLpCount: projection.importFailedLpCount
   };
 }
 
 export function selectCompatibilityPositionState(input: {
   ledger?: PositionLedgerSnapshot | null;
+  pendingSubmission?: PendingSubmissionSnapshot | null;
   prior?: PositionStateSnapshot | null;
   allowNewOpens: boolean;
   flattenOnly: boolean;
@@ -727,7 +771,7 @@ export function selectCompatibilityPositionState(input: {
   now: string;
 }): PositionStateSnapshot {
   const activeRecord = [...(input.ledger?.records ?? [])]
-    .filter((record) => isPositionLedgerRecordBusinessActive(record))
+    .filter((record) => isPositionRecordBusinessActive(record, input.pendingSubmission))
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
 
   if (!activeRecord) {

@@ -58,6 +58,7 @@ import {
   resolvePositionBusinessSemantics,
   type PositionBusinessSemantics
 } from './position-business-semantics.ts';
+import { buildLifecycleProjection, buildOrderAttemptRecord } from './lifecycle-projection.ts';
 import {
   applyLiveCycleResultToLedger,
   collectActiveLpPositions,
@@ -2039,6 +2040,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       );
       await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
         ledger: startupLedger,
+        pendingSubmission: await pendingSubmissionStore.read(),
         prior: startupPositionState,
         allowNewOpens: false,
         flattenOnly: false,
@@ -2918,7 +2920,27 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           confirmedFill: result.confirmedFill,
           now: nowIso()
         });
+        const orderAttemptRecord = buildOrderAttemptRecord({
+          strategyId: options.strategy,
+          actionIdentity: result.actionIdentity,
+          orderIntent: result.orderIntent,
+          pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
+          action: result.action,
+          reason: result.reason,
+          liveOrderSubmitted: result.liveOrderSubmitted,
+          confirmationStatus: result.confirmationStatus,
+          now: nowIso()
+        });
+        if (orderAttemptRecord) {
+          await runtimeStateStore.upsertOrderAttempt(orderAttemptRecord);
+        }
         await runtimeStateStore.writePositionLedger(positionLedger);
+        const lifecycleProjection = buildLifecycleProjection({
+          ledger: positionLedger,
+          pendingSubmission: persistedPendingSubmission,
+          accountState: effectiveAccountState,
+          maxActivePositions: options.maxActivePositions ?? 5
+        });
         const positionLedgerSummary = summarizePositionLedger(positionLedger);
         const businessAllowNewOpens = runtimeAllowsNewOpens && resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
@@ -2939,10 +2961,18 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           maxActivePositions: options.maxActivePositions ?? 5
         }).canOpenNewPosition.allowed;
         report.allowNewOpens = businessAllowNewOpens;
-        report.activeLpCount = positionLedgerSummary.activeLpCount;
-        report.managedLpCount = positionLedgerSummary.managedLpCount;
+        report.activeLpCount = lifecycleProjection.activeLpCount;
+        report.chainActiveLpCount = lifecycleProjection.chainActiveLpCount;
+        report.pendingOpenCount = lifecycleProjection.pendingOpenCount;
+        report.reconcileRequiredCount = lifecycleProjection.reconcileRequiredCount;
+        report.managedLpCount = lifecycleProjection.managedLpCount;
         report.untrackedLpCount = Math.max(0, countActiveLpExposures(effectiveAccountState) - positionLedgerSummary.managedLpCount);
-        report.importFailedLpCount = positionLedgerSummary.importFailedLpCount;
+        report.importFailedLpCount = lifecycleProjection.importFailedLpCount;
+        if (lifecycleProjection.reconcileRequiredCount > 0) {
+          report.mode = report.mode === 'healthy' ? 'degraded' : report.mode;
+          report.allowNewOpens = false;
+          report.circuitReason = report.circuitReason || 'lifecycle-reconcile-required';
+        }
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
           ? resolveConfirmedOpenFillEntry({
               resultFill: result.confirmedFill,
@@ -3083,6 +3113,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (positionLedgerSummary.activeLpCount > 0 || persistedLifecycleState === 'closed') {
           await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
             ledger: positionLedger,
+            pendingSubmission: persistedPendingSubmission,
             prior: nextPositionState,
             allowNewOpens: businessAllowNewOpens,
             flattenOnly: runtimeState.mode === 'flatten_only',

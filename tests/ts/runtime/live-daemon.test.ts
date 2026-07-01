@@ -2102,6 +2102,75 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('records unsubmitted add-lp attempts without creating phantom active LPs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-not-submitted-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: {
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        },
+        context: {
+          pool: { address: 'pool-failed', liquidityUsd: 10_000, score: 90 },
+          token: { mint: 'mint-failed', inSession: true, hasSolRoute: true, symbol: 'FAIL', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'test-signer',
+            signedAt: '2026-07-02T00:00:00.000Z',
+            signature: 'sig'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => ({
+            status: 'failed' as const,
+            reason: 'http-400',
+            retryable: false,
+            idempotencyKey: signedIntent.intent.idempotencyKey
+          })
+        }
+      })
+    });
+
+    const ledger = await runtimeStateStore.readPositionLedger();
+    const attempts = await runtimeStateStore.readOrderAttemptLedger();
+    const health = await runtimeStateStore.readHealthReport();
+
+    expect(ledger?.records ?? []).toHaveLength(0);
+    expect(attempts?.records).toHaveLength(1);
+    expect(attempts?.records[0]).toMatchObject({
+      action: 'add-lp',
+      status: 'broadcast_not_submitted',
+      broadcastStatus: 'not_submitted',
+      liveOrderSubmitted: false,
+      reason: 'http-400'
+    });
+    expect(health).toMatchObject({
+      activeLpCount: 0,
+      chainActiveLpCount: 0,
+      pendingOpenCount: 0,
+      reconcileRequiredCount: 0
+    });
+  });
+
   it('blocks repeated add-lp while same mint remains open_pending', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-open-pending-guard-'));
     const stateRootDir = join(root, 'state');

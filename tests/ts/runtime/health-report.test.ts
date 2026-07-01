@@ -50,4 +50,28 @@ describe('buildHealthReport', () => {
     expect(report.allowNewOpens).toBe(false);
     expect(report.circuitReason).toBe('runtime-stale:last-successful-tick');
   });
+
+  it('degrades health and blocks opens when lifecycle reconciliation is required', () => {
+    const report = buildHealthReport({
+      mode: 'healthy',
+      allowNewOpens: true,
+      activeLpCount: 0,
+      chainActiveLpCount: 0,
+      pendingOpenCount: 0,
+      reconcileRequiredCount: 1,
+      flattenOnly: false,
+      pendingSubmission: false,
+      circuitReason: '',
+      lastSuccessfulTickAt: '2026-03-22T00:00:00.000Z',
+      dependencyHealth: {
+        quoteFailures: 0,
+        reconcileFailures: 0
+      },
+      updatedAt: '2026-03-22T00:00:10.000Z'
+    });
+
+    expect(report.mode).toBe('degraded');
+    expect(report.allowNewOpens).toBe(false);
+    expect(report.circuitReason).toBe('lifecycle-reconcile-required');
+  });
 });
