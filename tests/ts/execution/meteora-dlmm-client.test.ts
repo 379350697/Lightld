@@ -143,6 +143,37 @@ describe('MeteoraDlmmClient', () => {
     expect(transactions).toEqual([{ id: 'tx-1a' }, { id: 'tx-1b' }, { id: 'tx-2' }]);
   });
 
+  it('removes liquidity only from the requested chain position when provided', async () => {
+    const positions = [
+      { publicKey: makePoolAddress(51), positionData: { lowerBinId: 10, upperBinId: 20 } },
+      { publicKey: makePoolAddress(52), positionData: { lowerBinId: 30, upperBinId: 40 } }
+    ];
+    const removeLiquidity = vi.fn(async () => ({ id: 'tx-target' }));
+
+    dlmmPkg.create = vi.fn(async () => ({
+      getPositionsByUserAndLbPair: async () => ({
+        activeBin: { binId: 120, price: '1' },
+        userPositions: positions
+      }),
+      removeLiquidity
+    }));
+
+    const client = new MeteoraDlmmClient({} as any);
+    const transactions = await client.removeLiquidity(
+      makePoolAddress(1),
+      makePoolAddress(2).toBase58(),
+      positions[1].publicKey.toBase58()
+    );
+
+    expect(removeLiquidity).toHaveBeenCalledTimes(1);
+    expect(removeLiquidity).toHaveBeenCalledWith(expect.objectContaining({
+      position: positions[1].publicKey,
+      fromBinId: 30,
+      toBinId: 40
+    }));
+    expect(transactions).toEqual([{ id: 'tx-target' }]);
+  });
+
   it('claims fees across every Meteora position in the pool', async () => {
     const positions = [
       { publicKey: makePoolAddress(60), positionData: { feeX: { isZero: () => false }, feeY: { isZero: () => true } } },

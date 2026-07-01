@@ -765,6 +765,13 @@ export function resolveNewOpenPassSkipReason(input: {
     return `runtime-mode:${input.runtimeMode}`;
   }
 
+  if (
+    input.maintenanceResult.action === 'hold'
+    && (input.businessSemantics.hasActiveLp || hasPersistedActiveLifecycleTarget(input.positionState))
+  ) {
+    return 'active-lp';
+  }
+
   return input.businessSemantics.canRunNewOpenAfterMaintenance.allowed
     ? undefined
     : input.businessSemantics.canRunNewOpenAfterMaintenance.reason;
@@ -1591,6 +1598,19 @@ function hasOpenInventory(accountState?: LiveAccountState) {
   );
 }
 
+function hasPersistedActiveLifecycleTarget(positionState?: PositionStateSnapshot | null) {
+  return Boolean(
+    positionState
+    && positionState.lifecycleState
+    && positionState.lifecycleState !== 'closed'
+    && (
+      positionState.chainPositionAddress
+      || (positionState.activeMint && positionState.activePoolAddress)
+      || positionState.activeMint
+    )
+  );
+}
+
 function reconcileTerminalFlatPositionState(input: {
   positionState?: PositionStateSnapshot;
   accountState?: LiveAccountState;
@@ -1873,6 +1893,20 @@ export function resolveLifecycleStateForPersist(input: {
     activePoolAddress: input.activePoolAddress
   });
   const accountIsFlat = !input.pendingSubmission && !hasInventory && !hasMatchingPosition;
+  const unresolvedOpen = Boolean(input.activeMint) && (
+    input.lastReason?.includes('journal-open-unresolved') ||
+    input.lastReason?.includes('pending-open:') ||
+    input.lastReason?.includes('mint-position-already-active:')
+  );
+  const lastReason = input.lastReason ?? '';
+  const historicalOnly = lastReason.includes('historical-unconfirmed-entry-only') ||
+    lastReason.includes('historical-confirmed-entry-only');
+  const pendingOpen = input.pendingSubmission && !hasInventory && (
+    input.previousLifecycleState === 'open_pending' ||
+    input.lastAction === 'add-lp' ||
+    input.lastAction === 'deploy' ||
+    unresolvedOpen
+  );
 
   if (isPositionAlreadyClosedTerminal({
     action: input.lastAction,
@@ -1904,24 +1938,17 @@ export function resolveLifecycleStateForPersist(input: {
     return 'open';
   }
 
+  if (isFullExitAction(input.lastAction as LiveAction) && hasMatchingPosition) {
+    return 'lp_exit_pending';
+  }
+
+  if (pendingOpen) {
+    return 'open_pending';
+  }
+
   if (input.nextLifecycleState) {
     return input.nextLifecycleState;
   }
-
-  const unresolvedOpen = Boolean(input.activeMint) && (
-    input.lastReason?.includes('journal-open-unresolved') ||
-    input.lastReason?.includes('pending-open:') ||
-    input.lastReason?.includes('mint-position-already-active:')
-  );
-  const lastReason = input.lastReason ?? '';
-  const historicalOnly = lastReason.includes('historical-unconfirmed-entry-only') ||
-    lastReason.includes('historical-confirmed-entry-only');
-  const pendingOpen = input.pendingSubmission && !hasInventory && (
-    input.previousLifecycleState === 'open_pending' ||
-    input.lastAction === 'add-lp' ||
-    input.lastAction === 'deploy' ||
-    unresolvedOpen
-  );
 
   if (!input.pendingSubmission && !hasInventory) {
     return 'closed';
@@ -1929,10 +1956,6 @@ export function resolveLifecycleStateForPersist(input: {
 
   if (historicalOnly) {
     return 'closed';
-  }
-
-  if (pendingOpen) {
-    return 'open_pending';
   }
 
   if (unresolvedOpen && (input.pendingSubmission || hasInventory || hasMatchingPosition)) {
@@ -2391,7 +2414,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         });
         const shouldStartMaintenancePass = Boolean(
           options.openAfterMaintenanceHold &&
-          preCycleBusinessSemantics.hasActiveLp
+          (
+            preCycleBusinessSemantics.hasActiveLp
+            || preCycleBusinessSemantics.residualDustState === 'dust_cleanup_pending'
+            || hasPersistedActiveLifecycleTarget(positionState)
+          )
         );
         // Gate the new-open pass only through the unified business semantics:
         // existing LPs are maintained independently, and capacity controls
@@ -2406,7 +2433,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           && !positionState.chainPositionAddress
         );
         const allowNewOpens = preCycleBusinessSemantics.canOpenNewPosition.allowed
-          && !priorOpenConfirming;
+          && !priorOpenConfirming
+          && !preCycleBusinessSemantics.hasActiveLp;
         const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
           store: targetOpenCooldownStore,
           now: nowIso()

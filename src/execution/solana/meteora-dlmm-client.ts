@@ -573,7 +573,7 @@ export class MeteoraDlmmClient {
     });
   }
 
-  async removeLiquidity(walletPublicKey: PublicKey, poolAddress: string) {
+  async removeLiquidity(walletPublicKey: PublicKey, poolAddress: string, chainPositionAddress?: string) {
     return this.withConnection(async (connection) => {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
@@ -582,8 +582,16 @@ export class MeteoraDlmmClient {
         throw new Error('Position not found for pool');
       }
 
+      const positionsToRemove = chainPositionAddress
+        ? userPositions.filter((positionInfo: any) => positionInfo.publicKey?.toBase58?.() === chainPositionAddress)
+        : userPositions;
+
+      if (positionsToRemove.length === 0) {
+        throw new Error('Position not found for pool');
+      }
+
       const transactions = await Promise.all(
-        userPositions.map((positionInfo: any) => dlmmPool.removeLiquidity({
+        positionsToRemove.map((positionInfo: any) => dlmmPool.removeLiquidity({
           user: walletPublicKey,
           position: positionInfo.publicKey,
           fromBinId: positionInfo.positionData.lowerBinId,
@@ -598,7 +606,7 @@ export class MeteoraDlmmClient {
     });
   }
 
-  async claimFee(walletPublicKey: PublicKey, poolAddress: string) {
+  async claimFee(walletPublicKey: PublicKey, poolAddress: string, chainPositionAddress?: string) {
     return this.withConnection(async (connection) => {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(walletPublicKey);
@@ -607,9 +615,17 @@ export class MeteoraDlmmClient {
         throw new Error('Position not found for pool');
       }
 
+      const positionsToClaim = chainPositionAddress
+        ? userPositions.filter((positionInfo: any) => positionInfo.publicKey?.toBase58?.() === chainPositionAddress)
+        : userPositions;
+
+      if (positionsToClaim.length === 0) {
+        throw new Error('Position not found for pool');
+      }
+
       return flattenTransactions(await dlmmPool.claimAllSwapFee({
         owner: walletPublicKey,
-        positions: userPositions
+        positions: positionsToClaim
       }));
     });
   }

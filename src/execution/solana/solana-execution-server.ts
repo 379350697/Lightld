@@ -46,7 +46,10 @@ const BroadcastRequestSchema = z.object({
       side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).optional(),
       tokenMint: z.string().min(1).optional(),
       fullPositionExit: z.boolean().optional(),
-      liquidateResidualTokenToSol: z.boolean().optional()
+      liquidateResidualTokenToSol: z.boolean().optional(),
+      openIntentId: z.string().min(1).optional(),
+      positionId: z.string().min(1).optional(),
+      chainPositionAddress: z.string().min(1).optional()
     }),
     signerId: z.string().min(1),
     signedAt: z.string().min(1),
@@ -90,7 +93,10 @@ const BroadcastResultSchema = z.object({
   residualUnsoldMints: z.array(z.string()).optional(),
   residualIgnoredMints: z.array(z.string()).optional(),
   residualFailureReasons: z.array(z.string()).optional(),
-  residualEstimatedValueSol: z.number().finite().nonnegative().optional()
+  residualEstimatedValueSol: z.number().finite().nonnegative().optional(),
+  openIntentId: z.string().min(1).optional(),
+  positionId: z.string().min(1).optional(),
+  chainPositionAddress: z.string().min(1).optional()
 });
 
 const SubmissionEntrySchema = z.object({
@@ -874,6 +880,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     residualIgnoredMints?: string[];
     residualFailureReasons?: string[];
     residualEstimatedValueSol?: number;
+    openIntentId?: string;
+    positionId?: string;
+    chainPositionAddress?: string;
   }): LiveBroadcastResult => ({
     status: 'submitted',
     submissionId: input.signatures[input.signatures.length - 1] ?? '',
@@ -888,7 +897,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     residualUnsoldMints: input.residualUnsoldMints,
     residualIgnoredMints: input.residualIgnoredMints,
     residualFailureReasons: input.residualFailureReasons,
-    residualEstimatedValueSol: input.residualEstimatedValueSol
+    residualEstimatedValueSol: input.residualEstimatedValueSol,
+    openIntentId: input.openIntentId,
+    positionId: input.positionId,
+    chainPositionAddress: input.chainPositionAddress
   });
   const buildFailedBroadcastResult = (input: {
     idempotencyKey: string;
@@ -1128,6 +1140,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
             const side = intent.side ?? 'buy';
+            const lifecycleResultIdentity = {
+              openIntentId: intent.openIntentId,
+              positionId: intent.positionId,
+              chainPositionAddress: intent.chainPositionAddress
+            };
             const tokenMint = intent.tokenMint ?? intent.poolAddress;
             let buildMs: number | undefined;
             let quoteMs: number | undefined;
@@ -1224,7 +1241,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
                 await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                   idempotencyKey: intent.idempotencyKey,
-                  signatures: [swapResult.signature]
+                  signatures: [swapResult.signature],
+                  ...lifecycleResultIdentity
                 }));
                 return;
               } else {
@@ -1249,11 +1267,19 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 }
               } else if (side === 'withdraw-lp') {
                 const buildStartedAt = Date.now();
-                txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(keypair.publicKey, intent.poolAddress));
+                txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(
+                  keypair.publicKey,
+                  intent.poolAddress,
+                  intent.chainPositionAddress
+                ));
                 buildMs = durationMs(buildStartedAt);
               } else if (side === 'claim-fee') {
                 const buildStartedAt = Date.now();
-                txBatch = toTransactionBatch(await options.dlmmClient.claimFee(keypair.publicKey, intent.poolAddress));
+                txBatch = toTransactionBatch(await options.dlmmClient.claimFee(
+                  keypair.publicKey,
+                  intent.poolAddress,
+                  intent.chainPositionAddress
+                ));
                 buildMs = durationMs(buildStartedAt);
               } else {
                 throw new Error(`Unsupported side: ${side}`);
@@ -1307,7 +1333,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
                     batchStatus: 'partial',
-                    reason
+                    reason,
+                    ...lifecycleResultIdentity
                   }));
                   return;
                 }
@@ -1341,7 +1368,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     idempotencyKey: intent.idempotencyKey,
                     signatures: txSignatures,
                     batchStatus: 'partial',
-                    reason
+                    reason,
+                    ...lifecycleResultIdentity
                   }));
                   return;
                 }
@@ -1397,7 +1425,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     residualSweepStatus: 'incomplete',
                     residualUnsoldMints: residualSweep.unsoldMints,
                     residualIgnoredMints: residualSweep.ignoredMints,
-                    residualFailureReasons: residualSweep.failureReasons
+                    residualFailureReasons: residualSweep.failureReasons,
+                    ...lifecycleResultIdentity
                   }));
                   return;
                 }
@@ -1427,7 +1456,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     reason,
                     residualSweepStatus: 'dust_ignored',
                     residualIgnoredMints: residualSweep.ignoredMints,
-                    residualFailureReasons: residualSweep.ignoredReasons
+                    residualFailureReasons: residualSweep.ignoredReasons,
+                    ...lifecycleResultIdentity
                   }));
                   return;
                 }
@@ -1453,7 +1483,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
               await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
-                signatures: txSignatures
+                signatures: txSignatures,
+                ...lifecycleResultIdentity
               }));
               return;
               }

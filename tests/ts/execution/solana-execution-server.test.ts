@@ -41,6 +41,9 @@ type BroadcastIntentOverrides = Partial<{
   idempotencyKey: string;
   outputSol: number;
   fullPositionExit: boolean;
+  openIntentId: string;
+  positionId: string;
+  chainPositionAddress: string;
 }>;
 
 function createIntentSigner() {
@@ -683,6 +686,45 @@ describe('createSolanaExecutionServer', () => {
       confirmationSignatures: ['sig-1', 'sig-2']
     });
     expect(transactions[0].signedBy[0]).toEqual([keypair.publicKey.toBase58()]);
+
+    await server.stop();
+  });
+
+  it('passes lifecycle chain position to Meteora close execution', async () => {
+    const keypair = Keypair.generate();
+    const transactions = [new FakeTransaction('close-1')];
+    const removeLiquidity = vi.fn(async () => transactions as any);
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: async () => 'sig-1'
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        removeLiquidity
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        chainPositionAddress: 'chain-position-1'
+      }))
+    });
+
+    expect(response.status).toBe(200);
+    expect(removeLiquidity).toHaveBeenCalledWith(keypair.publicKey, 'pool-1', 'chain-position-1');
 
     await server.stop();
   });

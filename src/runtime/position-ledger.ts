@@ -248,18 +248,53 @@ export function importActiveLpPositionsToLedger(input: {
     activeKeys.add(key);
 
     const existing = findMatchingRecord(records, position);
-    const entry = existing?.entrySol
+    const resolvedFillEntry = resolveEntryFromFills({
+      position,
+      accountState: input.accountState,
+      activePositions
+    });
+    const existingEntryMatchesPosition = Boolean(
+      existing
+      && existing.entrySol
+      && (
+        !existing.chainPositionAddress
+        || existing.chainPositionAddress === chainPositionAddress
+      )
+    );
+    const existingEntry = existing && existingEntryMatchesPosition
       ? {
           entrySol: existing.entrySol,
           entrySolSource: existing.entrySolSource,
           entryFillSubmissionId: existing.entryFillSubmissionId,
           openedAt: existing.openedAt
         }
-      : resolveEntryFromFills({
-          position,
-          accountState: input.accountState,
-          activePositions
-        });
+      : undefined;
+    const positionStateEntryMatchesPosition = Boolean(
+      input.positionState
+      && input.positionState.entrySol
+      && (
+        (chainPositionAddress && input.positionState.chainPositionAddress === chainPositionAddress)
+        || (
+          input.positionState.activePoolAddress === position.poolAddress
+          && input.positionState.activeMint === position.mint
+        )
+      )
+    );
+    const positionStateEntry = positionStateEntryMatchesPosition
+      ? {
+          entrySol: input.positionState?.entrySol,
+          entrySolSource: input.positionState?.entrySolSource,
+          entryFillSubmissionId: input.positionState?.entryFillSubmissionId,
+          openedAt: input.positionState?.openedAt
+        }
+      : undefined;
+    const entry = resolvedFillEntry ?? positionStateEntry ?? existingEntry;
+    const pendingMatchesPosition = Boolean(
+      input.pendingSubmission
+      && input.pendingSubmission.poolAddress === position.poolAddress
+      && input.pendingSubmission.tokenMint === position.mint
+    );
+    const hasTrustedEntry = typeof entry?.entrySol === 'number' && entry.entrySol > 0;
     const nextRecord: PositionLedgerRecord = {
       ...(existing ?? {
         lastAction: 'hold'
@@ -268,6 +303,8 @@ export function importActiveLpPositionsToLedger(input: {
       positionId: chainPositionAddress
         ? createPositionId({ chainPositionAddress })
         : position.positionId ?? existing?.positionId,
+      openIntentId: existing?.openIntentId ?? (pendingMatchesPosition ? input.pendingSubmission?.openIntentId : undefined),
+      idempotencyKey: existing?.idempotencyKey ?? (pendingMatchesPosition ? input.pendingSubmission?.idempotencyKey : undefined),
       chainPositionAddress,
       activeMint: position.mint,
       activePoolAddress: position.poolAddress,
@@ -276,13 +313,20 @@ export function importActiveLpPositionsToLedger(input: {
       entrySolSource: entry?.entrySolSource,
       entryFillSubmissionId: entry?.entryFillSubmissionId,
       openedAt: entry?.openedAt ?? existing?.openedAt,
-      importStatus: entry?.entrySol ? 'imported' : 'entry_unknown',
-      valuationStatus: position.valuationStatus as PositionLedgerRecord['valuationStatus'],
-      valuationReason: position.valuationReason,
-      exitQuoteValueSol: position.currentValueSol,
-      displayValueSol: position.currentValueSol,
-      lpTotalValueSol: position.currentValueSol,
-      lastValuationAt: position.lastValuationAt,
+      importStatus: hasTrustedEntry ? 'imported' : 'entry_unknown',
+      valuationStatus: hasTrustedEntry
+        ? position.valuationStatus as PositionLedgerRecord['valuationStatus']
+        : 'unavailable',
+      valuationReason: hasTrustedEntry
+        ? position.valuationReason
+        : 'orphaned-position-without-bound-entry',
+      valuationTrust: hasTrustedEntry ? position.valuationTrust : undefined,
+      valuationSource: hasTrustedEntry ? position.valuationSource : undefined,
+      valuationCompleteness: hasTrustedEntry ? position.valuationCompleteness : undefined,
+      exitQuoteValueSol: hasTrustedEntry ? position.currentValueSol : undefined,
+      displayValueSol: hasTrustedEntry ? position.currentValueSol : undefined,
+      lpTotalValueSol: hasTrustedEntry ? position.currentValueSol : undefined,
+      lastValuationAt: hasTrustedEntry ? position.lastValuationAt : undefined,
       lastRiskSentinel: evaluateLpRiskSentinel({
         observedAt: input.now,
         activeBinId: position.activeBinId,
@@ -333,9 +377,7 @@ export function importActiveLpPositionsToLedger(input: {
     if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
       return {
         ...record,
-        lifecycleState: input.closeMissingActive === true
-          ? 'closed' as const
-          : record.lifecycleState,
+        lifecycleState: record.lifecycleState,
         importStatus: input.closeMissingActive === true
           ? 'archived_missing_without_exit_evidence' as const
           : record.importStatus,
@@ -343,9 +385,7 @@ export function importActiveLpPositionsToLedger(input: {
           ? 'chain-position-missing-without-exit-evidence'
           : record.lastReason,
         missingOnChainSince: record.missingOnChainSince ?? input.now,
-        lastClosedAt: input.closeMissingActive === true
-          ? record.lastClosedAt ?? input.now
-          : record.lastClosedAt,
+        lastClosedAt: record.lastClosedAt,
         updatedAt: input.now
       };
     }
@@ -459,19 +499,55 @@ export function applyLiveCycleResultToLedger(input: {
     return imported;
   }
 
+  const actionChainPositionAddress = input.actionIdentity?.chainPositionAddress;
+  const actionPoolAddress = input.orderIntent?.poolAddress;
+  const actionTokenMint = input.orderIntent?.tokenMint;
+  const pendingOrderAction = input.persistedPendingSubmission?.orderAction
+    ?? input.pendingSubmissionBeforeCycle?.orderAction;
+  const positionStateMatchesTarget = Boolean(input.positionState && (
+    (actionChainPositionAddress && input.positionState.chainPositionAddress === actionChainPositionAddress)
+    || (
+      actionPoolAddress
+      && actionTokenMint
+      && input.positionState.activePoolAddress === actionPoolAddress
+      && input.positionState.activeMint === actionTokenMint
+    )
+    || (!actionChainPositionAddress && !actionPoolAddress && !actionTokenMint)
+  ));
+  const persistedPendingMatchesTarget = Boolean(input.persistedPendingSubmission && (
+    (actionChainPositionAddress && input.persistedPendingSubmission.chainPositionAddress === actionChainPositionAddress)
+    || (
+      actionPoolAddress
+      && actionTokenMint
+      && input.persistedPendingSubmission.poolAddress === actionPoolAddress
+      && input.persistedPendingSubmission.tokenMint === actionTokenMint
+    )
+    || (!actionChainPositionAddress && !actionPoolAddress && !actionTokenMint)
+  ));
+  const priorPendingMatchesTarget = Boolean(input.pendingSubmissionBeforeCycle && (
+    (actionChainPositionAddress && input.pendingSubmissionBeforeCycle.chainPositionAddress === actionChainPositionAddress)
+    || (
+      actionPoolAddress
+      && actionTokenMint
+      && input.pendingSubmissionBeforeCycle.poolAddress === actionPoolAddress
+      && input.pendingSubmissionBeforeCycle.tokenMint === actionTokenMint
+    )
+    || (!actionChainPositionAddress && !actionPoolAddress && !actionTokenMint)
+  ));
+
   const target = {
     chainPositionAddress: input.actionIdentity?.chainPositionAddress
-      ?? input.persistedPendingSubmission?.chainPositionAddress
-      ?? input.pendingSubmissionBeforeCycle?.chainPositionAddress
-      ?? input.positionState?.chainPositionAddress,
+      ?? (persistedPendingMatchesTarget ? input.persistedPendingSubmission?.chainPositionAddress : undefined)
+      ?? (priorPendingMatchesTarget ? input.pendingSubmissionBeforeCycle?.chainPositionAddress : undefined)
+      ?? (positionStateMatchesTarget ? input.positionState?.chainPositionAddress : undefined),
     positionId: input.actionIdentity?.positionId
-      ?? input.persistedPendingSubmission?.positionId
-      ?? input.pendingSubmissionBeforeCycle?.positionId
-      ?? input.positionState?.positionId,
+      ?? (persistedPendingMatchesTarget ? input.persistedPendingSubmission?.positionId : undefined)
+      ?? (priorPendingMatchesTarget ? input.pendingSubmissionBeforeCycle?.positionId : undefined)
+      ?? (positionStateMatchesTarget ? input.positionState?.positionId : undefined),
     openIntentId: input.actionIdentity?.openIntentId
-      ?? input.persistedPendingSubmission?.openIntentId
-      ?? input.pendingSubmissionBeforeCycle?.openIntentId
-      ?? input.positionState?.openIntentId,
+      ?? (persistedPendingMatchesTarget ? input.persistedPendingSubmission?.openIntentId : undefined)
+      ?? (priorPendingMatchesTarget ? input.pendingSubmissionBeforeCycle?.openIntentId : undefined)
+      ?? (positionStateMatchesTarget ? input.positionState?.openIntentId : undefined),
     idempotencyKey: input.orderIntent?.idempotencyKey
       ?? input.persistedPendingSubmission?.idempotencyKey
       ?? input.pendingSubmissionBeforeCycle?.idempotencyKey,
@@ -513,7 +589,9 @@ export function applyLiveCycleResultToLedger(input: {
       chainPositionAddress: target.chainPositionAddress,
       activeMint: target.tokenMint,
       activePoolAddress: target.poolAddress,
-      lifecycleState: input.action === 'add-lp' ? 'open_pending' : 'lp_exit_pending',
+      lifecycleState: input.action === 'add-lp' || pendingOrderAction === 'add-lp'
+        ? 'open_pending'
+        : 'lp_exit_pending',
       importStatus: 'entry_unknown',
       lastAction: input.action,
       lastReason: input.reason,
@@ -529,7 +607,7 @@ export function applyLiveCycleResultToLedger(input: {
   const record = records[index];
   const hasPending = Boolean(input.persistedPendingSubmission);
   const isConfirmed = input.confirmationStatus === 'confirmed';
-  const fullExit = input.action === 'withdraw-lp';
+  const fullExit = input.action === 'withdraw-lp' || pendingOrderAction === 'withdraw-lp';
   const stillOnChain = hasActivePositionForRecord({
     record,
     accountState: input.accountState
@@ -537,11 +615,13 @@ export function applyLiveCycleResultToLedger(input: {
   const terminalAlreadyClosed = fullExit
     && (input.reason.includes('position-already-closed') || /position not found for pool/i.test(input.reason))
     && !stillOnChain;
-  const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed) && !stillOnChain
-    ? 'closed'
+  const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed)
+    ? stillOnChain
+      ? 'lp_exit_pending'
+      : 'closed'
     : hasPending && fullExit
       ? 'lp_exit_pending'
-      : hasPending && input.action === 'add-lp'
+      : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')
         ? 'open_pending'
         : isConfirmed && input.action === 'add-lp'
           ? 'open'

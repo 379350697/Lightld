@@ -29,4 +29,25 @@ describe('buildHealthReport', () => {
     expect(report.dependencyHealth.quoteFailures).toBe(3);
     expect(report.housekeeping?.mirrorPruneDeletedRows).toBe(4);
   });
+
+  it('degrades health and blocks opens when successful ticks are stale', () => {
+    const report = buildHealthReport({
+      mode: 'healthy',
+      allowNewOpens: true,
+      flattenOnly: false,
+      pendingSubmission: false,
+      circuitReason: '',
+      lastSuccessfulTickAt: '2026-03-22T00:00:00.000Z',
+      dependencyHealth: {
+        quoteFailures: 0,
+        reconcileFailures: 0
+      },
+      updatedAt: '2026-03-22T00:10:01.000Z',
+      staleAfterMs: 10 * 60_000
+    });
+
+    expect(report.mode).toBe('degraded');
+    expect(report.allowNewOpens).toBe(false);
+    expect(report.circuitReason).toBe('runtime-stale:last-successful-tick');
+  });
 });

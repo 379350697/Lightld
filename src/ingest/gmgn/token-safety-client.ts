@@ -442,9 +442,13 @@ export async function fetchTokenSafetyBatch(
     }, timeoutMs);
     timeoutTimer.unref?.();
 
+    const spawnCommand = /\.m?js$/i.test(pythonBin) ? process.execPath : pythonBin;
+    const spawnArgs = spawnCommand === process.execPath
+      ? [pythonBin, SCRIPT_PATH, "--stdin"]
+      : [SCRIPT_PATH, "--stdin"];
     const child = spawn(
-      pythonBin,
-      [SCRIPT_PATH, "--stdin"],
+      spawnCommand,
+      spawnArgs,
       {
         detached: useDetachedChild,
         env: {

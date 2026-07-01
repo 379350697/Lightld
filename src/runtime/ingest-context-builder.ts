@@ -1553,9 +1553,14 @@ export async function buildLiveCycleInputFromIngest(
     );
   }
 
-  const accountBackedActiveLpCandidate = selectionMode === 'new-open-only'
-    ? null
-    : resolveAccountBackedActiveLpCandidate(input, now);
+  const shouldUseAccountBackedMaintenance = selectionMode !== 'new-open-only' && (
+    selectionMode === 'maintenance-only'
+    || Boolean(input.positionState?.activeMint || input.positionState?.activePoolAddress || input.positionState?.chainPositionAddress)
+    || !input.fetchTokenSafetyBatchImpl
+  );
+  const accountBackedActiveLpCandidate = shouldUseAccountBackedMaintenance
+    ? resolveAccountBackedActiveLpCandidate(input, now)
+    : null;
 
   if (accountBackedActiveLpCandidate) {
     console.log(

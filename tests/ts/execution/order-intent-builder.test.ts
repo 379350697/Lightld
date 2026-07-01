@@ -33,4 +33,22 @@ describe('buildOrderIntent', () => {
     expect(intent.tokenMint).toBe('mint-safe');
     expect(intent.fullPositionExit).toBe(true);
   });
+
+  it('carries lifecycle identity through the execution boundary', () => {
+    const intent = buildOrderIntent({
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1,
+      createdAt: '2026-03-21T00:00:00.000Z',
+      side: 'withdraw-lp',
+      tokenMint: 'mint-safe',
+      openIntentId: 'lp-open-intent:1',
+      positionId: 'position-1',
+      chainPositionAddress: 'chain-position-1'
+    });
+
+    expect(intent.openIntentId).toBe('lp-open-intent:1');
+    expect(intent.positionId).toBe('position-1');
+    expect(intent.chainPositionAddress).toBe('chain-position-1');
+  });
 });

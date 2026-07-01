@@ -7,12 +7,15 @@ export type BuildOrderIntentInput = {
   tokenMint?: string;
   fullPositionExit?: boolean;
   liquidateResidualTokenToSol?: boolean;
+  openIntentId?: string;
+  positionId?: string;
+  chainPositionAddress?: string;
 };
 
 export function buildOrderIntent(input: BuildOrderIntentInput) {
   const createdAt = input.createdAt ?? new Date().toISOString();
 
-  return {
+  const intent = {
     strategyId: input.strategyId,
     poolAddress: input.poolAddress,
     outputSol: input.outputSol,
@@ -22,6 +25,13 @@ export function buildOrderIntent(input: BuildOrderIntentInput) {
     tokenMint: input.tokenMint ?? '',
     fullPositionExit: input.fullPositionExit ?? false,
     liquidateResidualTokenToSol: input.liquidateResidualTokenToSol ?? false
+  };
+
+  return {
+    ...intent,
+    ...(input.openIntentId ? { openIntentId: input.openIntentId } : {}),
+    ...(input.positionId ? { positionId: input.positionId } : {}),
+    ...(input.chainPositionAddress ? { chainPositionAddress: input.chainPositionAddress } : {})
   };
 }
 

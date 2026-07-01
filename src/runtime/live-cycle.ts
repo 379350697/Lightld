@@ -281,6 +281,16 @@ function firstNumber(...values: unknown[]) {
   return 0;
 }
 
+function firstPositiveNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'number' && value > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 function firstString(...values: unknown[]) {
   for (const value of values) {
     if (typeof value === 'string' && value.length > 0) {
@@ -1086,12 +1096,14 @@ function resolveLifecycleOpenFill(input: {
     return undefined;
   }
 
-  const boundByPositionState = entryFills
-    .filter((fill) => classifyLpEntryFillBinding({
-      fill,
-      positionState: input.positionState!
-    }) !== 'none')
-    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
+  const boundByPositionState = matchesPositionStateLifecycle(input.position, input.positionState)
+    ? entryFills
+      .filter((fill) => classifyLpEntryFillBinding({
+        fill,
+        positionState: input.positionState!
+      }) !== 'none')
+      .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt))
+    : [];
 
   if (boundByPositionState[0]) {
     return boundByPositionState[0];
@@ -2220,18 +2232,45 @@ function resolveActionIdentity(input: {
     return {};
   }
 
+  const positionStateMatchesTarget = Boolean(
+    input.positionState
+    && (
+      (input.chainPositionAddress && input.positionState.chainPositionAddress === input.chainPositionAddress)
+      || (
+        input.positionState.activePoolAddress === input.poolAddress
+        && input.positionState.activeMint === input.tokenMint
+      )
+    )
+  );
+  const pendingSubmissionMatchesTarget = Boolean(
+    input.pendingSubmission
+    && (
+      (input.chainPositionAddress && input.pendingSubmission.chainPositionAddress === input.chainPositionAddress)
+      || (
+        input.pendingSubmission.poolAddress === input.poolAddress
+        && input.pendingSubmission.tokenMint === input.tokenMint
+      )
+    )
+  );
+  const canReusePositionStateIdentity = input.action === 'add-lp'
+    ? positionStateMatchesTarget && input.positionState?.lifecycleState !== 'closed'
+    : positionStateMatchesTarget;
+  const canReusePendingIdentity = input.action === 'add-lp'
+    ? pendingSubmissionMatchesTarget && input.pendingSubmission?.orderAction === 'add-lp'
+    : pendingSubmissionMatchesTarget;
+
   const chainPositionAddress = firstString(
     input.chainPositionAddress,
-    input.positionState?.chainPositionAddress,
-    input.pendingSubmission?.chainPositionAddress
+    canReusePositionStateIdentity ? input.positionState?.chainPositionAddress : undefined,
+    canReusePendingIdentity ? input.pendingSubmission?.chainPositionAddress : undefined
   ) || undefined;
   const positionId = firstString(
-    input.positionState?.positionId,
-    input.pendingSubmission?.positionId
+    canReusePositionStateIdentity ? input.positionState?.positionId : undefined,
+    canReusePendingIdentity ? input.pendingSubmission?.positionId : undefined
   ) || undefined;
   const openIntentId = firstString(
-    input.positionState?.openIntentId,
-    input.pendingSubmission?.openIntentId
+    canReusePositionStateIdentity ? input.positionState?.openIntentId : undefined,
+    canReusePendingIdentity ? input.pendingSubmission?.openIntentId : undefined
   ) || undefined;
 
   if (input.action === 'add-lp') {
@@ -3433,7 +3472,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       )
   });
   const activeLpExitTargetSol = actionableAction === 'withdraw-lp' && config.poolClass === 'new-token'
-    ? firstNumber(
+    ? firstPositiveNumber(
       activeLpExitPositionSol,
       typeof (updatedSnapshot as any).entrySol === 'number' && (updatedSnapshot as any).entrySol > 0
         ? (updatedSnapshot as any).entrySol
@@ -3446,7 +3485,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         : undefined,
       typeof (updatedSnapshot as any).lpCurrentValueSol === 'number' && (updatedSnapshot as any).lpCurrentValueSol > 0
         ? (updatedSnapshot as any).lpCurrentValueSol
-        : undefined
+        : undefined,
+      input.requestedPositionSol
     )
     : activeLpExitPositionSol;
   if (
@@ -3478,7 +3518,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
 
   const requestedPositionSol = resolveRequestedPositionSol({
-    activeLpExitPositionSol: activeLpExitTargetSol,
+    activeLpExitPositionSol,
     requestedPositionSol: input.requestedPositionSol,
     quoteOutputSol: quote.outputSol
   });
@@ -3642,15 +3682,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
-  const orderIntent = buildOrderIntent({
-    strategyId: input.strategy,
-    poolAddress: executionPlan.poolAddress,
-    outputSol: requestedPositionSol,
-    side: resolveOrderIntentSide(actionableAction),
-    tokenMint: logContext.tokenMint,
-    fullPositionExit: isFullPositionExitAction(actionableAction),
-    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee'
-  });
   const actionIdentity = resolveActionIdentity({
     action: actionableAction,
     positionState: input.positionState,
@@ -3658,6 +3689,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     poolAddress: executionPlan.poolAddress,
     tokenMint: logContext.tokenMint,
     chainPositionAddress: multiLpExit?.position.positionAddress
+  });
+  const orderIntent = buildOrderIntent({
+    strategyId: input.strategy,
+    poolAddress: executionPlan.poolAddress,
+    outputSol: requestedPositionSol,
+    side: resolveOrderIntentSide(actionableAction),
+    tokenMint: logContext.tokenMint,
+    fullPositionExit: isFullPositionExitAction(actionableAction),
+    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee',
+    openIntentId: actionIdentity.openIntentId,
+    positionId: actionIdentity.positionId,
+    chainPositionAddress: actionIdentity.chainPositionAddress
   });
   currentActionIdentity = actionIdentity;
   const orderLifecycleKey = buildMirrorLifecycleKey({

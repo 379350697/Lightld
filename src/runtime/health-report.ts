@@ -23,21 +23,27 @@ export function buildHealthReport(input: {
   housekeeping?: HousekeepingSnapshot;
   mirror?: MirrorMetricsSnapshot;
   updatedAt?: string;
+  staleAfterMs?: number;
 }): HealthReport {
+  const updatedAt = input.updatedAt ?? new Date().toISOString();
+  const staleAfterMs = input.staleAfterMs ?? 5 * 60_000;
+  const tickAgeMs = Date.parse(updatedAt) - Date.parse(input.lastSuccessfulTickAt);
+  const isStale = Number.isFinite(tickAgeMs) && tickAgeMs > staleAfterMs;
+
   return {
-    mode: input.mode,
-    allowNewOpens: input.allowNewOpens,
+    mode: isStale && input.mode === 'healthy' ? 'degraded' : input.mode,
+    allowNewOpens: isStale ? false : input.allowNewOpens,
     activeLpCount: input.activeLpCount,
     managedLpCount: input.managedLpCount,
     untrackedLpCount: input.untrackedLpCount,
     importFailedLpCount: input.importFailedLpCount,
     flattenOnly: input.flattenOnly,
     pendingSubmission: input.pendingSubmission,
-    circuitReason: input.circuitReason,
+    circuitReason: isStale && !input.circuitReason ? 'runtime-stale:last-successful-tick' : input.circuitReason,
     lastSuccessfulTickAt: input.lastSuccessfulTickAt,
     dependencyHealth: input.dependencyHealth,
     housekeeping: input.housekeeping,
     mirror: input.mirror,
-    updatedAt: input.updatedAt ?? new Date().toISOString()
+    updatedAt
   };
 }

@@ -469,6 +469,55 @@ describe('position ledger', () => {
     });
   });
 
+  it('does not copy stale position-state intent onto a different chain target', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-a',
+            positionId: 'pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            lastAction: 'add-lp',
+            updatedAt: '2026-06-29T00:00:00.000Z'
+          }
+        ]
+      },
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-b',
+        activePoolAddress: 'pool-b',
+        openIntentId: 'lp-open-intent:wrong',
+        positionId: 'pos-b',
+        chainPositionAddress: 'pos-b',
+        lifecycleState: 'open',
+        updatedAt: '2026-06-29T00:00:00.000Z'
+      },
+      actionIdentity: {
+        chainPositionAddress: 'pos-a',
+        positionId: 'pos-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'exit-pos-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      now: '2026-06-29T00:03:00.000Z'
+    });
+
+    expect(ledger.records[0].openIntentId).toBeUndefined();
+  });
+
   it('does not count records missing from chain as business-active LPs', () => {
     const ledger = {
       version: 1 as const,

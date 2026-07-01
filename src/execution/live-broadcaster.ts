@@ -17,6 +17,9 @@ export type LiveBroadcastResult =
       residualIgnoredMints?: string[];
       residualFailureReasons?: string[];
       residualEstimatedValueSol?: number;
+      openIntentId?: string;
+      positionId?: string;
+      chainPositionAddress?: string;
     }
   | {
       status: 'failed';

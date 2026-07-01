@@ -1071,6 +1071,44 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(true);
   });
 
+  it('does not reuse stale LP identity when opening a different target', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'old-mint',
+        activePoolAddress: 'old-pool',
+        openIntentId: 'lp-open-intent:old',
+        positionId: 'old-position',
+        chainPositionAddress: 'old-chain-position',
+        lifecycleState: 'closed',
+        updatedAt: '2026-06-29T17:00:00.000Z'
+      },
+      context: {
+        pool: { address: 'new-pool', liquidityUsd: 10_000 },
+        token: {
+          mint: 'new-mint',
+          inSession: true,
+          hasSolRoute: true,
+          symbol: 'NEW'
+        },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('add-lp');
+    expect(result.actionIdentity?.openIntentId).not.toBe('lp-open-intent:old');
+    expect(result.actionIdentity?.positionId).toBe('new-pool:new-mint');
+    expect(result.orderIntent?.openIntentId).toBe(result.actionIdentity?.openIntentId);
+    expect(result.orderIntent?.positionId).toBe('new-pool:new-mint');
+  });
+
   it('does not count exits toward daily spend limits', async () => {
     const stateDir = `${TEST_STATE_DIR}-spending`;
 
@@ -2461,7 +2499,7 @@ describe('runLiveCycle', () => {
 
       expect(result.mode).toBe('LIVE');
       expect(result.action).toBe('withdraw-lp');
-      expect(result.audit.reason).toBe('lp-sol-nearly-depleted');
+      expect(result.audit.reason).toContain('sol-depleted-bins');
       expect(result.orderIntent?.poolAddress).toBe('pool-new');
       expect(result.orderIntent).toMatchObject({
         poolAddress: 'pool-new',
@@ -2484,10 +2522,7 @@ describe('runLiveCycle', () => {
   it('does not reuse stale position-state entry for a new chain LP in the same pool and mint', async () => {
     const oldRecordedAt = '2026-06-30T07:58:40.362Z';
     const newRecordedAt = '2026-06-30T14:45:12.942Z';
-    const baseFillPath = resolveActiveJsonlPath(join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl'), {
-      rotateDaily: true,
-      now: new Date(newRecordedAt)
-    });
+    const baseFillPath = join(TEST_JOURNAL_DIR, 'new-token-v1-live-fills.jsonl');
 
     await appendJsonLine(baseFillPath, {
       submissionId: 'old-open',
@@ -2591,7 +2626,7 @@ describe('runLiveCycle', () => {
       }
     });
 
-    expect(result.action).toBe('hold');
+    expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).not.toContain('lp-stop-loss');
     expect(result.context.trader.lpEntryTradingSol).toBeCloseTo(0.020009965, 9);
     expect(result.context.trader.lpNetPnlPct).toBeGreaterThan(-1);
@@ -2656,7 +2691,7 @@ describe('runLiveCycle', () => {
 
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
-    expect(result.audit.reason).toContain('lp-sol-nearly-depleted');
+    expect(result.audit.reason).toContain('sol-depleted-bins');
     expect(result.orderIntent?.poolAddress).toBe('pool-residual');
   });
 
@@ -2739,7 +2774,7 @@ describe('runLiveCycle', () => {
 
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
-    expect(result.audit.reason).toContain('lp-sol-nearly-depleted');
+    expect(result.audit.reason).toContain('sol-depleted-bins');
     expect(result.context.trader.lpSolExposureStatus).toBe('sol-depleted');
     expect(result.orderIntent?.poolAddress).toBe('pool-token-y');
   });
