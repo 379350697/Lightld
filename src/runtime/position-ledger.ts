@@ -475,16 +475,20 @@ function recordMatchesTarget(input: {
       || input.record.positionKey === `chain-position:${input.chainPositionAddress}`;
   }
 
-  if (input.positionId) {
-    return input.record.positionId === input.positionId || input.record.positionKey === `position:${input.positionId}`;
-  }
-
   if (input.openIntentId) {
     return input.record.openIntentId === input.openIntentId || input.record.positionKey === `open-intent:${input.openIntentId}`;
   }
 
   if (input.idempotencyKey) {
     return input.record.idempotencyKey === input.idempotencyKey || input.record.positionKey === `idempotency:${input.idempotencyKey}`;
+  }
+
+  if (input.record.lifecycleState === 'closed' || input.record.importStatus === 'superseded_closed') {
+    return false;
+  }
+
+  if (input.positionId) {
+    return input.record.positionId === input.positionId || input.record.positionKey === `position:${input.positionId}`;
   }
 
   return Boolean(
@@ -644,7 +648,7 @@ export function applyLiveCycleResultToLedger(input: {
     records.push({
       positionKey: positionLedgerKey({
         chainPositionAddress: target.chainPositionAddress,
-        positionId: target.positionId,
+        positionId: target.chainPositionAddress || !target.openIntentId ? target.positionId : undefined,
         openIntentId: target.openIntentId,
         idempotencyKey: target.idempotencyKey,
         poolAddress: target.poolAddress,
@@ -708,7 +712,9 @@ export function applyLiveCycleResultToLedger(input: {
     idempotencyKey: target.idempotencyKey ?? record.idempotencyKey,
     positionId: target.chainPositionAddress
       ? createPositionId({ chainPositionAddress: target.chainPositionAddress })
-      : target.positionId ?? record.positionId,
+      : record.chainPositionAddress
+        ? record.positionId
+        : target.positionId ?? record.positionId,
     chainPositionAddress: target.chainPositionAddress ?? record.chainPositionAddress,
     activeMint: target.tokenMint ?? record.activeMint,
     activePoolAddress: target.poolAddress ?? record.activePoolAddress,

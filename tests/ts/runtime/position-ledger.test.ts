@@ -818,6 +818,61 @@ describe('position ledger', () => {
     expect(ledger.records[0].openIntentId).toBeUndefined();
   });
 
+  it('does not reopen a superseded synthetic record when the same pool is opened again', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-02T15:00:00.000Z',
+        records: [{
+          positionKey: 'position:pool-a:mint-a',
+          openIntentId: 'lp-open-intent:old',
+          idempotencyKey: 'old-open',
+          positionId: 'pool-a:mint-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'closed',
+          importStatus: 'superseded_closed',
+          supersededByPositionKey: 'chain-position:old-pos',
+          lastAction: 'withdraw-lp',
+          lastReason: 'superseded-by-chain-closed-position',
+          lastClosedAt: '2026-07-02T15:05:00.000Z',
+          updatedAt: '2026-07-02T15:05:00.000Z'
+        }]
+      },
+      actionIdentity: {
+        openIntentId: 'lp-open-intent:new',
+        positionId: 'pool-a:mint-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'new-open',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'add-lp',
+      reason: 'live-order-submitted',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      confirmedFill: {
+        submissionId: 'new-fill',
+        filledSol: 0.1,
+        fillAmountSource: 'wallet-delta',
+        recordedAt: '2026-07-02T15:10:00.000Z'
+      },
+      now: '2026-07-02T15:10:01.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(2);
+    expect(ledger.records.find((record) => record.openIntentId === 'lp-open-intent:old')).toMatchObject({
+      lifecycleState: 'closed',
+      importStatus: 'superseded_closed'
+    });
+    expect(ledger.records.find((record) => record.openIntentId === 'lp-open-intent:new')).toMatchObject({
+      positionKey: 'open-intent:lp-open-intent:new',
+      lifecycleState: 'open',
+      idempotencyKey: 'new-open'
+    });
+  });
+
   it('does not count records missing from chain as business-active LPs', () => {
     const ledger = {
       version: 1 as const,

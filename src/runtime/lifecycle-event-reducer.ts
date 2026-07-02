@@ -51,7 +51,7 @@ function upsertRecord(records: PositionLedgerRecord[], next: PositionLedgerRecor
 function eventTargetKey(event: LifecycleEventRecord) {
   return positionLedgerKey({
     chainPositionAddress: event.chainPositionAddress,
-    positionId: event.positionId,
+    positionId: event.chainPositionAddress || !event.openIntentId ? event.positionId : undefined,
     openIntentId: event.openIntentId,
     idempotencyKey: event.idempotencyKey,
     poolAddress: event.poolAddress,
