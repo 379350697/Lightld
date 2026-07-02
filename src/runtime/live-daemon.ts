@@ -27,7 +27,13 @@ import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type LiveCycleResult, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
-import type { PositionLifecycleState, PositionStateSnapshot, RuntimeMode, TargetOpenCooldownSnapshot } from './state-types.ts';
+import type {
+  LifecycleEventRecord,
+  PositionLifecycleState,
+  PositionStateSnapshot,
+  RuntimeMode,
+  TargetOpenCooldownSnapshot
+} from './state-types.ts';
 import { classifyAction, isExposureReducingAction, isFullExitAction, type LiveAction } from './action-semantics.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import type { HousekeepingRunner } from './housekeeping.ts';
@@ -75,6 +81,133 @@ type LiveDaemonBuildCycleContext = {
   skipMints?: string[];
   openCooldowns?: TargetOpenCooldownSnapshot[];
 };
+
+function lifecycleEventKey(input: {
+  result: LiveCycleResult;
+  eventType: LifecycleEventRecord['eventType'];
+  suffix?: string;
+}) {
+  return [
+    input.result.orderIntent?.idempotencyKey,
+    input.result.actionIdentity?.chainPositionAddress,
+    input.result.actionIdentity?.openIntentId,
+    input.result.action,
+    input.eventType,
+    input.suffix
+  ].filter(Boolean).join(':');
+}
+
+function buildLifecycleEventsFromResult(input: {
+  strategyId: StrategyId;
+  result: LiveCycleResult;
+  now: string;
+}): LifecycleEventRecord[] {
+  const { result } = input;
+  const identity = result.actionIdentity;
+  const intent = result.orderIntent;
+  if (!identity && !intent) {
+    return [];
+  }
+  const submittedBroadcast = result.broadcastResult?.status === 'submitted'
+    ? result.broadcastResult
+    : undefined;
+
+  const common = {
+    strategyId: input.strategyId,
+    openIntentId: identity?.openIntentId,
+    positionId: identity?.positionId,
+    chainPositionAddress: identity?.chainPositionAddress,
+    idempotencyKey: intent?.idempotencyKey,
+    action: result.action,
+    poolAddress: intent?.poolAddress,
+    tokenMint: intent?.tokenMint,
+    reason: result.reason,
+    detail: 'failureDetail' in result && typeof result.failureDetail === 'string'
+      ? result.failureDetail
+      : undefined
+  };
+  const events: LifecycleEventRecord[] = [];
+  const push = (eventType: LifecycleEventRecord['eventType'], suffix?: string, extra: Partial<LifecycleEventRecord> = {}) => {
+    events.push({
+      ...common,
+      ...extra,
+      eventType,
+      eventKey: lifecycleEventKey({ result, eventType, suffix }),
+      createdAt: input.now
+    });
+  };
+
+  if (result.action === 'add-lp' && identity?.openIntentId) {
+    push('OpenIntentCreated', 'intent');
+  }
+
+  if (isFullExitAction(result.action as LiveAction)) {
+    push('CloseIntentCreated', 'intent');
+  }
+
+  if (!result.liveOrderSubmitted) {
+    push(result.failureSource === 'signer' ? 'OrderSignFailed' : 'BroadcastNotSubmitted', result.reason);
+    return events;
+  }
+
+  push('BroadcastSubmitted', submittedBroadcast?.submissionId, {
+    submissionId: submittedBroadcast?.submissionId,
+    confirmationSignature: submittedBroadcast?.confirmationSignature
+  });
+
+  if (result.confirmationStatus) {
+    push('ConfirmationResolved', result.confirmationStatus, {
+      submissionId: submittedBroadcast?.submissionId,
+      confirmationSignature: submittedBroadcast?.confirmationSignature
+    });
+  }
+
+  if (result.confirmedFill) {
+    push('FillObserved', result.confirmedFill.submissionId, {
+      submissionId: result.confirmedFill.submissionId
+    });
+  }
+
+  if (result.action === 'add-lp' && identity?.chainPositionAddress) {
+    push('ChainPositionObserved', identity.chainPositionAddress);
+  }
+
+  if (isFullExitAction(result.action as LiveAction) && result.confirmationStatus === 'confirmed') {
+    push('PositionClosed', identity?.chainPositionAddress ?? submittedBroadcast?.submissionId);
+  }
+
+  if (submittedBroadcast?.residualSweepStatus === 'incomplete') {
+    push('ResidualCleanupRequired', 'residual', {
+      residualCleanupStatus: 'residual_cleanup_pending',
+      residualCleanupValueSol: submittedBroadcast.residualEstimatedValueSol
+    });
+  }
+
+  return events;
+}
+
+function residualCleanupStatusFromResult(result: LiveCycleResult) {
+  const submittedBroadcast = result.broadcastResult?.status === 'submitted'
+    ? result.broadcastResult
+    : undefined;
+  if (submittedBroadcast?.residualSweepStatus === 'incomplete') {
+    return 'residual_cleanup_pending';
+  }
+  if (submittedBroadcast?.residualSweepStatus === 'complete') {
+    return 'residual_cleanup_complete';
+  }
+  if (submittedBroadcast?.residualSweepStatus === 'dust_ignored') {
+    return 'residual_dust_ignored';
+  }
+  return undefined;
+}
+
+function residualCleanupValueFromResult(result: LiveCycleResult) {
+  const submittedBroadcast = result.broadcastResult?.status === 'submitted'
+    ? result.broadcastResult
+    : undefined;
+  return submittedBroadcast?.residualEstimatedValueSol;
+}
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
@@ -2905,6 +3038,16 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
         const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
         const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedPoolAddress;
+        const lifecycleEventNow = nowIso();
+        const lifecycleEvents = buildLifecycleEventsFromResult({
+          strategyId: options.strategy,
+          result,
+          now: lifecycleEventNow
+        });
+        if (lifecycleEvents.length > 0) {
+          await runtimeStateStore.appendLifecycleEvents(lifecycleEvents);
+        }
+
         positionLedger = applyLiveCycleResultToLedger({
           ledger: positionLedger,
           positionState,
@@ -2917,8 +3060,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           reason: result.reason,
           liveOrderSubmitted: result.liveOrderSubmitted,
           confirmationStatus: result.confirmationStatus,
+          residualCleanupStatus: residualCleanupStatusFromResult(result),
+          residualCleanupValueSol: residualCleanupValueFromResult(result),
           confirmedFill: result.confirmedFill,
-          now: nowIso()
+          now: lifecycleEventNow
         });
         const orderAttemptRecord = buildOrderAttemptRecord({
           strategyId: options.strategy,
@@ -2968,6 +3113,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         report.chainActiveLpCount = lifecycleProjection.chainActiveLpCount;
         report.pendingOpenCount = lifecycleProjection.pendingOpenCount;
         report.reconcileRequiredCount = lifecycleProjection.reconcileRequiredCount;
+        report.residualCleanupRequiredCount = lifecycleProjection.residualCleanupRequiredCount;
         report.managedLpCount = lifecycleProjection.managedLpCount;
         report.untrackedLpCount = Math.max(0, countActiveLpExposures(effectiveAccountState) - positionLedgerSummary.managedLpCount);
         report.importFailedLpCount = lifecycleProjection.importFailedLpCount;

@@ -12,6 +12,7 @@ export function buildHealthReport(input: {
   chainActiveLpCount?: number;
   pendingOpenCount?: number;
   reconcileRequiredCount?: number;
+  residualCleanupRequiredCount?: number;
   managedLpCount?: number;
   untrackedLpCount?: number;
   importFailedLpCount?: number;
@@ -49,6 +50,7 @@ export function buildHealthReport(input: {
     chainActiveLpCount: input.chainActiveLpCount,
     pendingOpenCount: input.pendingOpenCount,
     reconcileRequiredCount: input.reconcileRequiredCount,
+    residualCleanupRequiredCount: input.residualCleanupRequiredCount,
     managedLpCount: input.managedLpCount,
     untrackedLpCount: input.untrackedLpCount,
     importFailedLpCount: input.importFailedLpCount,

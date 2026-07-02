@@ -18,6 +18,7 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
     `chainActiveLpCount=${report.chainActiveLpCount ?? 0}`,
     `pendingOpenCount=${report.pendingOpenCount ?? 0}`,
     `reconcileRequiredCount=${report.reconcileRequiredCount ?? 0}`,
+    `residualCleanupRequiredCount=${report.residualCleanupRequiredCount ?? 0}`,
     `managedLpCount=${report.managedLpCount ?? 0}`,
     `untrackedLpCount=${report.untrackedLpCount ?? 0}`,
     `importFailedLpCount=${report.importFailedLpCount ?? 0}`,

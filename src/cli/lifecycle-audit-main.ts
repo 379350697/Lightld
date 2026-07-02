@@ -3,6 +3,9 @@ import { dirname, join } from 'node:path';
 
 import { PendingSubmissionStore } from '../runtime/pending-submission-store.ts';
 import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
+import { buildHealthReport } from '../runtime/health-report.ts';
+import { buildLifecycleProjection } from '../runtime/lifecycle-projection.ts';
+import { selectCompatibilityPositionState } from '../runtime/position-ledger.ts';
 import type { PendingSubmissionSnapshot, PositionLedgerRecord, PositionLedgerSnapshot } from '../runtime/state-types.ts';
 
 type Args = {
@@ -48,7 +51,15 @@ function targetKey(record: PositionLedgerRecord) {
 
 type CrossTargetIdentityIssue = { kind: 'cross-target-identity'; field: 'openIntentId' | 'positionId'; value: string; targets: string[] };
 type StaleOpenPendingIssue = { kind: 'stale-open-pending'; positionKey: string; poolAddress?: string; tokenMint?: string; reason?: string };
-type LifecycleIssue = CrossTargetIdentityIssue | StaleOpenPendingIssue;
+type SupersededSyntheticOpenIssue = {
+  kind: 'superseded-synthetic-open';
+  positionKey: string;
+  supersededByPositionKey: string;
+  poolAddress?: string;
+  tokenMint?: string;
+  reason: string;
+};
+type LifecycleIssue = CrossTargetIdentityIssue | StaleOpenPendingIssue | SupersededSyntheticOpenIssue;
 
 function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null): CrossTargetIdentityIssue[] {
   const issues: CrossTargetIdentityIssue[] = [];
@@ -119,13 +130,68 @@ function findStaleOpenPendingIssues(
     }));
 }
 
+function recordsShareLifecycleIdentity(record: PositionLedgerRecord, chainRecord: PositionLedgerRecord) {
+  if (record === chainRecord || !chainRecord.chainPositionAddress) {
+    return false;
+  }
+
+  if (record.openIntentId && record.openIntentId === chainRecord.openIntentId) {
+    return true;
+  }
+
+  if (record.idempotencyKey && record.idempotencyKey === chainRecord.idempotencyKey) {
+    return true;
+  }
+
+  if (record.entryFillSubmissionId && record.entryFillSubmissionId === chainRecord.entryFillSubmissionId) {
+    return true;
+  }
+
+  return Boolean(
+    record.missingOnChainSince
+    && record.activePoolAddress
+    && record.activeMint
+    && record.activePoolAddress === chainRecord.activePoolAddress
+    && record.activeMint === chainRecord.activeMint
+  );
+}
+
+function findSupersededSyntheticOpenIssues(ledger: PositionLedgerSnapshot | null): SupersededSyntheticOpenIssue[] {
+  const records = ledger?.records ?? [];
+  const closedChainRecords = records.filter((record) => record.lifecycleState === 'closed' && record.chainPositionAddress);
+
+  return records
+    .filter((record) =>
+      record.lifecycleState === 'open'
+      && !record.chainPositionAddress
+      && Boolean(record.missingOnChainSince)
+      && record.importStatus !== 'superseded_closed'
+    )
+    .flatMap((record) => {
+      const supersedingRecord = closedChainRecords.find((chainRecord) =>
+        recordsShareLifecycleIdentity(record, chainRecord)
+      );
+      return supersedingRecord
+        ? [{
+            kind: 'superseded-synthetic-open' as const,
+            positionKey: record.positionKey,
+            supersededByPositionKey: supersedingRecord.positionKey,
+            poolAddress: record.activePoolAddress,
+            tokenMint: record.activeMint,
+            reason: 'synthetic-open-superseded-by-chain-closed-position'
+          }]
+        : [];
+    });
+}
+
 function findLifecycleIssues(
   ledger: PositionLedgerSnapshot | null,
   pending: PendingSubmissionSnapshot | null
 ): LifecycleIssue[] {
   return [
     ...findCrossTargetIdentityIssues(ledger),
-    ...findStaleOpenPendingIssues(ledger, pending)
+    ...findStaleOpenPendingIssues(ledger, pending),
+    ...findSupersededSyntheticOpenIssues(ledger)
   ];
 }
 
@@ -149,6 +215,11 @@ function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSubmission
     issues
       .filter((issue): issue is StaleOpenPendingIssue => issue.kind === 'stale-open-pending')
       .map((issue) => issue.positionKey)
+  );
+  const supersededSyntheticOpenByKey = new Map(
+    issues
+      .filter((issue): issue is SupersededSyntheticOpenIssue => issue.kind === 'superseded-synthetic-open')
+      .map((issue) => [issue.positionKey, issue])
   );
 
   return {
@@ -174,6 +245,20 @@ function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSubmission
               : 'open-pending-without-chain-evidence-repaired',
             missingOnChainSince: record.missingOnChainSince ?? now,
             lastClosedAt: isTerminalFailedAttempt ? record.lastClosedAt ?? now : record.lastClosedAt,
+            updatedAt: now
+          };
+        }
+
+        const supersededSyntheticOpenIssue = supersededSyntheticOpenByKey.get(record.positionKey);
+        if (supersededSyntheticOpenIssue) {
+          return {
+            ...record,
+            lifecycleState: 'closed' as const,
+            importStatus: 'superseded_closed' as const,
+            supersededByPositionKey: supersededSyntheticOpenIssue.supersededByPositionKey,
+            lastReason: 'superseded-by-chain-closed-position',
+            evidenceMissingReason: record.lastReason ?? 'synthetic-open-without-chain-identity',
+            lastClosedAt: record.lastClosedAt ?? now,
             updatedAt: now
           };
         }
@@ -228,7 +313,7 @@ async function main() {
     issueCount: issues.length
   };
 
-  if (!args.apply || !ledger || issues.length === 0) {
+  if (!args.apply || !ledger) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
   }
@@ -236,6 +321,7 @@ async function main() {
   await copyIfExists(join(args.stateRootDir, 'position-ledger.json'), join(args.backupDir, 'position-ledger.json'));
   await copyIfExists(join(args.stateRootDir, 'position-state.json'), join(args.backupDir, 'position-state.json'));
   await copyIfExists(join(args.stateRootDir, 'order-attempt-ledger.json'), join(args.backupDir, 'order-attempt-ledger.json'));
+  await copyIfExists(join(args.stateRootDir, 'lifecycle-events.json'), join(args.backupDir, 'lifecycle-events.json'));
   const repaired = repairLedger(ledger, pending, new Date().toISOString());
   await store.writePositionLedger(repaired.ledger);
   const positionState = await store.readPositionState();
@@ -259,6 +345,48 @@ async function main() {
       lastClosedAt: closedActiveRecord.lastClosedAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
+  }
+  const refreshedNow = new Date().toISOString();
+  const refreshedProjection = buildLifecycleProjection({
+    ledger: repaired.ledger,
+    pendingSubmission: pending
+  });
+  const latestPositionState = await store.readPositionState();
+  await store.writePositionState(selectCompatibilityPositionState({
+    ledger: repaired.ledger,
+    pendingSubmission: pending,
+    prior: latestPositionState,
+    allowNewOpens: refreshedProjection.allowNewOpens,
+    flattenOnly: latestPositionState?.flattenOnly ?? false,
+    lastAction: latestPositionState?.lastAction ?? 'hold',
+    lastReason: latestPositionState?.lastReason,
+    walletSol: latestPositionState?.walletSol,
+    now: refreshedNow
+  }));
+  const health = await store.readHealthReport();
+  if (health) {
+    const lifecycleCircuitCleared = refreshedProjection.reconcileRequiredCount === 0
+      && health.circuitReason === 'lifecycle-reconcile-required';
+    await store.writeHealthReport(buildHealthReport({
+      mode: lifecycleCircuitCleared && health.mode === 'degraded' ? 'healthy' : health.mode,
+      allowNewOpens: refreshedProjection.allowNewOpens,
+      activeLpCount: refreshedProjection.activeLpCount,
+      chainActiveLpCount: refreshedProjection.chainActiveLpCount,
+      pendingOpenCount: refreshedProjection.pendingOpenCount,
+      reconcileRequiredCount: refreshedProjection.reconcileRequiredCount,
+      residualCleanupRequiredCount: refreshedProjection.residualCleanupRequiredCount,
+      managedLpCount: refreshedProjection.managedLpCount,
+      untrackedLpCount: health.untrackedLpCount,
+      importFailedLpCount: refreshedProjection.importFailedLpCount,
+      flattenOnly: health.flattenOnly,
+      pendingSubmission: pending !== null,
+      circuitReason: lifecycleCircuitCleared ? '' : health.circuitReason,
+      lastSuccessfulTickAt: health.lastSuccessfulTickAt,
+      dependencyHealth: health.dependencyHealth,
+      housekeeping: health.housekeeping,
+      mirror: health.mirror,
+      updatedAt: refreshedNow
+    }));
   }
 
   process.stdout.write(`${JSON.stringify({

@@ -162,6 +162,82 @@ describe('lifecycle projection', () => {
     expect(projection.allowNewOpens).toBe(true);
   });
 
+  it('does not let a synthetic open record block after its chain-backed position closed', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [
+        {
+          positionKey: 'position:pool-1:mint-1',
+          openIntentId: 'open-intent-1',
+          idempotencyKey: 'open-1',
+          positionId: 'pool-1:mint-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'sig-1',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: now,
+          updatedAt: now
+        },
+        {
+          positionKey: 'chain-position:pos-1',
+          openIntentId: 'open-intent-1',
+          idempotencyKey: 'open-1',
+          positionId: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'closed',
+          entryFillSubmissionId: 'sig-1',
+          lastAction: 'withdraw-lp',
+          lastClosedAt: now,
+          updatedAt: now
+        }
+      ]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(projection.chainActiveLpCount).toBe(0);
+    expect(projection.reconcileRequiredCount).toBe(0);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(true);
+  });
+
+  it('counts residual cleanup obligations without counting them as active LP capacity', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [{
+        positionKey: 'chain-position:pos-1',
+        positionId: 'pos-1',
+        chainPositionAddress: 'pos-1',
+        activeMint: 'mint-1',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'closed',
+        residualCleanupStatus: 'residual_cleanup_pending',
+        residualCleanupValueSol: 0.012,
+        lastAction: 'withdraw-lp',
+        lastClosedAt: now,
+        updatedAt: now
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 1
+    });
+
+    expect(projection.residualCleanupRequiredCount).toBe(1);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(true);
+  });
+
   it('does not count SOL or stable LP account positions as business-active capacity', () => {
     const projection = buildLifecycleProjection({
       accountState: {

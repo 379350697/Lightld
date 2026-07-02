@@ -542,6 +542,135 @@ describe('position ledger', () => {
     });
   });
 
+  it('closes superseded synthetic records when the chain-backed LP closes', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        records: [
+          {
+            positionKey: 'position:pool-a:mint-a',
+            positionId: 'pool-a:mint-a',
+            openIntentId: 'open-a',
+            idempotencyKey: 'open-order-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            entryFillSubmissionId: 'entry-a',
+            missingOnChainSince: '2026-07-02T00:02:00.000Z',
+            lastAction: 'add-lp',
+            lastReason: 'chain-position-missing-without-exit-evidence',
+            updatedAt: '2026-07-02T00:02:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-a',
+            positionId: 'pos-a',
+            chainPositionAddress: 'pos-a',
+            openIntentId: 'open-a',
+            idempotencyKey: 'open-order-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            entryFillSubmissionId: 'entry-a',
+            lastAction: 'add-lp',
+            updatedAt: '2026-07-02T00:01:00.000Z'
+          }
+        ]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      actionIdentity: {
+        chainPositionAddress: 'pos-a',
+        positionId: 'pos-a',
+        openIntentId: 'open-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'exit-pos-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      now: '2026-07-02T00:03:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(2);
+    expect(ledger.records.find((record) => record.positionKey === 'chain-position:pos-a')).toMatchObject({
+      lifecycleState: 'closed',
+      lastAction: 'withdraw-lp'
+    });
+    expect(ledger.records.find((record) => record.positionKey === 'position:pool-a:mint-a')).toMatchObject({
+      lifecycleState: 'closed',
+      importStatus: 'superseded_closed',
+      lastReason: 'superseded-by-chain-closed-position',
+      lastClosedAt: '2026-07-02T00:03:00.000Z'
+    });
+    expect(summarizePositionLedger(ledger).reconcileRequiredCount).toBe(0);
+  });
+
+  it('records residual cleanup obligation on a closed LP without keeping it active', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-a',
+          positionId: 'pos-a',
+          chainPositionAddress: 'pos-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-07-02T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      actionIdentity: {
+        chainPositionAddress: 'pos-a',
+        positionId: 'pos-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'exit-pos-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'residual token sweep incomplete',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      residualCleanupStatus: 'residual_cleanup_pending',
+      residualCleanupValueSol: 0.012,
+      now: '2026-07-02T00:03:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'closed',
+      residualCleanupStatus: 'residual_cleanup_pending',
+      residualCleanupValueSol: 0.012
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 0,
+      residualCleanupRequiredCount: 1
+    });
+  });
+
   it('does not create phantom open-pending records for failed add-lp attempts', () => {
     const ledger = applyLiveCycleResultToLedger({
       ledger: {
@@ -726,6 +855,7 @@ describe('position ledger', () => {
       chainActiveLpCount: 1,
       pendingOpenCount: 0,
       reconcileRequiredCount: 1,
+      residualCleanupRequiredCount: 0,
       managedLpCount: 1,
       importFailedLpCount: 0
     });

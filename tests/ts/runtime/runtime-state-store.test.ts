@@ -120,4 +120,55 @@ describe('RuntimeStateStore', () => {
       ]
     });
   });
+
+  it('appends and reloads lifecycle events in order', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lightld-runtime-lifecycle-events-'));
+    const store = new RuntimeStateStore(directory);
+
+    await store.appendLifecycleEvents([
+      {
+        eventKey: 'event-1',
+        eventType: 'OpenIntentCreated',
+        strategyId: 'new-token-v1',
+        openIntentId: 'open-1',
+        poolAddress: 'pool-1',
+        tokenMint: 'mint-1',
+        createdAt: '2026-07-02T00:00:00.000Z'
+      },
+      {
+        eventKey: 'event-2',
+        eventType: 'BroadcastSubmitted',
+        strategyId: 'new-token-v1',
+        openIntentId: 'open-1',
+        idempotencyKey: 'order-1',
+        submissionId: 'sig-1',
+        action: 'add-lp',
+        poolAddress: 'pool-1',
+        tokenMint: 'mint-1',
+        createdAt: '2026-07-02T00:00:01.000Z'
+      }
+    ]);
+
+    await store.appendLifecycleEvents([{
+      eventKey: 'event-2',
+      eventType: 'BroadcastSubmitted',
+      strategyId: 'new-token-v1',
+      openIntentId: 'open-1',
+      idempotencyKey: 'order-1',
+      submissionId: 'sig-1',
+      action: 'add-lp',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-1',
+      createdAt: '2026-07-02T00:00:01.000Z'
+    }]);
+
+    await expect(store.readLifecycleEventLog()).resolves.toEqual({
+      version: 1,
+      updatedAt: '2026-07-02T00:00:01.000Z',
+      events: [
+        expect.objectContaining({ eventKey: 'event-1', eventType: 'OpenIntentCreated' }),
+        expect.objectContaining({ eventKey: 'event-2', eventType: 'BroadcastSubmitted' })
+      ]
+    });
+  });
 });

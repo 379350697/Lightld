@@ -24,6 +24,7 @@ export type LifecycleProjection = {
   chainActiveLpCount: number;
   pendingOpenCount: number;
   reconcileRequiredCount: number;
+  residualCleanupRequiredCount: number;
   activeLpCount: number;
   managedLpCount: number;
   importFailedLpCount: number;
@@ -181,15 +182,36 @@ function recordMatchesChainActiveRecord(record: PositionLedgerRecord, chainRecor
   );
 }
 
-function isSupersededByChainActiveRecord(
+function recordMatchesClosedChainRecord(record: PositionLedgerRecord, chainRecord: PositionLedgerRecord) {
+  if (!recordMatchesChainActiveRecord(record, chainRecord)) {
+    return false;
+  }
+
+  if (record.openIntentId || record.idempotencyKey || record.entryFillSubmissionId) {
+    return true;
+  }
+
+  return Boolean(record.missingOnChainSince && chainRecord.lastClosedAt);
+}
+
+function isSupersededByChainRecord(
   record: PositionLedgerRecord,
-  chainActiveRecords: PositionLedgerRecord[]
+  chainRecords: PositionLedgerRecord[]
 ) {
   if (record.chainPositionAddress) {
     return false;
   }
 
-  return chainActiveRecords.some((chainRecord) => recordMatchesChainActiveRecord(record, chainRecord));
+  return chainRecords.some((chainRecord) => {
+    if (chainRecord.lifecycleState === 'closed') {
+      return recordMatchesClosedChainRecord(record, chainRecord);
+    }
+    return recordMatchesChainActiveRecord(record, chainRecord);
+  });
+}
+
+function isResidualCleanupRequired(record: PositionLedgerRecord) {
+  return record.residualCleanupStatus === 'residual_cleanup_pending';
 }
 
 export function buildLifecycleProjection(input: {
@@ -213,12 +235,16 @@ export function buildLifecycleProjection(input: {
   const pendingOpenRecords = classifications
     .filter((entry) => entry.classification === 'pending_open')
     .map((entry) => entry.record);
+  const supersedingChainRecords = classifications
+    .filter((entry) => entry.classification === 'chain_active' || entry.classification === 'closed')
+    .map((entry) => entry.record);
   const reconcileRequiredRecords = classifications
     .filter((entry) => (
       entry.classification === 'reconcile_required' &&
-      !isSupersededByChainActiveRecord(entry.record, chainActiveRecords)
+      !isSupersededByChainRecord(entry.record, supersedingChainRecords)
     ))
     .map((entry) => entry.record);
+  const residualCleanupRequiredCount = records.filter(isResidualCleanupRequired).length;
   const chainActiveKeys = collectChainActiveKeys(input.accountState);
   const chainActiveLpCount = Math.max(chainActiveRecords.length, chainActiveKeys.size);
   const pendingOpenCount = pendingOpenRecords.length;
@@ -231,6 +257,7 @@ export function buildLifecycleProjection(input: {
     chainActiveLpCount,
     pendingOpenCount,
     reconcileRequiredCount,
+    residualCleanupRequiredCount,
     activeLpCount: capacityUsed,
     managedLpCount: businessActiveRecords.filter((record) => record.importStatus !== 'import_failed').length,
     importFailedLpCount: businessActiveRecords.filter((record) => record.importStatus === 'import_failed').length,

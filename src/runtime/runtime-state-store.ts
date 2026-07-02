@@ -5,6 +5,10 @@ import {
   type DependencyHealthSnapshot,
   HealthReportSchema,
   type HealthReport,
+  LifecycleEventLogSnapshotSchema,
+  LifecycleEventRecordSchema,
+  type LifecycleEventLogSnapshot,
+  type LifecycleEventRecord,
   OrderAttemptLedgerSnapshotSchema,
   OrderAttemptRecordSchema,
   type OrderAttemptLedgerSnapshot,
@@ -96,6 +100,40 @@ export class RuntimeStateStore {
 
   async readOrderAttemptLedger(): Promise<OrderAttemptLedgerSnapshot | null> {
     return readJsonIfExists(join(this.rootDir, 'order-attempt-ledger.json'), OrderAttemptLedgerSnapshotSchema);
+  }
+
+  async writeLifecycleEventLog(snapshot: LifecycleEventLogSnapshot) {
+    await writeJsonAtomically(
+      join(this.rootDir, 'lifecycle-events.json'),
+      LifecycleEventLogSnapshotSchema.parse(snapshot)
+    );
+  }
+
+  async readLifecycleEventLog(): Promise<LifecycleEventLogSnapshot | null> {
+    return readJsonIfExists(join(this.rootDir, 'lifecycle-events.json'), LifecycleEventLogSnapshotSchema);
+  }
+
+  async appendLifecycleEvents(events: LifecycleEventRecord[]) {
+    if (events.length === 0) {
+      return;
+    }
+
+    const current = await this.readLifecycleEventLog();
+    const byKey = new Map<string, LifecycleEventRecord>();
+    for (const event of current?.events ?? []) {
+      byKey.set(event.eventKey, event);
+    }
+    for (const event of events) {
+      const parsed = LifecycleEventRecordSchema.parse(event);
+      byKey.set(parsed.eventKey, parsed);
+    }
+    const nextEvents = [...byKey.values()]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.eventKey.localeCompare(right.eventKey));
+    await this.writeLifecycleEventLog({
+      version: 1,
+      events: nextEvents,
+      updatedAt: nextEvents[nextEvents.length - 1]?.createdAt ?? new Date().toISOString()
+    });
   }
 
   async upsertOrderAttempt(record: OrderAttemptRecord) {

@@ -168,7 +168,8 @@ export const PositionLedgerImportStatusSchema = z.enum([
   'imported',
   'entry_unknown',
   'import_failed',
-  'archived_missing_without_exit_evidence'
+  'archived_missing_without_exit_evidence',
+  'superseded_closed'
 ]);
 export type PositionLedgerImportStatus = z.infer<typeof PositionLedgerImportStatusSchema>;
 
@@ -193,6 +194,10 @@ export const PositionLedgerRecordSchema = z.object({
   pendingOrderAction: PendingOrderActionSchema.optional(),
   pendingConfirmationStatus: PendingConfirmationStatusSchema.optional(),
   pendingFinality: PendingFinalitySchema.optional(),
+  residualCleanupStatus: z.string().optional(),
+  residualCleanupValueSol: z.number().finite().nonnegative().optional(),
+  supersededByPositionKey: z.string().optional(),
+  evidenceMissingReason: z.string().optional(),
   lastSeenOnChainAt: z.string().optional(),
   missingOnChainSince: z.string().optional(),
   valuationStatus: LpValuationStatusSchema.optional(),
@@ -218,13 +223,22 @@ export const PositionLedgerSnapshotSchema = z.object({
 
 export const LifecycleEventTypeSchema = z.enum([
   'IntentCreated',
+  'OpenIntentCreated',
   'SignFailed',
+  'OrderSignFailed',
   'BroadcastNotSubmitted',
   'BroadcastSubmitted',
   'ConfirmationResolved',
   'FillObserved',
   'ChainPositionObserved',
   'ChainMissing',
+  'ChainPositionMissing',
+  'CloseIntentCreated',
+  'PositionClosed',
+  'ResidualCleanupRequired',
+  'ResidualCleanupResolved',
+  'ReconciliationRequired',
+  'ReconciliationResolved',
   'ReconciledClosed'
 ]);
 export type LifecycleEventType = z.infer<typeof LifecycleEventTypeSchema>;
@@ -268,6 +282,32 @@ export const OrderAttemptLedgerSnapshotSchema = z.object({
   updatedAt: z.string()
 });
 
+export const LifecycleEventRecordSchema = z.object({
+  eventKey: z.string(),
+  eventType: LifecycleEventTypeSchema,
+  strategyId: z.string().optional(),
+  openIntentId: z.string().optional(),
+  positionId: z.string().optional(),
+  chainPositionAddress: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  submissionId: z.string().optional(),
+  confirmationSignature: z.string().optional(),
+  action: z.string().optional(),
+  poolAddress: z.string().optional(),
+  tokenMint: z.string().optional(),
+  reason: z.string().optional(),
+  detail: z.string().optional(),
+  residualCleanupStatus: z.string().optional(),
+  residualCleanupValueSol: z.number().finite().nonnegative().optional(),
+  createdAt: z.string()
+});
+
+export const LifecycleEventLogSnapshotSchema = z.object({
+  version: z.literal(1),
+  events: z.array(LifecycleEventRecordSchema),
+  updatedAt: z.string()
+});
+
 /** Per-slot subset forwarded to the exit policy snapshot. */
 export const LpExitPolicySnapshotSchema = PositionStateSnapshotSchema.pick({
   activeMint: true,
@@ -297,6 +337,8 @@ export type PositionLedgerRecord = z.infer<typeof PositionLedgerRecordSchema>;
 export type PositionLedgerSnapshot = z.infer<typeof PositionLedgerSnapshotSchema>;
 export type OrderAttemptRecord = z.infer<typeof OrderAttemptRecordSchema>;
 export type OrderAttemptLedgerSnapshot = z.infer<typeof OrderAttemptLedgerSnapshotSchema>;
+export type LifecycleEventRecord = z.infer<typeof LifecycleEventRecordSchema>;
+export type LifecycleEventLogSnapshot = z.infer<typeof LifecycleEventLogSnapshotSchema>;
 
 export const HousekeepingSnapshotSchema = z.object({
   lastHousekeepingAt: z.string(),
@@ -315,6 +357,7 @@ export const HealthReportSchema = z.object({
   chainActiveLpCount: z.number().int().nonnegative().optional(),
   pendingOpenCount: z.number().int().nonnegative().optional(),
   reconcileRequiredCount: z.number().int().nonnegative().optional(),
+  residualCleanupRequiredCount: z.number().int().nonnegative().optional(),
   managedLpCount: z.number().int().nonnegative().optional(),
   untrackedLpCount: z.number().int().nonnegative().optional(),
   importFailedLpCount: z.number().int().nonnegative().optional(),

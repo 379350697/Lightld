@@ -531,6 +531,8 @@ export function applyLiveCycleResultToLedger(input: {
   liveOrderSubmitted: boolean;
   confirmationStatus?: string;
   finality?: string;
+  residualCleanupStatus?: string;
+  residualCleanupValueSol?: number;
   confirmedFill?: {
     submissionId: string;
     actualFilledSol?: number;
@@ -730,10 +732,55 @@ export function applyLiveCycleResultToLedger(input: {
     pendingOrderAction: hasPending ? input.persistedPendingSubmission?.orderAction : undefined,
     pendingConfirmationStatus: hasPending ? input.persistedPendingSubmission?.confirmationStatus : undefined,
     pendingFinality: hasPending ? input.persistedPendingSubmission?.finality : undefined,
+    residualCleanupStatus: input.residualCleanupStatus ?? record.residualCleanupStatus,
+    residualCleanupValueSol: input.residualCleanupValueSol ?? record.residualCleanupValueSol,
     missingOnChainSince: stillOnChain ? undefined : record.missingOnChainSince,
     lastClosedAt: lifecycleState === 'closed' ? input.now : record.lastClosedAt,
     updatedAt: input.now
   };
+
+  if (lifecycleState === 'closed' && records[index].chainPositionAddress) {
+    const closedRecord = records[index];
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const candidate = records[recordIndex];
+      if (
+        recordIndex === index ||
+        candidate.chainPositionAddress ||
+        candidate.lifecycleState === 'closed'
+      ) {
+        continue;
+      }
+
+      const identityMatches = Boolean(
+        (closedRecord.openIntentId && candidate.openIntentId === closedRecord.openIntentId)
+        || (closedRecord.idempotencyKey && candidate.idempotencyKey === closedRecord.idempotencyKey)
+        || (closedRecord.entryFillSubmissionId && candidate.entryFillSubmissionId === closedRecord.entryFillSubmissionId)
+        || (
+          candidate.missingOnChainSince
+          && candidate.activePoolAddress
+          && candidate.activeMint
+          && candidate.activePoolAddress === closedRecord.activePoolAddress
+          && candidate.activeMint === closedRecord.activeMint
+        )
+      );
+
+      if (!identityMatches) {
+        continue;
+      }
+
+      records[recordIndex] = {
+        ...candidate,
+        lifecycleState: 'closed',
+        importStatus: 'superseded_closed',
+        supersededByPositionKey: closedRecord.positionKey,
+        lastAction: 'withdraw-lp',
+        lastReason: 'superseded-by-chain-closed-position',
+        missingOnChainSince: candidate.missingOnChainSince ?? input.now,
+        lastClosedAt: input.now,
+        updatedAt: input.now
+      };
+    }
+  }
 
   return {
     version: 1,
@@ -757,6 +804,7 @@ export function summarizePositionLedger(ledger?: PositionLedgerSnapshot | null) 
     chainActiveLpCount: projection.chainActiveLpCount,
     pendingOpenCount: projection.pendingOpenCount,
     reconcileRequiredCount: projection.reconcileRequiredCount,
+    residualCleanupRequiredCount: projection.residualCleanupRequiredCount,
     managedLpCount: projection.managedLpCount,
     importFailedLpCount: projection.importFailedLpCount
   };
