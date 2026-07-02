@@ -147,13 +147,22 @@ function recordsShareLifecycleIdentity(record: PositionLedgerRecord, chainRecord
     return true;
   }
 
-  return Boolean(
-    record.missingOnChainSince
-    && record.activePoolAddress
-    && record.activeMint
-    && record.activePoolAddress === chainRecord.activePoolAddress
-    && record.activeMint === chainRecord.activeMint
-  );
+  if (
+    !record.missingOnChainSince
+    || !chainRecord.lastClosedAt
+    || !record.activePoolAddress
+    || !record.activeMint
+    || record.activePoolAddress !== chainRecord.activePoolAddress
+    || record.activeMint !== chainRecord.activeMint
+  ) {
+    return false;
+  }
+
+  const recordOpenedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+  const chainClosedAtMs = Date.parse(chainRecord.lastClosedAt);
+  return Number.isFinite(recordOpenedAtMs) && Number.isFinite(chainClosedAtMs)
+    ? recordOpenedAtMs <= chainClosedAtMs
+    : false;
 }
 
 function findSupersededSyntheticOpenIssues(ledger: PositionLedgerSnapshot | null): SupersededSyntheticOpenIssue[] {

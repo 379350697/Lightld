@@ -65,6 +65,23 @@ function supersedeSyntheticRecords(input: {
   now: string;
   reason: string;
 }) {
+  const poolMintFallbackCanSupersede = (candidate: PositionLedgerRecord) => {
+    if (
+      !candidate.missingOnChainSince ||
+      !input.chainRecord.lastClosedAt ||
+      candidate.activePoolAddress !== input.chainRecord.activePoolAddress ||
+      candidate.activeMint !== input.chainRecord.activeMint
+    ) {
+      return false;
+    }
+
+    const candidateOpenedAtMs = candidate.openedAt ? Date.parse(candidate.openedAt) : Number.NaN;
+    const chainClosedAtMs = Date.parse(input.chainRecord.lastClosedAt);
+    return Number.isFinite(candidateOpenedAtMs) && Number.isFinite(chainClosedAtMs)
+      ? candidateOpenedAtMs <= chainClosedAtMs
+      : false;
+  };
+
   for (let index = 0; index < input.records.length; index += 1) {
     const candidate = input.records[index];
     if (
@@ -79,11 +96,7 @@ function supersedeSyntheticRecords(input: {
       (candidate.openIntentId && candidate.openIntentId === input.chainRecord.openIntentId)
       || (candidate.idempotencyKey && candidate.idempotencyKey === input.chainRecord.idempotencyKey)
       || (candidate.entryFillSubmissionId && candidate.entryFillSubmissionId === input.chainRecord.entryFillSubmissionId)
-      || (
-        candidate.missingOnChainSince
-        && candidate.activePoolAddress === input.chainRecord.activePoolAddress
-        && candidate.activeMint === input.chainRecord.activeMint
-      )
+      || poolMintFallbackCanSupersede(candidate)
     );
 
     if (!matches) {

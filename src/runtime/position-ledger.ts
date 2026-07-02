@@ -741,6 +741,25 @@ export function applyLiveCycleResultToLedger(input: {
 
   if (lifecycleState === 'closed' && records[index].chainPositionAddress) {
     const closedRecord = records[index];
+    const poolMintFallbackCanSupersede = (candidate: PositionLedgerRecord) => {
+      if (
+        !candidate.missingOnChainSince ||
+        !closedRecord.lastClosedAt ||
+        !candidate.activePoolAddress ||
+        !candidate.activeMint ||
+        candidate.activePoolAddress !== closedRecord.activePoolAddress ||
+        candidate.activeMint !== closedRecord.activeMint
+      ) {
+        return false;
+      }
+
+      const candidateOpenedAtMs = candidate.openedAt ? Date.parse(candidate.openedAt) : Number.NaN;
+      const closedAtMs = Date.parse(closedRecord.lastClosedAt);
+      return Number.isFinite(candidateOpenedAtMs) && Number.isFinite(closedAtMs)
+        ? candidateOpenedAtMs <= closedAtMs
+        : false;
+    };
+
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
       const candidate = records[recordIndex];
       if (
@@ -755,13 +774,7 @@ export function applyLiveCycleResultToLedger(input: {
         (closedRecord.openIntentId && candidate.openIntentId === closedRecord.openIntentId)
         || (closedRecord.idempotencyKey && candidate.idempotencyKey === closedRecord.idempotencyKey)
         || (closedRecord.entryFillSubmissionId && candidate.entryFillSubmissionId === closedRecord.entryFillSubmissionId)
-        || (
-          candidate.missingOnChainSince
-          && candidate.activePoolAddress
-          && candidate.activeMint
-          && candidate.activePoolAddress === closedRecord.activePoolAddress
-          && candidate.activeMint === closedRecord.activeMint
-        )
+        || poolMintFallbackCanSupersede(candidate)
       );
 
       if (!identityMatches) {

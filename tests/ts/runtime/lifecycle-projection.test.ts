@@ -209,6 +209,53 @@ describe('lifecycle projection', () => {
     expect(projection.allowNewOpens).toBe(true);
   });
 
+  it('does not use an older closed chain record to supersede a later same-pool reopen', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [
+        {
+          positionKey: 'chain-position:old-pos',
+          openIntentId: 'old-open-intent',
+          idempotencyKey: 'old-open',
+          positionId: 'old-pos',
+          chainPositionAddress: 'old-pos',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'closed',
+          entryFillSubmissionId: 'old-sig',
+          openedAt: '2026-07-01T00:00:00.000Z',
+          lastAction: 'withdraw-lp',
+          lastClosedAt: '2026-07-01T01:00:00.000Z',
+          updatedAt: '2026-07-01T01:00:00.000Z'
+        },
+        {
+          positionKey: 'position:pool-1:mint-1',
+          openIntentId: 'new-open-intent',
+          idempotencyKey: 'new-open',
+          positionId: 'pool-1:mint-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'new-sig',
+          openedAt: '2026-07-02T00:00:00.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-02T00:05:00.000Z',
+          updatedAt: '2026-07-02T00:05:00.000Z'
+        }
+      ]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(projection.reconcileRequiredCount).toBe(1);
+    expect(projection.allowNewOpens).toBe(false);
+  });
+
   it('counts residual cleanup obligations without counting them as active LP capacity', () => {
     const ledger: PositionLedgerSnapshot = {
       version: 1,
