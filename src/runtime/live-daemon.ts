@@ -899,13 +899,6 @@ export function resolveNewOpenPassSkipReason(input: {
     return `runtime-mode:${input.runtimeMode}`;
   }
 
-  if (
-    input.maintenanceResult.action === 'hold'
-    && (input.businessSemantics.hasActiveLp || hasPersistedActiveLifecycleTarget(input.positionState))
-  ) {
-    return 'active-lp';
-  }
-
   return input.businessSemantics.canRunNewOpenAfterMaintenance.allowed
     ? undefined
     : input.businessSemantics.canRunNewOpenAfterMaintenance.reason;
@@ -2568,8 +2561,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           && !positionState.chainPositionAddress
         );
         const allowNewOpens = preCycleBusinessSemantics.canOpenNewPosition.allowed
-          && !priorOpenConfirming
-          && !preCycleBusinessSemantics.hasActiveLp;
+          && !priorOpenConfirming;
         const activeOpenCooldowns = await readActiveTargetOpenCooldowns({
           store: targetOpenCooldownStore,
           now: nowIso()

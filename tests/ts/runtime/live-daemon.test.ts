@@ -76,6 +76,67 @@ describe('runLiveDaemon', () => {
     expect(skipReason).toBeUndefined();
   });
 
+  it('does not skip new-open after a maintenance hold while LP capacity remains', () => {
+    const accountState = {
+      walletSol: 1,
+      journalSol: 1,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'pos-active',
+        mint: 'mint-active',
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+    const businessSemantics = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      residualTokenSweepMinValueSol: 0.1,
+      accountState,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-active',
+          positionId: 'pos-active',
+          chainPositionAddress: 'pos-active',
+          activeMint: 'mint-active',
+          activePoolAddress: 'pool-active',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      maintenanceOutcome: {
+        action: 'hold',
+        liveOrderSubmitted: false,
+        reason: 'lp-risk-sentinel-hold'
+      }
+    });
+    const skipReason = resolveNewOpenPassSkipReason({
+      enabled: true,
+      maintenanceResult: {
+        action: 'hold',
+        liveOrderSubmitted: false,
+        reason: 'lp-risk-sentinel-hold'
+      } as any,
+      runtimeMode: 'healthy',
+      pendingSubmission: false,
+      accountState,
+      businessSemantics,
+      maxActivePositions: 5,
+      residualTokenSweepMinValueSol: 0.1
+    });
+
+    expect(businessSemantics.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: true,
+      reason: 'capacity-available'
+    });
+    expect(skipReason).toBeUndefined();
+  });
+
   it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
     expect(resolveLifecycleStateForPersist({
       nextLifecycleState: 'open',
@@ -461,7 +522,7 @@ describe('runLiveDaemon', () => {
     expect(health.housekeeping?.mirrorPruneDeletedRows).toBe(3);
   });
 
-  it('skips the new-open pass after safe LP maintenance hold while a managed LP remains active', async () => {
+  it('starts the new-open pass after safe LP maintenance hold while capacity remains', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-two-pass-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -519,19 +580,20 @@ describe('runLiveDaemon', () => {
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
         skipMints.push(context?.skipMints ?? []);
-        if (context?.selectionMode === 'new-open-only') {
-          throw new Error('new-open pass should be skipped while a managed LP remains active');
-        }
-
         return {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: 'pool-active', liquidityUsd: 20_000 },
-            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000 },
+            token: {
+              mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
+              inSession: true,
+              hasSolRoute: true,
+              symbol: context?.selectionMode === 'new-open-only' ? 'NEW' : 'ACTIVE'
+            },
             trader: {
-              hasInventory: true,
-              hasLpPosition: true,
+              hasInventory: context?.selectionMode !== 'new-open-only',
+              hasLpPosition: context?.selectionMode !== 'new-open-only',
               lpCurrentValueSol: 0.11,
               lpTotalValueSol: 0.11,
               exitQuoteValueSol: 0.11,
@@ -543,16 +605,41 @@ describe('runLiveDaemon', () => {
               valuationCompleteness: 'complete'
             },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          },
+          signer: {
+            sign: async (intent: any) => ({
+              intent,
+              signerId: 'test-signer',
+              signedAt: '2026-03-22T00:00:01.000Z',
+              signature: 'sig'
+            })
+          },
+          broadcaster: {
+            broadcast: async (signedIntent: any) => ({
+              status: 'submitted' as const,
+              submissionId: 'sub-new-open',
+              idempotencyKey: signedIntent.intent.idempotencyKey,
+              confirmationSignature: 'tx-new-open'
+            })
+          },
+          confirmationProvider: {
+            poll: async ({ submissionId, confirmationSignature }: any) => ({
+              submissionId,
+              confirmationSignature,
+              status: 'confirmed' as const,
+              finality: 'finalized' as const,
+              checkedAt: '2026-03-22T00:00:02.000Z'
+            })
           }
         };
       }
     });
 
     const nextPositionState = await runtimeStateStore.readPositionState();
-    expect(modes).toEqual(['maintenance-only']);
-    expect(skipMints).toEqual([[]]);
+    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
+    expect(skipMints).toEqual([[], ['mint-active']]);
     expect(nextPositionState).toMatchObject({
-      lastAction: 'hold',
+      lastAction: 'add-lp',
       activeMint: 'mint-active',
       activePoolAddress: 'pool-active',
       positionId: 'position-active'
@@ -616,19 +703,20 @@ describe('runLiveDaemon', () => {
       },
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
-        if (context?.selectionMode === 'new-open-only') {
-          throw new Error('new-open pass should be skipped while the bound LP remains active');
-        }
-
         return {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: 'pool-active', liquidityUsd: 20_000 },
-            token: { mint: 'mint-active', inSession: true, hasSolRoute: true, symbol: 'ACTIVE' },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000 },
+            token: {
+              mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
+              inSession: true,
+              hasSolRoute: true,
+              symbol: context?.selectionMode === 'new-open-only' ? 'NEW' : 'ACTIVE'
+            },
             trader: {
-              hasInventory: true,
-              hasLpPosition: true,
+              hasInventory: context?.selectionMode !== 'new-open-only',
+              hasLpPosition: context?.selectionMode !== 'new-open-only',
               lpCurrentValueSol: 0.11,
               lpTotalValueSol: 0.11,
               exitQuoteValueSol: 0.11,
@@ -641,15 +729,40 @@ describe('runLiveDaemon', () => {
               valuationCompleteness: 'complete'
             },
             route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+          },
+          signer: {
+            sign: async (intent: any) => ({
+              intent,
+              signerId: 'test-signer',
+              signedAt: '2026-03-22T00:00:01.000Z',
+              signature: 'sig'
+            })
+          },
+          broadcaster: {
+            broadcast: async (signedIntent: any) => ({
+              status: 'submitted' as const,
+              submissionId: 'sub-new-open',
+              idempotencyKey: signedIntent.intent.idempotencyKey,
+              confirmationSignature: 'tx-new-open'
+            })
+          },
+          confirmationProvider: {
+            poll: async ({ submissionId, confirmationSignature }: any) => ({
+              submissionId,
+              confirmationSignature,
+              status: 'confirmed' as const,
+              finality: 'finalized' as const,
+              checkedAt: '2026-03-22T00:00:02.000Z'
+            })
           }
         };
       }
     });
 
     const nextPositionState = await runtimeStateStore.readPositionState();
-    expect(modes).toEqual(['maintenance-only']);
+    expect(modes).toEqual(['maintenance-only', 'new-open-only']);
     expect(nextPositionState).toMatchObject({
-      lastAction: 'hold',
+      lastAction: 'add-lp',
       activeMint: 'mint-active',
       activePoolAddress: 'pool-active'
     });
@@ -683,7 +796,7 @@ describe('runLiveDaemon', () => {
       journalRootDir,
       tickIntervalMs: 1,
       maxTicks: 1,
-      maxActivePositions: 2,
+      maxActivePositions: 1,
       openAfterMaintenanceHold: true,
       buildCycleInput: async (_tick, context) => {
         modes.push(context?.selectionMode);
