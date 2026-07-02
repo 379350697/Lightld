@@ -27,6 +27,24 @@ export class HttpLiveBroadcaster implements LiveBroadcaster {
   }
 
   async broadcast(intent: SignedLiveOrderIntent): Promise<LiveBroadcastResult> {
+    const readErrorDetail = async (response: Response) => {
+      const text = await response.text().catch(() => '');
+
+      if (!text) {
+        return '';
+      }
+
+      try {
+        const payload = JSON.parse(text) as { error?: unknown; detail?: unknown };
+        const error = typeof payload.error === 'string' ? payload.error : '';
+        const detail = typeof payload.detail === 'string' ? payload.detail : '';
+
+        return [error, detail].filter((entry) => entry.length > 0).join(': ');
+      } catch {
+        return text;
+      }
+    };
+
     return executeWithRetry(async (signal) => {
       const response = await (this.fetchImpl ?? fetch)(this.url, {
         method: 'POST',
@@ -39,9 +57,15 @@ export class HttpLiveBroadcaster implements LiveBroadcaster {
       });
 
       if (!response.ok) {
+        const detail = await readErrorDetail(response);
+        const message = [
+          `Broadcast request failed: ${response.status} ${response.statusText}`.trim(),
+          detail
+        ].filter((entry) => entry.length > 0).join(' ');
+
         throw Object.assign(
-          new Error(`Broadcast request failed: ${response.status} ${response.statusText}`.trim()),
-          { status: response.status }
+          new Error(message),
+          { status: response.status, detail }
         );
       }
 

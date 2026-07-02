@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from 'zod';
 
 import { LocalLiveSigner } from './local-live-signer.ts';
+import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import {
   hasExpectedBearerToken,
@@ -12,17 +13,7 @@ import {
 } from '../shared/http-server.ts';
 
 const SignIntentRequestSchema = z.object({
-  intent: z.object({
-    strategyId: z.string().min(1),
-    poolAddress: z.string().min(1),
-    outputSol: z.number().finite().positive(),
-    createdAt: z.string().min(1),
-    idempotencyKey: z.string().min(1),
-    side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
-    tokenMint: z.string().default(''),
-    fullPositionExit: z.boolean().default(false),
-    liquidateResidualTokenToSol: z.boolean().default(false)
-  })
+  intent: LiveOrderIntentSchema
 });
 
 type LocalLiveSignerServerOptions = {
@@ -91,6 +82,7 @@ export function createLocalLiveSignerServer(options: LocalLiveSignerServerOption
             const signed = await signer.sign(payload.intent);
 
             writeJson(response, 200, {
+              intent: signed.intent,
               signerId: signed.signerId,
               signedAt: signed.signedAt,
               signature: signed.signature

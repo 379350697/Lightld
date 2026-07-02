@@ -126,6 +126,7 @@ export const SQLITE_MIRROR_SCHEMA = [
       stage TEXT NOT NULL,
       severity TEXT NOT NULL,
       reason TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
       runtime_mode TEXT NOT NULL,
       submission_id TEXT NOT NULL,
       token_mint TEXT NOT NULL,

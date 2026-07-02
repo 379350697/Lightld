@@ -24,6 +24,7 @@ import {
   signedIntentIdempotencyFingerprint,
   verifySignedIntent
 } from '../signed-intent-verifier.ts';
+import { LiveOrderIntentSchema } from '../live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from '../live-broadcaster.ts';
 import type { LiveConfirmationResult } from '../live-confirmation-provider.ts';
 import { collectLiveQuote } from '../live-quote-service.ts';
@@ -37,20 +38,7 @@ import { reconstructOpenPositionEntryEvidence } from '../../history/solana-close
 
 const BroadcastRequestSchema = z.object({
   intent: z.object({
-    intent: z.object({
-      strategyId: z.string().min(1),
-      poolAddress: z.string().min(1),
-      outputSol: z.number().finite().positive(),
-      createdAt: z.string().min(1),
-      idempotencyKey: z.string().min(1),
-      side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).optional(),
-      tokenMint: z.string().min(1).optional(),
-      fullPositionExit: z.boolean().optional(),
-      liquidateResidualTokenToSol: z.boolean().optional(),
-      openIntentId: z.string().min(1).optional(),
-      positionId: z.string().min(1).optional(),
-      chainPositionAddress: z.string().min(1).optional()
-    }),
+    intent: LiveOrderIntentSchema,
     signerId: z.string().min(1),
     signedAt: z.string().min(1),
     signature: z.string().min(1)

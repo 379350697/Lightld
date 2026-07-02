@@ -2927,6 +2927,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
           action: result.action,
           reason: result.reason,
+          detail: 'failureDetail' in result && typeof result.failureDetail === 'string'
+            ? result.failureDetail
+            : undefined,
           liveOrderSubmitted: result.liveOrderSubmitted,
           confirmationStatus: result.confirmationStatus,
           now: nowIso()

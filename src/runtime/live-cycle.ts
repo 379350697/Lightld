@@ -2600,6 +2600,7 @@ async function appendIncident(
       | 'recovery'
       | 'runtime-policy';
     reason: string;
+    detail?: string;
     severity: 'warning' | 'error';
     requestedPositionSol?: number;
     quote?: SolExitQuote;
@@ -2633,6 +2634,7 @@ async function appendIncident(
     severity,
     kind: classification.kind,
     reason: entry.reason,
+    detail: entry.detail,
     rootCause: classification.rootCause,
     suggestedAction: classification.suggestedAction,
     dedupeKey,
@@ -2661,6 +2663,7 @@ async function appendIncident(
       stage: entry.stage,
       severity,
       reason: entry.reason,
+      detail: entry.detail,
       runtimeMode: logContext.runtimeMode,
       submissionId: entry.submissionId ?? '',
       tokenMint: logContext.tokenMint,
@@ -2859,6 +2862,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     stage: 'live-config' | 'reconciliation' | 'guards' | 'signer' | 'broadcast' | 'recovery' | 'runtime-policy';
     action: LiveAction;
     reason: string;
+    failureDetail?: string;
     audit: { reason: string };
     requestedPositionSol?: number;
     quote?: SolExitQuote;
@@ -2891,6 +2895,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       await appendIncident(journals, logContext, mirrorSink, {
         stage: entry.stage,
         reason: entry.reason,
+        detail: entry.failureDetail,
         severity: entry.severity ?? 'warning',
         requestedPositionSol: entry.requestedPositionSol,
         quote: entry.quote,
@@ -2913,6 +2918,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       confirmationStatus: entry.confirmationStatus,
       failureKind: entry.failureKind,
       failureSource: entry.failureSource,
+      failureDetail: entry.failureDetail,
       journalPaths: journals.paths,
       killSwitchState
       }),
@@ -3717,6 +3723,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     finality?: PendingFinality | 'unknown';
     exitTriggerReason?: string;
     executionFailureReason?: string;
+    executionFailureDetail?: string;
     residualCleanupStatus?: string;
     residualCleanupValueSol?: number;
     updatedAt: string;
@@ -3737,6 +3744,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       finality: entry.finality ?? 'unknown',
       exitTriggerReason: entry.exitTriggerReason,
       executionFailureReason: entry.executionFailureReason,
+      executionFailureDetail: entry.executionFailureDetail,
       residualCleanupStatus: entry.residualCleanupStatus,
       residualCleanupValueSol: entry.residualCleanupValueSol,
       updatedAt: entry.updatedAt
@@ -3787,6 +3795,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       finality: 'unknown',
       exitTriggerReason: engineResult.audit.reason,
       executionFailureReason: reason,
+      executionFailureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
       updatedAt
     });
 
@@ -3794,6 +3803,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       stage: 'signer',
       action: actionableAction,
       reason,
+      failureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
       audit: engineResult.audit,
       requestedPositionSol,
       quote,
@@ -3835,6 +3845,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         finality: 'unknown',
         exitTriggerReason: engineResult.audit.reason,
         executionFailureReason: error.reason,
+        executionFailureDetail: error.detail,
         updatedAt
       });
 
@@ -3842,6 +3853,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         stage: 'broadcast',
         action: actionableAction,
         reason: error.reason,
+        failureDetail: error.detail,
         audit: engineResult.audit,
         requestedPositionSol,
         quote,
@@ -3867,6 +3879,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       finality: 'unknown',
       exitTriggerReason: engineResult.audit.reason,
       executionFailureReason: reason,
+      executionFailureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
       updatedAt
     });
 
@@ -3874,6 +3887,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       stage: 'broadcast',
       action: actionableAction,
       reason,
+      failureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
       audit: engineResult.audit,
       requestedPositionSol,
       quote,

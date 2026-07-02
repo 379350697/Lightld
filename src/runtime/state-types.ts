@@ -257,6 +257,7 @@ export const OrderAttemptRecordSchema = z.object({
   finality: z.string().optional(),
   liveOrderSubmitted: z.boolean(),
   reason: z.string().optional(),
+  detail: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });

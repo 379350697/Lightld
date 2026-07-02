@@ -58,13 +58,16 @@ export async function executeWithRetry<T>(
       const status = typeof (error as { status?: unknown })?.status === 'number'
         ? ((error as { status?: number }).status)
         : undefined;
+      const detail = typeof (error as { detail?: unknown })?.detail === 'string'
+        ? ((error as { detail?: string }).detail)
+        : undefined;
       const classification = classifyExecutionError(normalized, {
         operation: options.operation,
         status
       });
 
       if (!classification.retryable || attempt > options.maxRetries) {
-        throw new ExecutionRequestError(options.operation, classification, error, status);
+        throw new ExecutionRequestError(options.operation, classification, error, status, detail);
       }
 
       const baseDelay = options.baseDelayMs ?? 50;

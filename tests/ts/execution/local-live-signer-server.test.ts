@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createLocalLiveSignerServer } from '../../../src/execution/local-live-signer-server';
+import { verifySignedIntent } from '../../../src/execution/signed-intent-verifier';
 
 function base64UrlToBuffer(value: string) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -125,6 +126,55 @@ describe('createLocalLiveSignerServer', () => {
       signerId: keypair.publicKey,
       signature: expect.any(String)
     });
+
+    await server.stop();
+  });
+
+  it('preserves lifecycle identity fields in the signed canonical intent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-local-signer-identity-'));
+    directories.push(root);
+    const keypair = await createSolanaKeypairFile(root);
+    const server = createLocalLiveSignerServer({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'test-token',
+      keypairPath: keypair.path,
+      expectedPublicKey: keypair.publicKey
+    });
+    const intent = {
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1,
+      createdAt: '2026-03-24T00:00:00.000Z',
+      idempotencyKey: 'new-token-v1:pool-1:2026-03-24T00:00:00.000Z',
+      side: 'add-lp',
+      tokenMint: 'mint-1',
+      fullPositionExit: false,
+      liquidateResidualTokenToSol: false,
+      openIntentId: 'lp-open-intent:identity-1',
+      positionId: 'pool-1:mint-1',
+      chainPositionAddress: 'chain-position-1'
+    };
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/sign`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer test-token'
+      },
+      body: JSON.stringify({ intent })
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.intent).toMatchObject({
+      openIntentId: 'lp-open-intent:identity-1',
+      positionId: 'pool-1:mint-1',
+      chainPositionAddress: 'chain-position-1'
+    });
+    expect(() => verifySignedIntent(body, [keypair.publicKey])).not.toThrow();
 
     await server.stop();
   });

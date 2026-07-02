@@ -1,6 +1,6 @@
-export type LiveOrderIntent = ReturnType<
-  typeof import('./order-intent-builder').buildOrderIntent
->;
+import type { LiveOrderIntent } from './live-order-intent-schema.ts';
+
+export type { LiveOrderIntent };
 
 export type SignedLiveOrderIntent = {
   intent: LiveOrderIntent;

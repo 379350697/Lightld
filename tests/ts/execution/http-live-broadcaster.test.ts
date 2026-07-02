@@ -55,4 +55,33 @@ describe('HttpLiveBroadcaster', () => {
       confirmationSignature: 'tx-sig-1'
     });
   });
+
+  it('preserves execution error details from non-2xx responses', async () => {
+    const signer = new TestLiveSigner('prod-signer');
+    const intent = buildOrderIntent({
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1,
+      createdAt: '2026-03-21T00:00:00.000Z'
+    });
+    const signedIntent = await signer.sign(intent);
+    const broadcaster = new HttpLiveBroadcaster({
+      url: 'https://broadcast.example/api',
+      fetchImpl: async () => new Response(
+        JSON.stringify({
+          error: 'Signed intent verification failed',
+          detail: 'identity field mismatch'
+        }),
+        { status: 400, statusText: 'Bad Request' }
+      )
+    });
+
+    await expect(broadcaster.broadcast(signedIntent)).rejects.toMatchObject({
+      status: 400,
+      detail: 'Signed intent verification failed: identity field mismatch'
+    });
+    await expect(broadcaster.broadcast(signedIntent)).rejects.toThrow(
+      'Broadcast request failed: 400 Bad Request Signed intent verification failed: identity field mismatch'
+    );
+  });
 });

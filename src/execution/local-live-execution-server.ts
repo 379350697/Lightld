@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { readJsonIfExists, writeJsonAtomically } from '../runtime/atomic-file.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import { verifySignedIntent } from './signed-intent-verifier.ts';
+import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
@@ -19,17 +20,7 @@ import {
 } from '../shared/http-server.ts';
 
 const SignedIntentSchema = z.object({
-  intent: z.object({
-    strategyId: z.string().min(1),
-    poolAddress: z.string().min(1),
-    outputSol: z.number().finite().positive(),
-    createdAt: z.string().min(1),
-    idempotencyKey: z.string().min(1),
-    side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']).default('buy'),
-    tokenMint: z.string().default(''),
-    fullPositionExit: z.boolean().default(false),
-    liquidateResidualTokenToSol: z.boolean().default(false)
-  }),
+  intent: LiveOrderIntentSchema,
   signerId: z.string().min(1),
   signedAt: z.string().min(1),
   signature: z.string().min(1)

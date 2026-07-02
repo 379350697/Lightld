@@ -95,6 +95,7 @@ export type IncidentMirrorPayload = {
   stage: string;
   severity: 'warning' | 'error';
   reason: string;
+  detail?: string;
   runtimeMode: RuntimeMode;
   submissionId: string;
   tokenMint: string;

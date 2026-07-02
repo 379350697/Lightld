@@ -206,6 +206,7 @@ export function buildLifecycleProjection(input: {
 function orderAttemptStatus(input: {
   action: string;
   reason?: string;
+  detail?: string;
   liveOrderSubmitted: boolean;
   confirmationStatus?: string;
 }): { status: OrderAttemptStatus; eventType: OrderAttemptRecord['eventType']; broadcastStatus: string } {
@@ -263,6 +264,7 @@ export function buildOrderAttemptRecord(input: {
   pendingSubmission?: PendingSubmissionSnapshot | null;
   action: string;
   reason?: string;
+  detail?: string;
   liveOrderSubmitted: boolean;
   confirmationStatus?: string;
   finality?: string;
@@ -298,6 +300,7 @@ export function buildOrderAttemptRecord(input: {
     finality: input.finality ?? input.pendingSubmission?.finality,
     liveOrderSubmitted: input.liveOrderSubmitted,
     reason: input.reason,
+    detail: input.detail,
     createdAt: input.now,
     updatedAt: input.now
   };

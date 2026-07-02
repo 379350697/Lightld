@@ -1,3 +1,5 @@
+import type { LiveOrderIntent } from './live-order-intent-schema.ts';
+
 export type BuildOrderIntentInput = {
   strategyId: string;
   poolAddress: string;
@@ -12,7 +14,7 @@ export type BuildOrderIntentInput = {
   chainPositionAddress?: string;
 };
 
-export function buildOrderIntent(input: BuildOrderIntentInput) {
+export function buildOrderIntent(input: BuildOrderIntentInput): LiveOrderIntent {
   const createdAt = input.createdAt ?? new Date().toISOString();
 
   const intent = {

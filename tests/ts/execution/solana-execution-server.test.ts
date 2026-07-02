@@ -86,6 +86,9 @@ function buildIntent(side: BroadcastSide, intentOverrides: BroadcastIntentOverri
     createdAt: '2026-04-16T00:00:00.000Z',
     idempotencyKey: `k-${side}`,
     side,
+    tokenMint: '',
+    fullPositionExit: false,
+    liquidateResidualTokenToSol: false,
     ...intentOverrides
   };
 }
@@ -177,6 +180,116 @@ describe('createSolanaExecutionServer', () => {
     expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"sendTxMs":[');
 
     await server.stop();
+  });
+
+  it('accepts a canonical signed add-lp intent with lifecycle identity fields', async () => {
+    const keypair = Keypair.generate();
+    const newPositionKeypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-identity-'));
+    const sendRawTransaction = vi.fn(async () => 'sig-identity');
+    const signer = createIntentSigner();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-identity'),
+          newPositionKeypair
+        }),
+        invalidatePositionSnapshots: vi.fn()
+      } as any,
+      authToken: 'test-token',
+      expectedSignerPublicKeys: [signer.signerId]
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'k-add-lp-identity',
+        tokenMint: 'mint-identity',
+        openIntentId: 'lp-open-intent:identity',
+        positionId: 'pool-1:mint-identity',
+        chainPositionAddress: 'chain-position-identity'
+      }, signer))
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: 'submitted',
+      submissionId: 'sig-identity',
+      openIntentId: 'lp-open-intent:identity',
+      positionId: 'pool-1:mint-identity',
+      chainPositionAddress: 'chain-position-identity'
+    });
+
+    await server.stop();
+    await rm(stateRootDir, { recursive: true, force: true });
+  });
+
+  it('rejects a signed add-lp intent when lifecycle identity is changed after signing', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-tamper-'));
+    const signer = createIntentSigner();
+    const payload = buildBroadcastPayload('add-lp', {
+      idempotencyKey: 'k-add-lp-tamper',
+      tokenMint: 'mint-identity',
+      openIntentId: 'lp-open-intent:identity',
+      positionId: 'pool-1:mint-identity',
+      chainPositionAddress: 'chain-position-identity'
+    }, signer);
+    payload.intent.intent.chainPositionAddress = 'chain-position-tampered';
+    const sendRawTransaction = vi.fn(async () => 'sig-tamper');
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-tamper')
+        })
+      } as any,
+      authToken: 'test-token',
+      expectedSignerPublicKeys: [signer.signerId]
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('Signed intent verification failed');
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+
+    await server.stop();
+    await rm(stateRootDir, { recursive: true, force: true });
   });
 
   it('returns a failed broadcast and releases idempotency when a sent transaction never becomes visible', async () => {

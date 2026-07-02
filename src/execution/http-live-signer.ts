@@ -1,6 +1,7 @@
 import type { FetchImpl } from '../ingest/shared/http-client.ts';
 import { executeWithRetry } from './request-resilience.ts';
 import type { LiveOrderIntent, LiveSigner, SignedLiveOrderIntent } from './live-signer.ts';
+import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
 
 type HttpLiveSignerOptions = {
   url: string;
@@ -11,6 +12,7 @@ type HttpLiveSignerOptions = {
 };
 
 type SignerResponse = {
+  intent?: LiveOrderIntent;
   signerId: string;
   signedAt: string;
   signature: string;
@@ -58,7 +60,7 @@ export class HttpLiveSigner implements LiveSigner {
     });
 
     return {
-      intent,
+      intent: payload.intent ? LiveOrderIntentSchema.parse(payload.intent) : intent,
       signerId: payload.signerId,
       signedAt: payload.signedAt,
       signature: payload.signature

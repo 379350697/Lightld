@@ -27,6 +27,7 @@ type BaseResultInput = {
   confirmationStatus?: ConfirmationStatus;
   failureKind?: ExecutionFailureKind;
   failureSource?: 'quote' | 'signer' | 'broadcast' | 'confirmation' | 'account' | 'recovery' | 'runtime-policy';
+  failureDetail?: string;
 };
 
 export function buildBlockedCycleResult(
@@ -51,6 +52,7 @@ export function buildBlockedCycleResult(
     confirmationStatus: input.confirmationStatus,
     failureKind: input.failureKind,
     failureSource: input.failureSource,
+    failureDetail: input.failureDetail,
     journalPaths: input.journalPaths,
     killSwitchState: input.killSwitchState
   };

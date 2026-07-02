@@ -371,7 +371,8 @@ export class SqliteMirrorWriter {
       ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"]
     ]);
     this.ensureTableColumns(database, 'incidents', [
-      ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"]
+      ['lifecycle_key', "TEXT NOT NULL DEFAULT ''"],
+      ['detail', "TEXT NOT NULL DEFAULT ''"]
     ]);
     database.exec('CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_key ON orders (lifecycle_key, updated_at DESC)');
     database.exec('CREATE INDEX IF NOT EXISTS idx_fills_lifecycle_key ON fills (lifecycle_key, recorded_at DESC)');
@@ -882,12 +883,13 @@ export class SqliteMirrorWriter {
         stage,
         severity,
         reason,
+        detail,
         runtime_mode,
         submission_id,
         token_mint,
         token_symbol,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(incident_id) DO NOTHING
     `).run(
       payload.incidentId,
@@ -896,6 +898,7 @@ export class SqliteMirrorWriter {
       payload.stage,
       payload.severity,
       payload.reason,
+      payload.detail ?? '',
       payload.runtimeMode,
       payload.submissionId,
       payload.tokenMint,

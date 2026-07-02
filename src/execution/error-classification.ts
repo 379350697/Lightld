@@ -78,19 +78,22 @@ export class ExecutionRequestError extends Error {
   readonly reason: string;
   readonly operation: ExecutionOperation;
   readonly status?: number;
+  readonly detail?: string;
 
   constructor(
     operation: ExecutionOperation,
     classification: ExecutionErrorClassification,
     cause?: unknown,
-    status?: number
+    status?: number,
+    detail?: string
   ) {
-    super(classification.reason);
+    super(cause instanceof Error && cause.message.length > 0 ? cause.message : classification.reason);
     this.name = 'ExecutionRequestError';
     this.operation = operation;
     this.kind = classification.kind;
     this.reason = classification.reason;
     this.status = status;
+    this.detail = detail;
 
     if (cause !== undefined) {
       (this as Error & { cause?: unknown }).cause = cause;
