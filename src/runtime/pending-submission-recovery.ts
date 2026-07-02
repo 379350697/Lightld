@@ -123,6 +123,21 @@ function isUnknownExitFill(
   return classifyAction(pendingSubmission.orderAction) === 'reduce_risk';
 }
 
+function isUntrackedReduceRiskFailure(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  if (pendingSubmission.submissionId || !hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
+    return false;
+  }
+
+  if (!pendingSubmission.orderAction) {
+    return false;
+  }
+
+  return classifyAction(pendingSubmission.orderAction) === 'reduce_risk';
+}
+
 function hasFreshOpenWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
@@ -340,6 +355,10 @@ export async function recoverPendingSubmission(
   }
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
+    if (isUntrackedReduceRiskFailure(nextPendingSubmission, input.accountState)) {
+      return resolvedRecovery('pending-submission-failed');
+    }
+
     return {
       blocked: true,
       resolved: false,

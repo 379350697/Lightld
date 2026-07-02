@@ -193,6 +193,57 @@ describe('live-cycle preflight helpers', () => {
     expect(result.lifecycleState).toBe('closed');
   });
 
+  it('clears an untracked timed-out LP exit and returns the lifecycle to open', async () => {
+    let cleared = false;
+    const store = {
+      clear: async () => {
+        cleared = true;
+      },
+      write: async () => {}
+    } as unknown as PendingSubmissionStore;
+
+    const result = await runPendingRecoveryGate({
+      pendingSubmissionStore: store,
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-unknown-exit',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        orderAction: 'withdraw-lp',
+        reason: 'broadcast-outcome-unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:30.000Z',
+        timeoutAt: '2026-03-22T00:01:00.000Z'
+      },
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-safe',
+          positionAddress: 'pos-safe',
+          mint: 'mint-safe',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      currentLifecycleState: 'lp_exit_pending'
+    });
+
+    expect(cleared).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(result.reason).toBe('pending-submission-failed');
+    expect(result.lifecycleState).toBe('open');
+  });
+
   it('treats pool-matched LP evidence as a successful open recovery', async () => {
     let cleared = false;
     const store = {

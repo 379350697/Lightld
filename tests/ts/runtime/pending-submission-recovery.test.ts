@@ -529,6 +529,49 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('clears an untracked withdraw timeout as failed when the LP still exists', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-unknown-withdraw',
+        submissionId: '',
+        confirmationSignature: undefined,
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:30.000Z',
+        timeoutAt: '2026-03-22T00:01:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        orderAction: 'withdraw-lp',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        walletSol: 2,
+        journalSol: 2,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-safe',
+          positionAddress: 'pos-safe',
+          mint: 'mint-safe',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
+    });
+  });
+
   it('clears a stale partial-failure reason once every tracked submission is finalized', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
