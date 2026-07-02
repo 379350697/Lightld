@@ -116,6 +116,52 @@ describe('lifecycle projection', () => {
     expect(projection.allowNewOpens).toBe(true);
   });
 
+  it('does not let a superseded pool-mint open record block the chain-backed position', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [
+        {
+          positionKey: 'position:pool-1:mint-1',
+          openIntentId: 'open-intent-1',
+          idempotencyKey: 'open-1',
+          positionId: 'pool-1:mint-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'sig-1',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: now,
+          updatedAt: now
+        },
+        {
+          positionKey: 'chain-position:pos-1',
+          openIntentId: 'open-intent-1',
+          idempotencyKey: 'open-1',
+          positionId: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'sig-1',
+          lastAction: 'hold',
+          updatedAt: now
+        }
+      ]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(projection.chainActiveLpCount).toBe(1);
+    expect(projection.reconcileRequiredCount).toBe(0);
+    expect(projection.activeLpCount).toBe(1);
+    expect(projection.allowNewOpens).toBe(true);
+  });
+
   it('does not count SOL or stable LP account positions as business-active capacity', () => {
     const projection = buildLifecycleProjection({
       accountState: {

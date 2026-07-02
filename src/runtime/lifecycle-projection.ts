@@ -156,6 +156,42 @@ function collectChainActiveKeys(accountState?: LiveAccountState) {
   return keys;
 }
 
+function recordMatchesChainActiveRecord(record: PositionLedgerRecord, chainRecord: PositionLedgerRecord) {
+  if (record === chainRecord) {
+    return false;
+  }
+
+  if (record.openIntentId && record.openIntentId === chainRecord.openIntentId) {
+    return true;
+  }
+
+  if (record.idempotencyKey && record.idempotencyKey === chainRecord.idempotencyKey) {
+    return true;
+  }
+
+  if (record.entryFillSubmissionId && record.entryFillSubmissionId === chainRecord.entryFillSubmissionId) {
+    return true;
+  }
+
+  return Boolean(
+    record.activePoolAddress &&
+    record.activeMint &&
+    record.activePoolAddress === chainRecord.activePoolAddress &&
+    record.activeMint === chainRecord.activeMint
+  );
+}
+
+function isSupersededByChainActiveRecord(
+  record: PositionLedgerRecord,
+  chainActiveRecords: PositionLedgerRecord[]
+) {
+  if (record.chainPositionAddress) {
+    return false;
+  }
+
+  return chainActiveRecords.some((chainRecord) => recordMatchesChainActiveRecord(record, chainRecord));
+}
+
 export function buildLifecycleProjection(input: {
   ledger?: PositionLedgerSnapshot | null;
   pendingSubmission?: PendingSubmissionSnapshot | null;
@@ -178,7 +214,10 @@ export function buildLifecycleProjection(input: {
     .filter((entry) => entry.classification === 'pending_open')
     .map((entry) => entry.record);
   const reconcileRequiredRecords = classifications
-    .filter((entry) => entry.classification === 'reconcile_required')
+    .filter((entry) => (
+      entry.classification === 'reconcile_required' &&
+      !isSupersededByChainActiveRecord(entry.record, chainActiveRecords)
+    ))
     .map((entry) => entry.record);
   const chainActiveKeys = collectChainActiveKeys(input.accountState);
   const chainActiveLpCount = Math.max(chainActiveRecords.length, chainActiveKeys.size);
