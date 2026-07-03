@@ -40,6 +40,22 @@ const baseNewTokenConfig = {
   }
 } as any;
 
+const activeLpPositionState = (overrides: Record<string, unknown> = {}) => ({
+  allowNewOpens: true,
+  flattenOnly: false,
+  lastAction: 'add-lp',
+  activeMint: 'mint-safe',
+  activePoolAddress: 'pool-1',
+  chainPositionAddress: 'pos-1',
+  lifecycleState: 'open',
+  entrySol: 0.1,
+  entrySolSource: 'actual_fill',
+  entryFillSubmissionId: 'sub-open',
+  openedAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  ...overrides
+}) as any;
+
 describe('runLiveCycle', () => {
   beforeEach(async () => {
     liveIncidentDedupeStore.reset();
@@ -105,6 +121,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -160,6 +177,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -223,6 +241,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       accountState: {
         walletSol: 1,
         journalSol: 1,
@@ -284,6 +303,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       accountState: {
         walletSol: 1,
         journalSol: 1,
@@ -638,6 +658,7 @@ describe('runLiveCycle', () => {
         entrySolSource: 'actual_fill',
         entryFillSubmissionId: 'sub-open',
         openedAt,
+        chainPositionAddress: 'pos-1',
         updatedAt: openedAt
       },
       evolutionSink: {
@@ -674,7 +695,7 @@ describe('runLiveCycle', () => {
       strategyId: 'new-token-v1',
       tokenMint: 'mint-safe',
       tokenSymbol: 'SAFE',
-      positionId: 'pool-1:mint-safe',
+      positionId: 'pos-1',
       action: 'withdraw-lp',
       actualExitReason: 'lp-stop-loss',
       openedAt,
@@ -709,6 +730,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       evolutionSink: {
         appendOutcome: async () => {
           throw new Error('outcome-store-unavailable');
@@ -858,6 +880,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -891,6 +914,7 @@ describe('runLiveCycle', () => {
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
       runtimeMode: 'flatten_only',
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -924,6 +948,7 @@ describe('runLiveCycle', () => {
         entrySolSource: 'actual_fill',
         entryFillSubmissionId: 'sub-open',
         openedAt,
+        chainPositionAddress: 'pos-1',
         updatedAt: openedAt
       } as any,
       context: {
@@ -1197,6 +1222,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -1242,6 +1268,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -1286,6 +1313,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -1329,6 +1357,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -1370,6 +1399,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.5,
+      positionState: activeLpPositionState({ entrySol: 0.5 }),
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -1392,6 +1422,7 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
       mirrorSink: {
         enqueue(event) {
           events.push(event);
@@ -2175,6 +2206,7 @@ describe('runLiveCycle', () => {
         entrySolSource: 'actual_fill',
         entryFillSubmissionId: 'sub-open',
         openedAt,
+        chainPositionAddress: 'pos-1',
         updatedAt: openedAt
       },
       context: {
@@ -2222,6 +2254,7 @@ describe('runLiveCycle', () => {
         entrySolSource: 'actual_fill',
         entryFillSubmissionId: 'sub-open',
         openedAt,
+        chainPositionAddress: 'pos-open',
         updatedAt: openedAt
       },
       context: {
@@ -2277,6 +2310,7 @@ describe('runLiveCycle', () => {
         entrySolSource: 'actual_fill',
         entryFillSubmissionId: 'sub-open',
         openedAt,
+        chainPositionAddress: 'pos-open',
         updatedAt: openedAt
       },
       confirmationProvider: {
@@ -2350,7 +2384,7 @@ describe('runLiveCycle', () => {
         quoteOutputSol: 0.08,
         confirmationStatus: 'confirmed'
       });
-      expect(result.nextLifecycleState).toBe('lp_exit_pending');
+      expect(result.nextLifecycleState).toBe('inventory_exit_ready');
     });
 
     it('does not use unbound journal LP fills to override bin-depletion exits', async () => {

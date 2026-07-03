@@ -3519,6 +3519,17 @@ describe('runLiveDaemon', () => {
       {
         walletSol: 1.25,
         journalSol: 1.25,
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 165,
+          solSide: 'tokenX' as const,
+          solDepletedBins: 61,
+          hasLiquidity: true
+        }],
         walletTokens: [],
         journalTokens: [],
         fills: []
@@ -3609,7 +3620,7 @@ describe('runLiveDaemon', () => {
     expect(positionState?.lastAction).toBe('dca-out');
   });
 
-  it('keeps close state pending when confirmed withdraw lacks fill evidence', async () => {
+  it('closes confirmed withdraw even when fill evidence is missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-close-evidence-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -3714,12 +3725,127 @@ describe('runLiveDaemon', () => {
     expect(pendingSubmission).toBeNull();
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
-      lifecycleState: 'lp_exit_pending',
-      activeMint: 'mint-safe',
-      activePoolAddress: 'pool-1',
-      chainPositionAddress: 'pos-1',
+      lifecycleState: 'closed',
+      lastClosedMint: 'mint-safe'
+    });
+    expect(positionState?.activeMint).toBeUndefined();
+    expect(positionState?.activePoolAddress).toBeUndefined();
+    expect(positionState?.chainPositionAddress).toBeUndefined();
+  });
+
+  it('does not retry a confirmed full exit when the next account snapshot is stale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-no-closed-retry-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = '2026-03-22T00:00:00.000Z';
+    const staleAccountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-stale-close',
+        positionAddress: 'pos-stale-close',
+        mint: 'mint-stale-close',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 165,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 65,
+        hasLiquidity: true,
+        currentValueSol: 0.1
+      }],
+      journalLpPositions: [],
+      fills: [{
+        submissionId: 'sub-open',
+        mint: 'mint-stale-close',
+        side: 'add-lp' as const,
+        amount: 0.1,
+        filledSol: 0.1,
+        actualFilledSol: 0.1,
+        actualWalletDeltaSol: 0.1,
+        fillAmountSource: 'wallet-delta' as const,
+        hasFillEvidence: true,
+        chainPositionAddress: 'pos-stale-close',
+        recordedAt: openedAt
+      }]
+    };
+    const submittedIntents: unknown[] = [];
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      activeMint: 'mint-stale-close',
+      activePoolAddress: 'pool-stale-close',
+      lifecycleState: 'open',
       entrySol: 0.1,
-      openedAt
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'sub-open',
+      openedAt,
+      chainPositionAddress: 'pos-stale-close',
+      updatedAt: openedAt
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      hotTickIntervalMs: 1,
+      maxTicks: 2,
+      buildCycleInput: async () => ({
+        requestedPositionSol: 0.1,
+        accountState: staleAccountState,
+        accountProvider: {
+          readState: async () => staleAccountState
+        },
+        context: {
+          pool: { address: 'pool-stale-close', liquidityUsd: 10_000 },
+          token: { mint: 'mint-stale-close', inSession: true, hasSolRoute: true, symbol: 'STALE' },
+          trader: { hasInventory: true, hasLpPosition: true },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'test-signer',
+            signedAt: '2026-03-22T00:00:01.000Z',
+            signature: 'sig'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => {
+            submittedIntents.push(signedIntent.intent);
+            return {
+              status: 'submitted' as const,
+              submissionId: `sub-close-${submittedIntents.length}`,
+              idempotencyKey: signedIntent.intent.idempotencyKey,
+              confirmationSignature: `tx-close-${submittedIntents.length}`,
+              mainExecutionStatus: 'confirmed' as const
+            };
+          }
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: '2026-03-22T00:00:02.000Z'
+          })
+        }
+      })
+    });
+
+    const health = await runtimeStateStore.readHealthReport();
+    const withdrawIntents = submittedIntents.filter((intent) =>
+      (intent as { side?: string }).side === 'withdraw-lp'
+    );
+    expect(withdrawIntents).toHaveLength(1);
+    expect(health).toMatchObject({
+      chainActiveLpCount: 0
     });
   });
 

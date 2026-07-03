@@ -167,12 +167,36 @@ function isNonStableMint(mint?: string) {
   return typeof mint === 'string' && mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
 }
 
-function collectChainActiveKeys(accountState?: LiveAccountState) {
+function collectClosedChainKeys(records: PositionLedgerRecord[]) {
+  const keys = new Set<string>();
+
+  for (const record of records) {
+    if (record.lifecycleState !== 'closed') {
+      continue;
+    }
+
+    const key = record.chainPositionAddress
+      || record.positionId
+      || (record.positionKey.startsWith('chain-position:')
+        ? record.positionKey.slice('chain-position:'.length)
+        : '');
+    if (key) {
+      keys.add(key);
+    }
+  }
+
+  return keys;
+}
+
+function collectChainActiveKeys(input: {
+  accountState?: LiveAccountState;
+  closedChainKeys: Set<string>;
+}) {
   const keys = new Set<string>();
 
   for (const position of [
-    ...(accountState?.walletLpPositions ?? []),
-    ...(accountState?.journalLpPositions ?? [])
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
   ]) {
     if (!isNonStableMint(position.mint) || !(position.hasLiquidity ?? true)) {
       continue;
@@ -182,7 +206,7 @@ function collectChainActiveKeys(accountState?: LiveAccountState) {
       || position.positionAddress
       || position.positionId
       || `${position.poolAddress ?? ''}:${position.mint ?? ''}`;
-    if (key) {
+    if (key && !input.closedChainKeys.has(key)) {
       keys.add(key);
     }
   }
@@ -266,7 +290,11 @@ export function buildLifecycleProjection(input: {
     ))
     .map((entry) => entry.record);
   const residualCleanupRequiredCount = records.filter(isResidualCleanupRequired).length;
-  const chainActiveKeys = collectChainActiveKeys(input.accountState);
+  const closedChainKeys = collectClosedChainKeys(records);
+  const chainActiveKeys = collectChainActiveKeys({
+    accountState: input.accountState,
+    closedChainKeys
+  });
   const chainActiveLpCount = Math.max(chainActiveRecords.length, chainActiveKeys.size);
   const pendingOpenCount = pendingOpenRecords.length;
   const reconcileRequiredCount = reconcileRequiredRecords.length;

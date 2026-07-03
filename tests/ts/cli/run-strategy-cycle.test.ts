@@ -16,9 +16,23 @@ describe('runStrategyCycle', () => {
       stateRootDir: 'tmp/tests/run-strategy-cycle-state',
       journalRootDir: 'tmp/tests/run-strategy-cycle-journals',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }

@@ -121,9 +121,23 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
@@ -254,9 +268,23 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
@@ -267,6 +295,7 @@ describe('runLiveCycle production adapters', () => {
             JSON.stringify({
               status: 'submitted',
               submissionId: 'sub-2',
+              confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
               idempotencyKey: 'k2'
             }),
             { status: 200 }
@@ -279,9 +308,23 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }

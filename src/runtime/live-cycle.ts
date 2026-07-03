@@ -3696,6 +3696,19 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     tokenMint: logContext.tokenMint,
     chainPositionAddress: multiLpExit?.position.positionAddress
   });
+  if (actionableAction === 'withdraw-lp' && !actionIdentity.chainPositionAddress) {
+    return blockCycle({
+      stage: 'guards',
+      action: actionableAction,
+      reason: 'lp-exit-missing-chain-position-address',
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      severity: 'warning',
+      quoteCollected: true
+    });
+  }
   const orderIntent = buildOrderIntent({
     strategyId: input.strategy,
     poolAddress: executionPlan.poolAddress,
@@ -4236,7 +4249,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const lifecycleSynchronouslyResolved = isConfirmedConfirmation(confirmation.status, confirmationFinality)
-    && !fillEvidenceMissing;
+    && (!fillEvidenceMissing || isFullExitAction(actionableAction));
 
   return finalize({
     ...buildLiveSubmittedResult({

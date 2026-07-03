@@ -7,6 +7,7 @@ import {
   selectCompatibilityPositionState,
   summarizePositionLedger
 } from '../../../src/runtime/position-ledger';
+import { buildLifecycleProjection } from '../../../src/runtime/lifecycle-projection';
 import type { LiveAccountState } from '../../../src/runtime/live-account-provider';
 
 describe('position ledger', () => {
@@ -92,6 +93,93 @@ describe('position ledger', () => {
         importStatus: 'entry_unknown'
       })
     ]));
+  });
+
+  it('does not reopen a closed chain position from a stale account snapshot', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T14:19:22.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-closed',
+          positionId: 'pos-closed',
+          chainPositionAddress: 'pos-closed',
+          activeMint: 'mint-closed',
+          activePoolAddress: 'pool-closed',
+          lifecycleState: 'closed',
+          lastAction: 'withdraw-lp',
+          lastReason: 'live-order-submitted',
+          lastClosedAt: '2026-07-03T14:19:22.000Z',
+          updatedAt: '2026-07-03T14:19:22.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-closed',
+          positionAddress: 'pos-closed',
+          mint: 'mint-closed',
+          hasLiquidity: true,
+          currentValueSol: 0.1
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T14:19:30.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0]).toMatchObject({
+      positionKey: 'chain-position:pos-closed',
+      chainPositionAddress: 'pos-closed',
+      lifecycleState: 'closed',
+      lastAction: 'withdraw-lp'
+    });
+  });
+
+  it('does not count stale account positions that match closed chain records as active capacity', () => {
+    const projection = buildLifecycleProjection({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T14:19:22.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-closed',
+          positionId: 'pos-closed',
+          chainPositionAddress: 'pos-closed',
+          activeMint: 'mint-closed',
+          activePoolAddress: 'pool-closed',
+          lifecycleState: 'closed',
+          lastAction: 'withdraw-lp',
+          lastReason: 'live-order-submitted',
+          lastClosedAt: '2026-07-03T14:19:22.000Z',
+          updatedAt: '2026-07-03T14:19:22.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-closed',
+          positionAddress: 'pos-closed',
+          mint: 'mint-closed',
+          hasLiquidity: true,
+          currentValueSol: 0.1
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      maxActivePositions: 5
+    });
+
+    expect(projection.chainActiveLpCount).toBe(0);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(true);
   });
 
   it('persists LP risk sentinel snapshots when importing active chain LPs', () => {

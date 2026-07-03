@@ -29,6 +29,7 @@ import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type Li
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type {
   LifecycleEventRecord,
+  PositionLedgerSnapshot,
   PositionLifecycleState,
   PositionStateSnapshot,
   RuntimeMode,
@@ -782,6 +783,61 @@ function countActiveLpExposures(accountState?: LiveAccountState) {
     keys.add(position.chainPositionAddress || position.positionAddress || position.positionId || `${position.poolAddress}:${position.mint}`);
   }
   return keys.size;
+}
+
+function collectClosedLedgerChainKeys(ledger?: PositionLedgerSnapshot | null) {
+  const keys = new Set<string>();
+
+  for (const record of ledger?.records ?? []) {
+    if (record.lifecycleState !== 'closed') {
+      continue;
+    }
+
+    const key = record.chainPositionAddress
+      || record.positionId
+      || (record.positionKey.startsWith('chain-position:')
+        ? record.positionKey.slice('chain-position:'.length)
+        : '');
+    if (key) {
+      keys.add(key);
+    }
+  }
+
+  return keys;
+}
+
+function suppressClosedLedgerLpPositions(input: {
+  accountState?: LiveAccountState;
+  ledger?: PositionLedgerSnapshot | null;
+}): LiveAccountState | undefined {
+  if (!input.accountState) {
+    return undefined;
+  }
+
+  const closedChainKeys = collectClosedLedgerChainKeys(input.ledger);
+  if (closedChainKeys.size === 0) {
+    return input.accountState;
+  }
+
+  const keepPosition = (position: NonNullable<LiveAccountState['walletLpPositions']>[number]) => {
+    const key = position.chainPositionAddress || position.positionAddress || position.positionId;
+    return !key || !closedChainKeys.has(key);
+  };
+  const walletLpPositions = (input.accountState.walletLpPositions ?? []).filter(keepPosition);
+  const journalLpPositions = (input.accountState.journalLpPositions ?? []).filter(keepPosition);
+
+  if (
+    walletLpPositions.length === (input.accountState.walletLpPositions ?? []).length &&
+    journalLpPositions.length === (input.accountState.journalLpPositions ?? []).length
+  ) {
+    return input.accountState;
+  }
+
+  return {
+    ...input.accountState,
+    walletLpPositions,
+    journalLpPositions
+  };
 }
 
 // B2: collect active LP positions that are NOT tracked in positionState.
@@ -2050,6 +2106,10 @@ export function resolveLifecycleStateForPersist(input: {
     return 'closed';
   }
 
+  if (isFullExitAction(input.lastAction as LiveAction) && input.nextLifecycleState === 'inventory_exit_ready') {
+    return 'closed';
+  }
+
   if (input.nextLifecycleState === 'closed' && hasInventory) {
     if (isFullExitAction(input.lastAction as LiveAction) && !hasMatchingPosition) {
       return 'closed';
@@ -2271,6 +2331,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: nowIso()
         });
         await runtimeStateStore.writePositionLedger(positionLedger);
+        effectiveAccountState = suppressClosedLedgerLpPositions({
+          accountState: effectiveAccountState,
+          ledger: positionLedger
+        });
 
         if (options.signer && options.broadcaster) {
           const preIngestResidualSweepResult = await runResidualTokenSweepIfDue({
@@ -2617,6 +2681,10 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: nowIso()
         });
         await runtimeStateStore.writePositionLedger(positionLedger);
+        effectiveAccountState = suppressClosedLedgerLpPositions({
+          accountState: effectiveAccountState,
+          ledger: positionLedger
+        });
         const postSuppressionBusinessSemantics = resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
           positionState,
@@ -2891,6 +2959,19 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         }
 
         let postTickPendingSubmission = await pendingSubmissionStore.read();
+        if (!postTickPendingSubmission && pendingSubmissionBeforeCycle) {
+          pendingSubmission = null;
+          pendingSubmissionBeforeCycle = null;
+          runtimeState = {
+            ...runtimeState,
+            mode: runtimeState.mode === 'flatten_only' ? runtimeState.mode : 'healthy',
+            circuitReason: runtimeState.mode === 'flatten_only' ? runtimeState.circuitReason : '',
+            cooldownUntil: runtimeState.mode === 'flatten_only' ? runtimeState.cooldownUntil : '',
+            transientAutoHealEligible: false,
+            transientRecoverySuccessTicks: 0,
+            updatedAt: nowIso()
+          };
+        }
         if (postTickPendingSubmission && effectiveAccountState) {
           const postTickRecovery = await recoverPendingSubmission({
             pendingSubmission: postTickPendingSubmission,
@@ -2901,6 +2982,22 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           if (postTickRecovery.clearPending) {
             await pendingSubmissionStore.clear();
             postTickPendingSubmission = null;
+            pendingSubmission = null;
+            pendingSubmissionBeforeCycle = null;
+            if (
+              postTickRecovery.reason === 'pending-submission-filled' ||
+              postTickRecovery.reason === 'pending-submission-confirmed'
+            ) {
+              runtimeState = {
+                ...runtimeState,
+                mode: 'healthy' as RuntimeMode,
+                circuitReason: '',
+                cooldownUntil: '',
+                transientAutoHealEligible: false,
+                transientRecoverySuccessTicks: 0,
+                updatedAt: nowIso()
+              };
+            }
           } else if (postTickRecovery.nextPendingSubmission) {
             await pendingSubmissionStore.write(postTickRecovery.nextPendingSubmission);
             postTickPendingSubmission = postTickRecovery.nextPendingSubmission;

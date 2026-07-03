@@ -97,6 +97,10 @@ function isUnknownOpenFailure(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
+  if (!accountState) {
+    return false;
+  }
+
   if (pendingSubmission.submissionId || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
     return false;
   }
@@ -112,6 +116,10 @@ function isUnknownExitFill(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
+  if (!accountState) {
+    return false;
+  }
+
   if (pendingSubmission.submissionId || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
     return false;
   }
@@ -127,6 +135,10 @@ function isUntrackedReduceRiskFailure(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
+  if (!accountState) {
+    return false;
+  }
+
   if (pendingSubmission.submissionId || !hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
     return false;
   }
@@ -142,6 +154,10 @@ function hasFreshOpenWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
+  if (!accountState) {
+    return false;
+  }
+
   if ((!pendingSubmission.tokenMint && !pendingSubmission.poolAddress) || !pendingSubmission.orderAction) {
     return false;
   }
@@ -162,6 +178,10 @@ function hasFreshReduceRiskWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
+  if (!accountState) {
+    return false;
+  }
+
   if (!pendingSubmission.tokenMint || !pendingSubmission.orderAction) {
     return false;
   }

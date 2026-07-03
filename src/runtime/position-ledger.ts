@@ -142,6 +142,39 @@ function findMatchingRecord(
   return undefined;
 }
 
+function findPendingOpenRecordForObservedPosition(
+  records: PositionLedgerRecord[],
+  position: AccountLpPosition,
+  pendingSubmission?: PendingSubmissionSnapshot | null
+) {
+  if (
+    !pendingSubmission ||
+    (pendingSubmission.orderAction !== 'add-lp' && pendingSubmission.orderAction !== 'deploy')
+  ) {
+    return undefined;
+  }
+
+  const pendingMatchesPosition =
+    (!pendingSubmission.poolAddress || pendingSubmission.poolAddress === position.poolAddress) &&
+    (!pendingSubmission.tokenMint || pendingSubmission.tokenMint === position.mint);
+  if (!pendingMatchesPosition) {
+    return undefined;
+  }
+
+  return records.find((record) =>
+    record.lifecycleState !== 'closed' &&
+    record.lifecycleState !== 'failed_terminal' &&
+    !record.chainPositionAddress &&
+    (
+      (pendingSubmission.idempotencyKey && record.idempotencyKey === pendingSubmission.idempotencyKey) ||
+      (pendingSubmission.openIntentId && record.openIntentId === pendingSubmission.openIntentId) ||
+      (record.activePoolAddress === position.poolAddress && (
+        !record.activeMint || record.activeMint === position.mint
+      ))
+    )
+  );
+}
+
 function resolveEntryFromFills(input: {
   position: AccountLpPosition;
   accountState?: LiveAccountState;
@@ -453,7 +486,11 @@ export function importActiveLpPositionsToLedger(input: {
     });
     activeKeys.add(key);
 
-    const existing = findMatchingRecord(records, position, activePositions);
+    const existing = findMatchingRecord(records, position, activePositions)
+      ?? findPendingOpenRecordForObservedPosition(records, position, input.pendingSubmission);
+    if (existing?.lifecycleState === 'closed' && existing.chainPositionAddress === chainPositionAddress) {
+      continue;
+    }
     const resolvedFillEntry = resolveEntryFromFills({
       position,
       accountState: input.accountState,
@@ -555,6 +592,38 @@ export function importActiveLpPositionsToLedger(input: {
       records[existingIndex] = nextRecord;
     } else {
       records.push(nextRecord);
+    }
+
+    for (let i = 0; i < records.length; i += 1) {
+      const record = records[i];
+      if (
+        record.positionKey === nextRecord.positionKey ||
+        record.chainPositionAddress ||
+        record.lifecycleState === 'closed' ||
+        record.lifecycleState === 'failed_terminal' ||
+        record.importStatus === 'superseded_closed'
+      ) {
+        continue;
+      }
+
+      const sharesPendingIdentity =
+        (nextRecord.idempotencyKey && record.idempotencyKey === nextRecord.idempotencyKey) ||
+        (nextRecord.openIntentId && record.openIntentId === nextRecord.openIntentId);
+      const sharesPendingPool =
+        record.activePoolAddress === nextRecord.activePoolAddress &&
+        (!record.activeMint || record.activeMint === nextRecord.activeMint);
+      if (!sharesPendingIdentity && !sharesPendingPool) {
+        continue;
+      }
+
+      records[i] = {
+        ...record,
+        lifecycleState: 'closed',
+        importStatus: 'superseded_closed',
+        supersededByPositionKey: nextRecord.positionKey,
+        lastReason: 'superseded-by-chain-position',
+        updatedAt: input.now
+      };
     }
   }
 
@@ -910,9 +979,7 @@ export function applyLiveCycleResultToLedger(input: {
     && (input.reason.includes('position-already-closed') || /position not found for pool/i.test(input.reason))
     && !stillOnChain;
   const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed)
-    ? stillOnChain
-      ? 'lp_exit_pending'
-      : 'closed'
+    ? 'closed'
     : hasPending && fullExit
       ? 'lp_exit_pending'
     : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')

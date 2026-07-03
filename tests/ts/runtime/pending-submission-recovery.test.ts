@@ -153,6 +153,32 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
+  it('does not resolve reduce-risk pending submissions without account evidence', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-exit',
+        submissionId: 'sub-exit',
+        confirmationStatus: 'submitted',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        orderAction: 'withdraw-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z')
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
+    });
+  });
+
   it('treats an unknown deploy submission as resolved when fresh wallet tokens prove the mint exists', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
