@@ -10,6 +10,8 @@ import { buildLifecycleProjection } from '../runtime/lifecycle-projection.ts';
 import { selectCompatibilityPositionState } from '../runtime/position-ledger.ts';
 import type { PendingSubmissionSnapshot, PositionLedgerRecord, PositionLedgerSnapshot } from '../runtime/state-types.ts';
 
+const CHAIN_POSITION_EVIDENCE_GRACE_MS = 5 * 60_000;
+
 type Args = {
   stateRootDir: string;
   apply: boolean;
@@ -142,9 +144,18 @@ function pendingMatchesRecord(pending: PendingSubmissionSnapshot | null, record:
   );
 }
 
+function isOlderThanChainEvidenceGrace(record: PositionLedgerRecord, now: string) {
+  const referenceAtMs = Date.parse(record.openedAt ?? record.updatedAt ?? '');
+  const nowMs = Date.parse(now);
+  return Number.isFinite(referenceAtMs)
+    && Number.isFinite(nowMs)
+    && nowMs - referenceAtMs >= CHAIN_POSITION_EVIDENCE_GRACE_MS;
+}
+
 function findStaleOpenPendingIssues(
   ledger: PositionLedgerSnapshot | null,
-  pending: PendingSubmissionSnapshot | null
+  pending: PendingSubmissionSnapshot | null,
+  now: string
 ): StaleOpenPendingIssue[] {
   return (ledger?.records ?? [])
     .filter((record) =>
@@ -158,6 +169,14 @@ function findStaleOpenPendingIssues(
         || record.lastReason === 'not-submitted'
         || record.lastReason === 'broadcast-not-submitted'
         || record.lastReason === 'chain-position-missing-without-exit-evidence'
+        || (
+          record.lastAction === 'add-lp'
+          && (
+            record.lastReason === 'awaiting-chain-position-evidence'
+            || Boolean(record.pendingSubmissionId || record.pendingOrderAction || record.pendingConfirmationStatus)
+          )
+          && isOlderThanChainEvidenceGrace(record, now)
+        )
       )
     )
     .map((record) => ({
@@ -237,10 +256,7 @@ function findSyntheticLiveWithoutChainIssues(ledger: PositionLedgerSnapshot | nu
     .filter((record) =>
       !record.chainPositionAddress
       && record.importStatus !== 'superseded_closed'
-      && (
-        record.lifecycleState === 'open'
-        || record.lifecycleState === 'open_pending'
-      )
+      && record.lifecycleState === 'open'
     )
     .map((record) => ({
       kind: 'synthetic-live-without-chain' as const,
@@ -305,11 +321,12 @@ function findClosedWithPendingSubmissionIssues(ledger: PositionLedgerSnapshot | 
 
 export function findLifecycleIssues(
   ledger: PositionLedgerSnapshot | null,
-  pending: PendingSubmissionSnapshot | null
+  pending: PendingSubmissionSnapshot | null,
+  now = new Date().toISOString()
 ): LifecycleIssue[] {
   return [
     ...findCrossTargetIdentityIssues(ledger),
-    ...findStaleOpenPendingIssues(ledger, pending),
+    ...findStaleOpenPendingIssues(ledger, pending, now),
     ...findSyntheticLiveWithoutChainIssues(ledger),
     ...findOpenButArchivedOrMissingIssues(ledger),
     ...findChainOpenMissingIssues(ledger),
@@ -319,7 +336,7 @@ export function findLifecycleIssues(
 }
 
 export function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSubmissionSnapshot | null, now: string) {
-  const issues = findLifecycleIssues(ledger, pending);
+  const issues = findLifecycleIssues(ledger, pending, now);
   if (issues.length === 0) {
     return { ledger, changed: false, issues };
   }
@@ -529,7 +546,8 @@ async function main() {
   const refreshedNow = new Date().toISOString();
   const refreshedProjection = buildLifecycleProjection({
     ledger: repaired.ledger,
-    pendingSubmission: pending
+    pendingSubmission: pending,
+    now: refreshedNow
   });
   const latestPositionState = await store.readPositionState();
   await store.writePositionState(selectCompatibilityPositionState({

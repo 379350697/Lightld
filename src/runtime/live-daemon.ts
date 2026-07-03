@@ -3075,11 +3075,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           await runtimeStateStore.upsertOrderAttempt(orderAttemptRecord);
         }
         await runtimeStateStore.writePositionLedger(positionLedger);
+        const projectionNow = nowIso();
         const lifecycleProjection = buildLifecycleProjection({
           ledger: positionLedger,
           pendingSubmission: persistedPendingSubmission,
           accountState: effectiveAccountState,
-          maxActivePositions: options.maxActivePositions ?? 5
+          maxActivePositions: options.maxActivePositions ?? 5,
+          now: projectionNow
         });
         const positionLedgerSummary = summarizePositionLedger(positionLedger);
         const businessAllowNewOpens = runtimeAllowsNewOpens && resolvePositionBusinessSemantics({

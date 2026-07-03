@@ -11,6 +11,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
+const CHAIN_POSITION_EVIDENCE_GRACE_MS = 5 * 60_000;
 
 export type ProjectedPositionClass =
   | 'closed'
@@ -68,7 +69,8 @@ function pendingSubmissionMatchesRecord(
 
 export function isSubmittedPendingOpenRecord(
   record: PositionLedgerRecord,
-  pendingSubmission?: PendingSubmissionSnapshot | null
+  pendingSubmission?: PendingSubmissionSnapshot | null,
+  options: { now?: string } = {}
 ) {
   if (record.lifecycleState !== 'open_pending') {
     return false;
@@ -87,21 +89,43 @@ export function isSubmittedPendingOpenRecord(
     record.lastReason === 'awaiting-chain-position-evidence' &&
     record.entryFillSubmissionId
   ) {
-    return true;
+    if (!options.now) {
+      return true;
+    }
+
+    const openedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+    const nowMs = Date.parse(options.now);
+    return Number.isFinite(openedAtMs)
+      && Number.isFinite(nowMs)
+      && nowMs - openedAtMs < CHAIN_POSITION_EVIDENCE_GRACE_MS;
   }
 
-  return Boolean(
+  const hasPersistedPendingFields = Boolean(
     record.pendingOrderAction === 'add-lp' &&
     record.pendingSubmissionId &&
     record.pendingConfirmationStatus &&
     record.pendingConfirmationStatus !== 'failed' &&
     record.lastReason !== 'http-400'
   );
+  if (!hasPersistedPendingFields) {
+    return false;
+  }
+
+  if (!options.now) {
+    return true;
+  }
+
+  const referenceAtMs = Date.parse(record.openedAt ?? record.updatedAt ?? '');
+  const nowMs = Date.parse(options.now);
+  return Number.isFinite(referenceAtMs)
+    && Number.isFinite(nowMs)
+    && nowMs - referenceAtMs < CHAIN_POSITION_EVIDENCE_GRACE_MS;
 }
 
 export function classifyPositionRecord(
   record: PositionLedgerRecord,
-  pendingSubmission?: PendingSubmissionSnapshot | null
+  pendingSubmission?: PendingSubmissionSnapshot | null,
+  options: { now?: string } = {}
 ): ProjectedPositionClass {
   if (record.lifecycleState === 'closed') {
     return 'closed';
@@ -119,7 +143,7 @@ export function classifyPositionRecord(
     return record.missingOnChainSince ? 'reconcile_required' : 'chain_active';
   }
 
-  if (isSubmittedPendingOpenRecord(record, pendingSubmission)) {
+  if (isSubmittedPendingOpenRecord(record, pendingSubmission, options)) {
     return 'pending_open';
   }
 
@@ -132,9 +156,10 @@ export function classifyPositionRecord(
 
 export function isPositionRecordBusinessActive(
   record: PositionLedgerRecord,
-  pendingSubmission?: PendingSubmissionSnapshot | null
+  pendingSubmission?: PendingSubmissionSnapshot | null,
+  options: { now?: string } = {}
 ) {
-  const classification = classifyPositionRecord(record, pendingSubmission);
+  const classification = classifyPositionRecord(record, pendingSubmission, options);
   return classification === 'chain_active' || classification === 'pending_open';
 }
 
@@ -215,11 +240,12 @@ export function buildLifecycleProjection(input: {
   accountState?: LiveAccountState;
   maxActivePositions?: number;
   blockNewOpensOnReconcileRequired?: boolean;
+  now?: string;
 }): LifecycleProjection {
   const records = input.ledger?.records ?? [];
   const classifications = records.map((record) => ({
     record,
-    classification: classifyPositionRecord(record, input.pendingSubmission)
+    classification: classifyPositionRecord(record, input.pendingSubmission, { now: input.now })
   }));
   const businessActiveRecords = classifications
     .filter((entry) => entry.classification === 'chain_active' || entry.classification === 'pending_open')

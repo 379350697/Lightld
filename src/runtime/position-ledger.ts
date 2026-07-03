@@ -222,7 +222,43 @@ function recordsShareClosedLifecycleIdentity(record: PositionLedgerRecord, chain
     : false;
 }
 
-function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: string) {
+function pendingSubmissionMatchesSyntheticOpen(
+  record: PositionLedgerRecord,
+  pendingSubmission?: PendingSubmissionSnapshot | null
+) {
+  if (
+    !pendingSubmission ||
+    pendingSubmission.confirmationStatus === 'failed' ||
+    (pendingSubmission.orderAction !== 'add-lp' && pendingSubmission.orderAction !== 'deploy')
+  ) {
+    return false;
+  }
+
+  if (record.pendingSubmissionId && record.pendingSubmissionId === pendingSubmission.submissionId) {
+    return true;
+  }
+
+  if (record.idempotencyKey && record.idempotencyKey === pendingSubmission.idempotencyKey) {
+    return true;
+  }
+
+  if (record.openIntentId && record.openIntentId === pendingSubmission.openIntentId) {
+    return true;
+  }
+
+  return Boolean(
+    record.activePoolAddress &&
+    record.activeMint &&
+    record.activePoolAddress === pendingSubmission.poolAddress &&
+    record.activeMint === pendingSubmission.tokenMint
+  );
+}
+
+function normalizeLedgerLifecycleRecords(
+  records: PositionLedgerRecord[],
+  now: string,
+  pendingSubmission?: PendingSubmissionSnapshot | null
+) {
   const closedChainRecords = records.filter((record) =>
     record.lifecycleState === 'closed' && Boolean(record.chainPositionAddress)
   );
@@ -267,6 +303,34 @@ function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: s
         lifecycleState: 'open_pending' as const,
         lastReason: 'awaiting-chain-position-evidence',
         missingOnChainSince: undefined,
+        updatedAt: now
+      };
+    }
+
+    if (
+      record.lifecycleState === 'open_pending'
+      && !record.chainPositionAddress
+      && record.lastAction === 'add-lp'
+      && record.lastReason === 'awaiting-chain-position-evidence'
+      && record.entryFillSubmissionId
+    ) {
+      if (pendingSubmissionMatchesSyntheticOpen(record, pendingSubmission) || stillWithinChainEvidenceGrace) {
+        return {
+          ...record,
+          lifecycleState: 'open_pending' as const,
+          lastReason: 'awaiting-chain-position-evidence',
+          missingOnChainSince: undefined,
+          updatedAt: now
+        };
+      }
+
+      return {
+        ...record,
+        lifecycleState: 'reconcile_required' as const,
+        importStatus: 'archived_missing_without_exit_evidence' as const,
+        lastReason: 'chain-position-evidence-timeout',
+        evidenceMissingReason: record.evidenceMissingReason ?? 'submitted-open-without-chain-position-after-grace',
+        missingOnChainSince: record.missingOnChainSince ?? now,
         updatedAt: now
       };
     }
@@ -516,7 +580,7 @@ export function importActiveLpPositionsToLedger(input: {
       return record;
     }
 
-    if (isSubmittedPendingOpenRecord(record, input.pendingSubmission)) {
+    if (isSubmittedPendingOpenRecord(record, input.pendingSubmission, { now: input.now })) {
       return {
         ...record,
         missingOnChainSince: undefined,
@@ -550,13 +614,21 @@ export function importActiveLpPositionsToLedger(input: {
         || record.lastReason === 'broadcast-not-submitted'
         || record.lastReason === 'chain-position-missing-without-exit-evidence'
         || Boolean(record.missingOnChainSince);
+      const isChainEvidenceTimeout = record.lastAction === 'add-lp'
+        && record.lastReason === 'awaiting-chain-position-evidence'
+        && Boolean(record.entryFillSubmissionId);
       return {
         ...record,
         lifecycleState: isTerminalFailedAttempt ? 'failed_terminal' as const : 'reconcile_required' as const,
         importStatus: 'archived_missing_without_exit_evidence' as const,
         lastReason: isTerminalFailedAttempt
           ? record.lastReason
-          : 'open-pending-without-chain-evidence',
+          : isChainEvidenceTimeout
+            ? 'chain-position-evidence-timeout'
+            : 'open-pending-without-chain-evidence',
+        evidenceMissingReason: isChainEvidenceTimeout
+          ? record.evidenceMissingReason ?? 'submitted-open-without-chain-position-after-grace'
+          : record.evidenceMissingReason,
         missingOnChainSince: record.missingOnChainSince ?? input.now,
         lastClosedAt: isTerminalFailedAttempt ? record.lastClosedAt ?? input.now : record.lastClosedAt,
         updatedAt: input.now
@@ -606,7 +678,7 @@ export function importActiveLpPositionsToLedger(input: {
 
   return {
     version: 1,
-    records: normalizeLedgerLifecycleRecords(nextRecords, input.now),
+    records: normalizeLedgerLifecycleRecords(nextRecords, input.now, input.pendingSubmission),
     updatedAt: input.now
   };
 }
@@ -954,7 +1026,7 @@ export function applyLiveCycleResultToLedger(input: {
 
   return {
     version: 1,
-    records: normalizeLedgerLifecycleRecords(records, input.now),
+    records: normalizeLedgerLifecycleRecords(records, input.now, input.persistedPendingSubmission ?? input.pendingSubmissionBeforeCycle),
     updatedAt: input.now
   };
 }
@@ -992,7 +1064,7 @@ export function selectCompatibilityPositionState(input: {
   now: string;
 }): PositionStateSnapshot {
   const activeRecord = [...(input.ledger?.records ?? [])]
-    .filter((record) => isPositionRecordBusinessActive(record, input.pendingSubmission))
+    .filter((record) => isPositionRecordBusinessActive(record, input.pendingSubmission, { now: input.now }))
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
 
   if (!activeRecord) {

@@ -596,6 +596,97 @@ describe('position ledger', () => {
     expect(summarizePositionLedger(ledger).pendingOpenCount).toBe(1);
   });
 
+  it('expires awaiting chain evidence pending opens when no chain position appears', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:43:00.000Z',
+        records: [{
+          positionKey: 'open-intent:lp-open-intent:expired-pending',
+          openIntentId: 'lp-open-intent:expired-pending',
+          idempotencyKey: 'open-expired-pending',
+          activeMint: 'mint-expired-pending',
+          activePoolAddress: 'pool-expired-pending',
+          lifecycleState: 'open_pending',
+          entrySol: 0.05,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-expired-pending',
+          openedAt: '2026-07-03T09:42:21.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'awaiting-chain-position-evidence',
+          updatedAt: '2026-07-03T09:43:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:48:01.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'reconcile_required',
+      lastReason: 'chain-position-evidence-timeout',
+      evidenceMissingReason: 'submitted-open-without-chain-position-after-grace',
+      missingOnChainSince: '2026-07-03T09:48:01.000Z'
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 0,
+      pendingOpenCount: 0,
+      reconcileRequiredCount: 1
+    });
+  });
+
+  it('expires stale persisted pending-open fields when the pending submission is gone', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:43:00.000Z',
+        records: [{
+          positionKey: 'idempotency:stale-open',
+          idempotencyKey: 'stale-open',
+          pendingSubmissionId: 'stale-submission',
+          pendingOrderAction: 'add-lp',
+          pendingConfirmationStatus: 'submitted',
+          activeMint: 'mint-stale',
+          activePoolAddress: 'pool-stale',
+          lifecycleState: 'open_pending',
+          lastAction: 'add-lp',
+          lastReason: 'live-order-submitted',
+          updatedAt: '2026-07-03T09:42:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:48:01.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'reconcile_required',
+      lastReason: 'open-pending-without-chain-evidence',
+      missingOnChainSince: '2026-07-03T09:48:01.000Z'
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 0,
+      pendingOpenCount: 0,
+      reconcileRequiredCount: 1
+    });
+  });
+
   it('merges a reconciled synthetic open into the unique observed chain position for the same pool and mint', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {

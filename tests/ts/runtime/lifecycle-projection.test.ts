@@ -89,6 +89,75 @@ describe('lifecycle projection', () => {
     expect(projection.allowNewOpens).toBe(true);
   });
 
+  it('expires chain-evidence pending opens after the grace window when projecting current state', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: '2026-07-03T09:43:00.000Z',
+      records: [{
+        positionKey: 'open-intent:lp-open-intent:expired',
+        openIntentId: 'lp-open-intent:expired',
+        idempotencyKey: 'open-expired',
+        activeMint: 'mint-expired',
+        activePoolAddress: 'pool-expired',
+        lifecycleState: 'open_pending',
+        entrySol: 0.05,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'fill-expired',
+        openedAt: '2026-07-03T09:42:21.000Z',
+        lastAction: 'add-lp',
+        lastReason: 'awaiting-chain-position-evidence',
+        updatedAt: '2026-07-03T09:43:00.000Z'
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5,
+      now: '2026-07-03T09:48:01.000Z'
+    });
+
+    expect(isSubmittedPendingOpenRecord(ledger.records[0], null, {
+      now: '2026-07-03T09:48:01.000Z'
+    })).toBe(false);
+    expect(projection.pendingOpenCount).toBe(0);
+    expect(projection.reconcileRequiredCount).toBe(1);
+    expect(projection.activeLpCount).toBe(0);
+    expect(projection.allowNewOpens).toBe(false);
+  });
+
+  it('expires persisted pending-open fields when no live pending submission remains', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: '2026-07-03T09:43:00.000Z',
+      records: [{
+        positionKey: 'idempotency:stale-open',
+        idempotencyKey: 'stale-open',
+        pendingSubmissionId: 'stale-submission',
+        pendingOrderAction: 'add-lp',
+        pendingConfirmationStatus: 'submitted',
+        activeMint: 'mint-stale',
+        activePoolAddress: 'pool-stale',
+        lifecycleState: 'open_pending',
+        lastAction: 'add-lp',
+        lastReason: 'live-order-submitted',
+        updatedAt: '2026-07-03T09:42:00.000Z'
+      }]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5,
+      now: '2026-07-03T09:48:01.000Z'
+    });
+
+    expect(isSubmittedPendingOpenRecord(ledger.records[0], null, {
+      now: '2026-07-03T09:48:01.000Z'
+    })).toBe(false);
+    expect(projection.pendingOpenCount).toBe(0);
+    expect(projection.reconcileRequiredCount).toBe(1);
+    expect(projection.allowNewOpens).toBe(false);
+  });
+
   it('counts observed chain positions separately from pending opens', () => {
     const ledger: PositionLedgerSnapshot = {
       version: 1,
