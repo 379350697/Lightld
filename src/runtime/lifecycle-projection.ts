@@ -174,36 +174,11 @@ function recordMatchesChainActiveRecord(record: PositionLedgerRecord, chainRecor
     return true;
   }
 
-  return Boolean(
-    record.activePoolAddress &&
-    record.activeMint &&
-    record.activePoolAddress === chainRecord.activePoolAddress &&
-    record.activeMint === chainRecord.activeMint
-  );
+  return false;
 }
 
 function recordMatchesClosedChainRecord(record: PositionLedgerRecord, chainRecord: PositionLedgerRecord) {
-  if (record.openIntentId || record.idempotencyKey || record.entryFillSubmissionId) {
-    return Boolean(
-      (record.openIntentId && record.openIntentId === chainRecord.openIntentId)
-      || (record.idempotencyKey && record.idempotencyKey === chainRecord.idempotencyKey)
-      || (record.entryFillSubmissionId && record.entryFillSubmissionId === chainRecord.entryFillSubmissionId)
-    );
-  }
-
-  if (!recordMatchesChainActiveRecord(record, chainRecord)) {
-    return false;
-  }
-
-  if (!record.missingOnChainSince || !chainRecord.lastClosedAt) {
-    return false;
-  }
-
-  const recordOpenedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
-  const chainClosedAtMs = Date.parse(chainRecord.lastClosedAt);
-  return Number.isFinite(recordOpenedAtMs) && Number.isFinite(chainClosedAtMs)
-    ? recordOpenedAtMs <= chainClosedAtMs
-    : false;
+  return recordMatchesChainActiveRecord(record, chainRecord);
 }
 
 function isSupersededByChainRecord(

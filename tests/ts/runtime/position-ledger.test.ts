@@ -345,6 +345,72 @@ describe('position ledger', () => {
     expect(summarizePositionLedger(ledger).reconcileRequiredCount).toBe(0);
   });
 
+  it('closes archived synthetic opens when a matching chain-backed position is already closed', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T08:48:49.000Z',
+        records: [
+          {
+            positionKey: 'position:pool-a:mint-a',
+            positionId: 'pool-a:mint-a',
+            openIntentId: 'lp-open-intent:a',
+            idempotencyKey: 'open-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            entrySol: 0.077,
+            entrySolSource: 'actual_fill',
+            entryFillSubmissionId: 'fill-a',
+            openedAt: '2026-07-02T15:52:20.000Z',
+            importStatus: 'archived_missing_without_exit_evidence',
+            lastAction: 'add-lp',
+            lastReason: 'chain-position-missing-without-exit-evidence',
+            missingOnChainSince: '2026-07-02T18:59:20.000Z',
+            updatedAt: '2026-07-03T08:48:49.000Z'
+          },
+          {
+            positionKey: 'chain-position:chain-a',
+            positionId: 'chain-a',
+            chainPositionAddress: 'chain-a',
+            openIntentId: 'lp-open-intent:a',
+            idempotencyKey: 'open-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'closed',
+            entryFillSubmissionId: 'fill-a',
+            lastAction: 'withdraw-lp',
+            lastReason: 'position-already-closed:Position not found for pool',
+            lastClosedAt: '2026-07-02T18:59:20.000Z',
+            updatedAt: '2026-07-02T18:59:20.000Z'
+          }
+        ]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:00:00.000Z'
+    });
+
+    expect(ledger.records.find((record) => record.positionKey === 'position:pool-a:mint-a')).toMatchObject({
+      lifecycleState: 'closed',
+      importStatus: 'superseded_closed',
+      supersededByPositionKey: 'chain-position:chain-a',
+      lastReason: 'superseded-by-chain-closed-position'
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 0,
+      reconcileRequiredCount: 0
+    });
+  });
+
   it('keeps submitted pending opens as capacity reservations while waiting for chain evidence', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {

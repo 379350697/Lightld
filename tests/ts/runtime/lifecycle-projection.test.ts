@@ -162,6 +162,47 @@ describe('lifecycle projection', () => {
     expect(projection.allowNewOpens).toBe(true);
   });
 
+  it('does not suppress synthetic reconcile records only because a chain record has the same pool and mint', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: now,
+      records: [
+        {
+          positionKey: 'position:pool-1:mint-1',
+          positionId: 'pool-1:mint-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'old-sig',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: now,
+          updatedAt: now
+        },
+        {
+          positionKey: 'chain-position:pos-1',
+          positionId: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-1',
+          activePoolAddress: 'pool-1',
+          lifecycleState: 'open',
+          entryFillSubmissionId: 'new-sig',
+          lastAction: 'hold',
+          updatedAt: now
+        }
+      ]
+    };
+
+    const projection = buildLifecycleProjection({
+      ledger,
+      maxActivePositions: 5
+    });
+
+    expect(projection.chainActiveLpCount).toBe(1);
+    expect(projection.reconcileRequiredCount).toBe(1);
+    expect(projection.allowNewOpens).toBe(false);
+  });
+
   it('does not let a synthetic open record block after its chain-backed position closed', () => {
     const ledger: PositionLedgerSnapshot = {
       version: 1,

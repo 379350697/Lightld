@@ -111,6 +111,44 @@ describe('position business semantics', () => {
     });
   });
 
+  it('allows new opens after an already-closed exit reconciliation when capacity remains', () => {
+    const result = resolvePositionBusinessSemantics({
+      maxActivePositions: 5,
+      maintenanceOutcome: {
+        action: 'withdraw-lp',
+        liveOrderSubmitted: false,
+        reason: 'position-already-closed:Position not found for pool',
+        failureKind: 'reconciliation'
+      },
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-07-03T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-closed',
+          positionId: 'pos-closed',
+          chainPositionAddress: 'pos-closed',
+          activeMint: 'mint-closed',
+          activePoolAddress: 'pool-closed',
+          lifecycleState: 'closed',
+          lastAction: 'withdraw-lp',
+          lastReason: 'position-already-closed:Position not found for pool',
+          lastClosedAt: '2026-07-03T00:00:00.000Z',
+          updatedAt: '2026-07-03T00:00:00.000Z'
+        }]
+      },
+      accountState: baseAccount()
+    });
+
+    expect(result.canOpenNewPosition).toEqual({
+      allowed: true,
+      reason: 'flat'
+    });
+    expect(result.canRunNewOpenAfterMaintenance).toEqual({
+      allowed: true,
+      reason: 'flat'
+    });
+  });
+
   it('blocks new opens after a submitted maintenance order', () => {
     const result = resolvePositionBusinessSemantics({
       maxActivePositions: 5,
@@ -390,8 +428,8 @@ describe('position business semantics', () => {
     expect(result.hasActiveLp).toBe(false);
     expect(result.nextAction).toBe('cleanup-dust');
     expect(result.canOpenNewPosition).toEqual({
-      allowed: false,
-      reason: 'residual-dust-cleanup-pending'
+      allowed: true,
+      reason: 'flat-residual-cleanup-pending'
     });
   });
 

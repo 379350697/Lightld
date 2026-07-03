@@ -3250,20 +3250,17 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           walletSol: effectiveAccountState?.walletSol,
           updatedAt: nowIso()
         };
-        await runtimeStateStore.writePositionState(nextPositionState);
-        if (positionLedgerSummary.activeLpCount > 0 || persistedLifecycleState === 'closed') {
-          await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
-            ledger: positionLedger,
-            pendingSubmission: persistedPendingSubmission,
-            prior: nextPositionState,
-            allowNewOpens: businessAllowNewOpens,
-            flattenOnly: runtimeState.mode === 'flatten_only',
-            lastAction: result.action,
-            lastReason: result.reason,
-            walletSol: effectiveAccountState?.walletSol,
-            now: nowIso()
-          }));
-        }
+        await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
+          ledger: positionLedger,
+          pendingSubmission: persistedPendingSubmission,
+          prior: nextPositionState,
+          allowNewOpens: businessAllowNewOpens,
+          flattenOnly: runtimeState.mode === 'flatten_only',
+          lastAction: result.action,
+          lastReason: result.reason,
+          walletSol: effectiveAccountState?.walletSol,
+          now: nowIso()
+        }));
         enqueueResolvedOpenOrderMirror({
           mirrorRuntime,
           idempotencyKey: result.orderIntent?.idempotencyKey ?? positionState?.lastOrderIdempotencyKey,

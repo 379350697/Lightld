@@ -262,6 +262,9 @@ function resolveCanRunNewOpenAfterMaintenance(input: {
     const reason = input.maintenanceOutcome?.reason
       || input.maintenanceOutcome?.failureKind
       || 'not-submitted';
+    if (reason.includes('position-already-closed')) {
+      return input.canOpenNewPosition;
+    }
     return { allowed: false, reason: `maintenance-lp-exit-not-submitted:${reason}` };
   }
 
@@ -423,7 +426,14 @@ export function resolvePositionBusinessSemantics(input: {
   if (residualDustState === 'dust_cleanup_pending') {
     return buildResult({
       hasActiveLp: activeLpCount > 0,
-      canOpenNewPosition: { allowed: false, reason: 'residual-dust-cleanup-pending' },
+      canOpenNewPosition: activeLpCount < maxActivePositions
+        ? {
+            allowed: true,
+            reason: activeLpCount > 0
+              ? 'capacity-available-residual-cleanup-pending'
+              : 'flat-residual-cleanup-pending'
+          }
+        : { allowed: false, reason: 'position-capacity-full' },
       nextAction: 'cleanup-dust'
     });
   }

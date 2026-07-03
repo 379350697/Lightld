@@ -174,6 +174,96 @@ function resolveEntryFromFills(input: {
     : undefined;
 }
 
+function recordsShareClosedLifecycleIdentity(record: PositionLedgerRecord, chainRecord: PositionLedgerRecord) {
+  if (record === chainRecord || !chainRecord.chainPositionAddress || record.chainPositionAddress) {
+    return false;
+  }
+
+  if (record.openIntentId && record.openIntentId === chainRecord.openIntentId) {
+    return true;
+  }
+
+  if (record.idempotencyKey && record.idempotencyKey === chainRecord.idempotencyKey) {
+    return true;
+  }
+
+  if (record.entryFillSubmissionId && record.entryFillSubmissionId === chainRecord.entryFillSubmissionId) {
+    return true;
+  }
+
+  if (
+    !record.missingOnChainSince ||
+    !chainRecord.lastClosedAt ||
+    !record.activePoolAddress ||
+    !record.activeMint ||
+    record.activePoolAddress !== chainRecord.activePoolAddress ||
+    record.activeMint !== chainRecord.activeMint
+  ) {
+    return false;
+  }
+
+  const recordOpenedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+  const chainClosedAtMs = Date.parse(chainRecord.lastClosedAt);
+  return Number.isFinite(recordOpenedAtMs) && Number.isFinite(chainClosedAtMs)
+    ? recordOpenedAtMs <= chainClosedAtMs
+    : false;
+}
+
+function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: string) {
+  const closedChainRecords = records.filter((record) =>
+    record.lifecycleState === 'closed' && Boolean(record.chainPositionAddress)
+  );
+
+  return records.map((record) => {
+    if (record.lifecycleState === 'closed' || record.importStatus === 'superseded_closed') {
+      return record;
+    }
+
+    const supersedingRecord = closedChainRecords.find((chainRecord) =>
+      recordsShareClosedLifecycleIdentity(record, chainRecord)
+    );
+    if (supersedingRecord) {
+      return {
+        ...record,
+        lifecycleState: 'closed' as const,
+        importStatus: 'superseded_closed' as const,
+        supersededByPositionKey: supersedingRecord.positionKey,
+        lastAction: 'withdraw-lp',
+        lastReason: 'superseded-by-chain-closed-position',
+        evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
+        missingOnChainSince: record.missingOnChainSince ?? now,
+        lastClosedAt: record.lastClosedAt ?? supersedingRecord.lastClosedAt ?? now,
+        updatedAt: now
+      };
+    }
+
+    const syntheticOpenWithoutChainEvidence = record.lifecycleState === 'open'
+      && !record.chainPositionAddress
+      && (
+        Boolean(record.missingOnChainSince)
+        || record.importStatus === 'archived_missing_without_exit_evidence'
+        || record.lastReason === 'chain-position-missing-without-exit-evidence'
+      );
+    if (syntheticOpenWithoutChainEvidence) {
+      const isTerminalFailedAttempt = !record.entrySol;
+      return {
+        ...record,
+        lifecycleState: isTerminalFailedAttempt ? 'failed_terminal' as const : 'reconcile_required' as const,
+        importStatus: 'archived_missing_without_exit_evidence' as const,
+        lastReason: isTerminalFailedAttempt
+          ? record.lastReason ?? 'synthetic-open-without-chain-evidence'
+          : 'synthetic-open-missing-chain-evidence',
+        evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason ?? 'synthetic-open-without-chain-identity',
+        missingOnChainSince: record.missingOnChainSince ?? now,
+        lastClosedAt: isTerminalFailedAttempt ? record.lastClosedAt ?? now : record.lastClosedAt,
+        updatedAt: now
+      };
+    }
+
+    return record;
+  });
+}
+
 export function migratePositionStateToLedger(input: {
   positionState?: PositionStateSnapshot | null;
   now: string;
@@ -455,7 +545,7 @@ export function importActiveLpPositionsToLedger(input: {
 
   return {
     version: 1,
-    records: nextRecords,
+    records: normalizeLedgerLifecycleRecords(nextRecords, input.now),
     updatedAt: input.now
   };
 }
@@ -803,7 +893,7 @@ export function applyLiveCycleResultToLedger(input: {
 
   return {
     version: 1,
-    records,
+    records: normalizeLedgerLifecycleRecords(records, input.now),
     updatedAt: input.now
   };
 }
