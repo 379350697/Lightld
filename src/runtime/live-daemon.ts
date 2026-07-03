@@ -3147,6 +3147,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           orderIntent: result.orderIntent,
           action: result.action,
           reason: result.reason,
+          exitTriggerReason: result.audit?.reason,
           liveOrderSubmitted: result.liveOrderSubmitted,
           confirmationStatus: result.confirmationStatus,
           residualCleanupStatus: residualCleanupStatusFromResult(result),

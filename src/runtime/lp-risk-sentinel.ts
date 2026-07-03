@@ -2,6 +2,8 @@ export type LpRiskIntent = 'hold' | 'range-warning' | 'range-exit' | 'liquidity-
 
 export type LpOutOfRangeSide = 'below' | 'above';
 
+const DEFAULT_ABOVE_OUT_OF_RANGE_EXIT_BINS = 8;
+
 export type LpRiskSentinelSnapshot = {
   observedAt: string;
   riskIntent: LpRiskIntent;
@@ -43,6 +45,7 @@ export type LpRiskSentinelInput = {
   currentPrice?: Numeric;
   previous?: LpRiskSentinelSnapshot;
   warningDistanceBins?: number;
+  aboveOutOfRangeExitBins?: number;
   liquidityDropPct?: number;
   valueDropPct?: number;
   priceDropPct?: number;
@@ -122,8 +125,17 @@ function buildBaseSnapshot(input: LpRiskSentinelInput): LpRiskSentinelSnapshot {
 export function evaluateLpRiskSentinel(input: LpRiskSentinelInput): LpRiskSentinelSnapshot {
   const snapshot = buildBaseSnapshot(input);
   const warningDistanceBins = Math.max(0, input.warningDistanceBins ?? 3);
+  const aboveOutOfRangeExitBins = Math.max(0, input.aboveOutOfRangeExitBins ?? DEFAULT_ABOVE_OUT_OF_RANGE_EXIT_BINS);
 
   if (snapshot.outOfRangeSide && typeof snapshot.outOfRangeBins === 'number' && snapshot.outOfRangeBins > 0) {
+    if (snapshot.outOfRangeSide === 'above' && snapshot.outOfRangeBins <= aboveOutOfRangeExitBins) {
+      return {
+        ...snapshot,
+        riskIntent: 'range-warning',
+        riskReason: `active-bin-out-of-range:above-within-tolerance:${snapshot.outOfRangeBins}/${aboveOutOfRangeExitBins}`
+      };
+    }
+
     return {
       ...snapshot,
       riskIntent: 'range-exit',

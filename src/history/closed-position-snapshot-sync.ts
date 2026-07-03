@@ -130,6 +130,52 @@ function fillRowsCanShareLifecycle(open: TrustedClosedPositionFillRow, close: Tr
   return open.recordedAt.localeCompare(close.recordedAt) <= 0;
 }
 
+function selectOpenFillsForClose(input: {
+  opens: TrustedClosedPositionFillRow[];
+  close: TrustedClosedPositionFillRow;
+  usedOpenIndexes: Set<number>;
+}) {
+  const closeHasChainIdentity = looksLikeBase58Address(input.close.positionAddress);
+  if (closeHasChainIdentity) {
+    for (let index = input.opens.length - 1; index >= 0; index -= 1) {
+      const open = input.opens[index];
+      if (
+        input.usedOpenIndexes.has(index) ||
+        !looksLikeBase58Address(open.positionAddress) ||
+        open.positionAddress !== input.close.positionAddress ||
+        !fillRowsCanShareLifecycle(open, input.close)
+      ) {
+        continue;
+      }
+
+      return [index];
+    }
+  }
+
+  const selectedIndexes: number[] = [];
+  let selectedSol = 0;
+
+  for (let index = input.opens.length - 1; index >= 0; index -= 1) {
+    const open = input.opens[index];
+    if (
+      input.usedOpenIndexes.has(index) ||
+      looksLikeBase58Address(open.positionAddress) ||
+      !fillRowsCanShareLifecycle(open, input.close)
+    ) {
+      continue;
+    }
+
+    selectedIndexes.unshift(index);
+    selectedSol += open.filledSol;
+
+    if (selectedSol + 0.000000001 >= input.close.filledSol) {
+      break;
+    }
+  }
+
+  return selectedIndexes;
+}
+
 export function buildClosedPositionSnapshotsFromTrustedFills(input: {
   walletAddress: string;
   fills: TrustedClosedPositionFillRow[];
@@ -144,23 +190,22 @@ export function buildClosedPositionSnapshotsFromTrustedFills(input: {
   const snapshots: ClosedPositionSnapshot[] = [];
 
   for (const close of closes) {
-    let matchedOpenIndex = -1;
+    const matchedOpenIndexes = selectOpenFillsForClose({
+      opens,
+      close,
+      usedOpenIndexes
+    });
 
-    for (let index = opens.length - 1; index >= 0; index -= 1) {
-      if (usedOpenIndexes.has(index) || !fillRowsCanShareLifecycle(opens[index], close)) {
-        continue;
-      }
-
-      matchedOpenIndex = index;
-      break;
-    }
-
-    if (matchedOpenIndex < 0) {
+    if (matchedOpenIndexes.length === 0) {
       continue;
     }
 
-    const open = opens[matchedOpenIndex];
-    usedOpenIndexes.add(matchedOpenIndex);
+    const matchedOpens = matchedOpenIndexes.map((index) => opens[index]);
+    for (const index of matchedOpenIndexes) {
+      usedOpenIndexes.add(index);
+    }
+    const open = matchedOpens[0];
+    const depositSol = matchedOpens.reduce((total, row) => total + row.filledSol, 0);
     snapshots.push({
       walletAddress: input.walletAddress,
       tokenMint: open.tokenMint,
@@ -169,7 +214,7 @@ export function buildClosedPositionSnapshotsFromTrustedFills(input: {
       positionAddress: close.positionAddress || open.positionAddress || `${open.poolAddress}:${open.tokenMint}`,
       openedAt: open.recordedAt,
       closedAt: close.recordedAt,
-      depositSol: open.filledSol,
+      depositSol,
       depositTokenAmount: 0,
       withdrawSol: close.filledSol,
       withdrawTokenAmount: 0,
@@ -177,7 +222,7 @@ export function buildClosedPositionSnapshotsFromTrustedFills(input: {
       feeSol: 0,
       feeTokenAmount: 0,
       feeTokenValueSol: 0,
-      pnlSol: close.filledSol - open.filledSol,
+      pnlSol: close.filledSol - depositSol,
       source: 'wallet-delta',
       confidence: 'exact'
     });

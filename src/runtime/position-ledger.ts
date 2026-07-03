@@ -824,6 +824,7 @@ export function applyLiveCycleResultToLedger(input: {
   };
   action: string;
   reason: string;
+  exitTriggerReason?: string;
   liveOrderSubmitted: boolean;
   confirmationStatus?: string;
   finality?: string;
@@ -978,6 +979,17 @@ export function applyLiveCycleResultToLedger(input: {
   const terminalAlreadyClosed = fullExit
     && (input.reason.includes('position-already-closed') || /position not found for pool/i.test(input.reason))
     && !stillOnChain;
+  if (
+    record.lifecycleState === 'closed'
+    && terminalAlreadyClosed
+    && !input.liveOrderSubmitted
+  ) {
+    return {
+      version: 1,
+      records: normalizeLedgerLifecycleRecords(records, input.now, input.persistedPendingSubmission ?? input.pendingSubmissionBeforeCycle),
+      updatedAt: input.now
+    };
+  }
   const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed)
     ? 'closed'
     : hasPending && fullExit
@@ -987,6 +999,10 @@ export function applyLiveCycleResultToLedger(input: {
       : isConfirmed && input.action === 'add-lp'
         ? target.chainPositionAddress ? 'open' : 'open_pending'
         : record.lifecycleState;
+
+  const lastReason = fullExit && isConfirmed && input.exitTriggerReason
+    ? input.exitTriggerReason
+    : input.reason;
 
   records[index] = {
     ...record,
@@ -1022,7 +1038,7 @@ export function applyLiveCycleResultToLedger(input: {
       ? input.confirmedFill?.recordedAt ?? record.openedAt ?? input.now
       : record.openedAt,
     lastAction: input.action,
-    lastReason: input.reason,
+    lastReason,
     lastOrderIdempotencyKey: target.idempotencyKey ?? record.lastOrderIdempotencyKey,
     pendingSubmissionId: hasPending ? input.persistedPendingSubmission?.submissionId : undefined,
     pendingOrderAction: hasPending ? input.persistedPendingSubmission?.orderAction : undefined,

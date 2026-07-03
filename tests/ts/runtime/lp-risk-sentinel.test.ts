@@ -20,6 +20,36 @@ describe('evaluateLpRiskSentinel', () => {
     expect(result.activeBinDistanceToUpper).toBe(-17);
   });
 
+  it('keeps above-range drift within eight bins as a warning instead of an exit', () => {
+    const result = evaluateLpRiskSentinel({
+      observedAt: '2026-07-04T01:30:00.000Z',
+      activeBinId: -158,
+      lowerBinId: -234,
+      upperBinId: -166,
+      currentValueSol: 0.114030143,
+      liquidityValueSol: 0.056624063
+    });
+
+    expect(result.riskIntent).toBe('range-warning');
+    expect(result.riskReason).toBe('active-bin-out-of-range:above-within-tolerance:8/8');
+    expect(result.outOfRangeSide).toBe('above');
+    expect(result.outOfRangeBins).toBe(8);
+  });
+
+  it('still exits immediately when active bin crosses below the position range', () => {
+    const result = evaluateLpRiskSentinel({
+      observedAt: '2026-07-04T01:30:00.000Z',
+      activeBinId: -235,
+      lowerBinId: -234,
+      upperBinId: -166,
+      currentValueSol: 0.114030143,
+      liquidityValueSol: 0.056624063
+    });
+
+    expect(result.riskIntent).toBe('range-exit');
+    expect(result.riskReason).toBe('active-bin-out-of-range:below:1');
+  });
+
   it('flags short-window liquidity and price drops without requiring route quotes', () => {
     const previous = evaluateLpRiskSentinel({
       observedAt: '2026-06-30T13:18:25.774Z',

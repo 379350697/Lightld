@@ -499,6 +499,82 @@ describe('position ledger', () => {
     });
   });
 
+  it('does not overwrite a closed position reason with a later already-closed retry', () => {
+    const firstClose = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T11:15:00.000Z',
+        records: [{
+          positionKey: 'chain-position:chain-a',
+          positionId: 'chain-a',
+          chainPositionAddress: 'chain-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          lastReason: 'live-order-submitted',
+          updatedAt: '2026-07-03T11:10:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      actionIdentity: {
+        chainPositionAddress: 'chain-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'close-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      exitTriggerReason: 'lp-take-profit',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      now: '2026-07-03T11:15:23.000Z'
+    });
+
+    const retry = applyLiveCycleResultToLedger({
+      ledger: firstClose,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      actionIdentity: {
+        chainPositionAddress: 'chain-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'close-a-retry',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'position-already-closed:Position not found for pool',
+      liveOrderSubmitted: false,
+      confirmationStatus: 'unknown',
+      now: '2026-07-03T11:15:38.000Z'
+    });
+
+    expect(retry.records[0]).toMatchObject({
+      lifecycleState: 'closed',
+      lastAction: 'withdraw-lp',
+      lastReason: 'lp-take-profit',
+      lastClosedAt: '2026-07-03T11:15:23.000Z'
+    });
+  });
+
   it('keeps submitted pending opens as capacity reservations while waiting for chain evidence', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {

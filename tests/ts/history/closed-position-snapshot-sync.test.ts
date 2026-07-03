@@ -149,6 +149,53 @@ describe('buildClosedPositionSnapshotsFromTrustedFills', () => {
     });
     expect(snapshots[0]?.pnlSol).toBeCloseTo(-0.00001929, 12);
   });
+
+  it('aggregates adjacent synthetic open fills for the same pool before matching a chain close', () => {
+    const snapshots = buildClosedPositionSnapshotsFromTrustedFills({
+      walletAddress: 'wallet-1',
+      fills: [
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: 'pool-1:mint-earth',
+          side: 'add-lp',
+          recordedAt: '2026-07-03T10:59:28.794Z',
+          filledSol: 0.077416045
+        },
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: 'pool-1:mint-earth',
+          side: 'add-lp',
+          recordedAt: '2026-07-03T10:59:45.365Z',
+          filledSol: 0.020004965
+        },
+        {
+          tokenMint: 'mint-earth',
+          tokenSymbol: 'earthcoin',
+          poolAddress: 'pool-1',
+          positionAddress: POSITION_ADDRESS,
+          side: 'withdraw-lp',
+          recordedAt: '2026-07-03T11:02:59.515Z',
+          filledSol: 0.097400875
+        }
+      ]
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      positionAddress: POSITION_ADDRESS,
+      openedAt: '2026-07-03T10:59:28.794Z',
+      closedAt: '2026-07-03T11:02:59.515Z',
+      depositSol: 0.09742101,
+      withdrawSol: 0.097400875,
+      source: 'wallet-delta',
+      confidence: 'exact'
+    });
+    expect(snapshots[0]?.pnlSol).toBeCloseTo(-0.000020135, 12);
+  });
 });
 
 describe('syncClosedPositionSnapshots', () => {
