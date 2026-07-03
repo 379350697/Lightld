@@ -82,6 +82,14 @@ export function isSubmittedPendingOpenRecord(
     return false;
   }
 
+  if (
+    record.lastAction === 'add-lp' &&
+    record.lastReason === 'awaiting-chain-position-evidence' &&
+    record.entryFillSubmissionId
+  ) {
+    return true;
+  }
+
   return Boolean(
     record.pendingOrderAction === 'add-lp' &&
     record.pendingSubmissionId &&

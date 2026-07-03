@@ -463,6 +463,139 @@ describe('position ledger', () => {
     expect(summarizePositionLedger(ledger).pendingOpenCount).toBe(1);
   });
 
+  it('keeps recently confirmed opens pending while waiting for chain position evidence', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:42:31.000Z',
+        records: [{
+          positionKey: 'open-intent:lp-open-intent:recent',
+          openIntentId: 'lp-open-intent:recent',
+          idempotencyKey: 'open-recent',
+          activeMint: 'mint-recent',
+          activePoolAddress: 'pool-recent',
+          lifecycleState: 'open',
+          entrySol: 0.05,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-recent',
+          openedAt: '2026-07-03T09:42:21.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-03T09:42:31.000Z',
+          updatedAt: '2026-07-03T09:42:31.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:43:55.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'open_pending',
+      lastReason: 'awaiting-chain-position-evidence',
+      missingOnChainSince: undefined
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 1,
+      pendingOpenCount: 1,
+      reconcileRequiredCount: 0
+    });
+  });
+
+  it('moves confirmed opens to reconciliation after the chain evidence grace expires', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:42:31.000Z',
+        records: [{
+          positionKey: 'open-intent:lp-open-intent:expired',
+          openIntentId: 'lp-open-intent:expired',
+          idempotencyKey: 'open-expired',
+          activeMint: 'mint-expired',
+          activePoolAddress: 'pool-expired',
+          lifecycleState: 'open',
+          entrySol: 0.05,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-expired',
+          openedAt: '2026-07-03T09:42:21.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-03T09:42:31.000Z',
+          updatedAt: '2026-07-03T09:42:31.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:48:01.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'reconcile_required',
+      lastReason: 'synthetic-open-missing-chain-evidence',
+      missingOnChainSince: '2026-07-03T09:42:31.000Z'
+    });
+    expect(summarizePositionLedger(ledger).reconcileRequiredCount).toBe(1);
+  });
+
+  it('recovers recently misclassified reconcile records back to pending chain evidence', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:44:31.000Z',
+        records: [{
+          positionKey: 'open-intent:lp-open-intent:recover',
+          openIntentId: 'lp-open-intent:recover',
+          idempotencyKey: 'open-recover',
+          activeMint: 'mint-recover',
+          activePoolAddress: 'pool-recover',
+          lifecycleState: 'reconcile_required',
+          entrySol: 0.05,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-recover',
+          openedAt: '2026-07-03T09:44:04.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-03T09:44:10.000Z',
+          updatedAt: '2026-07-03T09:44:31.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:45:31.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'open_pending',
+      lastReason: 'awaiting-chain-position-evidence',
+      missingOnChainSince: undefined
+    });
+    expect(summarizePositionLedger(ledger).pendingOpenCount).toBe(1);
+  });
+
   it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
@@ -934,7 +1067,7 @@ describe('position ledger', () => {
     });
     expect(ledger.records.find((record) => record.openIntentId === 'lp-open-intent:new')).toMatchObject({
       positionKey: 'open-intent:lp-open-intent:new',
-      lifecycleState: 'open',
+      lifecycleState: 'open_pending',
       idempotencyKey: 'new-open'
     });
   });

@@ -17,6 +17,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
+const CHAIN_POSITION_EVIDENCE_GRACE_MS = 5 * 60_000;
 
 type AccountLpPosition = NonNullable<LiveAccountState['walletLpPositions']>[number];
 
@@ -213,6 +214,7 @@ function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: s
   const closedChainRecords = records.filter((record) =>
     record.lifecycleState === 'closed' && Boolean(record.chainPositionAddress)
   );
+  const nowMs = Date.parse(now);
 
   return records.map((record) => {
     if (record.lifecycleState === 'closed' || record.importStatus === 'superseded_closed') {
@@ -237,6 +239,26 @@ function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: s
       };
     }
 
+    const openedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+    const stillWithinChainEvidenceGrace = record.lastAction === 'add-lp'
+      && Boolean(record.entryFillSubmissionId)
+      && Number.isFinite(openedAtMs)
+      && Number.isFinite(nowMs)
+      && nowMs - openedAtMs < CHAIN_POSITION_EVIDENCE_GRACE_MS;
+    if (
+      record.lifecycleState === 'reconcile_required'
+      && !record.chainPositionAddress
+      && stillWithinChainEvidenceGrace
+    ) {
+      return {
+        ...record,
+        lifecycleState: 'open_pending' as const,
+        lastReason: 'awaiting-chain-position-evidence',
+        missingOnChainSince: undefined,
+        updatedAt: now
+      };
+    }
+
     const syntheticOpenWithoutChainEvidence = record.lifecycleState === 'open'
       && !record.chainPositionAddress
       && (
@@ -245,6 +267,16 @@ function normalizeLedgerLifecycleRecords(records: PositionLedgerRecord[], now: s
         || record.lastReason === 'chain-position-missing-without-exit-evidence'
       );
     if (syntheticOpenWithoutChainEvidence) {
+      if (stillWithinChainEvidenceGrace) {
+        return {
+          ...record,
+          lifecycleState: 'open_pending' as const,
+          lastReason: 'awaiting-chain-position-evidence',
+          missingOnChainSince: undefined,
+          updatedAt: now
+        };
+      }
+
       const isTerminalFailedAttempt = !record.entrySol;
       return {
         ...record,
@@ -483,6 +515,23 @@ export function importActiveLpPositionsToLedger(input: {
     const isUnprovenPendingOpenRecord = record.lifecycleState === 'open_pending'
       && !record.chainPositionAddress;
     if (isUnprovenPendingOpenRecord) {
+      const openedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+      const nowMs = Date.parse(input.now);
+      const stillWithinChainEvidenceGrace = record.lastAction === 'add-lp'
+        && Boolean(record.entryFillSubmissionId)
+        && Number.isFinite(openedAtMs)
+        && Number.isFinite(nowMs)
+        && nowMs - openedAtMs < CHAIN_POSITION_EVIDENCE_GRACE_MS;
+      if (stillWithinChainEvidenceGrace) {
+        return {
+          ...record,
+          lifecycleState: 'open_pending' as const,
+          lastReason: 'awaiting-chain-position-evidence',
+          missingOnChainSince: undefined,
+          updatedAt: input.now
+        };
+      }
+
       const isTerminalFailedAttempt = record.lastReason === 'http-400'
         || record.lastReason === 'sign-failed'
         || record.lastReason === 'not-submitted'
@@ -782,11 +831,11 @@ export function applyLiveCycleResultToLedger(input: {
       : 'closed'
     : hasPending && fullExit
       ? 'lp_exit_pending'
-      : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')
-        ? 'open_pending'
-        : isConfirmed && input.action === 'add-lp'
-          ? 'open'
-          : record.lifecycleState;
+    : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')
+      ? 'open_pending'
+      : isConfirmed && input.action === 'add-lp'
+        ? target.chainPositionAddress ? 'open' : 'open_pending'
+        : record.lifecycleState;
 
   records[index] = {
     ...record,
