@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { buildStatusView, readMirrorStatus } from '../observability/mirror-query-service.ts';
+import { refreshHealthReportFreshness } from '../runtime/health-report.ts';
 import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
 import { formatRuntimeStatus } from './show-runtime-status.ts';
 
@@ -53,12 +54,13 @@ function parseArgs(argv: string[]): ParsedArgs {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const store = new RuntimeStateStore(args.stateRootDir);
-  const report = await store.readHealthReport();
+  const persistedReport = await store.readHealthReport();
 
-  if (!report) {
+  if (!persistedReport) {
     throw new Error(`No runtime health report found under ${args.stateRootDir}`);
   }
 
+  const report = refreshHealthReportFreshness(persistedReport);
   const mirrorPath = args.mirrorPath ?? report.mirror?.path;
   const view = await buildStatusView({
     fileState: async () => report,

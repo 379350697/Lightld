@@ -16,6 +16,8 @@ import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
 import { toExecutionTerminalStatus } from '../runtime/execution-terminal-status.ts';
+import { refreshHealthReportFreshness } from '../runtime/health-report.ts';
+import { HealthReportSchema } from '../runtime/state-types.ts';
 import type { PendingFinality } from '../runtime/state-types.ts';
 
 // ── Configuration ──
@@ -215,11 +217,13 @@ type ClosedPositionSnapshotRow = {
 
 async function handleStatus(): Promise<StatusResponse> {
   const evolutionPaths = resolveEvolutionPaths(STRATEGY_ID === 'large-pool-v1' ? 'large-pool-v1' : 'new-token-v1', join(STATE_ROOT_DIR, 'evolution'));
-  const [health, position, runtime] = await Promise.all([
-    readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'health.json')),
+  const [rawHealth, position, runtime] = await Promise.all([
+    readJsonSafe<unknown>(join(STATE_ROOT_DIR, 'health.json')),
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'position-state.json')),
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'runtime-state.json')),
   ]);
+  const parsedHealth = HealthReportSchema.safeParse(rawHealth);
+  const health = parsedHealth.success ? refreshHealthReportFreshness(parsedHealth.data) : null;
   const [proposalCatalog, approvalQueue] = await Promise.all([
     readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.proposalCatalogPath),
     readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.approvalQueuePath)

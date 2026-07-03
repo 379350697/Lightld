@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildHealthReport } from '../../../src/runtime/health-report';
+import { buildHealthReport, refreshHealthReportFreshness } from '../../../src/runtime/health-report';
 
 describe('buildHealthReport', () => {
   it('summarizes the current runtime mode and pending submission state', () => {
@@ -49,6 +49,30 @@ describe('buildHealthReport', () => {
     expect(report.mode).toBe('degraded');
     expect(report.allowNewOpens).toBe(false);
     expect(report.circuitReason).toBe('runtime-stale:last-successful-tick');
+  });
+
+  it('degrades a persisted healthy report when the current clock is past the stale window', () => {
+    const report = refreshHealthReportFreshness({
+      mode: 'healthy',
+      allowNewOpens: true,
+      flattenOnly: false,
+      pendingSubmission: false,
+      circuitReason: '',
+      lastSuccessfulTickAt: '2026-03-22T00:00:00.000Z',
+      dependencyHealth: {
+        quoteFailures: 0,
+        reconcileFailures: 0
+      },
+      updatedAt: '2026-03-22T00:00:01.000Z'
+    }, {
+      nowIso: '2026-03-22T00:06:00.000Z',
+      staleAfterMs: 5 * 60_000
+    });
+
+    expect(report.mode).toBe('degraded');
+    expect(report.allowNewOpens).toBe(false);
+    expect(report.circuitReason).toBe('runtime-stale:last-successful-tick');
+    expect(report.updatedAt).toBe('2026-03-22T00:06:00.000Z');
   });
 
   it('degrades health and blocks opens when lifecycle reconciliation is required', () => {

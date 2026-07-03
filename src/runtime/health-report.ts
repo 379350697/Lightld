@@ -64,3 +64,17 @@ export function buildHealthReport(input: {
     updatedAt
   };
 }
+
+export function refreshHealthReportFreshness(
+  report: HealthReport,
+  options: {
+    nowIso?: string;
+    staleAfterMs?: number;
+  } = {}
+): HealthReport {
+  return buildHealthReport({
+    ...report,
+    updatedAt: options.nowIso ?? new Date().toISOString(),
+    staleAfterMs: options.staleAfterMs
+  });
+}

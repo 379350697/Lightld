@@ -156,7 +156,13 @@ if (-not `$env:LIVE_MAX_DAILY_SPEND_SOL) { `$env:LIVE_MAX_DAILY_SPEND_SOL = '0.2
 if (-not `$env:LIVE_METEORA_SORT_BY) { `$env:LIVE_METEORA_SORT_BY = 'fee_tvl_ratio_24h:desc' }
 if (-not `$env:LIVE_METEORA_FILTER_BY) { `$env:LIVE_METEORA_FILTER_BY = 'tvl>=10000 && is_blacklisted=false' }
 if (-not `$env:LIVE_METEORA_PAGE_SIZE) { `$env:LIVE_METEORA_PAGE_SIZE = '50' }
-npm.cmd run run:daemon -- --strategy new-token-v1 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/daemon.log') -Append
+while (`$true) {
+    npm.cmd run run:daemon -- --strategy new-token-v1 2>&1 | Tee-Object -FilePath (Join-Path (Get-Location) 'logs/daemon.log') -Append
+    `$ExitCode = `$LASTEXITCODE
+    `$RestartAt = (Get-Date).ToUniversalTime().ToString('o')
+    Write-Warning "[Lightld Daemon] run:daemon exited code=`$ExitCode at `$RestartAt; restarting in 5 seconds"
+    Start-Sleep -Seconds 5
+}
 "@
 
 Write-Host "`n========================================"
