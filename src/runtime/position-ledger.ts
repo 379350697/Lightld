@@ -84,7 +84,11 @@ export function collectActiveLpPositions(accountState?: LiveAccountState): Accou
   return positions;
 }
 
-function findMatchingRecord(records: PositionLedgerRecord[], position: AccountLpPosition) {
+function findMatchingRecord(
+  records: PositionLedgerRecord[],
+  position: AccountLpPosition,
+  activePositions: AccountLpPosition[]
+) {
   const chainPositionAddress = position.chainPositionAddress || position.positionAddress;
   if (chainPositionAddress) {
     const byChain = records.find((record) =>
@@ -96,27 +100,35 @@ function findMatchingRecord(records: PositionLedgerRecord[], position: AccountLp
       return byChain;
     }
 
-    const pendingOpenMatches = records.filter((record) =>
-      record.lifecycleState === 'open_pending' &&
-      !record.chainPositionAddress &&
-      record.activeMint === position.mint &&
-      record.activePoolAddress === position.poolAddress
-    );
-    if (pendingOpenMatches.length === 1) {
-      return pendingOpenMatches[0];
-    }
+    const samePoolMintActiveCount = activePositions.filter((activePosition) =>
+      activePosition.poolAddress === position.poolAddress && activePosition.mint === position.mint
+    ).length;
+    if (samePoolMintActiveCount === 1) {
+      const pendingOrReconcileMatches = records.filter((record) =>
+        (
+          record.lifecycleState === 'open_pending' ||
+          record.lifecycleState === 'reconcile_required'
+        ) &&
+        !record.chainPositionAddress &&
+        record.activeMint === position.mint &&
+        record.activePoolAddress === position.poolAddress
+      );
+      if (pendingOrReconcileMatches.length === 1) {
+        return pendingOrReconcileMatches[0];
+      }
 
-    const syntheticOpenMatches = records.filter((record) =>
-      record.lifecycleState !== 'closed' &&
-      record.lifecycleState !== 'failed_terminal' &&
-      record.lifecycleState !== 'reconcile_required' &&
-      !record.missingOnChainSince &&
-      !record.chainPositionAddress &&
-      record.activeMint === position.mint &&
-      record.activePoolAddress === position.poolAddress
-    );
-    if (syntheticOpenMatches.length === 1) {
-      return syntheticOpenMatches[0];
+      const syntheticOpenMatches = records.filter((record) =>
+        record.lifecycleState !== 'closed' &&
+        record.lifecycleState !== 'failed_terminal' &&
+        record.lifecycleState !== 'reconcile_required' &&
+        !record.missingOnChainSince &&
+        !record.chainPositionAddress &&
+        record.activeMint === position.mint &&
+        record.activePoolAddress === position.poolAddress
+      );
+      if (syntheticOpenMatches.length === 1) {
+        return syntheticOpenMatches[0];
+      }
     }
   }
 
@@ -377,7 +389,7 @@ export function importActiveLpPositionsToLedger(input: {
     });
     activeKeys.add(key);
 
-    const existing = findMatchingRecord(records, position);
+    const existing = findMatchingRecord(records, position, activePositions);
     const resolvedFillEntry = resolveEntryFromFills({
       position,
       accountState: input.accountState,

@@ -596,6 +596,62 @@ describe('position ledger', () => {
     expect(summarizePositionLedger(ledger).pendingOpenCount).toBe(1);
   });
 
+  it('merges a reconciled synthetic open into the unique observed chain position for the same pool and mint', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-03T09:54:31.000Z',
+        records: [{
+          positionKey: 'open-intent:lp-open-intent:observed',
+          openIntentId: 'lp-open-intent:observed',
+          idempotencyKey: 'open-observed',
+          activeMint: 'mint-observed',
+          activePoolAddress: 'pool-observed',
+          lifecycleState: 'reconcile_required',
+          entrySol: 0.05,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-observed',
+          openedAt: '2026-07-03T09:44:04.000Z',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-03T09:44:10.000Z',
+          updatedAt: '2026-07-03T09:54:31.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-observed',
+          positionAddress: 'chain-observed',
+          mint: 'mint-observed',
+          hasLiquidity: true,
+          currentValueSol: 0.06
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-03T09:54:55.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0]).toMatchObject({
+      positionKey: 'chain-position:chain-observed',
+      chainPositionAddress: 'chain-observed',
+      openIntentId: 'lp-open-intent:observed',
+      idempotencyKey: 'open-observed',
+      entryFillSubmissionId: 'fill-observed',
+      lifecycleState: 'open'
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      chainActiveLpCount: 1,
+      reconcileRequiredCount: 0
+    });
+  });
+
   it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
