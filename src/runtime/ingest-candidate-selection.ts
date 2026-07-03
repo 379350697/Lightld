@@ -62,14 +62,19 @@ export type IngestCandidate = {
 } & Partial<AuxiliarySignalFields>;
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
-  const inventoryPositions = (accountState?.walletTokens ?? [])
-    .filter((token) => token.amount > 0 && token.symbol !== 'SOL' && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
-    .length;
-  const lpPositions = (accountState?.walletLpPositions ?? [])
-    .filter((position) => hasActiveLpLiquidity(position) && position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint))
-    .length;
+  const seen = new Set<string>();
+  for (const position of [
+    ...(accountState?.walletLpPositions ?? []),
+    ...(accountState?.journalLpPositions ?? [])
+  ]) {
+    if (!hasActiveLpLiquidity(position) || position.mint === SOL_MINT || STABLE_MINTS.has(position.mint)) {
+      continue;
+    }
 
-  return inventoryPositions + lpPositions;
+    seen.add(position.positionAddress || position.chainPositionAddress || position.positionId || `${position.poolAddress}:${position.mint}`);
+  }
+
+  return seen.size;
 }
 
 export function isInScanWindow(now: Date) {

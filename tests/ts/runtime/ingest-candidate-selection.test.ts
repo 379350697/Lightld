@@ -94,7 +94,7 @@ function makeConfig(): StrategyConfig {
 }
 
 describe('ingest candidate helpers', () => {
-  it('counts active non-SOL inventory positions and Meteora LP positions', () => {
+  it('counts active non-SOL Meteora LP positions without charging token inventory to LP capacity', () => {
     expect(countActiveInventoryPositions({
       walletSol: 1,
       journalSol: 1,
@@ -109,7 +109,7 @@ describe('ingest candidate helpers', () => {
       ],
       journalTokens: [],
       fills: []
-    })).toBe(2);
+    })).toBe(1);
   });
 
   it('does not count empty Meteora position accounts as active LP exposure', () => {
