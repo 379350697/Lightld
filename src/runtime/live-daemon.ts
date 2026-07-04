@@ -1514,7 +1514,7 @@ function resolveNextTickDelayMs(input: {
   return input.baseTickIntervalMs;
 }
 
-function isOpenPathFetchFailure(input: {
+export function isOpenPathTargetCooldownFailure(input: {
   action?: string;
   failureSource?: string;
   reason?: string;
@@ -1527,7 +1527,11 @@ function isOpenPathFetchFailure(input: {
     return false;
   }
 
-  return input.reason === 'fetch failed' || input.reason === 'rate-limited' || /429|rate-limit/i.test(input.reason ?? '');
+  const reason = input.reason ?? '';
+  return input.reason === 'fetch failed' ||
+    input.reason === 'rate-limited' ||
+    /429|rate-limit/i.test(reason) ||
+    (/transaction simulation failed/i.test(reason) && /custom program error/i.test(reason));
 }
 
 function isBadExitReopenCooldownReason(reason: string) {
@@ -2850,7 +2854,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             );
           }
 
-          if (isOpenPathFetchFailure({
+          if (isOpenPathTargetCooldownFailure({
             action: result.action,
             failureSource: result.failureSource,
             reason: result.reason
@@ -2868,7 +2872,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
           if (
             result.failureKind === 'unknown' &&
-            !isOpenPathFetchFailure({
+            !isOpenPathTargetCooldownFailure({
               action: result.action,
               failureSource: result.failureSource,
               reason: result.reason

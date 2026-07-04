@@ -15,6 +15,7 @@ describe('incident taxonomy', () => {
     expect(classifyIncidentReason('pending-submission-partial-failure: No RPC endpoint available for jupiter').kind).toBe('pending_partial_failure');
     expect(classifyIncidentReason('Token balance is zero for mint abc').kind).toBe('zero_token_balance');
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1774').kind).toBe('dlmm_simulation_error');
+    expect(classifyIncidentReason('Solana RPC sendTransaction error: Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1').kind).toBe('dlmm_simulation_error');
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1771').rootCause).toContain('invalidBinId');
     expect(classifyIncidentReason('Solana RPC sendTransaction failed: custom program error: 0x1774').rootCause).toContain('exceededBinSlippageTolerance');
     expect(classifyIncidentReason('unknown_pending_reconciliation:missing-fill-evidence').kind).toBe('missing_fill_evidence');

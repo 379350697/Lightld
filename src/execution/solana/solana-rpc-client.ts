@@ -18,7 +18,7 @@ type RpcResponse<T> = {
   jsonrpc: '2.0';
   id: number;
   result: T;
-  error?: { code: number; message: string };
+  error?: { code: number; message: string; data?: unknown };
 };
 
 export type SignatureStatus = {
@@ -66,6 +66,29 @@ const DEFAULT_SIGNATURE_VISIBILITY_DELAY_MS = 1_500;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readRpcSimulationLogs(data: unknown): string[] {
+  if (!data || typeof data !== 'object') {
+    return [];
+  }
+
+  const logs = (data as { logs?: unknown }).logs;
+  if (!Array.isArray(logs)) {
+    return [];
+  }
+
+  return logs.filter((line): line is string => typeof line === 'string' && line.length > 0);
+}
+
+function formatRpcErrorMessage(method: string, error: { message: string; data?: unknown }) {
+  const logs = readRpcSimulationLogs(error.data);
+  if (logs.length === 0) {
+    return `Solana RPC ${method} error: ${error.message}`;
+  }
+
+  const compactLogs = logs.slice(-12).join(' | ');
+  return `Solana RPC ${method} error: ${error.message}; simulationLogs=${compactLogs}`;
 }
 
 export class SolanaRpcClient {
@@ -168,7 +191,7 @@ export class SolanaRpcClient {
       if (body.error) {
         if (body.error.code !== 429 && body.error.code !== -32005) {
           throw Object.assign(
-            new Error(`Solana RPC ${method} error: ${body.error.message}`),
+            new Error(formatRpcErrorMessage(method, body.error)),
             { status: 400 }
           );
         }

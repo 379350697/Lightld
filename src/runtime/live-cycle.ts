@@ -3950,6 +3950,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       orderIntent,
       broadcastResult,
       confirmationStatus: confirmation.status,
+      failureKind: 'hard',
       failureSource: 'broadcast',
       severity: failureSeverity,
       quoteCollected: true

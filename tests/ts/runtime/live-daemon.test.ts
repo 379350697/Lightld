@@ -10,7 +10,7 @@ import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
 import { createHousekeepingRunner } from '../../../src/runtime/housekeeping';
 import { buildLiveCycleInputFromIngest } from '../../../src/runtime/ingest-context-builder';
-import { resolveLifecycleStateForPersist, resolveNewOpenPassSkipReason, runLiveDaemon } from '../../../src/runtime/live-daemon';
+import { isOpenPathTargetCooldownFailure, resolveLifecycleStateForPersist, resolveNewOpenPassSkipReason, runLiveDaemon } from '../../../src/runtime/live-daemon';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
 import { resolvePositionBusinessSemantics } from '../../../src/runtime/position-business-semantics';
 import { ResidualTokenSweepStore } from '../../../src/runtime/residual-token-sweep-store';
@@ -19,6 +19,20 @@ import { TargetOpenCooldownStore } from '../../../src/runtime/target-open-cooldo
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 
 describe('runLiveDaemon', () => {
+  it('treats add-lp transaction simulation failures as target cooldown failures', () => {
+    expect(isOpenPathTargetCooldownFailure({
+      action: 'add-lp',
+      failureSource: 'broadcast',
+      reason: 'Solana RPC sendTransaction error: Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1'
+    })).toBe(true);
+
+    expect(isOpenPathTargetCooldownFailure({
+      action: 'withdraw-lp',
+      failureSource: 'broadcast',
+      reason: 'Solana RPC sendTransaction error: Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1'
+    })).toBe(false);
+  });
+
   it('does not skip new-open after an unsubmitted residual dca-out when business semantics allow it', () => {
     const accountState = {
       walletSol: 1,

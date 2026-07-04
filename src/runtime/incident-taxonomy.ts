@@ -147,6 +147,7 @@ export function classifyIncidentReason(reason: string): IncidentClassification {
   } else if (
     lower.includes('custom program error: 0x1771') ||
     lower.includes('custom program error: 0x1774') ||
+    (lower.includes('transaction simulation failed') && lower.includes('custom program error')) ||
     lower.includes('dlmm') && lower.includes('simulation')
   ) {
     kind = 'dlmm_simulation_error';

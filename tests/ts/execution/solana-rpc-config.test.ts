@@ -211,6 +211,31 @@ describe('solana rpc config policy', () => {
     });
   });
 
+  it('preserves RPC simulation logs in send transaction errors', async () => {
+    const client = new SolanaRpcClient({
+      rpcUrl: 'https://write-primary.example',
+      fetchImpl: async () => new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        error: {
+          code: -32002,
+          message: 'Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1',
+          data: {
+            logs: [
+              'Program 11111111111111111111111111111111 invoke [1]',
+              'Program log: Error Code: InsufficientFunds',
+              'Program 11111111111111111111111111111111 failed: custom program error: 0x1'
+            ]
+          }
+        }
+      }), { status: 200 })
+    });
+
+    await expect(client.sendRawTransaction('tx-base64')).rejects.toThrow(
+      /Program log: Error Code: InsufficientFunds/
+    );
+  });
+
   it('requires a sent transaction to become visible on a read endpoint', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     const client = new SolanaRpcClient({
