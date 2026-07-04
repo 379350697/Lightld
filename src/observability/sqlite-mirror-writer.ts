@@ -129,6 +129,7 @@ export class SqliteMirrorWriter {
     this.ensureLifecycleKeyColumns(database);
     this.backfillLifecycleKeys(database);
     this.normalizeLocalIntentOnlyOrders(database);
+    this.backfillOrderFailureReasons(database);
 
     this.database = database;
   }
@@ -151,6 +152,7 @@ export class SqliteMirrorWriter {
         this.writeEvent(event);
       }
       this.normalizeLocalIntentOnlyOrders(database);
+      this.backfillOrderFailureReasons(database);
       database.exec('COMMIT');
     } catch (error) {
       try {
@@ -422,6 +424,47 @@ export class SqliteMirrorWriter {
         AND confirmation_signature = ''
         AND broadcast_status = 'pending'
         AND confirmation_status = 'unknown'
+    `);
+  }
+
+  private backfillOrderFailureReasons(database: DatabaseSync) {
+    database.exec(`
+      WITH incident_reasons AS (
+        SELECT
+          orders.idempotency_key AS idempotency_key,
+          (
+            SELECT CASE
+              WHEN incidents.reason <> ''
+                AND incidents.detail <> ''
+                AND instr(incidents.reason, incidents.detail) = 0
+                THEN incidents.reason || ': ' || incidents.detail
+              WHEN incidents.reason <> '' THEN incidents.reason
+              ELSE incidents.detail
+            END
+            FROM incidents
+            WHERE incidents.cycle_id = orders.cycle_id
+              AND (incidents.token_mint = orders.token_mint OR incidents.token_mint = '' OR orders.token_mint = '')
+              AND (incidents.submission_id = orders.submission_id OR incidents.submission_id = '' OR orders.submission_id = '')
+              AND (incidents.reason <> '' OR incidents.detail <> '')
+            ORDER BY incidents.recorded_at DESC
+            LIMIT 1
+          ) AS reason
+        FROM orders
+        WHERE orders.execution_failure_reason = ''
+          AND orders.broadcast_status IN ('failed', 'not_submitted')
+      )
+      UPDATE orders
+      SET execution_failure_reason = (
+        SELECT incident_reasons.reason
+        FROM incident_reasons
+        WHERE incident_reasons.idempotency_key = orders.idempotency_key
+      )
+      WHERE orders.idempotency_key IN (
+        SELECT incident_reasons.idempotency_key
+        FROM incident_reasons
+        WHERE incident_reasons.reason IS NOT NULL
+          AND incident_reasons.reason <> ''
+      )
     `);
   }
 
@@ -697,7 +740,10 @@ export class SqliteMirrorWriter {
         confirmation_status=excluded.confirmation_status,
         finality=excluded.finality,
         exit_trigger_reason=excluded.exit_trigger_reason,
-        execution_failure_reason=excluded.execution_failure_reason,
+        execution_failure_reason=CASE
+          WHEN excluded.execution_failure_reason <> '' THEN excluded.execution_failure_reason
+          ELSE orders.execution_failure_reason
+        END,
         residual_cleanup_status=excluded.residual_cleanup_status,
         residual_cleanup_value_sol=excluded.residual_cleanup_value_sol,
         updated_at=excluded.updated_at

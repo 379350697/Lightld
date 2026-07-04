@@ -306,6 +306,128 @@ describe('SqliteMirrorWriter', () => {
     });
   });
 
+  it('does not overwrite a captured execution failure reason with an empty later order update', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-failure-reason-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+    const basePayload = {
+      idempotencyKey: 'order-failed-open',
+      cycleId: 'cycle-1',
+      strategyId: 'new-token-v1',
+      submissionId: '',
+      confirmationSignature: '',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-1',
+      tokenSymbol: 'SAFE',
+      action: 'add-lp' as const,
+      requestedPositionSol: 0.08,
+      quotedOutputSol: 0.08,
+      broadcastStatus: 'not_submitted' as const,
+      confirmationStatus: 'failed' as const,
+      finality: 'unknown' as const,
+      createdAt: '2026-04-18T08:00:00.000Z'
+    };
+
+    await writer.open();
+    await writer.writeBatch([
+      {
+        type: 'order',
+        priority: 'high',
+        payload: {
+          ...basePayload,
+          executionFailureReason: 'Transaction simulation failed: custom program error: 0x1; simulationLogs=Transfer: insufficient lamports',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        }
+      },
+      {
+        type: 'order',
+        priority: 'high',
+        payload: {
+          ...basePayload,
+          updatedAt: '2026-04-18T08:00:02.000Z'
+        }
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const row = db.prepare(`
+      SELECT execution_failure_reason, updated_at
+      FROM orders
+      WHERE idempotency_key = 'order-failed-open'
+    `).get() as { execution_failure_reason: string; updated_at: string };
+    db.close();
+
+    expect(row).toEqual({
+      execution_failure_reason: 'Transaction simulation failed: custom program error: 0x1; simulationLogs=Transfer: insufficient lamports',
+      updated_at: '2026-04-18T08:00:02.000Z'
+    });
+  });
+
+  it('backfills empty order failure reasons from matching incidents', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-failure-backfill-'));
+    directories.push(root);
+    const path = join(root, 'mirror.sqlite');
+    const writer = new SqliteMirrorWriter({ path });
+
+    await writer.open();
+    await writer.writeBatch([
+      {
+        type: 'order',
+        priority: 'high',
+        payload: {
+          idempotencyKey: 'order-failed-open',
+          cycleId: 'cycle-1',
+          strategyId: 'new-token-v1',
+          submissionId: '',
+          confirmationSignature: '',
+          poolAddress: 'pool-1',
+          tokenMint: 'mint-1',
+          tokenSymbol: 'SAFE',
+          action: 'add-lp',
+          requestedPositionSol: 0.08,
+          quotedOutputSol: 0.08,
+          broadcastStatus: 'not_submitted',
+          confirmationStatus: 'failed',
+          finality: 'unknown',
+          createdAt: '2026-04-18T08:00:00.000Z',
+          updatedAt: '2026-04-18T08:00:01.000Z'
+        }
+      },
+      {
+        type: 'incident',
+        priority: 'high',
+        payload: {
+          incidentId: 'incident-1',
+          cycleId: 'cycle-1',
+          stage: 'broadcast',
+          severity: 'error',
+          reason: 'Transaction simulation failed: custom program error: 0x1',
+          detail: 'simulationLogs=Transfer: insufficient lamports',
+          runtimeMode: 'recovering',
+          submissionId: '',
+          tokenMint: 'mint-1',
+          tokenSymbol: 'SAFE',
+          recordedAt: '2026-04-18T08:00:02.000Z'
+        }
+      }
+    ]);
+    await writer.close();
+
+    const db = new DatabaseSync(path, { readOnly: true });
+    const row = db.prepare(`
+      SELECT execution_failure_reason
+      FROM orders
+      WHERE idempotency_key = 'order-failed-open'
+    `).get() as { execution_failure_reason: string };
+    db.close();
+
+    expect(row.execution_failure_reason).toBe(
+      'Transaction simulation failed: custom program error: 0x1: simulationLogs=Transfer: insufficient lamports'
+    );
+  });
+
   it('normalizes unsubmitted maintenance intents as not submitted', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-mirror-local-intent-'));
     directories.push(root);
