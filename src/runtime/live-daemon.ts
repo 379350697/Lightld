@@ -636,6 +636,29 @@ async function recordResidualCooldownForSellAttempt(input: {
   });
 }
 
+async function recordTargetOpenCooldownForResult(input: {
+  result: Awaited<ReturnType<typeof runLiveCycle>>;
+  targetOpenCooldownStore: TargetOpenCooldownStore;
+}) {
+  if (!isOpenPathTargetCooldownFailure({
+    action: input.result.action,
+    failureSource: input.result.failureSource,
+    reason: input.result.reason
+  })) {
+    return;
+  }
+
+  const cooldownNow = nowIso();
+  await input.targetOpenCooldownStore.upsert({
+    poolAddress: typeof input.result.context.pool.address === 'string' ? input.result.context.pool.address : '',
+    tokenMint: typeof input.result.context.token.mint === 'string' ? input.result.context.token.mint : '',
+    reason: input.result.reason,
+    cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+    lastFailedAt: cooldownNow,
+    updatedAt: cooldownNow
+  });
+}
+
 function mergeTrackedWatchTokens(input: {
   strategy: StrategyId;
   existing: TrackedWatchTokenRecord[];
@@ -2813,6 +2836,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               residualTokenSweepMinValueSol
             });
 
+            await recordTargetOpenCooldownForResult({
+              result: newOpenResult,
+              targetOpenCooldownStore
+            });
+
             await updateEvolutionWatchlistBestEffort({
               strategy: options.strategy,
               store: evolutionWatchlistStore,
@@ -2854,21 +2882,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             );
           }
 
-          if (isOpenPathTargetCooldownFailure({
-            action: result.action,
-            failureSource: result.failureSource,
-            reason: result.reason
-          })) {
-            const cooldownNow = nowIso();
-            await targetOpenCooldownStore.upsert({
-              poolAddress: typeof result.context.pool.address === 'string' ? result.context.pool.address : '',
-              tokenMint: typeof result.context.token.mint === 'string' ? result.context.token.mint : '',
-              reason: result.reason,
-              cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
-              lastFailedAt: cooldownNow,
-              updatedAt: cooldownNow
-            });
-          }
+          await recordTargetOpenCooldownForResult({ result, targetOpenCooldownStore });
 
           if (
             result.failureKind === 'unknown' &&

@@ -151,6 +151,98 @@ describe('runLiveDaemon', () => {
     expect(skipReason).toBeUndefined();
   });
 
+  it('records target cooldown when the new-open pass hits an add-lp simulation failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-new-open-sim-cooldown-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const targetCooldownStore = new TargetOpenCooldownStore(stateRootDir);
+    const simulationReason = [
+      'Solana RPC sendTransaction error: Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1',
+      'simulationLogs=Transfer: insufficient lamports 38522692, need 57406080'
+    ].join('; ');
+    const baseAccountState = {
+      walletSol: 0.0385,
+      journalSol: 0.0385,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-active',
+        positionAddress: 'pos-active',
+        mint: 'mint-active',
+        currentValueSol: 0.08,
+        unclaimedFeeSol: 0,
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      maxActivePositions: 5,
+      openAfterMaintenanceHold: true,
+      accountProvider: {
+        readState: async () => baseAccountState
+      },
+      buildCycleInput: async (_tick, context) => {
+        if (context?.selectionMode === 'new-open-only') {
+          return {
+            requestedPositionSol: 0.08,
+            accountState: baseAccountState,
+            context: {
+              pool: { address: 'pool-fable', liquidityUsd: 10_000, score: 90 },
+              token: { mint: 'mint-fable', inSession: true, hasSolRoute: true, symbol: 'FABLE', score: 90 },
+              trader: { hasInventory: false, hasLpPosition: false },
+              route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+            },
+            signer: {
+              sign: async (intent) => ({
+                intent,
+                signerId: 'test-signer',
+                signedAt: '2026-07-04T00:00:00.000Z',
+                signature: 'sig'
+              })
+            },
+            broadcaster: {
+              broadcast: async (signedIntent) => ({
+                status: 'failed' as const,
+                reason: simulationReason,
+                retryable: false,
+                idempotencyKey: signedIntent.intent.idempotencyKey
+              })
+            }
+          };
+        }
+
+        return {
+          requestedPositionSol: 0.08,
+          accountState: baseAccountState,
+          context: {
+            pool: { address: 'pool-active', liquidityUsd: 10_000, score: 90 },
+            token: { mint: 'mint-active', inSession: false, hasSolRoute: true, symbol: 'ACTIVE', score: 90 },
+            trader: { hasInventory: true, hasLpPosition: true, lpCurrentValueSol: 0.08, lpUnclaimedFeeSol: 0 },
+            route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
+          }
+        };
+      }
+    });
+
+    const cooldown = await targetCooldownStore.readActive({
+      poolAddress: 'pool-fable',
+      tokenMint: 'mint-fable'
+    });
+
+    expect(cooldown).toMatchObject({
+      poolAddress: 'pool-fable',
+      tokenMint: 'mint-fable',
+      reason: simulationReason
+    });
+  });
+
   it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
     expect(resolveLifecycleStateForPersist({
       nextLifecycleState: 'open',
