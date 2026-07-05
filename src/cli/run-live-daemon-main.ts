@@ -354,6 +354,7 @@ async function main() {
         ...executionAdapters,
         accountState,
         spendingLimitsConfig,
+        ignoreLivePositionSolLimit: parseBoolean(process.env.LIVE_IGNORE_POSITION_SOL_LIMIT, false),
         ...ingestInput
       };
     },

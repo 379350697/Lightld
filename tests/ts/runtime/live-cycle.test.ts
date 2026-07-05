@@ -1096,6 +1096,31 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(true);
   });
 
+  it('can ignore the configured live position size cap for paper sampling', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 2,
+      ignoreLivePositionSolLimit: true,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: {
+          mint: 'mint-safe',
+          inSession: true,
+          hasSolRoute: true,
+          symbol: 'SAFE'
+        },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 2, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('add-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+  });
+
   it('does not reuse stale LP identity when opening a different target', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',

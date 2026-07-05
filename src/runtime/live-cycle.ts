@@ -159,6 +159,7 @@ export type LiveCycleInput = {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
   positionLedger?: PositionLedgerSnapshot;
+  ignoreLivePositionSolLimit?: boolean;
   residualTokenSweepMinValueSol?: number;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
@@ -3657,7 +3658,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     action: actionableAction,
     symbol: tokenSymbol,
     requestedPositionSol,
-    maxLivePositionSol: config.live.maxLivePositionSol,
+    maxLivePositionSol: input.ignoreLivePositionSolLimit ? Number.POSITIVE_INFINITY : config.live.maxLivePositionSol,
     killSwitchEngaged: killSwitchState,
     sessionPhase: logContext.sessionPhase,
     maxSingleOrderSol: input.spendingLimitsConfig?.maxSingleOrderSol,

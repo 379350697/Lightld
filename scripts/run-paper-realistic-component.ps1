@@ -43,6 +43,7 @@ $env:LIVE_CONFIRMATION_URL = "http://127.0.0.1:8791/confirmation"
 $env:LIVE_ACCOUNT_STATE_URL = "http://127.0.0.1:8791/account-state"
 $env:LIVE_REQUESTED_POSITION_SOL = [string]$RequestedPositionSol
 $env:LIVE_DISABLE_DYNAMIC_POSITION_SIZING = "true"
+$env:LIVE_IGNORE_POSITION_SOL_LIMIT = "true"
 $env:LIVE_MAX_ACTIVE_POSITIONS = [string]$MaxActivePositions
 $env:LIVE_DAEMON_TICK_INTERVAL_MS = [string]$TickIntervalMs
 $env:LIVE_DAEMON_HOT_TICK_INTERVAL_MS = [string]$HotTickIntervalMs
