@@ -18,6 +18,9 @@ Set-Location $Root
 & (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root
 
 $Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
+$env:LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL = "1000000"
+$env:LIVE_LOCAL_EXECUTION_MAX_OUTPUT_SOL = "1000000"
+$env:SOLANA_MAX_OUTPUT_SOL = "1000000"
 
 if ($Role -eq "signer") {
     npm.cmd run run:signer
