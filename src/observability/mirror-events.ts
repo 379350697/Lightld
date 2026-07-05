@@ -47,6 +47,13 @@ export type OrderMirrorPayload = {
   finality: PendingFinality | 'unknown';
   exitTriggerReason?: string;
   executionFailureReason?: string;
+  executionFailureKind?: string;
+  executionFailureOperation?: string;
+  rebuildAttemptCount?: number;
+  activeBinIdAtBuild?: number;
+  lowerBinIdAtBuild?: number;
+  upperBinIdAtBuild?: number;
+  binSlippageBps?: number;
   residualCleanupStatus?: string;
   residualCleanupValueSol?: number;
   createdAt: string;

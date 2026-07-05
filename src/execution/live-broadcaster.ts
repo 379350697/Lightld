@@ -20,12 +20,25 @@ export type LiveBroadcastResult =
       openIntentId?: string;
       positionId?: string;
       chainPositionAddress?: string;
+      rebuildAttemptCount?: number;
+      activeBinIdAtBuild?: number;
+      lowerBinIdAtBuild?: number;
+      upperBinIdAtBuild?: number;
+      binSlippageBps?: number;
     }
   | {
       status: 'failed';
       reason: string;
       retryable: boolean;
       idempotencyKey: string;
+      executionFailureKind?: string;
+      executionFailureOperation?: string;
+      rebuildAttemptCount?: number;
+      activeBinIdAtBuild?: number;
+      lowerBinIdAtBuild?: number;
+      upperBinIdAtBuild?: number;
+      binSlippageBps?: number;
+      targetCooldownMs?: number;
     };
 
 export interface LiveBroadcaster {

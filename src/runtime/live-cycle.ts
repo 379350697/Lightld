@@ -3737,6 +3737,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     exitTriggerReason?: string;
     executionFailureReason?: string;
     executionFailureDetail?: string;
+    executionFailureKind?: string;
+    executionFailureOperation?: string;
+    rebuildAttemptCount?: number;
+    activeBinIdAtBuild?: number;
+    lowerBinIdAtBuild?: number;
+    upperBinIdAtBuild?: number;
+    binSlippageBps?: number;
     residualCleanupStatus?: string;
     residualCleanupValueSol?: number;
     updatedAt: string;
@@ -3758,6 +3765,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       exitTriggerReason: entry.exitTriggerReason,
       executionFailureReason: entry.executionFailureReason,
       executionFailureDetail: entry.executionFailureDetail,
+      executionFailureKind: entry.executionFailureKind,
+      executionFailureOperation: entry.executionFailureOperation,
+      rebuildAttemptCount: entry.rebuildAttemptCount,
+      activeBinIdAtBuild: entry.activeBinIdAtBuild,
+      lowerBinIdAtBuild: entry.lowerBinIdAtBuild,
+      upperBinIdAtBuild: entry.upperBinIdAtBuild,
+      binSlippageBps: entry.binSlippageBps,
       residualCleanupStatus: entry.residualCleanupStatus,
       residualCleanupValueSol: entry.residualCleanupValueSol,
       updatedAt: entry.updatedAt
@@ -3784,6 +3798,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         finality: entry.finality ?? 'unknown',
         exitTriggerReason: entry.exitTriggerReason,
         executionFailureReason: entry.executionFailureReason,
+        executionFailureKind: entry.executionFailureKind,
+        executionFailureOperation: entry.executionFailureOperation,
+        rebuildAttemptCount: entry.rebuildAttemptCount,
+        activeBinIdAtBuild: entry.activeBinIdAtBuild,
+        lowerBinIdAtBuild: entry.lowerBinIdAtBuild,
+        upperBinIdAtBuild: entry.upperBinIdAtBuild,
+        binSlippageBps: entry.binSlippageBps,
         residualCleanupStatus: entry.residualCleanupStatus,
         residualCleanupValueSol: entry.residualCleanupValueSol,
         createdAt: logContext.startedAt,
@@ -3936,6 +3957,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       finality: 'unknown',
       exitTriggerReason: engineResult.audit.reason,
       executionFailureReason: normalizedFailureReason,
+      executionFailureKind: broadcastResult.executionFailureKind,
+      executionFailureOperation: broadcastResult.executionFailureOperation,
+      rebuildAttemptCount: broadcastResult.rebuildAttemptCount,
+      activeBinIdAtBuild: broadcastResult.activeBinIdAtBuild,
+      lowerBinIdAtBuild: broadcastResult.lowerBinIdAtBuild,
+      upperBinIdAtBuild: broadcastResult.upperBinIdAtBuild,
+      binSlippageBps: broadcastResult.binSlippageBps,
       updatedAt: new Date().toISOString()
     });
 
@@ -4055,6 +4083,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     executionFailureReason: residualExecutionReason,
     residualCleanupStatus,
     residualCleanupValueSol: broadcastResult.residualEstimatedValueSol,
+    rebuildAttemptCount: broadcastResult.rebuildAttemptCount,
+    activeBinIdAtBuild: broadcastResult.activeBinIdAtBuild,
+    lowerBinIdAtBuild: broadcastResult.lowerBinIdAtBuild,
+    upperBinIdAtBuild: broadcastResult.upperBinIdAtBuild,
+    binSlippageBps: broadcastResult.binSlippageBps,
     updatedAt: confirmationCheckedAt
   });
 

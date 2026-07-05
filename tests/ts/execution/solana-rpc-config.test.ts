@@ -89,6 +89,9 @@ describe('solana rpc config policy', () => {
     expect(defaults.okxDexChainIndex).toBe('501');
     expect(defaults.residualTokenMinValueSol).toBe(0.1);
     expect(defaults.residualTokenDustMaxUiAmount).toBe(0.00001);
+    expect(defaults.dryRunAddLpRebuildOnBinSlippage).toBe(true);
+    expect(defaults.dryRunAddLpRebuildMaxAttempts).toBe(1);
+    expect(defaults.addLpBinSlippageCooldownMs).toBe(300_000);
 
     const config = loadSolanaExecutionConfig(envBase({
       RPC_429_COOLDOWN_MS: '45000',
@@ -106,7 +109,10 @@ describe('solana rpc config policy', () => {
       OKX_DEX_SECRET_KEY: 'okx-secret',
       OKX_DEX_PASSPHRASE: 'okx-passphrase',
       LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL: '0.05',
-      SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT: '0.00002'
+      SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT: '0.00002',
+      SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE: 'false',
+      SOLANA_DRY_RUN_ADD_LP_REBUILD_MAX_ATTEMPTS: '2',
+      SOLANA_ADD_LP_BIN_SLIPPAGE_COOLDOWN_MS: '120000'
     }));
     expect(config.rpc429CooldownMs).toBe(45_000);
     expect(config.rpcEndpointMinIntervalMs).toBe(125);
@@ -124,6 +130,9 @@ describe('solana rpc config policy', () => {
     expect(config.okxDexPassphrase).toBe('okx-passphrase');
     expect(config.residualTokenMinValueSol).toBe(0.05);
     expect(config.residualTokenDustMaxUiAmount).toBe(0.00002);
+    expect(config.dryRunAddLpRebuildOnBinSlippage).toBe(false);
+    expect(config.dryRunAddLpRebuildMaxAttempts).toBe(2);
+    expect(config.addLpBinSlippageCooldownMs).toBe(120_000);
   });
 
   it('lets the solana residual token threshold override the daemon fallback', () => {

@@ -69,7 +69,10 @@ const SolanaExecutionConfigSchema = z.object({
   residualTokenMinValueSol: z.number().finite().nonnegative().default(0.1),
   residualTokenDustMaxUiAmount: z.number().finite().nonnegative().default(0.00001),
   jitoTipLamports: z.number().int().nonnegative().optional(),
-  dryRun: z.boolean().default(false)
+  dryRun: z.boolean().default(false),
+  dryRunAddLpRebuildOnBinSlippage: z.boolean().default(true),
+  dryRunAddLpRebuildMaxAttempts: z.number().int().nonnegative().default(1),
+  addLpBinSlippageCooldownMs: z.number().int().nonnegative().default(300_000)
 });
 
 export type SolanaExecutionConfig = z.infer<typeof SolanaExecutionConfigSchema>;
@@ -193,6 +196,15 @@ export function loadSolanaExecutionConfig(
     jitoTipLamports: env.JITO_TIP_LAMPORTS
       ? Number(env.JITO_TIP_LAMPORTS)
       : undefined,
-    dryRun: parseBooleanFlag(env.SOLANA_EXECUTION_DRY_RUN)
+    dryRun: parseBooleanFlag(env.SOLANA_EXECUTION_DRY_RUN),
+    dryRunAddLpRebuildOnBinSlippage: env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE
+      ? parseBooleanFlag(env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE)
+      : true,
+    dryRunAddLpRebuildMaxAttempts: env.SOLANA_DRY_RUN_ADD_LP_REBUILD_MAX_ATTEMPTS
+      ? Number(env.SOLANA_DRY_RUN_ADD_LP_REBUILD_MAX_ATTEMPTS)
+      : 1,
+    addLpBinSlippageCooldownMs: env.SOLANA_ADD_LP_BIN_SLIPPAGE_COOLDOWN_MS
+      ? Number(env.SOLANA_ADD_LP_BIN_SLIPPAGE_COOLDOWN_MS)
+      : 300_000
   });
 }

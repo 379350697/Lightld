@@ -137,7 +137,10 @@ async function main() {
     residualTokenMinValueSol: config.residualTokenMinValueSol,
     residualTokenDustMaxUiAmount: config.residualTokenDustMaxUiAmount,
     jitoTipLamports: config.jitoTipLamports,
-    dryRun: config.dryRun
+    dryRun: config.dryRun,
+    dryRunAddLpRebuildOnBinSlippage: config.dryRunAddLpRebuildOnBinSlippage,
+    dryRunAddLpRebuildMaxAttempts: config.dryRunAddLpRebuildMaxAttempts,
+    addLpBinSlippageCooldownMs: config.addLpBinSlippageCooldownMs
   });
 
   await server.start();

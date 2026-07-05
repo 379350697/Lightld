@@ -333,6 +333,13 @@ export class SqliteMirrorWriter {
       ['chain_position_address', "TEXT NOT NULL DEFAULT ''"],
       ['exit_trigger_reason', "TEXT NOT NULL DEFAULT ''"],
       ['execution_failure_reason', "TEXT NOT NULL DEFAULT ''"],
+      ['execution_failure_kind', "TEXT NOT NULL DEFAULT ''"],
+      ['execution_failure_operation', "TEXT NOT NULL DEFAULT ''"],
+      ['rebuild_attempt_count', 'INTEGER NOT NULL DEFAULT 0'],
+      ['active_bin_id_at_build', 'INTEGER'],
+      ['lower_bin_id_at_build', 'INTEGER'],
+      ['upper_bin_id_at_build', 'INTEGER'],
+      ['bin_slippage_bps', 'INTEGER'],
       ['residual_cleanup_status', "TEXT NOT NULL DEFAULT ''"],
       ['residual_cleanup_value_sol', 'REAL']
     ]);
@@ -717,11 +724,18 @@ export class SqliteMirrorWriter {
         finality,
         exit_trigger_reason,
         execution_failure_reason,
+        execution_failure_kind,
+        execution_failure_operation,
+        rebuild_attempt_count,
+        active_bin_id_at_build,
+        lower_bin_id_at_build,
+        upper_bin_id_at_build,
+        bin_slippage_bps,
         residual_cleanup_status,
         residual_cleanup_value_sol,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(idempotency_key) DO UPDATE SET
         cycle_id=excluded.cycle_id,
         strategy_id=excluded.strategy_id,
@@ -744,6 +758,19 @@ export class SqliteMirrorWriter {
           WHEN excluded.execution_failure_reason <> '' THEN excluded.execution_failure_reason
           ELSE orders.execution_failure_reason
         END,
+        execution_failure_kind=CASE
+          WHEN excluded.execution_failure_kind <> '' THEN excluded.execution_failure_kind
+          ELSE orders.execution_failure_kind
+        END,
+        execution_failure_operation=CASE
+          WHEN excluded.execution_failure_operation <> '' THEN excluded.execution_failure_operation
+          ELSE orders.execution_failure_operation
+        END,
+        rebuild_attempt_count=excluded.rebuild_attempt_count,
+        active_bin_id_at_build=excluded.active_bin_id_at_build,
+        lower_bin_id_at_build=excluded.lower_bin_id_at_build,
+        upper_bin_id_at_build=excluded.upper_bin_id_at_build,
+        bin_slippage_bps=excluded.bin_slippage_bps,
         residual_cleanup_status=excluded.residual_cleanup_status,
         residual_cleanup_value_sol=excluded.residual_cleanup_value_sol,
         updated_at=excluded.updated_at
@@ -768,6 +795,13 @@ export class SqliteMirrorWriter {
       payload.finality,
       payload.exitTriggerReason ?? '',
       payload.executionFailureReason ?? '',
+      payload.executionFailureKind ?? '',
+      payload.executionFailureOperation ?? '',
+      payload.rebuildAttemptCount ?? 0,
+      payload.activeBinIdAtBuild ?? null,
+      payload.lowerBinIdAtBuild ?? null,
+      payload.upperBinIdAtBuild ?? null,
+      payload.binSlippageBps ?? null,
       payload.residualCleanupStatus ?? '',
       payload.residualCleanupValueSol ?? null,
       payload.createdAt,

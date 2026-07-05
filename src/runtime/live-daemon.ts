@@ -649,11 +649,17 @@ async function recordTargetOpenCooldownForResult(input: {
   }
 
   const cooldownNow = nowIso();
+  const broadcastTargetCooldownMs = input.result.broadcastResult?.status === 'failed'
+    ? input.result.broadcastResult.targetCooldownMs
+    : undefined;
+  const cooldownMs = typeof broadcastTargetCooldownMs === 'number' && Number.isFinite(broadcastTargetCooldownMs)
+    ? Math.max(0, broadcastTargetCooldownMs)
+    : 5 * 60_000;
   await input.targetOpenCooldownStore.upsert({
     poolAddress: typeof input.result.context.pool.address === 'string' ? input.result.context.pool.address : '',
     tokenMint: typeof input.result.context.token.mint === 'string' ? input.result.context.token.mint : '',
     reason: input.result.reason,
-    cooldownUntil: new Date(Date.now() + 5 * 60_000).toISOString(),
+    cooldownUntil: new Date(Date.now() + cooldownMs).toISOString(),
     lastFailedAt: cooldownNow,
     updatedAt: cooldownNow
   });

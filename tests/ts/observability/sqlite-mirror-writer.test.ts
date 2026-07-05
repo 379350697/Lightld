@@ -189,6 +189,13 @@ describe('SqliteMirrorWriter', () => {
       'chain_position_address',
       'exit_trigger_reason',
       'execution_failure_reason',
+      'execution_failure_kind',
+      'execution_failure_operation',
+      'rebuild_attempt_count',
+      'active_bin_id_at_build',
+      'lower_bin_id_at_build',
+      'upper_bin_id_at_build',
+      'bin_slippage_bps',
       'residual_cleanup_status',
       'residual_cleanup_value_sol'
     ]));
@@ -230,6 +237,13 @@ describe('SqliteMirrorWriter', () => {
           finality: 'unknown',
           exitTriggerReason: 'lp-sol-nearly-depleted',
           executionFailureReason: 'residual token sweep incomplete: mint-1',
+          executionFailureKind: 'dlmm_bin_slippage',
+          executionFailureOperation: 'rpc-simulate',
+          rebuildAttemptCount: 1,
+          activeBinIdAtBuild: 123,
+          lowerBinIdAtBuild: 89,
+          upperBinIdAtBuild: 157,
+          binSlippageBps: 100,
           residualCleanupStatus: 'residual_cleanup_pending',
           residualCleanupValueSol: 0.012,
           createdAt: '2026-04-18T08:00:00.000Z',
@@ -266,6 +280,13 @@ describe('SqliteMirrorWriter', () => {
         chain_position_address,
         exit_trigger_reason,
         execution_failure_reason,
+        execution_failure_kind,
+        execution_failure_operation,
+        rebuild_attempt_count,
+        active_bin_id_at_build,
+        lower_bin_id_at_build,
+        upper_bin_id_at_build,
+        bin_slippage_bps,
         residual_cleanup_status,
         residual_cleanup_value_sol
       FROM orders
@@ -276,6 +297,13 @@ describe('SqliteMirrorWriter', () => {
       chain_position_address: string;
       exit_trigger_reason: string;
       execution_failure_reason: string;
+      execution_failure_kind: string;
+      execution_failure_operation: string;
+      rebuild_attempt_count: number;
+      active_bin_id_at_build: number;
+      lower_bin_id_at_build: number;
+      upper_bin_id_at_build: number;
+      bin_slippage_bps: number;
       residual_cleanup_status: string;
       residual_cleanup_value_sol: number;
     };
@@ -296,6 +324,13 @@ describe('SqliteMirrorWriter', () => {
       chain_position_address: 'chain-pos-1',
       exit_trigger_reason: 'lp-sol-nearly-depleted',
       execution_failure_reason: 'residual token sweep incomplete: mint-1',
+      execution_failure_kind: 'dlmm_bin_slippage',
+      execution_failure_operation: 'rpc-simulate',
+      rebuild_attempt_count: 1,
+      active_bin_id_at_build: 123,
+      lower_bin_id_at_build: 89,
+      upper_bin_id_at_build: 157,
+      bin_slippage_bps: 100,
       residual_cleanup_status: 'residual_cleanup_pending',
       residual_cleanup_value_sol: 0.012
     });

@@ -411,6 +411,274 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('rebuilds a dry-run add-lp once when DLMM bin slippage moves before simulation', async () => {
+    const keypair = Keypair.generate();
+    const firstPositionKeypair = Keypair.generate();
+    const secondPositionKeypair = Keypair.generate();
+    const addLiquidityByStrategy = vi.fn()
+      .mockResolvedValueOnce({
+        transaction: new FakeTransaction('open-stale-bin'),
+        newPositionKeypair: firstPositionKeypair
+      })
+      .mockResolvedValueOnce({
+        transaction: new FakeTransaction('open-refreshed-bin'),
+        newPositionKeypair: secondPositionKeypair
+      });
+    const simulated: string[] = [];
+    const simulateRawTransaction = vi.fn(async (base64: string) => {
+      const decoded = Buffer.from(base64, 'base64').toString('utf8');
+      simulated.push(decoded);
+      if (decoded === 'open-stale-bin') {
+        return {
+          value: {
+            err: { InstructionError: [6, { Custom: 6004 }] },
+            logs: [
+              'Program log: Error Code: ExceededBinSlippageTolerance',
+              'Program failed: custom program error: 0x1774'
+            ]
+          }
+        };
+      }
+      return { value: { err: null, logs: ['simulation ok after rebuild'] } };
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 1_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy,
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-bin-rebuild',
+        tokenMint: 'earthcoin-mint'
+      }))
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(addLiquidityByStrategy).toHaveBeenCalledTimes(2);
+    expect(simulated).toEqual(['open-stale-bin', 'open-refreshed-bin']);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      reason: 'paper-dry-run-simulated',
+      rebuildAttemptCount: 1,
+      chainPositionAddress: secondPositionKeypair.publicKey.toBase58()
+    });
+
+    const accountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await accountResponse.json();
+
+    expect(account.walletLpPositions).toEqual([
+      expect.objectContaining({
+        chainPositionAddress: secondPositionKeypair.publicKey.toBase58(),
+        valuationSource: 'paper-dry-run-overlay'
+      })
+    ]);
+
+    await server.stop();
+  });
+
+  it('keeps a repeated dry-run bin slippage failure as not submitted with structured reason', async () => {
+    const keypair = Keypair.generate();
+    const addLiquidityByStrategy = vi.fn(async () => ({
+      transaction: new FakeTransaction('open-bin-slippage')
+    }));
+    const simulateRawTransaction = vi.fn(async () => ({
+      value: {
+        err: { InstructionError: [6, { Custom: 6004 }] },
+        logs: [
+          'Program log: Error Code: ExceededBinSlippageTolerance',
+          'Program failed: custom program error: 0x1774'
+        ]
+      }
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 1_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy,
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-bin-rebuild-fails',
+        tokenMint: 'earthcoin-mint'
+      }))
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(addLiquidityByStrategy).toHaveBeenCalledTimes(2);
+    expect(payload).toMatchObject({
+      status: 'failed',
+      idempotencyKey: 'dry-run-bin-rebuild-fails',
+      retryable: true,
+      executionFailureKind: 'dlmm_bin_slippage',
+      executionFailureOperation: 'rpc-simulate',
+      rebuildAttemptCount: 1
+    });
+    expect(payload.reason).toContain('rpc-simulate-dlmm-bin-slippage');
+    expect(payload.reason).toContain('ExceededBinSlippageTolerance');
+
+    const accountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await accountResponse.json();
+    expect(account.walletLpPositions).toEqual([]);
+
+    await server.stop();
+  });
+
+  it('classifies live add-lp bin slippage failures without rebuilding or submitting a second attempt', async () => {
+    const keypair = Keypair.generate();
+    const addLiquidityByStrategy = vi.fn(async () => ({
+      transaction: new FakeTransaction('open-live-bin-slippage')
+    }));
+    const sendRawTransaction = vi.fn(async () => {
+      throw new Error('Solana RPC sendTransaction error: Transaction simulation failed: custom program error: 0x1774 ExceededBinSlippageTolerance');
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 1_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy,
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: false
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'live-bin-slippage',
+        tokenMint: 'earthcoin-mint'
+      }))
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(addLiquidityByStrategy).toHaveBeenCalledTimes(1);
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(payload).toMatchObject({
+      status: 'failed',
+      idempotencyKey: 'live-bin-slippage',
+      executionFailureKind: 'dlmm_bin_slippage',
+      executionFailureOperation: 'rpc-send',
+      rebuildAttemptCount: 0,
+      targetCooldownMs: 300_000
+    });
+    expect(payload.reason).toContain('rpc-send-dlmm-bin-slippage');
+
+    await server.stop();
+  });
+
+  it('classifies DLMM build fetch failures by operation instead of returning a bare fetch failed', async () => {
+    const keypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } })
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => {
+          throw new TypeError('fetch failed');
+        }
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-build-fetch-failed',
+        tokenMint: 'earthcoin-mint'
+      }))
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      status: 'failed',
+      idempotencyKey: 'dry-run-build-fetch-failed',
+      executionFailureKind: 'fetch_failed',
+      executionFailureOperation: 'dlmm-build'
+    });
+    expect(payload.reason).toBe('dlmm-build-fetch-failed: fetch failed');
+
+    await server.stop();
+  });
+
   it('accepts a canonical signed add-lp intent with lifecycle identity fields', async () => {
     const keypair = Keypair.generate();
     const newPositionKeypair = Keypair.generate();

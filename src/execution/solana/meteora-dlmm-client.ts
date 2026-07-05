@@ -512,7 +512,14 @@ export class MeteoraDlmmClient {
     poolAddress: string,
     amountSol: number,
     strategyType: any = StrategyType.BidAsk
-  ): Promise<{ transaction: Transaction | Transaction[]; newPositionKeypair?: Keypair }> {
+  ): Promise<{
+    transaction: Transaction | Transaction[];
+    newPositionKeypair?: Keypair;
+    activeBinId: number;
+    lowerBinId: number;
+    upperBinId: number;
+    binSlippageBps: number;
+  }> {
     return this.withConnection(async (connection) => {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const activeBin = await dlmmPool.getActiveBin();
@@ -531,6 +538,10 @@ export class MeteoraDlmmClient {
       if (repairCandidate) {
         return {
           newPositionKeypair: undefined,
+          activeBinId: activeBin.binId,
+          lowerBinId: minBinId,
+          upperBinId: maxBinId,
+          binSlippageBps: 100,
           transaction: await dlmmPool.addLiquidityByStrategy({
             positionPubKey: repairCandidate.publicKey,
             user: walletPublicKey,
@@ -568,7 +579,11 @@ export class MeteoraDlmmClient {
 
       return {
         transaction: result,
-        newPositionKeypair: positionKeypair
+        newPositionKeypair: positionKeypair,
+        activeBinId: activeBin.binId,
+        lowerBinId: minBinId,
+        upperBinId: maxBinId,
+        binSlippageBps: 100
       };
     });
   }

@@ -160,6 +160,13 @@ export function buildOrderMirrorPayload(input: {
   finality?: PendingFinality | 'unknown';
   exitTriggerReason?: string;
   executionFailureReason?: string;
+  executionFailureKind?: string;
+  executionFailureOperation?: string;
+  rebuildAttemptCount?: number;
+  activeBinIdAtBuild?: number;
+  lowerBinIdAtBuild?: number;
+  upperBinIdAtBuild?: number;
+  binSlippageBps?: number;
   residualCleanupStatus?: string;
   residualCleanupValueSol?: number;
   createdAt: string;
@@ -194,6 +201,13 @@ export function buildOrderMirrorPayload(input: {
     finality: input.finality ?? 'unknown',
     exitTriggerReason: input.exitTriggerReason,
     executionFailureReason: input.executionFailureReason,
+    executionFailureKind: input.executionFailureKind,
+    executionFailureOperation: input.executionFailureOperation,
+    rebuildAttemptCount: input.rebuildAttemptCount,
+    activeBinIdAtBuild: input.activeBinIdAtBuild,
+    lowerBinIdAtBuild: input.lowerBinIdAtBuild,
+    upperBinIdAtBuild: input.upperBinIdAtBuild,
+    binSlippageBps: input.binSlippageBps,
     residualCleanupStatus: input.residualCleanupStatus,
     residualCleanupValueSol: input.residualCleanupValueSol,
     createdAt: input.createdAt,

@@ -86,7 +86,12 @@ const BroadcastResultSchema = z.object({
   residualEstimatedValueSol: z.number().finite().nonnegative().optional(),
   openIntentId: z.string().min(1).optional(),
   positionId: z.string().min(1).optional(),
-  chainPositionAddress: z.string().min(1).optional()
+  chainPositionAddress: z.string().min(1).optional(),
+  rebuildAttemptCount: z.number().int().nonnegative().optional(),
+  activeBinIdAtBuild: z.number().int().optional(),
+  lowerBinIdAtBuild: z.number().int().optional(),
+  upperBinIdAtBuild: z.number().int().optional(),
+  binSlippageBps: z.number().finite().nonnegative().optional()
 });
 
 const SubmissionEntrySchema = z.object({
@@ -144,6 +149,9 @@ type SolanaExecutionServerOptions = {
   residualTokenDustMaxUiAmount?: number;
   jitoTipLamports?: number;
   dryRun?: boolean;
+  dryRunAddLpRebuildOnBinSlippage?: boolean;
+  dryRunAddLpRebuildMaxAttempts?: number;
+  addLpBinSlippageCooldownMs?: number;
 };
 
 type BroadcastLogPayload = {
@@ -168,6 +176,13 @@ type BroadcastLogPayload = {
   swapProvider?: string;
   swapProviderAttempts?: string;
   dryRun?: boolean;
+  executionFailureKind?: string;
+  executionFailureOperation?: string;
+  rebuildAttemptCount?: number;
+  activeBinIdAtBuild?: number;
+  lowerBinIdAtBuild?: number;
+  upperBinIdAtBuild?: number;
+  binSlippageBps?: number;
 };
 
 const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
@@ -364,6 +379,71 @@ type AccountStateLpPosition = MeteoraLpPositionSnapshot & {
 
 function readExecutionErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+type ExecutionFailureMetadata = {
+  executionFailureKind?: string;
+  executionFailureOperation?: string;
+  retryable?: boolean;
+};
+
+class StructuredExecutionError extends Error {
+  readonly executionFailureKind?: string;
+  readonly executionFailureOperation?: string;
+  readonly retryable: boolean;
+
+  constructor(message: string, metadata: ExecutionFailureMetadata = {}) {
+    super(message);
+    this.name = 'StructuredExecutionError';
+    this.executionFailureKind = metadata.executionFailureKind;
+    this.executionFailureOperation = metadata.executionFailureOperation;
+    this.retryable = metadata.retryable ?? true;
+  }
+}
+
+function getExecutionFailureMetadata(error: unknown): ExecutionFailureMetadata {
+  if (error instanceof StructuredExecutionError) {
+    return {
+      executionFailureKind: error.executionFailureKind,
+      executionFailureOperation: error.executionFailureOperation,
+      retryable: error.retryable
+    };
+  }
+
+  return {};
+}
+
+function isBareFetchFailure(error: unknown) {
+  return error instanceof Error && error.message.trim().toLowerCase() === 'fetch failed';
+}
+
+function isDlmmBinSlippageMessage(message: string) {
+  return /ExceededBinSlippageTolerance|custom program error:\s*0x1774|\"Custom\":6004|Custom.*6004/i.test(message);
+}
+
+function classifyOperationError(error: unknown, operation: string) {
+  if (error instanceof StructuredExecutionError) {
+    return error;
+  }
+
+  const message = readExecutionErrorMessage(error);
+  if (isBareFetchFailure(error)) {
+    return new StructuredExecutionError(`${operation}-fetch-failed: ${message}`, {
+      executionFailureKind: 'fetch_failed',
+      executionFailureOperation: operation,
+      retryable: true
+    });
+  }
+
+  if (isDlmmBinSlippageMessage(message)) {
+    return new StructuredExecutionError(`${operation}-dlmm-bin-slippage: ${message}`, {
+      executionFailureKind: 'dlmm_bin_slippage',
+      executionFailureOperation: operation,
+      retryable: true
+    });
+  }
+
+  return error;
 }
 
 function hasPoolPriceFallbackValue(position: MeteoraLpPositionSnapshot) {
@@ -942,6 +1022,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     defaultSlippageBps = 100,
     dryRun = false
   } = options;
+  const dryRunAddLpRebuildOnBinSlippage = options.dryRunAddLpRebuildOnBinSlippage ?? true;
+  const dryRunAddLpRebuildMaxAttempts = options.dryRunAddLpRebuildMaxAttempts ?? 1;
+  const addLpBinSlippageCooldownMs = options.addLpBinSlippageCooldownMs ?? 300_000;
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
@@ -976,6 +1059,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     openIntentId?: string;
     positionId?: string;
     chainPositionAddress?: string;
+    rebuildAttemptCount?: number;
+    activeBinIdAtBuild?: number;
+    lowerBinIdAtBuild?: number;
+    upperBinIdAtBuild?: number;
+    binSlippageBps?: number;
   }): LiveBroadcastResult => ({
     status: 'submitted',
     submissionId: input.signatures[input.signatures.length - 1] ?? '',
@@ -993,17 +1081,38 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     residualEstimatedValueSol: input.residualEstimatedValueSol,
     openIntentId: input.openIntentId,
     positionId: input.positionId,
-    chainPositionAddress: input.chainPositionAddress
+    chainPositionAddress: input.chainPositionAddress,
+    rebuildAttemptCount: input.rebuildAttemptCount,
+    activeBinIdAtBuild: input.activeBinIdAtBuild,
+    lowerBinIdAtBuild: input.lowerBinIdAtBuild,
+    upperBinIdAtBuild: input.upperBinIdAtBuild,
+    binSlippageBps: input.binSlippageBps
   });
   const buildFailedBroadcastResult = (input: {
     idempotencyKey: string;
     reason: string;
     retryable?: boolean;
+    executionFailureKind?: string;
+    executionFailureOperation?: string;
+    rebuildAttemptCount?: number;
+    activeBinIdAtBuild?: number;
+    lowerBinIdAtBuild?: number;
+    upperBinIdAtBuild?: number;
+    binSlippageBps?: number;
+    targetCooldownMs?: number;
   }): LiveBroadcastResult => ({
     status: 'failed',
     idempotencyKey: input.idempotencyKey,
     reason: input.reason,
-    retryable: input.retryable ?? true
+    retryable: input.retryable ?? true,
+    executionFailureKind: input.executionFailureKind,
+    executionFailureOperation: input.executionFailureOperation,
+    rebuildAttemptCount: input.rebuildAttemptCount,
+    activeBinIdAtBuild: input.activeBinIdAtBuild,
+    lowerBinIdAtBuild: input.lowerBinIdAtBuild,
+    upperBinIdAtBuild: input.upperBinIdAtBuild,
+    binSlippageBps: input.binSlippageBps,
+    targetCooldownMs: input.targetCooldownMs
   });
   const buildDryRunSignature = (signedTransactionBase64: string) => {
     const digest = createHash('sha512')
@@ -1060,11 +1169,24 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
       throw new Error('Solana dry-run simulation unavailable: rpcClient.simulateRawTransaction is not configured');
     }
 
-    const result = await simulator.simulateRawTransaction(signedTransactionBase64);
+    let result: { value: { err: unknown | null; logs?: string[] | null } };
+    try {
+      result = await simulator.simulateRawTransaction(signedTransactionBase64);
+    } catch (error) {
+      throw classifyOperationError(error, 'rpc-simulate');
+    }
     if (result.value.err) {
       const logs = Array.isArray(result.value.logs) ? result.value.logs.filter(Boolean) : [];
       const logSuffix = logs.length > 0 ? `; simulationLogs=${logs.slice(-12).join(' | ')}` : '';
-      throw new Error(`Solana dry-run simulation failed: ${JSON.stringify(result.value.err)}${logSuffix}`);
+      const rawReason = `Solana dry-run simulation failed: ${JSON.stringify(result.value.err)}${logSuffix}`;
+      if (isDlmmBinSlippageMessage(rawReason)) {
+        throw new StructuredExecutionError(`rpc-simulate-dlmm-bin-slippage: ${rawReason}`, {
+          executionFailureKind: 'dlmm_bin_slippage',
+          executionFailureOperation: 'rpc-simulate',
+          retryable: true
+        });
+      }
+      throw new Error(rawReason);
     }
 
     return buildDryRunSignature(signedTransactionBase64);
@@ -1081,10 +1203,18 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     };
 
     if (typeof visibilitySender.sendRawTransactionAndWaitForVisibility === 'function') {
-      return (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+      try {
+        return (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+      } catch (error) {
+        throw classifyOperationError(error, 'rpc-send');
+      }
     }
 
-    return rpcClient.sendRawTransaction(signedTransactionBase64);
+    try {
+      return await rpcClient.sendRawTransaction(signedTransactionBase64);
+    } catch (error) {
+      throw classifyOperationError(error, 'rpc-send');
+    }
   };
   const withIdempotencyLock = async <T>(idempotencyKey: string, action: () => Promise<T>): Promise<T> => {
     const prior = idempotencyLocks.get(idempotencyKey) ?? Promise.resolve();
@@ -1318,6 +1448,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let swapProviderName: string | undefined;
             let swapProviderAttempts: SwapProviderAttempt[] | undefined;
             let builtChainPositionAddress: string | undefined;
+            let rebuildAttemptCount = 0;
+            let activeBinIdAtBuild: number | undefined;
+            let lowerBinIdAtBuild: number | undefined;
+            let upperBinIdAtBuild: number | undefined;
+            let binSlippageBps: number | undefined;
 
             try {
               let signedBase64 = '';
@@ -1422,13 +1557,22 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
               if (side === 'add-lp') {
                 const buildStartedAt = Date.now();
-                const result = await options.dlmmClient.addLiquidityByStrategy(
-                  keypair.publicKey,
-                  intent.poolAddress,
-                  intent.outputSol
-                );
+                let result: any;
+                try {
+                  result = await options.dlmmClient.addLiquidityByStrategy(
+                    keypair.publicKey,
+                    intent.poolAddress,
+                    intent.outputSol
+                  );
+                } catch (error) {
+                  throw classifyOperationError(error, 'dlmm-build');
+                }
                 buildMs = durationMs(buildStartedAt);
                 txBatch = toTransactionBatch(result.transaction);
+                activeBinIdAtBuild = typeof result.activeBinId === 'number' ? result.activeBinId : activeBinIdAtBuild;
+                lowerBinIdAtBuild = typeof result.lowerBinId === 'number' ? result.lowerBinId : lowerBinIdAtBuild;
+                upperBinIdAtBuild = typeof result.upperBinId === 'number' ? result.upperBinId : upperBinIdAtBuild;
+                binSlippageBps = typeof result.binSlippageBps === 'number' ? result.binSlippageBps : binSlippageBps;
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
                   builtChainPositionAddress = result.newPositionKeypair.publicKey.toBase58();
@@ -1464,7 +1608,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               blockhashMs = durationMs(blockhashStartedAt);
               const txSignatures: string[] = [];
 
-              for (const txParams of txBatch) {
+              for (let txIndex = 0; txIndex < txBatch.length; txIndex += 1) {
+                const txParams = txBatch[txIndex];
                 try {
                   txParams.recentBlockhash = blockhash.blockhash;
                   txParams.feePayer = keypair.publicKey;
@@ -1475,6 +1620,44 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   visibleBroadcastRecorded = true;
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
+                  const failureMetadata = getExecutionFailureMetadata(error);
+                  const canRebuildDryRunAddLp = dryRun
+                    && side === 'add-lp'
+                    && dryRunAddLpRebuildOnBinSlippage
+                    && failureMetadata.executionFailureKind === 'dlmm_bin_slippage'
+                    && rebuildAttemptCount < dryRunAddLpRebuildMaxAttempts
+                    && txSignatures.length === 0;
+                  if (canRebuildDryRunAddLp) {
+                    rebuildAttemptCount += 1;
+                    const rebuildStartedAt = Date.now();
+                    let rebuilt: any;
+                    try {
+                      rebuilt = await options.dlmmClient.addLiquidityByStrategy(
+                        keypair.publicKey,
+                        intent.poolAddress,
+                        intent.outputSol
+                      );
+                    } catch (buildError) {
+                      throw classifyOperationError(buildError, 'dlmm-build');
+                    }
+                    buildMs = (buildMs ?? 0) + durationMs(rebuildStartedAt);
+                    txBatch = toTransactionBatch(rebuilt.transaction);
+                    signers = [keypair];
+                    if (rebuilt.newPositionKeypair) {
+                      signers.push(rebuilt.newPositionKeypair);
+                      builtChainPositionAddress = rebuilt.newPositionKeypair.publicKey.toBase58();
+                    } else {
+                      builtChainPositionAddress = intent.chainPositionAddress
+                        ?? buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
+                    }
+                    activeBinIdAtBuild = typeof rebuilt.activeBinId === 'number' ? rebuilt.activeBinId : activeBinIdAtBuild;
+                    lowerBinIdAtBuild = typeof rebuilt.lowerBinId === 'number' ? rebuilt.lowerBinId : lowerBinIdAtBuild;
+                    upperBinIdAtBuild = typeof rebuilt.upperBinId === 'number' ? rebuilt.upperBinId : upperBinIdAtBuild;
+                    binSlippageBps = typeof rebuilt.binSlippageBps === 'number' ? rebuilt.binSlippageBps : binSlippageBps;
+                    txIndex = -1;
+                    continue;
+                  }
+
                   if (dryRun || txSignatures.length === 0) {
                     throw error;
                   }
@@ -1554,7 +1737,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   sendTxMs,
                   totalMs: durationMs(broadcastStartedAt),
                   reason,
-                  dryRun
+                  dryRun,
+                  rebuildAttemptCount,
+                  activeBinIdAtBuild,
+                  lowerBinIdAtBuild,
+                  upperBinIdAtBuild,
+                  binSlippageBps
                 });
 
                 await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
@@ -1567,7 +1755,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     ? 'complete'
                     : undefined,
                   ...lifecycleResultIdentity,
-                  chainPositionAddress: dryRunChainPositionAddress
+                  chainPositionAddress: dryRunChainPositionAddress,
+                  rebuildAttemptCount,
+                  activeBinIdAtBuild,
+                  lowerBinIdAtBuild,
+                  upperBinIdAtBuild,
+                  binSlippageBps
                 }));
                 return;
               }
@@ -1723,6 +1916,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
             } catch (error) {
               const reason = error instanceof Error ? error.message : String(error);
+              const failureMetadata = getExecutionFailureMetadata(error);
 
               logBroadcastOutcome({
                 event: 'solana-execution-broadcast',
@@ -1745,7 +1939,14 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 reason,
                 swapProvider: swapProviderName,
                 swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts),
-                dryRun
+                dryRun,
+                executionFailureKind: failureMetadata.executionFailureKind,
+                executionFailureOperation: failureMetadata.executionFailureOperation,
+                rebuildAttemptCount,
+                activeBinIdAtBuild,
+                lowerBinIdAtBuild,
+                upperBinIdAtBuild,
+                binSlippageBps
               });
 
               if (!visibleBroadcastRecorded) {
@@ -1753,7 +1954,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 writeJson(response, 200, buildFailedBroadcastResult({
                   idempotencyKey: intent.idempotencyKey,
                   reason,
-                  retryable: true
+                  retryable: failureMetadata.retryable ?? true,
+                  executionFailureKind: failureMetadata.executionFailureKind,
+                  executionFailureOperation: failureMetadata.executionFailureOperation,
+                  rebuildAttemptCount,
+                  activeBinIdAtBuild,
+                  lowerBinIdAtBuild,
+                  upperBinIdAtBuild,
+                  binSlippageBps,
+                  targetCooldownMs: failureMetadata.executionFailureKind === 'dlmm_bin_slippage'
+                    ? addLpBinSlippageCooldownMs
+                    : undefined
                 }));
                 return;
               }

@@ -212,7 +212,8 @@ describe('runLiveDaemon', () => {
                 status: 'failed' as const,
                 reason: simulationReason,
                 retryable: false,
-                idempotencyKey: signedIntent.intent.idempotencyKey
+                idempotencyKey: signedIntent.intent.idempotencyKey,
+                targetCooldownMs: 120_000
               })
             }
           };
@@ -241,6 +242,8 @@ describe('runLiveDaemon', () => {
       tokenMint: 'mint-fable',
       reason: simulationReason
     });
+    expect(Date.parse(cooldown!.cooldownUntil) - Date.parse(cooldown!.lastFailedAt)).toBeGreaterThanOrEqual(119_000);
+    expect(Date.parse(cooldown!.cooldownUntil) - Date.parse(cooldown!.lastFailedAt)).toBeLessThanOrEqual(121_000);
   });
 
   it('treats a flat account as closed even when a stale reduce-risk snapshot says open', () => {
