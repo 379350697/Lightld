@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $Root).Path
 Set-Location $Root
 
-$roles = @("signer", "execution", "daemon")
+$roles = @("signer", "execution", "candidate", "daemon")
 $started = @()
 foreach ($role in $roles) {
     $arguments = @(

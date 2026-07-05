@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("signer", "execution", "daemon")]
+    [ValidateSet("signer", "execution", "candidate", "daemon")]
     [string]$Role,
     [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$StateRoot = "state-paper-realistic",
@@ -31,6 +31,14 @@ if ($Role -eq "execution") {
     $env:SOLANA_EXECUTION_DRY_RUN = "true"
     $env:SOLANA_EXECUTION_STATE_DIR = (Join-Path $StateRoot "solana-execution")
     npm.cmd run run:solana-execution
+    exit $LASTEXITCODE
+}
+
+if ($Role -eq "candidate") {
+    $env:LIVE_STATE_DIR = $StateRoot
+    $env:LIVE_CANDIDATE_POOL_DB_PATH = "state/lightld-candidate-pool.sqlite"
+    $env:LIVE_REQUESTED_POSITION_SOL = [string]$RequestedPositionSol
+    npm.cmd run run:candidate-worker -- --strategy new-token-v1 --state-root-dir $StateRoot --db-path $env:LIVE_CANDIDATE_POOL_DB_PATH
     exit $LASTEXITCODE
 }
 
