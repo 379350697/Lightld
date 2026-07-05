@@ -102,6 +102,42 @@ describe('MeteoraDlmmClient', () => {
     }));
   });
 
+  it('allows paper sampling to initialize another position when unrelated live positions exist', async () => {
+    const existingPosition = {
+      publicKey: makePoolAddress(10),
+      positionData: {
+        lowerBinId: 1,
+        upperBinId: 2,
+        positionBinData: []
+      }
+    };
+    const initializePositionAndAddLiquidityByStrategy = vi.fn(async () => ({ id: 'paper-init-tx' }));
+
+    dlmmPkg.create = vi.fn(async () => ({
+      tokenX: { publicKey: SOL_MINT },
+      tokenY: { publicKey: makePoolAddress(30) },
+      getActiveBin: async () => ({ binId: 120 }),
+      getPositionsByUserAndLbPair: async () => ({
+        activeBin: { binId: 120, price: '1' },
+        userPositions: [existingPosition]
+      }),
+      initializePositionAndAddLiquidityByStrategy
+    }));
+
+    const client = new MeteoraDlmmClient({} as any);
+    const result = await client.addLiquidityByStrategy(
+      makePoolAddress(1),
+      makePoolAddress(2).toBase58(),
+      0.1,
+      undefined,
+      { allowDuplicatePosition: true }
+    );
+
+    expect(result.transaction).toEqual({ id: 'paper-init-tx' });
+    expect(result.newPositionKeypair).toBeDefined();
+    expect(initializePositionAndAddLiquidityByStrategy).toHaveBeenCalled();
+  });
+
   it('removes liquidity across every Meteora position in the pool', async () => {
     const positions = [
       { publicKey: makePoolAddress(40), positionData: { lowerBinId: 10, upperBinId: 20 } },

@@ -1570,7 +1570,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   result = await options.dlmmClient.addLiquidityByStrategy(
                     keypair.publicKey,
                     intent.poolAddress,
-                    intent.outputSol
+                    intent.outputSol,
+                    undefined,
+                    { allowDuplicatePosition: dryRun }
                   );
                 } catch (error) {
                   throw classifyOperationError(error, 'dlmm-build');
@@ -1643,7 +1645,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                       rebuilt = await options.dlmmClient.addLiquidityByStrategy(
                         keypair.publicKey,
                         intent.poolAddress,
-                        intent.outputSol
+                        intent.outputSol,
+                        undefined,
+                        { allowDuplicatePosition: dryRun }
                       );
                     } catch (buildError) {
                       throw classifyOperationError(buildError, 'dlmm-build');

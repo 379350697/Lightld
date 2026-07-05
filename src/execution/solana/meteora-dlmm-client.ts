@@ -511,7 +511,8 @@ export class MeteoraDlmmClient {
     walletPublicKey: PublicKey,
     poolAddress: string,
     amountSol: number,
-    strategyType: any = StrategyType.BidAsk
+    strategyType: any = StrategyType.BidAsk,
+    options: { allowDuplicatePosition?: boolean } = {}
   ): Promise<{
     transaction: Transaction | Transaction[];
     newPositionKeypair?: Keypair;
@@ -558,7 +559,7 @@ export class MeteoraDlmmClient {
         };
       }
 
-      if (userPositions.length > 0) {
+      if (userPositions.length > 0 && !options.allowDuplicatePosition) {
         throw new Error(`Existing Meteora positions already present for pool ${poolAddress}; refusing to initialize a duplicate position without a matching repair target`);
       }
 
