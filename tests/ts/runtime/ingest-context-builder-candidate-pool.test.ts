@@ -83,6 +83,24 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
     });
   });
 
+  it('can disable dynamic position sizing for paper sampling', async () => {
+    const reader: CandidatePoolReader = {
+      selectOpenableCandidate: vi.fn(async () => makeEntry(makeCandidate({ liquidityUsd: 25_000 })))
+    };
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 1,
+      disableDynamicPositionSizing: true,
+      now: new Date('2026-06-21T10:00:00.000Z'),
+      candidatePoolReadEnabled: true,
+      candidatePoolReader: reader
+    });
+
+    expect(result.requestedPositionSol).toBe(1);
+    expect(result.context.token?.expectedOutSol).toBe(1);
+  });
+
   it('fails closed for new opens when candidate pool is enabled but unavailable', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'new-token-v1',

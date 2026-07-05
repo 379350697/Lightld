@@ -2061,6 +2061,22 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
           // Account state — query wallet SOL and token balances from RPC
           if (request.method === 'GET' && request.url === '/account-state') {
+            if (dryRun) {
+              const paperState = await paperDryRunStore.read();
+              const walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
+              const walletLpPositions = paperState.positions.map(toPaperLpPosition);
+              writeJson(response, 200, {
+                walletSol,
+                journalSol: walletSol,
+                walletLpPositions,
+                journalLpPositions: walletLpPositions,
+                walletTokens: [],
+                journalTokens: [],
+                fills: []
+              });
+              return;
+            }
+
             let lamports: number;
             try {
               lamports = await rpcClient.getBalance(walletPublicKey);
@@ -2137,17 +2153,6 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
             } catch {
               // Meteora positions query may fail on free RPC
-            }
-
-            if (dryRun) {
-              const paperState = await paperDryRunStore.read();
-              walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
-              const paperPositions = paperState.positions.map(toPaperLpPosition);
-              const merged = new Map<string, AccountStateLpPosition>();
-              for (const position of [...walletLpPositions, ...paperPositions]) {
-                merged.set(position.chainPositionAddress ?? position.positionAddress, position);
-              }
-              walletLpPositions = Array.from(merged.values());
             }
 
             writeJson(response, 200, {

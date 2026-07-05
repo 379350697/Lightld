@@ -95,6 +95,7 @@ type IngestContextBuilderInput = {
   candidatePoolReader?: CandidatePoolReader;
   candidatePoolReadEnabled?: boolean;
   candidatePoolMaxAgeMs?: number;
+  disableDynamicPositionSizing?: boolean;
   selectionMode?: IngestSelectionMode;
   skipMints?: string[];
   openCooldowns?: TargetOpenCooldownSnapshot[];
@@ -610,6 +611,24 @@ async function maybeFetchTraderSnapshot(input: IngestContextBuilderInput) {
 
 function defaultRequestedPositionSol(maxLivePositionSol: number) {
   return Math.min(0.05, maxLivePositionSol);
+}
+
+function resolveCandidateRequestedPositionSol(input: {
+  strategy: StrategyId;
+  requestedPositionSol: number;
+  candidate: Pick<IngestCandidate, 'liquidityUsd' | 'safetyScore'>;
+  disableDynamicPositionSizing?: boolean;
+}) {
+  if (input.strategy !== 'new-token-v1' || input.disableDynamicPositionSizing) {
+    return input.requestedPositionSol;
+  }
+
+  return computeDynamicPositionSol(
+    input.candidate.liquidityUsd,
+    input.requestedPositionSol,
+    undefined,
+    { safetyScore: input.candidate.safetyScore }
+  );
 }
 
 function buildDeferredSafetyResults(mints: string[]): TokenSafetyResult[] {
@@ -1241,14 +1260,12 @@ async function buildCandidatePoolBackedCycleInput(
     hasLpPosition: false,
     safetyScore: entry.score
   };
-  const selectedRequestedPositionSol = input.strategy === 'new-token-v1'
-    ? computeDynamicPositionSol(
-      candidate.liquidityUsd,
-      requestedPositionSol,
-      undefined,
-      { safetyScore: candidate.safetyScore }
-    )
-    : requestedPositionSol;
+  const selectedRequestedPositionSol = resolveCandidateRequestedPositionSol({
+    strategy: input.strategy,
+    requestedPositionSol,
+    candidate,
+    disableDynamicPositionSizing: input.disableDynamicPositionSizing
+  });
   const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
     mint: candidate.mint,
     poolAddress: candidate.address
@@ -1865,16 +1882,12 @@ export async function buildLiveCycleInputFromIngest(
   }
 
   const baseRequestedPositionSol = input.requestedPositionSol ?? defaultRequestedPositionSol(config.live.maxLivePositionSol);
-  const requestedPositionSol = input.strategy === 'new-token-v1'
-    ? computeDynamicPositionSol(
-      candidate.liquidityUsd,
-      baseRequestedPositionSol,
-      undefined,
-      {
-        safetyScore: candidate.safetyScore
-      }
-    )
-    : baseRequestedPositionSol;
+  const requestedPositionSol = resolveCandidateRequestedPositionSol({
+    strategy: input.strategy,
+    requestedPositionSol: baseRequestedPositionSol,
+    candidate,
+    disableDynamicPositionSizing: input.disableDynamicPositionSizing
+  });
   const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
     mint: candidate.mint,
     poolAddress: candidate.address

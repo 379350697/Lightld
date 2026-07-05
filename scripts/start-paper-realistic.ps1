@@ -5,7 +5,7 @@ param(
     [int]$MaxActivePositions = 100000,
     [int]$TickIntervalMs = 10000,
     [int]$HotTickIntervalMs = 2000,
-    [double]$RequestedPositionSol = 0.01
+    [double]$RequestedPositionSol = 1
 )
 
 $ErrorActionPreference = "Stop"

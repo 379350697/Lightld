@@ -341,6 +341,7 @@ async function main() {
         candidatePoolReader,
         candidatePoolReadEnabled,
         candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
+        disableDynamicPositionSizing: parseBoolean(process.env.LIVE_DISABLE_DYNAMIC_POSITION_SIZING, false),
         newCandidateSafetyMaxBatchSize: parsePositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE, 1),
         newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
         positionState: buildContext?.positionState,

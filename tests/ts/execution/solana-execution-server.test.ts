@@ -330,6 +330,54 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('keeps dry-run account state paper-only even when the real wallet is unavailable', async () => {
+    const keypair = Keypair.generate();
+    const getBalance = vi.fn(async () => {
+      throw new Error('real wallet balance should not gate paper mode');
+    });
+    const getTokenAccountsByOwner = vi.fn(async () => {
+      throw new Error('real wallet tokens should not gate paper mode');
+    });
+    const getPositionSnapshots = vi.fn(async () => {
+      throw new Error('real wallet LP positions should not gate paper mode');
+    });
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance,
+        getTokenAccountsByOwner,
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction: vi.fn(async () => ({ value: { err: null, logs: ['ok'] } }))
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        getPositionSnapshots
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(account.walletSol).toBe(1_000_000);
+    expect(account.walletTokens).toEqual([]);
+    expect(account.walletLpPositions).toEqual([]);
+    expect(getBalance).not.toHaveBeenCalled();
+    expect(getTokenAccountsByOwner).not.toHaveBeenCalled();
+    expect(getPositionSnapshots).not.toHaveBeenCalled();
+
+    await server.stop();
+  });
+
   it('closes dry-run overlay LP positions without touching live send', async () => {
     const keypair = Keypair.generate();
     const newPositionKeypair = Keypair.generate();
