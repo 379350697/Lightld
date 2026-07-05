@@ -1556,6 +1556,50 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 }));
                 return;
               } else {
+                if (dryRun && side === 'withdraw-lp') {
+                  const closed = await paperDryRunStore.closePosition({
+                    chainPositionAddress: intent.chainPositionAddress,
+                    positionId: intent.positionId,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint
+                  });
+                  const dryRunChainPositionAddress = intent.chainPositionAddress ?? closed?.chainPositionAddress;
+                  const reason = closed ? 'paper-dry-run-simulated' : 'paper-dry-run-position-already-closed';
+                  const signatureSeed = Buffer.from(
+                    `${intent.idempotencyKey}:${side}:${dryRunChainPositionAddress ?? intent.poolAddress}`,
+                    'utf8'
+                  ).toString('base64');
+                  const signature = buildDryRunSignature(signatureSeed);
+
+                  logBroadcastOutcome({
+                    event: 'solana-execution-broadcast',
+                    recordedAt: new Date().toISOString(),
+                    strategyId: intent.strategyId,
+                    idempotencyKey: intent.idempotencyKey,
+                    side,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint,
+                    outputSol: intent.outputSol,
+                    result: 'submitted',
+                    acceptedSignatureCount: 1,
+                    sendTxMs: [],
+                    totalMs: durationMs(broadcastStartedAt),
+                    reason,
+                    dryRun
+                  });
+
+                  await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                    idempotencyKey: intent.idempotencyKey,
+                    signatures: [signature],
+                    batchStatus: 'complete',
+                    reason,
+                    mainExecutionStatus: 'confirmed',
+                    ...lifecycleResultIdentity,
+                    chainPositionAddress: dryRunChainPositionAddress
+                  }));
+                  return;
+                }
+
                 if (!options.dlmmClient) {
                   throw new Error('DLMM client not configured');
                 }

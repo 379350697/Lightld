@@ -383,6 +383,9 @@ describe('createSolanaExecutionServer', () => {
     const newPositionKeypair = Keypair.generate();
     const sendRawTransaction = vi.fn(async () => 'unexpected-live-signature');
     const simulateRawTransaction = vi.fn(async () => ({ value: { err: null, logs: ['ok'] } }));
+    const removeLiquidity = vi.fn(async () => {
+      throw new Error('paper close should not require a live Meteora position');
+    });
 
     const server = createSolanaExecutionServer({
       host: '127.0.0.1',
@@ -401,7 +404,7 @@ describe('createSolanaExecutionServer', () => {
           transaction: new FakeTransaction('open-1'),
           newPositionKeypair
         }),
-        removeLiquidity: async () => new FakeTransaction('close-1'),
+        removeLiquidity,
         getPositionSnapshots: async () => []
       } as any,
       authToken: 'test-token',
@@ -442,9 +445,11 @@ describe('createSolanaExecutionServer', () => {
     expect(closePayload).toMatchObject({
       status: 'submitted',
       mainExecutionStatus: 'confirmed',
+      reason: 'paper-dry-run-simulated',
       chainPositionAddress: openPayload.chainPositionAddress
     });
     expect(sendRawTransaction).not.toHaveBeenCalled();
+    expect(removeLiquidity).not.toHaveBeenCalled();
 
     const accountResponse = await fetch(`${server.origin}/account-state`, {
       headers: { authorization: 'Bearer test-token' }
@@ -453,6 +458,28 @@ describe('createSolanaExecutionServer', () => {
 
     expect(account.walletSol).toBe(1_000_000);
     expect(account.walletLpPositions).toEqual([]);
+
+    const alreadyClosedResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'earthcoin-mint',
+        idempotencyKey: 'dry-run-close-retry',
+        chainPositionAddress: openPayload.chainPositionAddress
+      }))
+    });
+    const alreadyClosedPayload = await alreadyClosedResponse.json();
+
+    expect(alreadyClosedPayload).toMatchObject({
+      status: 'submitted',
+      mainExecutionStatus: 'confirmed',
+      reason: 'paper-dry-run-position-already-closed',
+      chainPositionAddress: openPayload.chainPositionAddress
+    });
+    expect(removeLiquidity).not.toHaveBeenCalled();
 
     await server.stop();
   });
