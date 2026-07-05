@@ -185,11 +185,13 @@ function buildSpendingLimitsConfig(input: {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const runtimeConfig = loadLiveRuntimeConfig();
-  const spendingLimitsConfig = buildSpendingLimitsConfig({
-    maxSingleOrderSol: runtimeConfig.maxSingleOrderSol,
-    maxDailySpendSol: runtimeConfig.maxDailySpendSol,
-    maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
-  });
+  const spendingLimitsConfig = parseBoolean(process.env.LIVE_IGNORE_SPENDING_LIMITS, false)
+    ? undefined
+    : buildSpendingLimitsConfig({
+      maxSingleOrderSol: runtimeConfig.maxSingleOrderSol,
+      maxDailySpendSol: runtimeConfig.maxDailySpendSol,
+      maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
+    });
 
   if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
     await new SpendingLimitsStore(args.stateRootDir).reset();
