@@ -145,6 +145,14 @@ describe('solana rpc config policy', () => {
     expect(config.expectedSignerPublicKeys).toEqual(['signer-a', 'signer-b']);
   });
 
+  it('loads solana execution dry-run mode from env', () => {
+    const config = loadSolanaExecutionConfig(envBase({
+      SOLANA_EXECUTION_DRY_RUN: 'true'
+    }));
+
+    expect(config.dryRun).toBe(true);
+  });
+
   it('rpc client retries write and read urls in order', async () => {
     const calls: string[] = [];
     const registry = new RpcEndpointRegistry({ maxWaitMs: 0 });
@@ -234,6 +242,40 @@ describe('solana rpc config policy', () => {
     await expect(client.sendRawTransaction('tx-base64')).rejects.toThrow(
       /Program log: Error Code: InsufficientFunds/
     );
+  });
+
+  it('simulates transactions without sending them', async () => {
+    const calls: Array<{ method: string; params: unknown[] }> = [];
+    const client = new SolanaRpcClient({
+      rpcUrl: 'https://write-primary.example',
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { method: string; params: unknown[] };
+        calls.push(body);
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { value: { err: null, logs: ['ok'] } }
+        }), { status: 200 });
+      }
+    });
+
+    await expect(client.simulateRawTransaction('tx-base64')).resolves.toMatchObject({
+      value: { err: null, logs: ['ok'] }
+    });
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        method: 'simulateTransaction',
+        params: [
+          'tx-base64',
+          expect.objectContaining({
+            encoding: 'base64',
+            commitment: 'confirmed',
+            sigVerify: true
+          })
+        ]
+      })
+    ]);
   });
 
   it('requires a sent transaction to become visible on a read endpoint', async () => {

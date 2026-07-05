@@ -68,7 +68,8 @@ const SolanaExecutionConfigSchema = z.object({
   defaultSlippageBps: z.number().int().min(1).max(5000).default(100),
   residualTokenMinValueSol: z.number().finite().nonnegative().default(0.1),
   residualTokenDustMaxUiAmount: z.number().finite().nonnegative().default(0.00001),
-  jitoTipLamports: z.number().int().nonnegative().optional()
+  jitoTipLamports: z.number().int().nonnegative().optional(),
+  dryRun: z.boolean().default(false)
 });
 
 export type SolanaExecutionConfig = z.infer<typeof SolanaExecutionConfigSchema>;
@@ -78,6 +79,10 @@ function splitCsv(value: string | undefined) {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function parseBooleanFlag(value: string | undefined) {
+  return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
 }
 
 export function loadSolanaExecutionConfig(
@@ -187,6 +192,7 @@ export function loadSolanaExecutionConfig(
       : 0.00001,
     jitoTipLamports: env.JITO_TIP_LAMPORTS
       ? Number(env.JITO_TIP_LAMPORTS)
-      : undefined
+      : undefined,
+    dryRun: parseBooleanFlag(env.SOLANA_EXECUTION_DRY_RUN)
   });
 }

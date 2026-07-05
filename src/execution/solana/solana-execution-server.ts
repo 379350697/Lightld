@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Keypair } from '@solana/web3.js';
@@ -35,6 +36,7 @@ import {
   writeText
 } from '../../shared/http-server.ts';
 import { reconstructOpenPositionEntryEvidence } from '../../history/solana-closed-position-reconstructor.ts';
+import { encodeBase58 } from '../../shared/base58.ts';
 
 const BroadcastRequestSchema = z.object({
   intent: z.object({
@@ -101,8 +103,28 @@ const SubmissionStoreSchema = z.object({
   submissions: z.array(SubmissionEntrySchema)
 });
 
+const PaperDryRunPositionSchema = z.object({
+  poolAddress: z.string().min(1),
+  positionAddress: z.string().min(1),
+  chainPositionAddress: z.string().min(1),
+  positionId: z.string().min(1).optional(),
+  openIntentId: z.string().min(1).optional(),
+  mint: z.string().min(1),
+  currentValueSol: z.number().finite().nonnegative(),
+  openedAt: z.string().min(1),
+  updatedAt: z.string().min(1)
+});
+
+const PaperDryRunStateSchema = z.object({
+  version: z.literal(1),
+  walletSolDelta: z.number().finite().default(0),
+  positions: z.array(PaperDryRunPositionSchema)
+});
+
 type SubmissionStore = z.infer<typeof SubmissionStoreSchema>;
 type SignedBroadcastIntent = z.infer<typeof BroadcastRequestSchema>['intent'];
+type PaperDryRunState = z.infer<typeof PaperDryRunStateSchema>;
+type PaperDryRunPosition = z.infer<typeof PaperDryRunPositionSchema>;
 
 type SolanaExecutionServerOptions = {
   host: string;
@@ -121,6 +143,7 @@ type SolanaExecutionServerOptions = {
   residualTokenMinValueSol?: number;
   residualTokenDustMaxUiAmount?: number;
   jitoTipLamports?: number;
+  dryRun?: boolean;
 };
 
 type BroadcastLogPayload = {
@@ -144,6 +167,7 @@ type BroadcastLogPayload = {
   reason?: string;
   swapProvider?: string;
   swapProviderAttempts?: string;
+  dryRun?: boolean;
 };
 
 const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
@@ -327,11 +351,15 @@ async function resolveTokenCurrentValueSol(input: {
 }
 
 type AccountStateLpPosition = MeteoraLpPositionSnapshot & {
+  chainPositionAddress?: string;
+  positionId?: string;
+  openIntentId?: string;
   withdrawTokenValueSol?: number;
   exitQuoteValueSol?: number;
   marketValueSol?: number;
   displayValueSol?: number;
   valuationTrust?: ValuationTrust;
+  lastValuationAt?: string;
 };
 
 function readExecutionErrorMessage(error: unknown) {
@@ -831,17 +859,94 @@ class SolanaExecutionStateStore {
   }
 }
 
+class PaperDryRunStateStore {
+  private readonly path: string | undefined;
+  private memoryStore: PaperDryRunState = { version: 1, walletSolDelta: 0, positions: [] };
+
+  constructor(rootDir: string | undefined) {
+    this.path = rootDir ? join(rootDir, 'paper-dry-run-state.json') : undefined;
+  }
+
+  async read(): Promise<PaperDryRunState> {
+    if (!this.path) {
+      return this.memoryStore;
+    }
+
+    return (await readJsonIfExists(this.path, PaperDryRunStateSchema)) ?? {
+      version: 1,
+      walletSolDelta: 0,
+      positions: []
+    };
+  }
+
+  async write(store: PaperDryRunState) {
+    const parsed = PaperDryRunStateSchema.parse(store);
+
+    if (!this.path) {
+      this.memoryStore = parsed;
+      return;
+    }
+
+    await writeJsonAtomically(this.path, parsed);
+  }
+
+  async upsertOpenPosition(position: PaperDryRunPosition) {
+    const store = await this.read();
+    const positions = store.positions.filter((entry) =>
+      entry.chainPositionAddress !== position.chainPositionAddress
+      && (!position.openIntentId || entry.openIntentId !== position.openIntentId)
+    );
+    positions.push(position);
+    await this.write({
+      version: 1,
+      walletSolDelta: store.walletSolDelta - position.currentValueSol,
+      positions
+    });
+  }
+
+  async closePosition(input: {
+    chainPositionAddress?: string;
+    positionId?: string;
+    poolAddress: string;
+    tokenMint?: string;
+  }) {
+    const store = await this.read();
+    const identityMatch = store.positions.find((position) =>
+      (input.chainPositionAddress && position.chainPositionAddress === input.chainPositionAddress)
+      || (input.positionId && position.positionId === input.positionId)
+    );
+    const poolMintCandidates = store.positions.filter((position) =>
+      position.poolAddress === input.poolAddress && (!input.tokenMint || position.mint === input.tokenMint)
+    );
+    const match = identityMatch ?? (poolMintCandidates.length === 1 ? poolMintCandidates[0] : undefined);
+
+    if (!match) {
+      return undefined;
+    }
+
+    await this.write({
+      version: 1,
+      walletSolDelta: store.walletSolDelta + match.currentValueSol,
+      positions: store.positions.filter((position) => position.chainPositionAddress !== match.chainPositionAddress)
+    });
+
+    return match;
+  }
+}
+
 export function createSolanaExecutionServer(options: SolanaExecutionServerOptions) {
   const {
     keypair,
     rpcClient,
     jupiterClient,
-    defaultSlippageBps = 100
+    defaultSlippageBps = 100,
+    dryRun = false
   } = options;
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
   const store = new SolanaExecutionStateStore(options.stateRootDir);
+  const paperDryRunStore = new PaperDryRunStateStore(options.stateRootDir);
   const expectedSignerPublicKeys = options.expectedSignerPublicKeys ?? [];
   const idempotencyLocks = new Map<string, Promise<void>>();
   const tokenValueCache = new Map<string, TokenValueCacheEntry>();
@@ -900,7 +1005,75 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     reason: input.reason,
     retryable: input.retryable ?? true
   });
-  const sendVisibleRawTransaction = async (signedTransactionBase64: string) => {
+  const buildDryRunSignature = (signedTransactionBase64: string) => {
+    const digest = createHash('sha512')
+      .update('lightld-paper-dry-run-v1')
+      .update(signedTransactionBase64)
+      .digest();
+    return encodeBase58(digest);
+  };
+  const buildDryRunAddress = (seed: string) => {
+    const digest = createHash('sha256')
+      .update('lightld-paper-position-v1')
+      .update(seed)
+      .digest();
+    return encodeBase58(digest);
+  };
+  const toPaperLpPosition = (position: PaperDryRunPosition): AccountStateLpPosition => ({
+    poolAddress: position.poolAddress,
+    positionAddress: position.positionAddress,
+    chainPositionAddress: position.chainPositionAddress,
+    positionId: position.positionId,
+    openIntentId: position.openIntentId,
+    mint: position.mint,
+    lowerBinId: 0,
+    upperBinId: 68,
+    activeBinId: 34,
+    binCount: 69,
+    fundedBinCount: 69,
+    solSide: 'tokenX',
+    solDepletedBins: 0,
+    currentValueSol: position.currentValueSol,
+    withdrawSolAmount: position.currentValueSol,
+    liquidityValueSol: position.currentValueSol,
+    lpTotalValueSol: position.currentValueSol,
+    exitQuoteValueSol: position.currentValueSol,
+    displayValueSol: position.currentValueSol,
+    valuationTrust: 'exit_quote',
+    valuationCompleteness: 'complete',
+    positionStatus: 'active',
+    hasLiquidity: true,
+    hasClaimableFees: false,
+    valuationStatus: 'ready',
+    valuationReason: '',
+    valuationSource: 'paper-dry-run-overlay',
+    lastValuationAt: position.updatedAt
+  });
+  const simulateDryRunRawTransaction = async (signedTransactionBase64: string) => {
+    const simulator = rpcClient as SolanaRpcClient & {
+      simulateRawTransaction?: (
+        base64Transaction: string
+      ) => Promise<{ value: { err: unknown | null; logs?: string[] | null } }>;
+    };
+
+    if (typeof simulator.simulateRawTransaction !== 'function') {
+      throw new Error('Solana dry-run simulation unavailable: rpcClient.simulateRawTransaction is not configured');
+    }
+
+    const result = await simulator.simulateRawTransaction(signedTransactionBase64);
+    if (result.value.err) {
+      const logs = Array.isArray(result.value.logs) ? result.value.logs.filter(Boolean) : [];
+      const logSuffix = logs.length > 0 ? `; simulationLogs=${logs.slice(-12).join(' | ')}` : '';
+      throw new Error(`Solana dry-run simulation failed: ${JSON.stringify(result.value.err)}${logSuffix}`);
+    }
+
+    return buildDryRunSignature(signedTransactionBase64);
+  };
+  const submitRawTransaction = async (signedTransactionBase64: string) => {
+    if (dryRun) {
+      return simulateDryRunRawTransaction(signedTransactionBase64);
+    }
+
     const visibilitySender = rpcClient as SolanaRpcClient & {
       sendRawTransactionAndWaitForVisibility?: (
         base64Transaction: string
@@ -1070,7 +1243,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             writeJson(response, 200, {
               status: 'ok',
               wallet: walletPublicKey,
-              solBalance
+              solBalance,
+              dryRun
             });
             return;
           }
@@ -1133,7 +1307,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               positionId: intent.positionId,
               chainPositionAddress: intent.chainPositionAddress
             };
-            const tokenMint = intent.tokenMint ?? intent.poolAddress;
+            const tokenMint = intent.tokenMint || intent.poolAddress;
             let buildMs: number | undefined;
             let quoteMs: number | undefined;
             let swapBuildMs: number | undefined;
@@ -1143,6 +1317,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let visibleBroadcastRecorded = false;
             let swapProviderName: string | undefined;
             let swapProviderAttempts: SwapProviderAttempt[] | undefined;
+            let builtChainPositionAddress: string | undefined;
 
             try {
               let signedBase64 = '';
@@ -1195,7 +1370,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     rpcClient,
                     sendRawTransaction: async (signedTransactionBase64) => {
                       const sendStartedAt = Date.now();
-                      const signature = await sendVisibleRawTransaction(signedTransactionBase64);
+                      const signature = await submitRawTransaction(signedTransactionBase64);
                       visibleBroadcastRecorded = true;
                       sendTxMs.push(durationMs(sendStartedAt));
                       return signature;
@@ -1224,12 +1399,16 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   sendTxMs,
                   totalMs: durationMs(broadcastStartedAt),
                   swapProvider: swapProviderName,
-                  swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts)
+                  swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts),
+                  reason: dryRun ? 'paper-dry-run-simulated' : undefined,
+                  dryRun
                 });
 
                 await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                   idempotencyKey: intent.idempotencyKey,
                   signatures: [swapResult.signature],
+                  reason: dryRun ? 'paper-dry-run-simulated' : undefined,
+                  mainExecutionStatus: dryRun ? 'confirmed' : undefined,
                   ...lifecycleResultIdentity
                 }));
                 return;
@@ -1252,7 +1431,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 txBatch = toTransactionBatch(result.transaction);
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
+                  builtChainPositionAddress = result.newPositionKeypair.publicKey.toBase58();
                 }
+                builtChainPositionAddress ??= intent.chainPositionAddress
+                  ?? buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
               } else if (side === 'withdraw-lp') {
                 const buildStartedAt = Date.now();
                 txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(
@@ -1289,11 +1471,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   txParams.sign(...signers);
                   signedBase64 = txParams.serialize().toString('base64');
                   const sendStartedAt = Date.now();
-                  txSignatures.push(await sendVisibleRawTransaction(signedBase64));
+                  txSignatures.push(await submitRawTransaction(signedBase64));
                   visibleBroadcastRecorded = true;
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
-                  if (txSignatures.length === 0) {
+                  if (dryRun || txSignatures.length === 0) {
                     throw error;
                   }
 
@@ -1314,7 +1496,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     blockhashMs,
                     sendTxMs,
                     totalMs: durationMs(broadcastStartedAt),
-                    reason
+                    reason,
+                    dryRun
                   });
 
                   await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
@@ -1326,6 +1509,67 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   }));
                   return;
                 }
+              }
+
+              if (dryRun) {
+                const reason = 'paper-dry-run-simulated';
+                let dryRunChainPositionAddress = intent.chainPositionAddress;
+                if (side === 'add-lp') {
+                  dryRunChainPositionAddress = builtChainPositionAddress
+                    ?? buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
+                  await paperDryRunStore.upsertOpenPosition({
+                    poolAddress: intent.poolAddress,
+                    positionAddress: dryRunChainPositionAddress,
+                    chainPositionAddress: dryRunChainPositionAddress,
+                    positionId: intent.positionId,
+                    openIntentId: intent.openIntentId,
+                    mint: tokenMint,
+                    currentValueSol: intent.outputSol,
+                    openedAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                  });
+                } else if (side === 'withdraw-lp') {
+                  const closed = await paperDryRunStore.closePosition({
+                    chainPositionAddress: intent.chainPositionAddress,
+                    positionId: intent.positionId,
+                    poolAddress: intent.poolAddress,
+                    tokenMint: intent.tokenMint
+                  });
+                  dryRunChainPositionAddress = intent.chainPositionAddress ?? closed?.chainPositionAddress;
+                }
+                options.dlmmClient.invalidatePositionSnapshots?.(keypair.publicKey);
+                logBroadcastOutcome({
+                  event: 'solana-execution-broadcast',
+                  recordedAt: new Date().toISOString(),
+                  strategyId: intent.strategyId,
+                  idempotencyKey: intent.idempotencyKey,
+                  side,
+                  poolAddress: intent.poolAddress,
+                  tokenMint: intent.tokenMint,
+                  outputSol: intent.outputSol,
+                  result: 'submitted',
+                  acceptedSignatureCount: txSignatures.length,
+                  buildMs,
+                  blockhashMs,
+                  sendTxMs,
+                  totalMs: durationMs(broadcastStartedAt),
+                  reason,
+                  dryRun
+                });
+
+                await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
+                  idempotencyKey: intent.idempotencyKey,
+                  signatures: txSignatures,
+                  batchStatus: 'complete',
+                  reason,
+                  mainExecutionStatus: 'confirmed',
+                  residualSweepStatus: (side === 'withdraw-lp' || side === 'claim-fee') && intent.liquidateResidualTokenToSol
+                    ? 'complete'
+                    : undefined,
+                  ...lifecycleResultIdentity,
+                  chainPositionAddress: dryRunChainPositionAddress
+                }));
+                return;
               }
 
               if ((side === 'withdraw-lp' || side === 'claim-fee') && intent.liquidateResidualTokenToSol && intent.tokenMint) {
@@ -1369,7 +1613,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   walletPublicKey,
                   defaultSlippageBps,
                   jitoTipLamports: options.jitoTipLamports,
-                  sendRawTransaction: sendVisibleRawTransaction,
+                  sendRawTransaction: submitRawTransaction,
                   sendTxMs,
                   acceptedSignatures: txSignatures,
                   poolAddressByMint: new Map([[intent.tokenMint, intent.poolAddress]]),
@@ -1466,7 +1710,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 buildMs,
                 blockhashMs,
                 sendTxMs,
-                totalMs: durationMs(broadcastStartedAt)
+                totalMs: durationMs(broadcastStartedAt),
+                dryRun
               });
 
               await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
@@ -1499,7 +1744,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 totalMs: durationMs(broadcastStartedAt),
                 reason,
                 swapProvider: swapProviderName,
-                swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts)
+                swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts),
+                dryRun
               });
 
               if (!visibleBroadcastRecorded) {
@@ -1603,7 +1849,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               writeJson(response, 503, accountStateUnavailablePayload(error));
               return;
             }
-            const walletSol = lamports / LAMPORTS_PER_SOL;
+            let walletSol = lamports / LAMPORTS_PER_SOL;
 
             let walletTokens: {
               mint: string;
@@ -1672,6 +1918,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
             } catch {
               // Meteora positions query may fail on free RPC
+            }
+
+            if (dryRun) {
+              const paperState = await paperDryRunStore.read();
+              walletSol += paperState.walletSolDelta;
+              const paperPositions = paperState.positions.map(toPaperLpPosition);
+              const merged = new Map<string, AccountStateLpPosition>();
+              for (const position of [...walletLpPositions, ...paperPositions]) {
+                merged.set(position.chainPositionAddress ?? position.positionAddress, position);
+              }
+              walletLpPositions = Array.from(merged.values());
             }
 
             writeJson(response, 200, {

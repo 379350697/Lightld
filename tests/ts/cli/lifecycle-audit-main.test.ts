@@ -165,4 +165,28 @@ describe('lifecycle audit', () => {
       lastReason: 'superseded-by-chain-closed-position'
     });
   });
+
+  it('does not flag paper dry-run overlay positions as missing real chain records', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: '2026-07-05T04:55:00.000Z',
+      records: [{
+        positionKey: 'chain-position:paper-position',
+        positionId: 'paper-position',
+        chainPositionAddress: 'paper-position',
+        openIntentId: 'lp-open-intent:paper',
+        activeMint: 'mint-paper',
+        activePoolAddress: 'pool-paper',
+        lifecycleState: 'open',
+        entrySol: 0.01,
+        importStatus: 'imported',
+        lastAction: 'add-lp',
+        lastReason: 'chain-position-missing-without-exit-evidence',
+        valuationSource: 'paper-dry-run-overlay',
+        updatedAt: '2026-07-05T04:55:00.000Z'
+      }]
+    };
+
+    expect(findLifecycleIssues(ledger, null)).toEqual([]);
+  });
 });

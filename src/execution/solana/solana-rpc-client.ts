@@ -28,6 +28,14 @@ export type SignatureStatus = {
   confirmationStatus: 'processed' | 'confirmed' | 'finalized' | null;
 };
 
+export type TransactionSimulationResult = {
+  value: {
+    err: unknown | null;
+    logs?: string[] | null;
+    unitsConsumed?: number;
+  };
+};
+
 type AddressSignatureInfo = {
   signature: string;
   slot: number;
@@ -234,6 +242,17 @@ export class SolanaRpcClient {
         skipPreflight: false,
         preflightCommitment: 'confirmed',
         maxRetries: 5
+      }
+    ]);
+  }
+
+  async simulateRawTransaction(base64Transaction: string): Promise<TransactionSimulationResult> {
+    return this.call<TransactionSimulationResult>('simulateTransaction', [
+      base64Transaction,
+      {
+        encoding: 'base64',
+        commitment: 'confirmed',
+        sigVerify: true
       }
     ]);
   }

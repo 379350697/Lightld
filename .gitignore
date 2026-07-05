@@ -4,8 +4,10 @@ liudx-ref/
 node_modules/
 dist/
 coverage/
+logs/
 tmp/
 state/
+state-paper*/
 secrets/
 .venv/
 *.sqlite

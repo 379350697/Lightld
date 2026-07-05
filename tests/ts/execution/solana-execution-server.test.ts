@@ -182,6 +182,235 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('dry-runs Meteora open batches through simulation without sending transactions', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const keypair = Keypair.generate();
+    const transactions = [
+      new FakeTransaction('open-1'),
+      new FakeTransaction('open-2')
+    ];
+    const simulated: string[] = [];
+    const sendRawTransaction = vi.fn(async () => 'unexpected-live-signature');
+    const simulateRawTransaction = vi.fn(async (base64: string) => {
+      simulated.push(Buffer.from(base64, 'base64').toString('utf8'));
+      return { value: { err: null, logs: ['simulation ok'] } };
+    });
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction,
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: transactions as any
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const healthResponse = await fetch(`${server.origin}/health`);
+    const health = await healthResponse.json();
+    expect(health).toMatchObject({ status: 'ok', dryRun: true });
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp'))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+    expect(simulated).toEqual(['open-1', 'open-2']);
+    expect(payload).toMatchObject({
+      status: 'submitted',
+      idempotencyKey: 'k-add-lp',
+      mainExecutionStatus: 'confirmed',
+      reason: 'paper-dry-run-simulated',
+      batchStatus: 'complete'
+    });
+    expect(payload.chainPositionAddress).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,88}$/);
+    expect(payload.submissionIds).toHaveLength(2);
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"dryRun":true');
+    expect(String(infoSpy.mock.calls[0]?.[0])).toContain('"reason":"paper-dry-run-simulated"');
+
+    const accountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await accountResponse.json();
+
+    expect(account.walletSol).toBe(1.9);
+    expect(account.walletLpPositions).toEqual([
+      expect.objectContaining({
+        poolAddress: 'pool-1',
+        positionAddress: payload.chainPositionAddress,
+        chainPositionAddress: payload.chainPositionAddress,
+        mint: 'pool-1',
+        currentValueSol: 0.1,
+        valuationSource: 'paper-dry-run-overlay'
+      })
+    ]);
+
+    await server.stop();
+  });
+
+  it('closes dry-run overlay LP positions without touching live send', async () => {
+    const keypair = Keypair.generate();
+    const newPositionKeypair = Keypair.generate();
+    const sendRawTransaction = vi.fn(async () => 'unexpected-live-signature');
+    const simulateRawTransaction = vi.fn(async () => ({ value: { err: null, logs: ['ok'] } }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction,
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1'),
+          newPositionKeypair
+        }),
+        removeLiquidity: async () => new FakeTransaction('close-1'),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const openResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        tokenMint: 'earthcoin-mint',
+        idempotencyKey: 'dry-run-open-close'
+      }))
+    });
+    const openPayload = await openResponse.json();
+
+    expect(openPayload.chainPositionAddress).toBe(newPositionKeypair.publicKey.toBase58());
+
+    const closeResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        tokenMint: 'earthcoin-mint',
+        idempotencyKey: 'dry-run-close',
+        chainPositionAddress: openPayload.chainPositionAddress
+      }))
+    });
+    const closePayload = await closeResponse.json();
+
+    expect(closePayload).toMatchObject({
+      status: 'submitted',
+      mainExecutionStatus: 'confirmed',
+      chainPositionAddress: openPayload.chainPositionAddress
+    });
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+
+    const accountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await accountResponse.json();
+
+    expect(account.walletSol).toBe(2);
+    expect(account.walletLpPositions).toEqual([]);
+
+    await server.stop();
+  });
+
+  it('returns failed and does not send when dry-run simulation fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const keypair = Keypair.generate();
+    const sendRawTransaction = vi.fn(async () => 'unexpected-live-signature');
+    const simulateRawTransaction = vi.fn(async () => ({
+      value: {
+        err: { InstructionError: [1, { Custom: 1 }] },
+        logs: [
+          'Program log: Error Code: InsufficientFunds',
+          'Program failed: custom program error: 0x1'
+        ]
+      }
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction,
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        })
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-sim-failed'
+      }))
+    });
+
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      status: 'failed',
+      idempotencyKey: 'dry-run-sim-failed',
+      retryable: true
+    });
+    expect(payload.reason).toContain('Solana dry-run simulation failed');
+    expect(payload.reason).toContain('InsufficientFunds');
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('"dryRun":true');
+
+    await server.stop();
+  });
+
   it('accepts a canonical signed add-lp intent with lifecycle identity fields', async () => {
     const keypair = Keypair.generate();
     const newPositionKeypair = Keypair.generate();

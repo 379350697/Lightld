@@ -3722,7 +3722,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     chainPositionAddress: actionIdentity.chainPositionAddress
   });
   currentActionIdentity = actionIdentity;
-  const orderLifecycleKey = buildMirrorLifecycleKey({
+  const buildCurrentOrderLifecycleKey = () => buildMirrorLifecycleKey({
     tokenMint: logContext.tokenMint,
     openIntentId: actionIdentity.openIntentId,
     positionId: actionIdentity.positionId,
@@ -3764,7 +3764,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
     emitMirrorEvent(mirrorSink, () => {
       mirrorSink!.enqueue(toOrderMirrorEvent(buildOrderMirrorPayload({
-        lifecycleKey: orderLifecycleKey,
+        lifecycleKey: buildCurrentOrderLifecycleKey(),
         idempotencyKey: orderIntent.idempotencyKey,
         cycleId: logContext.cycleId,
         strategyId: input.strategy,
@@ -3955,6 +3955,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       severity: failureSeverity,
       quoteCollected: true
     });
+  }
+
+  if (broadcastResult.chainPositionAddress && !actionIdentity.chainPositionAddress) {
+    actionIdentity.chainPositionAddress = broadcastResult.chainPositionAddress;
   }
 
   let confirmation: {

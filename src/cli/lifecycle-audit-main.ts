@@ -53,6 +53,10 @@ function targetKey(record: PositionLedgerRecord) {
   return `${record.chainPositionAddress ?? ''}|${record.activePoolAddress ?? ''}|${record.activeMint ?? ''}`;
 }
 
+function isPaperDryRunOverlayRecord(record: PositionLedgerRecord) {
+  return record.valuationSource === 'paper-dry-run-overlay';
+}
+
 type CrossTargetIdentityIssue = { kind: 'cross-target-identity'; field: 'openIntentId' | 'positionId'; value: string; targets: string[] };
 type StaleOpenPendingIssue = { kind: 'stale-open-pending'; positionKey: string; poolAddress?: string; tokenMint?: string; reason?: string };
 type SyntheticLiveWithoutChainIssue = {
@@ -272,6 +276,7 @@ function findOpenButArchivedOrMissingIssues(ledger: PositionLedgerSnapshot | nul
   return (ledger?.records ?? [])
     .filter((record) =>
       record.lifecycleState === 'open'
+      && !isPaperDryRunOverlayRecord(record)
       && (
         Boolean(record.missingOnChainSince)
         || record.importStatus === 'archived_missing_without_exit_evidence'
@@ -292,6 +297,7 @@ function findChainOpenMissingIssues(ledger: PositionLedgerSnapshot | null): Chai
   return (ledger?.records ?? [])
     .filter((record) =>
       record.lifecycleState === 'open'
+      && !isPaperDryRunOverlayRecord(record)
       && Boolean(record.chainPositionAddress)
       && Boolean(record.missingOnChainSince)
     )
