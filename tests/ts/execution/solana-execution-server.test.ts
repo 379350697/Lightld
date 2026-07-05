@@ -255,7 +255,7 @@ describe('createSolanaExecutionServer', () => {
     });
     const account = await accountResponse.json();
 
-    expect(account.walletSol).toBe(1.9);
+    expect(account.walletSol).toBe(999_999.9);
     expect(account.walletLpPositions).toEqual([
       expect.objectContaining({
         poolAddress: 'pool-1',
@@ -266,6 +266,66 @@ describe('createSolanaExecutionServer', () => {
         valuationSource: 'paper-dry-run-overlay'
       })
     ]);
+
+    await server.stop();
+  });
+
+  it('uses an effectively unlimited paper SOL balance for dry-run account state', async () => {
+    const keypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 181_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction: vi.fn(async () => ({
+          value: {
+            err: { InstructionError: [1, { Custom: 1 }] },
+            logs: ['Transfer: insufficient lamports 181000000, need 1000000000']
+          }
+        }))
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const beforeResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const beforeAccount = await beforeResponse.json();
+
+    expect(beforeAccount.walletSol).toBeGreaterThan(100_000);
+
+    await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-paper-unlimited-sol',
+        outputSol: 1
+      }))
+    });
+
+    const afterResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const afterAccount = await afterResponse.json();
+
+    expect(afterAccount.walletSol).toBeGreaterThan(100_000);
 
     await server.stop();
   });
@@ -343,7 +403,7 @@ describe('createSolanaExecutionServer', () => {
     });
     const account = await accountResponse.json();
 
-    expect(account.walletSol).toBe(2);
+    expect(account.walletSol).toBe(1_000_000);
     expect(account.walletLpPositions).toEqual([]);
 
     await server.stop();

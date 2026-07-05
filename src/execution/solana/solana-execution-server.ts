@@ -191,6 +191,7 @@ const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
 const RESIDUAL_TOKEN_SWEEP_PASSES = 3;
 const RESIDUAL_TOKEN_DISCOVERY_PASSES = 6;
 const RESIDUAL_TOKEN_MIN_SOL_VALUE = 0;
+const PAPER_DRY_RUN_WALLET_SOL = 1_000_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -419,6 +420,10 @@ function isBareFetchFailure(error: unknown) {
 
 function isDlmmBinSlippageMessage(message: string) {
   return /ExceededBinSlippageTolerance|custom program error:\s*0x1774|\"Custom\":6004|Custom.*6004/i.test(message);
+}
+
+function isPaperDryRunWalletFundingMessage(message: string) {
+  return /insufficient lamports|insufficient funds for rent|attempt to debit an account/i.test(message);
 }
 
 function classifyOperationError(error: unknown, operation: string) {
@@ -1185,6 +1190,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           executionFailureOperation: 'rpc-simulate',
           retryable: true
         });
+      }
+      if (isPaperDryRunWalletFundingMessage(rawReason)) {
+        return buildDryRunSignature(signedTransactionBase64);
       }
       throw new Error(rawReason);
     }
@@ -2133,7 +2141,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             if (dryRun) {
               const paperState = await paperDryRunStore.read();
-              walletSol += paperState.walletSolDelta;
+              walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
               const paperPositions = paperState.positions.map(toPaperLpPosition);
               const merged = new Map<string, AccountStateLpPosition>();
               for (const position of [...walletLpPositions, ...paperPositions]) {
