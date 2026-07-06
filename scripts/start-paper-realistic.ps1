@@ -13,6 +13,11 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $Root).Path
 Set-Location $Root
 
+$stopScript = Join-Path $PSScriptRoot "stop-lightld.ps1"
+foreach ($role in @("signer", "execution", "candidate", "daemon")) {
+    & $stopScript -Root $Root -Role $role
+}
+
 $roles = @("signer", "execution", "candidate", "daemon")
 $started = @()
 foreach ($role in $roles) {
