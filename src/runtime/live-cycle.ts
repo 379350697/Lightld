@@ -3373,10 +3373,21 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const actionableAction = runtimeAction.action;
+  const actionTargetLpPosition = (
+    actionableAction === 'withdraw-lp'
+    || actionableAction === 'claim-fee'
+    || actionableAction === 'rebalance-lp'
+  )
+    ? (multiLpExit?.position ?? observedLpPosition?.position)
+    : undefined;
+  const actionTargetChainPositionAddress = firstString(
+    actionTargetLpPosition?.chainPositionAddress,
+    actionTargetLpPosition?.positionAddress,
+    actionTargetLpPosition?.positionId
+  );
   const actionableTokenMint = activeMint || logContext.tokenMint;
   const actionableChainPositionAddress = firstString(
-    multiLpExit?.position.chainPositionAddress,
-    multiLpExit?.position.positionAddress,
+    actionTargetChainPositionAddress,
     input.positionState?.chainPositionAddress
   );
   const hasActiveLpForActionTarget = Boolean(
@@ -3572,8 +3583,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       tokenMint: logContext.tokenMint,
       poolAddress,
       chainPositionAddress: firstString(
-        multiLpExit?.position.chainPositionAddress,
-        multiLpExit?.position.positionAddress,
+        actionTargetChainPositionAddress,
         input.positionState?.chainPositionAddress
       )
     })) {
@@ -3626,8 +3636,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         tokenMint: logContext.tokenMint,
         poolAddress,
         chainPositionAddress: firstString(
-          multiLpExit?.position.chainPositionAddress,
-          multiLpExit?.position.positionAddress,
+          actionTargetChainPositionAddress,
           input.positionState?.chainPositionAddress
         )
       })) {
@@ -3704,10 +3713,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     pendingSubmission,
     poolAddress: executionPlan.poolAddress,
     tokenMint: logContext.tokenMint,
-    chainPositionAddress: firstString(
-      multiLpExit?.position.chainPositionAddress,
-      multiLpExit?.position.positionAddress
-    )
+    chainPositionAddress: actionTargetChainPositionAddress
   });
   if (actionableAction === 'withdraw-lp' && !actionIdentity.chainPositionAddress) {
     return blockCycle({
