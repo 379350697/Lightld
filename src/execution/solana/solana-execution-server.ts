@@ -115,7 +115,17 @@ const PaperDryRunPositionSchema = z.object({
   positionId: z.string().min(1).optional(),
   openIntentId: z.string().min(1).optional(),
   mint: z.string().min(1),
+  entrySol: z.number().finite().positive().optional(),
+  activeBinIdAtOpen: z.number().int().optional(),
+  activeBinId: z.number().int().optional(),
+  lowerBinId: z.number().int().optional(),
+  upperBinId: z.number().int().optional(),
+  binSlippageBps: z.number().finite().nonnegative().optional(),
+  solSide: z.enum(['tokenX', 'tokenY']).optional(),
   currentValueSol: z.number().finite().nonnegative(),
+  valuationStatus: z.enum(['ready', 'unavailable', 'stale', 'invalid']).optional(),
+  valuationReason: z.string().optional(),
+  valuationSource: z.string().optional(),
   openedAt: z.string().min(1),
   updatedAt: z.string().min(1)
 });
@@ -982,9 +992,12 @@ class PaperDryRunStateStore {
       && (!position.openIntentId || entry.openIntentId !== position.openIntentId)
     );
     positions.push(position);
+    const entrySol = typeof position.entrySol === 'number' && position.entrySol > 0
+      ? position.entrySol
+      : position.currentValueSol;
     await this.write({
       version: 1,
-      walletSolDelta: store.walletSolDelta - position.currentValueSol,
+      walletSolDelta: store.walletSolDelta - entrySol,
       positions
     });
   }
@@ -1133,6 +1146,206 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
       .digest();
     return encodeBase58(digest);
   };
+  const computePaperPositionValueSol = (input: {
+    entrySol: number;
+    activeBinIdAtOpen?: number;
+    lowerBinId?: number;
+    upperBinId?: number;
+    currentActiveBinId: number;
+    solSide?: 'tokenX' | 'tokenY';
+  }) => {
+    if (!Number.isFinite(input.entrySol) || input.entrySol <= 0) {
+      return undefined;
+    }
+    if (
+      typeof input.activeBinIdAtOpen !== 'number' ||
+      typeof input.lowerBinId !== 'number' ||
+      typeof input.upperBinId !== 'number' ||
+      typeof input.solSide !== 'string'
+    ) {
+      return input.entrySol;
+    }
+
+    const width = Math.max(1, input.upperBinId - input.lowerBinId);
+    const openOffset = input.solSide === 'tokenX'
+      ? input.activeBinIdAtOpen - input.lowerBinId
+      : input.upperBinId - input.activeBinIdAtOpen;
+    const currentOffset = input.solSide === 'tokenX'
+      ? input.currentActiveBinId - input.lowerBinId
+      : input.upperBinId - input.currentActiveBinId;
+    const deltaBins = currentOffset - openOffset;
+    const drift = deltaBins / width;
+    const boundedDrift = Math.max(-1.5, Math.min(1.5, drift));
+    const value = input.entrySol * (1 + boundedDrift * 0.18);
+    return Math.max(0, Math.round(value * 1_000_000_000) / 1_000_000_000);
+  };
+  const inferSolSideFromBuildRange = (input: {
+    activeBinIdAtBuild?: number;
+    lowerBinIdAtBuild?: number;
+    upperBinIdAtBuild?: number;
+  }): 'tokenX' | 'tokenY' | undefined => {
+    if (
+      typeof input.activeBinIdAtBuild !== 'number' ||
+      typeof input.lowerBinIdAtBuild !== 'number' ||
+      typeof input.upperBinIdAtBuild !== 'number'
+    ) {
+      return undefined;
+    }
+
+    if (input.activeBinIdAtBuild === input.lowerBinIdAtBuild) {
+      return 'tokenX';
+    }
+    if (input.activeBinIdAtBuild === input.upperBinIdAtBuild) {
+      return 'tokenY';
+    }
+    return undefined;
+  };
+  const backfillPaperPositionOpenEvidence = (
+    position: PaperDryRunPosition,
+    submissions: SubmissionStore
+  ): PaperDryRunPosition => {
+    if (
+      typeof position.entrySol === 'number' &&
+      typeof position.activeBinIdAtOpen === 'number' &&
+      typeof position.lowerBinId === 'number' &&
+      typeof position.upperBinId === 'number' &&
+      position.solSide
+    ) {
+      return position;
+    }
+
+    const match = submissions.submissions.find((entry) => {
+      const intent = entry.signedIntent.intent;
+      const result = entry.result;
+      if (intent.side !== 'add-lp' || result?.status !== 'submitted') {
+        return false;
+      }
+
+      return (result.chainPositionAddress && result.chainPositionAddress === position.chainPositionAddress)
+        || (intent.openIntentId && intent.openIntentId === position.openIntentId)
+        || (intent.positionId && intent.positionId === position.positionId);
+    });
+
+    if (!match?.result) {
+      return position;
+    }
+
+    const result = match.result;
+    const inferredSolSide = inferSolSideFromBuildRange({
+      activeBinIdAtBuild: result.activeBinIdAtBuild,
+      lowerBinIdAtBuild: result.lowerBinIdAtBuild,
+      upperBinIdAtBuild: result.upperBinIdAtBuild
+    });
+
+    return {
+      ...position,
+      entrySol: position.entrySol ?? match.signedIntent.intent.outputSol,
+      activeBinIdAtOpen: position.activeBinIdAtOpen ?? result.activeBinIdAtBuild,
+      activeBinId: position.activeBinId ?? result.activeBinIdAtBuild,
+      lowerBinId: position.lowerBinId ?? result.lowerBinIdAtBuild,
+      upperBinId: position.upperBinId ?? result.upperBinIdAtBuild,
+      binSlippageBps: position.binSlippageBps ?? result.binSlippageBps,
+      solSide: position.solSide ?? inferredSolSide
+    };
+  };
+  const revaluePaperDryRunState = async (paperState: PaperDryRunState): Promise<PaperDryRunState> => {
+    if (
+      !dryRun ||
+      !options.dlmmClient ||
+      typeof options.dlmmClient.getPoolPriceSnapshot !== 'function' ||
+      paperState.positions.length === 0
+    ) {
+      return paperState;
+    }
+
+    let changed = false;
+    const updatedPositions: PaperDryRunPosition[] = [];
+    const submissions = await store.read();
+    for (const position of paperState.positions) {
+      const positionWithEvidence = backfillPaperPositionOpenEvidence(position, submissions);
+      if (
+        typeof positionWithEvidence.entrySol !== 'number' ||
+        typeof positionWithEvidence.activeBinIdAtOpen !== 'number' ||
+        typeof positionWithEvidence.lowerBinId !== 'number' ||
+        typeof positionWithEvidence.upperBinId !== 'number' ||
+        !positionWithEvidence.solSide
+      ) {
+        const next = {
+          ...positionWithEvidence,
+          valuationStatus: 'unavailable' as const,
+          valuationReason: 'paper-open-bin-evidence-missing',
+          valuationSource: 'paper-dry-run-overlay',
+          updatedAt: new Date().toISOString()
+        };
+        changed = changed
+          || JSON.stringify(next) !== JSON.stringify(position);
+        updatedPositions.push(next);
+        continue;
+      }
+
+      try {
+        const pool = await options.dlmmClient.getPoolPriceSnapshot(positionWithEvidence.poolAddress);
+        const currentValueSol = computePaperPositionValueSol({
+          entrySol: positionWithEvidence.entrySol,
+          activeBinIdAtOpen: positionWithEvidence.activeBinIdAtOpen,
+          lowerBinId: positionWithEvidence.lowerBinId,
+          upperBinId: positionWithEvidence.upperBinId,
+          currentActiveBinId: pool.activeBinId,
+          solSide: positionWithEvidence.solSide
+        }) ?? positionWithEvidence.currentValueSol;
+        const next = {
+          ...positionWithEvidence,
+          activeBinId: pool.activeBinId,
+          currentValueSol,
+          valuationStatus: 'ready' as const,
+          valuationReason: '',
+          valuationSource: 'paper-shadow-dlmm-active-bin',
+          updatedAt: new Date().toISOString()
+        };
+        changed = changed
+          || JSON.stringify(positionWithEvidence) !== JSON.stringify(position)
+          || next.currentValueSol !== position.currentValueSol
+          || next.activeBinId !== position.activeBinId
+          || next.valuationSource !== position.valuationSource
+          || next.solSide !== position.solSide;
+        updatedPositions.push(next);
+      } catch (error) {
+        const next = {
+          ...positionWithEvidence,
+          valuationStatus: 'unavailable' as const,
+          valuationReason: error instanceof Error ? error.message : String(error),
+          valuationSource: position.valuationSource ?? 'paper-shadow-dlmm-active-bin',
+          updatedAt: new Date().toISOString()
+        };
+        changed = changed
+          || next.valuationStatus !== position.valuationStatus
+          || next.valuationReason !== position.valuationReason
+          || next.valuationSource !== position.valuationSource;
+        updatedPositions.push(next);
+      }
+    }
+
+    const nextStore = { ...paperState, positions: updatedPositions };
+    if (changed) {
+      await paperDryRunStore.write(nextStore);
+    }
+    return nextStore;
+  };
+  const computePaperSolDepletedBins = (position: PaperDryRunPosition) => {
+    if (
+      typeof position.lowerBinId !== 'number' ||
+      typeof position.upperBinId !== 'number' ||
+      typeof position.activeBinId !== 'number'
+    ) {
+      return 0;
+    }
+
+    if (position.solSide === 'tokenX') {
+      return Math.max(0, Math.min(position.upperBinId - position.lowerBinId + 1, position.activeBinId - position.lowerBinId));
+    }
+
+    return Math.max(0, Math.min(position.upperBinId - position.lowerBinId + 1, position.upperBinId - position.activeBinId));
+  };
   const toPaperLpPosition = (position: PaperDryRunPosition): AccountStateLpPosition => ({
     poolAddress: position.poolAddress,
     positionAddress: position.positionAddress,
@@ -1140,13 +1353,15 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     positionId: position.positionId,
     openIntentId: position.openIntentId,
     mint: position.mint,
-    lowerBinId: 0,
-    upperBinId: 68,
-    activeBinId: 34,
-    binCount: 69,
+    lowerBinId: position.lowerBinId ?? 0,
+    upperBinId: position.upperBinId ?? 68,
+    activeBinId: position.activeBinId ?? position.activeBinIdAtOpen ?? 34,
+    binCount: typeof position.lowerBinId === 'number' && typeof position.upperBinId === 'number'
+      ? Math.max(0, position.upperBinId - position.lowerBinId + 1)
+      : 69,
     fundedBinCount: 69,
-    solSide: 'tokenX',
-    solDepletedBins: 0,
+    solSide: position.solSide ?? 'tokenX',
+    solDepletedBins: computePaperSolDepletedBins(position),
     currentValueSol: position.currentValueSol,
     withdrawSolAmount: position.currentValueSol,
     liquidityValueSol: position.currentValueSol,
@@ -1158,9 +1373,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     positionStatus: 'active',
     hasLiquidity: true,
     hasClaimableFees: false,
-    valuationStatus: 'ready',
-    valuationReason: '',
-    valuationSource: 'paper-dry-run-overlay',
+    valuationStatus: position.valuationStatus ?? 'ready',
+    valuationReason: position.valuationReason ?? '',
+    valuationSource: position.valuationSource ?? 'paper-dry-run-overlay',
     lastValuationAt: position.updatedAt
   });
   const simulateDryRunRawTransaction = async (signedTransactionBase64: string) => {
@@ -1461,6 +1676,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let lowerBinIdAtBuild: number | undefined;
             let upperBinIdAtBuild: number | undefined;
             let binSlippageBps: number | undefined;
+            let solSideAtBuild: 'tokenX' | 'tokenY' | undefined;
 
             try {
               let signedBase64 = '';
@@ -1557,6 +1773,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 return;
               } else {
                 if (dryRun && side === 'withdraw-lp') {
+                  await revaluePaperDryRunState(await paperDryRunStore.read());
                   const closed = await paperDryRunStore.closePosition({
                     chainPositionAddress: intent.chainPositionAddress,
                     positionId: intent.positionId,
@@ -1627,6 +1844,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 lowerBinIdAtBuild = typeof result.lowerBinId === 'number' ? result.lowerBinId : lowerBinIdAtBuild;
                 upperBinIdAtBuild = typeof result.upperBinId === 'number' ? result.upperBinId : upperBinIdAtBuild;
                 binSlippageBps = typeof result.binSlippageBps === 'number' ? result.binSlippageBps : binSlippageBps;
+                solSideAtBuild = result.solSide === 'tokenX' || result.solSide === 'tokenY' ? result.solSide : solSideAtBuild;
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
                   builtChainPositionAddress = result.newPositionKeypair.publicKey.toBase58();
@@ -1710,6 +1928,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     lowerBinIdAtBuild = typeof rebuilt.lowerBinId === 'number' ? rebuilt.lowerBinId : lowerBinIdAtBuild;
                     upperBinIdAtBuild = typeof rebuilt.upperBinId === 'number' ? rebuilt.upperBinId : upperBinIdAtBuild;
                     binSlippageBps = typeof rebuilt.binSlippageBps === 'number' ? rebuilt.binSlippageBps : binSlippageBps;
+                    solSideAtBuild = rebuilt.solSide === 'tokenX' || rebuilt.solSide === 'tokenY' ? rebuilt.solSide : solSideAtBuild;
                     txIndex = -1;
                     continue;
                   }
@@ -1763,11 +1982,22 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     positionId: intent.positionId,
                     openIntentId: intent.openIntentId,
                     mint: tokenMint,
+                    entrySol: intent.outputSol,
+                    activeBinIdAtOpen: activeBinIdAtBuild,
+                    activeBinId: activeBinIdAtBuild,
+                    lowerBinId: lowerBinIdAtBuild,
+                    upperBinId: upperBinIdAtBuild,
+                    binSlippageBps,
+                    solSide: solSideAtBuild,
                     currentValueSol: intent.outputSol,
+                    valuationStatus: 'ready',
+                    valuationReason: '',
+                    valuationSource: 'paper-dry-run-overlay',
                     openedAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString()
                   });
                 } else if (side === 'withdraw-lp') {
+                  await revaluePaperDryRunState(await paperDryRunStore.read());
                   const closed = await paperDryRunStore.closePosition({
                     chainPositionAddress: intent.chainPositionAddress,
                     positionId: intent.positionId,
@@ -2110,7 +2340,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           // Account state — query wallet SOL and token balances from RPC
           if (request.method === 'GET' && request.url === '/account-state') {
             if (dryRun) {
-              const paperState = await paperDryRunStore.read();
+              const paperState = await revaluePaperDryRunState(await paperDryRunStore.read());
               const walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
               const walletLpPositions = paperState.positions.map(toPaperLpPosition);
               writeJson(response, 200, {

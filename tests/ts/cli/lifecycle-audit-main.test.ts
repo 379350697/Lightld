@@ -189,4 +189,46 @@ describe('lifecycle audit', () => {
 
     expect(findLifecycleIssues(ledger, null)).toEqual([]);
   });
+
+  it('repairs paper reconcile blockers as closed when the overlay position is gone', () => {
+    const ledger: PositionLedgerSnapshot = {
+      version: 1,
+      updatedAt: '2026-07-06T12:40:00.000Z',
+      records: [{
+        positionKey: 'chain-position:paper-position',
+        positionId: 'paper-position',
+        chainPositionAddress: 'paper-position',
+        openIntentId: 'lp-open-intent:paper',
+        activeMint: 'mint-paper',
+        activePoolAddress: 'pool-paper',
+        lifecycleState: 'reconcile_required',
+        entrySol: 1,
+        importStatus: 'archived_missing_without_exit_evidence',
+        lastAction: 'add-lp',
+        lastReason: 'chain-position-missing-without-exit-evidence',
+        evidenceMissingReason: 'chain-position-missing-without-exit-evidence',
+        missingOnChainSince: '2026-07-06T12:35:00.000Z',
+        valuationSource: 'paper-shadow-dlmm-active-bin',
+        updatedAt: '2026-07-06T12:40:00.000Z'
+      }]
+    };
+
+    expect(findLifecycleIssues(ledger, null)).toEqual([
+      expect.objectContaining({
+        kind: 'paper-reconcile-closed',
+        positionKey: 'chain-position:paper-position'
+      })
+    ]);
+
+    const repaired = repairLedger(ledger, null, '2026-07-06T12:41:00.000Z');
+
+    expect(repaired.ledger.records[0]).toMatchObject({
+      lifecycleState: 'closed',
+      importStatus: 'superseded_closed',
+      lastReason: 'paper-overlay-position-closed',
+      lastClosedAt: '2026-07-06T12:41:00.000Z'
+    });
+    expect(repaired.ledger.records[0].missingOnChainSince).toBeUndefined();
+    expect(findLifecycleIssues(repaired.ledger, null)).toEqual([]);
+  });
 });

@@ -270,6 +270,237 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('marks paper LP positions to live DLMM active-bin value before account-state and close', async () => {
+    const keypair = Keypair.generate();
+    const newPositionKeypair = Keypair.generate();
+    const simulateRawTransaction = vi.fn(async () => ({ value: { err: null, logs: ['ok'] } }));
+    const getPoolPriceSnapshot = vi.fn(async () => ({
+      poolAddress: 'pool-1',
+      activeBinId: 134,
+      binStep: 100,
+      tokenXMint: 'So11111111111111111111111111111111111111112',
+      tokenYMint: 'earthcoin-mint',
+      tokenXIsSol: true,
+      tokenYIsSol: false,
+      solSide: 'tokenX' as const,
+      currentPrice: 1
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1'),
+          newPositionKeypair,
+          activeBinId: 100,
+          lowerBinId: 100,
+          upperBinId: 168,
+          binSlippageBps: 100,
+          solSide: 'tokenX' as const
+        }),
+        getPoolPriceSnapshot,
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    const openResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        idempotencyKey: 'dry-run-mark-to-market',
+        outputSol: 1,
+        tokenMint: 'earthcoin-mint'
+      }))
+    });
+    const openPayload = await openResponse.json();
+
+    expect(openPayload).toMatchObject({
+      status: 'submitted',
+      chainPositionAddress: newPositionKeypair.publicKey.toBase58(),
+      activeBinIdAtBuild: 100,
+      lowerBinIdAtBuild: 100,
+      upperBinIdAtBuild: 168
+    });
+
+    const accountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const account = await accountResponse.json();
+
+    expect(account.walletLpPositions).toEqual([
+      expect.objectContaining({
+        chainPositionAddress: newPositionKeypair.publicKey.toBase58(),
+        currentValueSol: 1.09,
+        withdrawSolAmount: 1.09,
+        activeBinId: 134,
+        lowerBinId: 100,
+        upperBinId: 168,
+        solDepletedBins: 34,
+        valuationSource: 'paper-shadow-dlmm-active-bin'
+      })
+    ]);
+    expect(account.walletSol).toBe(999_999);
+
+    const closeResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('withdraw-lp', {
+        idempotencyKey: 'dry-run-mark-to-market-close',
+        outputSol: 1,
+        tokenMint: 'earthcoin-mint',
+        chainPositionAddress: newPositionKeypair.publicKey.toBase58()
+      }))
+    });
+    const closePayload = await closeResponse.json();
+
+    expect(closePayload).toMatchObject({
+      status: 'submitted',
+      reason: 'paper-dry-run-simulated',
+      chainPositionAddress: newPositionKeypair.publicKey.toBase58()
+    });
+
+    const closedAccountResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const closedAccount = await closedAccountResponse.json();
+
+    expect(closedAccount.walletLpPositions).toEqual([]);
+    expect(closedAccount.walletSol).toBe(1_000_000.09);
+    expect(getPoolPriceSnapshot).toHaveBeenCalledWith('pool-1');
+    expect(simulateRawTransaction).toHaveBeenCalledTimes(1);
+
+    await server.stop();
+  });
+
+  it('backfills historical paper LP build ranges from submitted add-lp evidence before valuation', async () => {
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-paper-backfill-'));
+    const keypair = Keypair.generate();
+    const signedIntent = defaultIntentSigner.sign(buildIntent('add-lp', {
+      idempotencyKey: 'historical-open',
+      outputSol: 1,
+      tokenMint: 'earthcoin-mint',
+      openIntentId: 'open-1',
+      positionId: 'pool-1:earthcoin-mint'
+    }));
+
+    await writeFile(join(stateRootDir, 'paper-dry-run-state.json'), JSON.stringify({
+      version: 1,
+      walletSolDelta: -1,
+      positions: [{
+        poolAddress: 'pool-1',
+        positionAddress: 'paper-position-1',
+        chainPositionAddress: 'paper-position-1',
+        positionId: 'pool-1:earthcoin-mint',
+        openIntentId: 'open-1',
+        mint: 'earthcoin-mint',
+        currentValueSol: 1,
+        openedAt: '2026-07-06T00:00:00.000Z',
+        updatedAt: '2026-07-06T00:00:00.000Z'
+      }]
+    }));
+    await writeFile(join(stateRootDir, 'solana-execution-submissions.json'), JSON.stringify({
+      submissions: [{
+        idempotencyKey: 'historical-open',
+        signedIntentFingerprint: 'historical-open-fingerprint',
+        signedIntent,
+        status: 'submitted',
+        result: {
+          status: 'submitted',
+          submissionId: 'dry-run-sig',
+          idempotencyKey: 'historical-open',
+          confirmationSignature: 'dry-run-sig',
+          submissionIds: ['dry-run-sig'],
+          confirmationSignatures: ['dry-run-sig'],
+          batchStatus: 'complete',
+          reason: 'paper-dry-run-simulated',
+          mainExecutionStatus: 'confirmed',
+          openIntentId: 'open-1',
+          positionId: 'pool-1:earthcoin-mint',
+          chainPositionAddress: 'paper-position-1',
+          activeBinIdAtBuild: 100,
+          lowerBinIdAtBuild: 100,
+          upperBinIdAtBuild: 168,
+          binSlippageBps: 100
+        },
+        receivedAt: '2026-07-06T00:00:00.000Z',
+        updatedAt: '2026-07-06T00:00:00.000Z'
+      }]
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(),
+        simulateRawTransaction: vi.fn()
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        getPoolPriceSnapshot: async () => ({
+          poolAddress: 'pool-1',
+          activeBinId: 134,
+          binStep: 100,
+          tokenXMint: 'So11111111111111111111111111111111111111112',
+          tokenYMint: 'earthcoin-mint',
+          tokenXIsSol: true,
+          tokenYIsSol: false,
+          solSide: 'tokenX' as const,
+          currentPrice: 1
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    try {
+      const accountResponse = await fetch(`${server.origin}/account-state`, {
+        headers: { authorization: 'Bearer test-token' }
+      });
+      const account = await accountResponse.json();
+
+      expect(account.walletLpPositions).toEqual([
+        expect.objectContaining({
+          chainPositionAddress: 'paper-position-1',
+          currentValueSol: 1.09,
+          activeBinId: 134,
+          lowerBinId: 100,
+          upperBinId: 168,
+          solSide: 'tokenX',
+          valuationSource: 'paper-shadow-dlmm-active-bin'
+        })
+      ]);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses an effectively unlimited paper SOL balance for dry-run account state', async () => {
     const keypair = Keypair.generate();
     const server = createSolanaExecutionServer({

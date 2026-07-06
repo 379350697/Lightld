@@ -63,6 +63,18 @@ export type MeteoraLpPositionSnapshot = {
   valuationSource?: string;
 };
 
+export type MeteoraPoolPriceSnapshot = {
+  poolAddress: string;
+  activeBinId: number;
+  binStep?: number;
+  tokenXMint: string;
+  tokenYMint: string;
+  tokenXIsSol: boolean;
+  tokenYIsSol: boolean;
+  solSide: 'tokenX' | 'tokenY';
+  currentPrice?: number;
+};
+
 export type MeteoraDirectSwapResult = {
   transaction: Transaction;
   outAmountLamports: string;
@@ -507,6 +519,38 @@ export class MeteoraDlmmClient {
     await this.getPositionSnapshots(walletPublicKey);
   }
 
+  async getPoolPriceSnapshot(poolAddress: string): Promise<MeteoraPoolPriceSnapshot> {
+    return this.withConnection(async (connection) => {
+      const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
+      const activeBin = await dlmmPool.getActiveBin();
+      const tokenXMint = dlmmPool.tokenX.publicKey.toBase58();
+      const tokenYMint = dlmmPool.tokenY.publicKey.toBase58();
+      const tokenXIsSol = dlmmPool.tokenX.publicKey.equals(SOL_MINT);
+      const tokenYIsSol = dlmmPool.tokenY.publicKey.equals(SOL_MINT);
+      if (!tokenXIsSol && !tokenYIsSol) {
+        throw new Error(`Meteora pool ${poolAddress} is not a SOL pair`);
+      }
+      const tokenXDecimals = resolveTokenDecimals(dlmmPool.tokenX);
+      const tokenYDecimals = resolveTokenDecimals(dlmmPool.tokenY);
+      const binStep = toPositiveFiniteNumber((dlmmPool as any).lbPair?.binStep);
+      const currentPrice = typeof tokenXDecimals === 'number' && typeof tokenYDecimals === 'number' && typeof binStep === 'number'
+        ? pricePerTokenFromBinId(activeBin.binId, binStep, tokenXDecimals, tokenYDecimals)
+        : undefined;
+
+      return {
+        poolAddress,
+        activeBinId: activeBin.binId,
+        binStep,
+        tokenXMint,
+        tokenYMint,
+        tokenXIsSol,
+        tokenYIsSol,
+        solSide: tokenXIsSol ? 'tokenX' : 'tokenY',
+        currentPrice
+      };
+    });
+  }
+
   async addLiquidityByStrategy(
     walletPublicKey: PublicKey,
     poolAddress: string,
@@ -520,6 +564,7 @@ export class MeteoraDlmmClient {
     lowerBinId: number;
     upperBinId: number;
     binSlippageBps: number;
+    solSide: 'tokenX' | 'tokenY';
   }> {
     return this.withConnection(async (connection) => {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
@@ -543,6 +588,7 @@ export class MeteoraDlmmClient {
           lowerBinId: minBinId,
           upperBinId: maxBinId,
           binSlippageBps: 100,
+          solSide: isTokenXSol ? 'tokenX' : 'tokenY',
           transaction: await dlmmPool.addLiquidityByStrategy({
             positionPubKey: repairCandidate.publicKey,
             user: walletPublicKey,
@@ -584,7 +630,8 @@ export class MeteoraDlmmClient {
         activeBinId: activeBin.binId,
         lowerBinId: minBinId,
         upperBinId: maxBinId,
-        binSlippageBps: 100
+        binSlippageBps: 100,
+        solSide: isTokenXSol ? 'tokenX' : 'tokenY'
       };
     });
   }

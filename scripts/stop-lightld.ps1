@@ -11,11 +11,11 @@ if ($Role -contains "all") {
 }
 
 $RolePatterns = @{
-    signer = @("run:signer", "local-live-signer")
-    execution = @("run:execution", "run:solana-execution", "local-live-execution", "solana-execution")
+    signer = @("run:signer", "local-live-signer", "run-paper-realistic-component.ps1 -role signer")
+    execution = @("run:execution", "run:solana-execution", "local-live-execution", "solana-execution", "run-paper-realistic-component.ps1 -role execution")
     gmgn = @("gmgn-token-safety-server.py", "start-gmgn-safety.ps1", "lightld gmgn safety")
-    candidate = @("run:candidate-worker", "candidate-worker")
-    daemon = @("run:daemon", "live-daemon")
+    candidate = @("run:candidate-worker", "candidate-worker", "run-paper-realistic-component.ps1 -role candidate")
+    daemon = @("run:daemon", "live-daemon", "run-live-daemon-main", "run-paper-realistic-component.ps1 -role daemon")
     dashboard = @("run:dashboard", "dashboard-server")
 }
 
@@ -76,6 +76,27 @@ function Stop-LightldProcessIds {
     }
 }
 
+function Add-DescendantProcessIds {
+    param(
+        [System.Collections.Generic.HashSet[int]]$Set,
+        $Processes
+    )
+
+    $Added = $true
+    while ($Added) {
+        $Added = $false
+        foreach ($Process in $Processes) {
+            if (-not $Process.ProcessId -or -not $Process.ParentProcessId) { continue }
+            $ProcessId = [int]$Process.ProcessId
+            $ParentProcessId = [int]$Process.ParentProcessId
+            if ($Set.Contains($ParentProcessId) -and -not $Set.Contains($ProcessId) -and -not $ProtectedPids.Contains($ProcessId)) {
+                [void]$Set.Add($ProcessId)
+                $Added = $true
+            }
+        }
+    }
+}
+
 $RootNeedle = $Root.ToLowerInvariant()
 $TargetPids = [System.Collections.Generic.HashSet[int]]::new()
 
@@ -102,7 +123,13 @@ foreach ($Process in $Processes) {
     if (-not $Process.CommandLine) { continue }
 
     $CommandLine = $Process.CommandLine.ToLowerInvariant()
-    $InThisProject = $CommandLine.Contains($RootNeedle) -or $CommandLine.Contains("lightld")
+    $InThisProject = $CommandLine.Contains($RootNeedle) `
+        -or $CommandLine.Contains("lightld") `
+        -or $CommandLine.Contains("run-paper-realistic-component.ps1") `
+        -or $CommandLine.Contains("run-live-daemon-main") `
+        -or $CommandLine.Contains("candidate-worker") `
+        -or $CommandLine.Contains("solana-execution-server") `
+        -or $CommandLine.Contains("local-live-signer")
     if (-not $InThisProject) { continue }
 
     foreach ($CurrentRole in $Role) {
@@ -114,6 +141,8 @@ foreach ($Process in $Processes) {
         }
     }
 }
+
+Add-DescendantProcessIds $TargetPids $Processes
 
 if ($TargetPids.Count -eq 0) {
     Write-Host "No old Lightld instances found for role(s): $($Role -join ', ')"

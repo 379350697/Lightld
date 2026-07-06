@@ -57,6 +57,10 @@ function isPaperDryRunOverlayRecord(record: PositionLedgerRecord) {
   return record.valuationSource === 'paper-dry-run-overlay';
 }
 
+function isPaperDryRunRecord(record: PositionLedgerRecord) {
+  return typeof record.valuationSource === 'string' && record.valuationSource.startsWith('paper-');
+}
+
 type CrossTargetIdentityIssue = { kind: 'cross-target-identity'; field: 'openIntentId' | 'positionId'; value: string; targets: string[] };
 type StaleOpenPendingIssue = { kind: 'stale-open-pending'; positionKey: string; poolAddress?: string; tokenMint?: string; reason?: string };
 type SyntheticLiveWithoutChainIssue = {
@@ -97,6 +101,14 @@ type SupersededSyntheticOpenIssue = {
   tokenMint?: string;
   reason: string;
 };
+type PaperReconcileClosedIssue = {
+  kind: 'paper-reconcile-closed';
+  positionKey: string;
+  chainPositionAddress?: string;
+  poolAddress?: string;
+  tokenMint?: string;
+  reason?: string;
+};
 type LifecycleIssue =
   | CrossTargetIdentityIssue
   | StaleOpenPendingIssue
@@ -104,7 +116,8 @@ type LifecycleIssue =
   | OpenButArchivedOrMissingIssue
   | ChainOpenMissingIssue
   | ClosedWithPendingSubmissionIssue
-  | SupersededSyntheticOpenIssue;
+  | SupersededSyntheticOpenIssue
+  | PaperReconcileClosedIssue;
 
 function findCrossTargetIdentityIssues(ledger: PositionLedgerSnapshot | null): CrossTargetIdentityIssue[] {
   const issues: CrossTargetIdentityIssue[] = [];
@@ -325,6 +338,27 @@ function findClosedWithPendingSubmissionIssues(ledger: PositionLedgerSnapshot | 
     }));
 }
 
+function findPaperReconcileClosedIssues(ledger: PositionLedgerSnapshot | null): PaperReconcileClosedIssue[] {
+  return (ledger?.records ?? [])
+    .filter((record) =>
+      record.lifecycleState === 'reconcile_required'
+      && isPaperDryRunRecord(record)
+      && (
+        Boolean(record.missingOnChainSince)
+        || record.importStatus === 'archived_missing_without_exit_evidence'
+        || record.lastReason === 'chain-position-missing-without-exit-evidence'
+      )
+    )
+    .map((record) => ({
+      kind: 'paper-reconcile-closed' as const,
+      positionKey: record.positionKey,
+      chainPositionAddress: record.chainPositionAddress,
+      poolAddress: record.activePoolAddress,
+      tokenMint: record.activeMint,
+      reason: record.lastReason
+    }));
+}
+
 export function findLifecycleIssues(
   ledger: PositionLedgerSnapshot | null,
   pending: PendingSubmissionSnapshot | null,
@@ -337,7 +371,8 @@ export function findLifecycleIssues(
     ...findOpenButArchivedOrMissingIssues(ledger),
     ...findChainOpenMissingIssues(ledger),
     ...findClosedWithPendingSubmissionIssues(ledger),
-    ...findSupersededSyntheticOpenIssues(ledger)
+    ...findSupersededSyntheticOpenIssues(ledger),
+    ...findPaperReconcileClosedIssues(ledger)
   ];
 }
 
@@ -382,6 +417,11 @@ export function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSub
   const closedWithPendingSubmissionKeys = new Set(
     issues
       .filter((issue): issue is ClosedWithPendingSubmissionIssue => issue.kind === 'closed-with-pending-submission')
+      .map((issue) => issue.positionKey)
+  );
+  const paperReconcileClosedKeys = new Set(
+    issues
+      .filter((issue): issue is PaperReconcileClosedIssue => issue.kind === 'paper-reconcile-closed')
       .map((issue) => issue.positionKey)
   );
 
@@ -462,6 +502,20 @@ export function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSub
             pendingOrderAction: undefined,
             pendingConfirmationStatus: undefined,
             pendingFinality: undefined,
+            updatedAt: now
+          };
+        }
+
+        if (paperReconcileClosedKeys.has(record.positionKey)) {
+          return {
+            ...record,
+            lifecycleState: 'closed' as const,
+            importStatus: 'superseded_closed' as const,
+            lastAction: record.lastAction ?? 'withdraw-lp',
+            lastReason: 'paper-overlay-position-closed',
+            evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
+            missingOnChainSince: undefined,
+            lastClosedAt: record.lastClosedAt ?? now,
             updatedAt: now
           };
         }
