@@ -38,8 +38,21 @@ if ($Role -eq "candidate") {
     $env:LIVE_STATE_DIR = $StateRoot
     $env:LIVE_CANDIDATE_POOL_DB_PATH = "state/lightld-candidate-pool.sqlite"
     $env:LIVE_REQUESTED_POSITION_SOL = [string]$RequestedPositionSol
-    npm.cmd run run:candidate-worker -- --strategy new-token-v1 --state-root-dir $StateRoot --db-path $env:LIVE_CANDIDATE_POOL_DB_PATH
-    exit $LASTEXITCODE
+    $restartDelayMs = 5000
+    $parsedRestartDelayMs = 0
+    if ([int]::TryParse($env:LIVE_CANDIDATE_WORKER_RESTART_DELAY_MS, [ref]$parsedRestartDelayMs) -and $parsedRestartDelayMs -gt 0) {
+        $restartDelayMs = $parsedRestartDelayMs
+    }
+
+    while ($true) {
+        $startedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Host "[PaperRealistic] candidate worker starting at $startedAt"
+        npm.cmd run run:candidate-worker -- --strategy new-token-v1 --state-root-dir $StateRoot --db-path $env:LIVE_CANDIDATE_POOL_DB_PATH
+        $exitCode = $LASTEXITCODE
+        $stoppedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Warning "[PaperRealistic] candidate worker exited with code $exitCode at $stoppedAt; restarting in ${restartDelayMs}ms"
+        Start-Sleep -Milliseconds $restartDelayMs
+    }
 }
 
 $env:LIVE_EXECUTION_MODE = "http"
