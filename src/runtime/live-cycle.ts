@@ -3375,6 +3375,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const actionableAction = runtimeAction.action;
   const actionableTokenMint = activeMint || logContext.tokenMint;
   const actionableChainPositionAddress = firstString(
+    multiLpExit?.position.chainPositionAddress,
     multiLpExit?.position.positionAddress,
     input.positionState?.chainPositionAddress
   );
@@ -3570,7 +3571,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       accountState,
       tokenMint: logContext.tokenMint,
       poolAddress,
-      chainPositionAddress: multiLpExit?.position.positionAddress ?? input.positionState?.chainPositionAddress
+      chainPositionAddress: firstString(
+        multiLpExit?.position.chainPositionAddress,
+        multiLpExit?.position.positionAddress,
+        input.positionState?.chainPositionAddress
+      )
     })) {
       await appendIncident(journals, logContext, mirrorSink, {
         stage: 'reconciliation',
@@ -3620,7 +3625,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         accountState,
         tokenMint: logContext.tokenMint,
         poolAddress,
-        chainPositionAddress: multiLpExit?.position.positionAddress ?? input.positionState?.chainPositionAddress
+        chainPositionAddress: firstString(
+          multiLpExit?.position.chainPositionAddress,
+          multiLpExit?.position.positionAddress,
+          input.positionState?.chainPositionAddress
+        )
       })) {
         await appendIncident(journals, logContext, mirrorSink, {
           stage: 'reconciliation',
@@ -3695,7 +3704,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     pendingSubmission,
     poolAddress: executionPlan.poolAddress,
     tokenMint: logContext.tokenMint,
-    chainPositionAddress: multiLpExit?.position.positionAddress
+    chainPositionAddress: firstString(
+      multiLpExit?.position.chainPositionAddress,
+      multiLpExit?.position.positionAddress
+    )
   });
   if (actionableAction === 'withdraw-lp' && !actionIdentity.chainPositionAddress) {
     return blockCycle({

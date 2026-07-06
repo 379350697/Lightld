@@ -2578,6 +2578,125 @@ describe('runLiveCycle', () => {
       });
     });
 
+  it('uses chainPositionAddress for paper overlay multi-LP exits when positionAddress is absent', async () => {
+    const oldRecordedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-old',
+        activePoolAddress: 'pool-old',
+        chainPositionAddress: 'pos-old',
+        lifecycleState: 'open',
+        entrySol: 1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'old-open',
+        openedAt: oldRecordedAt,
+        updatedAt: oldRecordedAt
+      },
+      context: {
+        pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
+        token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: 1,
+          lpUnclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationSource: 'paper-dry-run-overlay'
+        },
+        route: { hasSolRoute: false, expectedOutSol: 1, slippageBps: 50, blockReason: 'no-selected-candidate' }
+      },
+      accountState: {
+        walletSol: 999_998,
+        journalSol: 999_998,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          {
+            poolAddress: 'pool-paper',
+            chainPositionAddress: 'paper-chain-position',
+            mint: 'mint-paper',
+            lowerBinId: 0,
+            upperBinId: 68,
+            activeBinId: 67,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 1,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          },
+          {
+            poolAddress: 'pool-old',
+            positionAddress: 'pos-old',
+            chainPositionAddress: 'pos-old',
+            mint: 'mint-old',
+            lowerBinId: 0,
+            upperBinId: 68,
+            activeBinId: 34,
+            solSide: 'tokenX',
+            solDepletedBins: 0,
+            currentValueSol: 1,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }
+        ],
+        journalLpPositions: [
+          {
+            poolAddress: 'pool-paper',
+            chainPositionAddress: 'paper-chain-position',
+            mint: 'mint-paper',
+            lowerBinId: 0,
+            upperBinId: 68,
+            activeBinId: 67,
+            solSide: 'tokenX',
+            solDepletedBins: 65,
+            currentValueSol: 1,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          },
+          {
+            poolAddress: 'pool-old',
+            positionAddress: 'pos-old',
+            chainPositionAddress: 'pos-old',
+            mint: 'mint-old',
+            lowerBinId: 0,
+            upperBinId: 68,
+            activeBinId: 34,
+            solSide: 'tokenX',
+            solDepletedBins: 0,
+            currentValueSol: 1,
+            unclaimedFeeSol: 0,
+            hasLiquidity: true
+          }
+        ],
+        fills: []
+      } as any
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toContain('sol-depleted-bins');
+    expect(result.orderIntent).toMatchObject({
+      poolAddress: 'pool-paper',
+      tokenMint: 'mint-paper',
+      chainPositionAddress: 'paper-chain-position',
+      fullPositionExit: true
+    });
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    expect(orderJournal[0]).toMatchObject({
+      side: 'withdraw-lp',
+      poolAddress: 'pool-paper',
+      tokenMint: 'mint-paper',
+      chainPositionAddress: 'paper-chain-position'
+    });
+  });
+
   it('does not reuse stale position-state entry for a new chain LP in the same pool and mint', async () => {
     const oldRecordedAt = '2026-06-30T07:58:40.362Z';
     const newRecordedAt = '2026-06-30T14:45:12.942Z';
