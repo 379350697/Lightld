@@ -15,12 +15,16 @@ type EngineCycleResult =
       action: 'hold';
       audit: {
         reason: string;
+        reasons?: string[];
+        secondaryReason?: string;
       };
     }
   | {
       action: 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
       audit: {
         reason: string;
+        reasons?: string[];
+        secondaryReason?: string;
       };
     };
 
@@ -87,7 +91,9 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
   return {
     action: decision.action,
     audit: {
-      reason: ('reason' in decision) ? (decision.reason as string) : 'decision-generated'
+      reason: ('reason' in decision) ? (decision.reason as string) : 'decision-generated',
+      reasons: 'reasons' in decision ? decision.reasons : undefined,
+      secondaryReason: 'secondaryReason' in decision ? decision.secondaryReason : undefined
     }
   };
 }

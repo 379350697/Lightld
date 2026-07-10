@@ -1619,7 +1619,13 @@ export function validateLpWithdrawTriggerEligibility(input: {
       : undefined
   }, buildStrategyLpExitPolicyConfig(input.config));
 
-  if (expected.action === 'withdraw-lp' && expected.reason === input.reason) {
+  if (
+    expected.action === 'withdraw-lp'
+    && (
+      expected.reason === input.reason
+      || (Array.isArray(expected.reasons) && expected.reasons.includes(input.reason ?? ''))
+    )
+  ) {
     return { allowed: true };
   }
 
@@ -3373,12 +3379,20 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const actionableAction = runtimeAction.action;
+  const observedActionTargetPosition = observedLpPosition?.position && matchesLpExitTarget({
+    position: observedLpPosition.position,
+    tokenMint: activeMint || logContext.tokenMint,
+    poolAddress,
+    chainPositionAddress: input.positionState?.chainPositionAddress
+  })
+    ? observedLpPosition.position
+    : undefined;
   const actionTargetLpPosition = (
     actionableAction === 'withdraw-lp'
     || actionableAction === 'claim-fee'
     || actionableAction === 'rebalance-lp'
   )
-    ? (multiLpExit?.position ?? observedLpPosition?.position)
+    ? (multiLpExit?.position ?? observedActionTargetPosition)
     : undefined;
   const actionTargetChainPositionAddress = firstString(
     actionTargetLpPosition?.chainPositionAddress,
@@ -3754,6 +3768,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationStatus: ConfirmationStatus;
     finality?: PendingFinality | 'unknown';
     exitTriggerReason?: string;
+    exitTriggerReasons?: string[];
+    exitTriggerSecondaryReason?: string;
     executionFailureReason?: string;
     executionFailureDetail?: string;
     executionFailureKind?: string;
@@ -3767,6 +3783,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     residualCleanupValueSol?: number;
     updatedAt: string;
   }) => {
+    const exitTriggerReasons = entry.exitTriggerReasons
+      ?? (Array.isArray(engineResult.audit.reasons) && engineResult.audit.reasons.length > 0
+        ? engineResult.audit.reasons
+        : entry.exitTriggerReason
+          ? [entry.exitTriggerReason]
+          : undefined);
+    const exitTriggerSecondaryReason = entry.exitTriggerSecondaryReason
+      ?? (exitTriggerReasons && entry.exitTriggerReason
+        ? exitTriggerReasons.find((reason) => reason !== entry.exitTriggerReason)
+        : undefined);
+
     await journals.orders.append({
       cycleId: logContext.cycleId,
       ...orderIntent,
@@ -3782,6 +3809,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       confirmationStatus: entry.confirmationStatus,
       finality: entry.finality ?? 'unknown',
       exitTriggerReason: entry.exitTriggerReason,
+      exitTriggerReasons,
+      exitTriggerSecondaryReason,
       executionFailureReason: entry.executionFailureReason,
       executionFailureDetail: entry.executionFailureDetail,
       executionFailureKind: entry.executionFailureKind,

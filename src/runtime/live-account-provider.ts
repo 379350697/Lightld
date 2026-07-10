@@ -167,13 +167,23 @@ export class HttpLiveAccountStateProvider implements LiveAccountStateProvider {
 
   async readState(): Promise<LiveAccountState> {
     return executeWithRetry(async (signal) => {
-      const response = await (this.fetchImpl ?? fetch)(this.url, {
-        method: 'GET',
-        headers: {
-          ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {})
-        },
-        signal
-      });
+      let response: Response;
+      try {
+        response = await (this.fetchImpl ?? fetch)(this.url, {
+          method: 'GET',
+          headers: {
+            ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {})
+          },
+          signal
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.trim().toLowerCase() === 'fetch failed') {
+          throw new Error(`account-state-fetch-failed:${this.url}`);
+        }
+
+        throw error;
+      }
 
       if (!response.ok) {
         throw Object.assign(

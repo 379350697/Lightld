@@ -1167,12 +1167,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     }
 
     const width = Math.max(1, input.upperBinId - input.lowerBinId);
+    const valuationBinId = Math.max(input.lowerBinId, Math.min(input.upperBinId, input.currentActiveBinId));
     const openOffset = input.solSide === 'tokenX'
       ? input.activeBinIdAtOpen - input.lowerBinId
       : input.upperBinId - input.activeBinIdAtOpen;
     const currentOffset = input.solSide === 'tokenX'
-      ? input.currentActiveBinId - input.lowerBinId
-      : input.upperBinId - input.currentActiveBinId;
+      ? valuationBinId - input.lowerBinId
+      : input.upperBinId - valuationBinId;
     const deltaBins = currentOffset - openOffset;
     const drift = deltaBins / width;
     const boundedDrift = Math.max(-1.5, Math.min(1.5, drift));
@@ -1365,6 +1366,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     currentValueSol: position.currentValueSol,
     withdrawSolAmount: position.currentValueSol,
     liquidityValueSol: position.currentValueSol,
+    unclaimedFeeValueSol: 0,
+    claimedFeeValueSol: 0,
+    recoverableRentSol: 0,
     lpTotalValueSol: position.currentValueSol,
     exitQuoteValueSol: position.currentValueSol,
     displayValueSol: position.currentValueSol,
@@ -1378,6 +1382,35 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     valuationSource: position.valuationSource ?? 'paper-dry-run-overlay',
     lastValuationAt: position.updatedAt
   });
+  const toPaperLpFill = (position: PaperDryRunPosition, submissions: SubmissionStore) => {
+    const submission = submissions.submissions.find((entry) => {
+      const intent = entry.signedIntent.intent;
+      return entry.result?.chainPositionAddress === position.chainPositionAddress
+        || intent.chainPositionAddress === position.chainPositionAddress
+        || (position.openIntentId && intent.openIntentId === position.openIntentId)
+        || (
+          intent.side === 'add-lp'
+          && intent.poolAddress === position.poolAddress
+          && intent.tokenMint === position.mint
+        );
+    });
+
+    return {
+      submissionId: submission?.result?.submissionId ?? submission?.result?.confirmationSignature,
+      confirmationSignature: submission?.result?.confirmationSignature,
+      openIntentId: position.openIntentId,
+      positionId: position.positionId,
+      chainPositionAddress: position.chainPositionAddress,
+      mint: position.mint,
+      side: 'add-lp' as const,
+      amount: position.entrySol ?? position.currentValueSol,
+      actualFilledSol: position.entrySol ?? position.currentValueSol,
+      actualWalletDeltaSol: -(position.entrySol ?? position.currentValueSol),
+      fillAmountSource: 'wallet-delta' as const,
+      hasFillEvidence: true,
+      recordedAt: position.openedAt
+    };
+  };
   const simulateDryRunRawTransaction = async (signedTransactionBase64: string) => {
     const simulator = rpcClient as SolanaRpcClient & {
       simulateRawTransaction?: (
@@ -2341,8 +2374,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           if (request.method === 'GET' && request.url === '/account-state') {
             if (dryRun) {
               const paperState = await revaluePaperDryRunState(await paperDryRunStore.read());
+              const submissions = await store.read();
               const walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
               const walletLpPositions = paperState.positions.map(toPaperLpPosition);
+              const fills = paperState.positions
+                .filter((position) => typeof position.entrySol === 'number' && position.entrySol > 0)
+                .map((position) => toPaperLpFill(position, submissions));
               writeJson(response, 200, {
                 walletSol,
                 journalSol: walletSol,
@@ -2350,7 +2387,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 journalLpPositions: walletLpPositions,
                 walletTokens: [],
                 journalTokens: [],
-                fills: []
+                fills
               });
               return;
             }

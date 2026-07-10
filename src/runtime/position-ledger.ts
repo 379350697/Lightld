@@ -25,6 +25,24 @@ function isNonStableMint(mint?: string) {
   return typeof mint === 'string' && mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
 }
 
+function isPaperDryRunOverlayRecord(record: PositionLedgerRecord) {
+  return record.valuationSource === 'paper-dry-run-overlay';
+}
+
+function isPaperDryRunRecord(record: PositionLedgerRecord) {
+  return typeof record.valuationSource === 'string' && record.valuationSource.startsWith('paper-');
+}
+
+function isPaperMissingWithoutOverlayRecord(record: PositionLedgerRecord) {
+  return isPaperDryRunRecord(record)
+    && !isPaperDryRunOverlayRecord(record)
+    && (
+      Boolean(record.missingOnChainSince)
+      || record.importStatus === 'archived_missing_without_exit_evidence'
+      || record.lastReason === 'chain-position-missing-without-exit-evidence'
+    );
+}
+
 export function positionLedgerKey(input: {
   chainPositionAddress?: string;
   positionAddress?: string;
@@ -368,6 +386,24 @@ function normalizeLedgerLifecycleRecords(
       };
     }
 
+    if (
+      (record.lifecycleState === 'open' || record.lifecycleState === 'reconcile_required')
+      && isPaperMissingWithoutOverlayRecord(record)
+      && !stillWithinChainEvidenceGrace
+    ) {
+      return {
+        ...record,
+        lifecycleState: 'closed' as const,
+        importStatus: 'superseded_closed' as const,
+        lastAction: record.lastAction ?? 'withdraw-lp',
+        lastReason: 'paper-overlay-position-closed',
+        evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
+        missingOnChainSince: undefined,
+        lastClosedAt: record.lastClosedAt ?? now,
+        updatedAt: now
+      };
+    }
+
     const syntheticOpenWithoutChainEvidence = record.lifecycleState === 'open'
       && !record.chainPositionAddress
       && (
@@ -657,6 +693,32 @@ export function importActiveLpPositionsToLedger(input: {
       };
     }
 
+    const openedAtMs = record.openedAt ? Date.parse(record.openedAt) : Number.NaN;
+    const nowMs = Date.parse(input.now);
+    const stillWithinChainEvidenceGrace = record.lastAction === 'add-lp'
+      && Boolean(record.entryFillSubmissionId)
+      && Number.isFinite(openedAtMs)
+      && Number.isFinite(nowMs)
+      && nowMs - openedAtMs < CHAIN_POSITION_EVIDENCE_GRACE_MS;
+
+    if (
+      (record.lifecycleState === 'open' || record.lifecycleState === 'reconcile_required')
+      && isPaperMissingWithoutOverlayRecord(record)
+      && !stillWithinChainEvidenceGrace
+    ) {
+      return {
+        ...record,
+        lifecycleState: 'closed' as const,
+        importStatus: 'superseded_closed' as const,
+        lastAction: record.lastAction ?? 'withdraw-lp',
+        lastReason: 'paper-overlay-position-closed',
+        evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
+        missingOnChainSince: undefined,
+        lastClosedAt: record.lastClosedAt ?? input.now,
+        updatedAt: input.now
+      };
+    }
+
     const isUnprovenPendingOpenRecord = record.lifecycleState === 'open_pending'
       && !record.chainPositionAddress;
     if (isUnprovenPendingOpenRecord) {
@@ -720,6 +782,23 @@ export function importActiveLpPositionsToLedger(input: {
     }
 
     if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
+      if (
+        input.closeMissingActive === true
+        && record.chainPositionAddress
+        && !record.entrySol
+      ) {
+        return {
+          ...record,
+          lifecycleState: 'failed_terminal' as const,
+          importStatus: 'archived_missing_without_exit_evidence' as const,
+          lastReason: record.lastReason ?? 'chain-position-missing-without-trusted-entry',
+          evidenceMissingReason: record.evidenceMissingReason ?? 'chain-position-missing-without-trusted-entry',
+          missingOnChainSince: record.missingOnChainSince ?? input.now,
+          lastClosedAt: record.lastClosedAt ?? input.now,
+          updatedAt: input.now
+        };
+      }
+
       return {
         ...record,
         lifecycleState: record.lifecycleState,

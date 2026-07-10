@@ -115,6 +115,32 @@ describe('runLiveCycle', () => {
     expect(result).toEqual({ allowed: true });
   });
 
+  it('keeps secondary LP exit reasons eligible when all exit conditions are true', () => {
+    const result = validateLpWithdrawTriggerEligibility({
+      action: 'withdraw-lp',
+      reason: 'lp-range-exit:active-bin-out-of-range:above:9',
+      config: {
+        ...baseNewTokenConfig,
+        lpConfig: {
+          ...baseNewTokenConfig.lpConfig,
+          stopLossNetPnlPct: 5,
+          takeProfitNetPnlPct: 5
+        }
+      },
+      snapshot: {
+        hasLpPosition: true,
+        lpNetPnlPct: -6,
+        lpRiskIntent: 'range-exit',
+        lpRiskReason: 'active-bin-out-of-range:above:9',
+        valuationStatus: 'ready',
+        holdTimeMs: 10 * 60 * 1000,
+        pendingConfirmationStatus: 'confirmed'
+      }
+    });
+
+    expect(result).toEqual({ allowed: true });
+  });
+
   it('submits a live order for actionable new-token input and writes journals', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -1612,6 +1638,63 @@ describe('runLiveCycle', () => {
 
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toContain('lp-take-profit');
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(31, 10);
+  });
+
+  it('derives lpNetPnlPct from paper exit-quote overlay values', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      positionState: activeLpPositionState({
+        entrySol: 1,
+        openedAt
+      }),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 20,
+          currentValueSol: 1.31,
+          liquidityValueSol: 1.31,
+          lpTotalValueSol: 1.31,
+          exitQuoteValueSol: 1.31,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationTrust: 'exit_quote',
+          valuationReason: '',
+          valuationSource: 'paper-shadow-dlmm-active-bin'
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect((result.audit as typeof result.audit & { reasons?: string[] }).reasons).toContain('lp-take-profit');
+    expect(result.context.trader.lpTradingValueSol).toBeCloseTo(1.31, 10);
     expect(result.context.trader.lpNetPnlPct).toBeCloseTo(31, 10);
   });
 

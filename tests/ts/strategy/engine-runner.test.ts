@@ -87,6 +87,35 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('max-hold-with-lp-position');
   });
 
+  it('passes every LP exit reason through the audit payload', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        hasLpPosition: true,
+        hasSolRoute: false,
+        liquidityUsd: 0,
+        lpRiskIntent: 'range-exit',
+        lpRiskReason: 'active-bin-out-of-range:above:9',
+        lpNetPnlPct: -6,
+        holdTimeMs: 10 * 60 * 1000,
+        pendingConfirmationStatus: 'confirmed'
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 5,
+        lpTakeProfitNetPnlPct: 5
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+    expect(result.audit.reasons).toEqual(['lp-stop-loss', 'lp-range-exit:active-bin-out-of-range:above:9']);
+  });
+
   it('returns hold when hard gates reject the snapshot', () => {
     const result = runEngineCycle({
       engine: 'large-pool',

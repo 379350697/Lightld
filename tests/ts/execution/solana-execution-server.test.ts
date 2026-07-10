@@ -349,11 +349,26 @@ describe('createSolanaExecutionServer', () => {
         chainPositionAddress: newPositionKeypair.publicKey.toBase58(),
         currentValueSol: 1.09,
         withdrawSolAmount: 1.09,
+        unclaimedFeeValueSol: 0,
+        claimedFeeValueSol: 0,
+        recoverableRentSol: 0,
+        exitQuoteValueSol: 1.09,
         activeBinId: 134,
         lowerBinId: 100,
         upperBinId: 168,
         solDepletedBins: 34,
         valuationSource: 'paper-shadow-dlmm-active-bin'
+      })
+    ]);
+    expect(account.fills).toEqual([
+      expect.objectContaining({
+        side: 'add-lp',
+        mint: 'earthcoin-mint',
+        chainPositionAddress: newPositionKeypair.publicKey.toBase58(),
+        amount: 1,
+        actualFilledSol: 1,
+        fillAmountSource: 'wallet-delta',
+        hasFillEvidence: true
       })
     ]);
     expect(account.walletSol).toBe(999_999);
@@ -390,6 +405,83 @@ describe('createSolanaExecutionServer', () => {
     expect(simulateRawTransaction).toHaveBeenCalledTimes(1);
 
     await server.stop();
+  });
+
+  it('does not mark SOL-side above-range paper LP positions below entry value', async () => {
+    const keypair = Keypair.generate();
+    const newPositionKeypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2_000_000_000,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(),
+        simulateRawTransaction: vi.fn(async () => ({ value: { err: null, logs: ['ok'] } }))
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-token-y-sol'),
+          newPositionKeypair,
+          activeBinId: 168,
+          lowerBinId: 100,
+          upperBinId: 168,
+          binSlippageBps: 100,
+          solSide: 'tokenY' as const
+        }),
+        getPoolPriceSnapshot: async () => ({
+          poolAddress: 'pool-1',
+          activeBinId: 180,
+          binStep: 100,
+          tokenXMint: 'earthcoin-mint',
+          tokenYMint: 'So11111111111111111111111111111111111111112',
+          tokenXIsSol: false,
+          tokenYIsSol: true,
+          solSide: 'tokenY' as const,
+          currentPrice: 1
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    try {
+      await fetch(`${server.origin}/broadcast`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(buildBroadcastPayload('add-lp', {
+          idempotencyKey: 'dry-run-token-y-sol',
+          outputSol: 1,
+          tokenMint: 'earthcoin-mint'
+        }))
+      });
+
+      const accountResponse = await fetch(`${server.origin}/account-state`, {
+        headers: { authorization: 'Bearer test-token' }
+      });
+      const account = await accountResponse.json();
+
+      expect(account.walletLpPositions[0]).toMatchObject({
+        chainPositionAddress: newPositionKeypair.publicKey.toBase58(),
+        solSide: 'tokenY',
+        activeBinId: 180,
+        lowerBinId: 100,
+        upperBinId: 168,
+        valuationSource: 'paper-shadow-dlmm-active-bin'
+      });
+      expect(account.walletLpPositions[0].currentValueSol).toBeGreaterThanOrEqual(1);
+    } finally {
+      await server.stop();
+    }
   });
 
   it('backfills historical paper LP build ranges from submitted add-lp evidence before valuation', async () => {
@@ -495,6 +587,74 @@ describe('createSolanaExecutionServer', () => {
           valuationSource: 'paper-shadow-dlmm-active-bin'
         })
       ]);
+    } finally {
+      await server.stop();
+      await rm(stateRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks paper LP valuation unavailable when open bin side evidence is missing', async () => {
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-paper-missing-side-'));
+    const keypair = Keypair.generate();
+    await writeFile(join(stateRootDir, 'paper-dry-run-state.json'), JSON.stringify({
+      version: 1,
+      walletSolDelta: -1,
+      positions: [{
+        poolAddress: 'pool-1',
+        positionAddress: 'paper-position-missing-side',
+        chainPositionAddress: 'paper-position-missing-side',
+        positionId: 'pool-1:earthcoin-mint',
+        openIntentId: 'open-missing-side',
+        mint: 'earthcoin-mint',
+        currentValueSol: 1,
+        openedAt: '2026-07-06T00:00:00.000Z',
+        updatedAt: '2026-07-06T00:00:00.000Z'
+      }]
+    }));
+
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(),
+        simulateRawTransaction: vi.fn()
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        getPoolPriceSnapshot: async () => ({
+          poolAddress: 'pool-1',
+          activeBinId: 180,
+          binStep: 100,
+          tokenXMint: 'earthcoin-mint',
+          tokenYMint: 'So11111111111111111111111111111111111111112',
+          tokenXIsSol: false,
+          tokenYIsSol: true,
+          solSide: 'tokenY' as const,
+          currentPrice: 1
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true
+    });
+
+    await server.start();
+
+    try {
+      const accountResponse = await fetch(`${server.origin}/account-state`, {
+        headers: { authorization: 'Bearer test-token' }
+      });
+      const account = await accountResponse.json();
+
+      expect(account.walletLpPositions[0]).toMatchObject({
+        chainPositionAddress: 'paper-position-missing-side',
+        valuationStatus: 'unavailable',
+        valuationReason: 'paper-open-bin-evidence-missing',
+        valuationSource: 'paper-dry-run-overlay'
+      });
     } finally {
       await server.stop();
       await rm(stateRootDir, { recursive: true, force: true });
