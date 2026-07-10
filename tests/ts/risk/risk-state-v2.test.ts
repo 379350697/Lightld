@@ -85,7 +85,8 @@ describe('RiskStateV2 policy', () => {
   it.each([
     ['dataQualityStatus', 'degraded', 'data-quality-untrusted'],
     ['reconciliationStatus', 'mismatch', 'reconciliation-untrusted'],
-    ['outboxStatus', 'unknown', 'outbox-untrusted']
+    ['outboxStatus', 'unknown', 'outbox-untrusted'],
+    ['valuationStatus', 'unavailable', 'valuation-untrusted']
   ] as const)('fails closed without blind flatten when %s is %s', (field, value, reason) => {
     const initial = createInitialRiskStateV2({
       now: NOW,

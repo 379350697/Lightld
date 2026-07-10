@@ -25,6 +25,9 @@ export const LedgerEventV2Schema = z.object({
   priorityFeeLamports: RawIntegerStringSchema.default('0'),
   jitoTipLamports: RawIntegerStringSchema.default('0'),
   rentLamports: RawIntegerStringSchema.default('0'),
+  failedTransactionCostLamports: RawIntegerStringSchema.default('0'),
+  accountChange: z.enum(['unchanged', 'created', 'closed']).default('unchanged'),
+  transactionStatus: z.enum(['succeeded', 'failed', 'unknown']).default('unknown'),
   source: z.enum(['transaction-meta', 'chain-reconstruction', 'compensation']),
   compensatesEventId: z.string().min(1).optional()
 });
@@ -76,7 +79,7 @@ export class LedgerEventV2Store {
   }
 }
 
-export function buildFinalizedLedgerProjection(events: LedgerEventV2[]) {
+export function buildFinalizedLedgerProjection(events: Array<z.input<typeof LedgerEventV2Schema>>) {
   const balanceDeltaByAsset = new Map<string, bigint>();
   let provisionalEventCount = 0;
   let finalizedEventCount = 0;
@@ -84,6 +87,7 @@ export function buildFinalizedLedgerProjection(events: LedgerEventV2[]) {
   let totalPriorityFeeLamports = 0n;
   let totalJitoTipLamports = 0n;
   let totalRentLamports = 0n;
+  let totalFailedTransactionCostLamports = 0n;
 
   for (const raw of events) {
     const event = LedgerEventV2Schema.parse(raw);
@@ -98,6 +102,7 @@ export function buildFinalizedLedgerProjection(events: LedgerEventV2[]) {
     totalPriorityFeeLamports += BigInt(event.priorityFeeLamports);
     totalJitoTipLamports += BigInt(event.jitoTipLamports);
     totalRentLamports += BigInt(event.rentLamports);
+    totalFailedTransactionCostLamports += BigInt(event.failedTransactionCostLamports);
   }
 
   return {
@@ -109,8 +114,143 @@ export function buildFinalizedLedgerProjection(events: LedgerEventV2[]) {
     totalBaseFeeLamports: totalBaseFeeLamports.toString(),
     totalPriorityFeeLamports: totalPriorityFeeLamports.toString(),
     totalJitoTipLamports: totalJitoTipLamports.toString(),
-    totalRentLamports: totalRentLamports.toString()
+    totalRentLamports: totalRentLamports.toString(),
+    totalFailedTransactionCostLamports: totalFailedTransactionCostLamports.toString()
   };
+}
+
+export const LifecycleAccountingBlockingReasonV2Schema = z.enum([
+  'lifecycle_not_finalized',
+  'no_finalized_events',
+  'provisional_events_present',
+  'rolled_back_events_present',
+  'residual_asset_delta'
+]);
+
+export const LifecycleAccountingClosureV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  lifecycleKey: z.string().min(1),
+  lifecycleStatus: z.string().min(1),
+  finalizedEventCount: z.number().int().nonnegative(),
+  provisionalEventCount: z.number().int().nonnegative(),
+  rolledBackEventCount: z.number().int().nonnegative(),
+  compensationEventCount: z.number().int().nonnegative(),
+  balanceDeltaByAssetRaw: z.record(z.string(), RawIntegerStringSchema),
+  residualAssetDeltas: z.array(z.object({
+    asset: z.string().min(1),
+    deltaRaw: RawIntegerStringSchema
+  })),
+  totalBaseFeeLamports: RawIntegerStringSchema,
+  totalPriorityFeeLamports: RawIntegerStringSchema,
+  totalJitoTipLamports: RawIntegerStringSchema,
+  totalRentLamports: RawIntegerStringSchema,
+  totalFailedTransactionCostLamports: RawIntegerStringSchema,
+  allAssetsClosed: z.boolean(),
+  formalAccountingReady: z.boolean(),
+  valuationConfidence: z.enum(['exact', 'partial', 'untrusted']),
+  blockingReasons: z.array(LifecycleAccountingBlockingReasonV2Schema)
+});
+
+export type LifecycleAccountingClosureV2 = z.infer<typeof LifecycleAccountingClosureV2Schema>;
+
+export function buildLifecycleAccountingClosureV2(input: {
+  lifecycleKey: string;
+  lifecycleStatus: string;
+  events: Array<z.input<typeof LedgerEventV2Schema>>;
+  ignoredResidualAssets?: string[];
+}): LifecycleAccountingClosureV2 {
+  const ignoredResidualAssets = new Set(input.ignoredResidualAssets ?? []);
+  const lifecycleEvents = input.events
+    .map((event) => LedgerEventV2Schema.parse(event))
+    .filter((event) => event.lifecycleKey === input.lifecycleKey);
+  const finalizedEvents = lifecycleEvents.filter((event) => event.finality === 'finalized');
+  const provisionalEventCount = lifecycleEvents.filter((event) => event.finality === 'confirmed').length;
+  const rolledBackEventCount = lifecycleEvents.filter((event) => event.finality === 'rolled_back').length;
+  const compensationEventCount = finalizedEvents.filter((event) => event.source === 'compensation').length;
+  const balanceDeltaByAsset = new Map<string, bigint>();
+  let totalBaseFeeLamports = 0n;
+  let totalPriorityFeeLamports = 0n;
+  let totalJitoTipLamports = 0n;
+  let totalRentLamports = 0n;
+  let totalFailedTransactionCostLamports = 0n;
+
+  for (const event of finalizedEvents) {
+    const delta = BigInt(event.postAmountRaw) - BigInt(event.preAmountRaw);
+    balanceDeltaByAsset.set(event.asset, (balanceDeltaByAsset.get(event.asset) ?? 0n) + delta);
+    totalBaseFeeLamports += BigInt(event.baseFeeLamports);
+    totalPriorityFeeLamports += BigInt(event.priorityFeeLamports);
+    totalJitoTipLamports += BigInt(event.jitoTipLamports);
+    totalRentLamports += BigInt(event.rentLamports);
+    totalFailedTransactionCostLamports += BigInt(event.failedTransactionCostLamports);
+  }
+
+  const balanceDeltaByAssetRaw = Object.fromEntries(
+    [...balanceDeltaByAsset.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([asset, delta]) => [asset, delta.toString()])
+  );
+  const residualAssetDeltas = [...balanceDeltaByAsset.entries()]
+    .filter(([asset, delta]) => asset !== 'SOL' && !ignoredResidualAssets.has(asset) && delta !== 0n)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([asset, delta]) => ({
+      asset,
+      deltaRaw: delta.toString()
+    }));
+  const lifecycleFinalized = input.lifecycleStatus === 'finalized_closed';
+  const blockingReasons = [
+    !lifecycleFinalized ? 'lifecycle_not_finalized' : undefined,
+    finalizedEvents.length === 0 ? 'no_finalized_events' : undefined,
+    provisionalEventCount > 0 ? 'provisional_events_present' : undefined,
+    rolledBackEventCount > 0 ? 'rolled_back_events_present' : undefined,
+    residualAssetDeltas.length > 0 ? 'residual_asset_delta' : undefined
+  ].filter((reason): reason is z.infer<typeof LifecycleAccountingBlockingReasonV2Schema> => !!reason);
+  const allAssetsClosed = residualAssetDeltas.length === 0;
+  const formalAccountingReady = lifecycleFinalized
+    && finalizedEvents.length > 0
+    && provisionalEventCount === 0
+    && rolledBackEventCount === 0
+    && allAssetsClosed;
+  const valuationConfidence = formalAccountingReady
+    ? 'exact' as const
+    : lifecycleFinalized && finalizedEvents.length > 0 && allAssetsClosed
+      ? 'partial' as const
+      : 'untrusted' as const;
+
+  return LifecycleAccountingClosureV2Schema.parse({
+    schemaVersion: 2,
+    lifecycleKey: input.lifecycleKey,
+    lifecycleStatus: input.lifecycleStatus,
+    finalizedEventCount: finalizedEvents.length,
+    provisionalEventCount,
+    rolledBackEventCount,
+    compensationEventCount,
+    balanceDeltaByAssetRaw,
+    residualAssetDeltas,
+    totalBaseFeeLamports: totalBaseFeeLamports.toString(),
+    totalPriorityFeeLamports: totalPriorityFeeLamports.toString(),
+    totalJitoTipLamports: totalJitoTipLamports.toString(),
+    totalRentLamports: totalRentLamports.toString(),
+    totalFailedTransactionCostLamports: totalFailedTransactionCostLamports.toString(),
+    allAssetsClosed,
+    formalAccountingReady,
+    valuationConfidence,
+    blockingReasons
+  });
+}
+
+export async function buildLifecycleAccountingClosureFromLedgerStoreV2(input: {
+  store: Pick<LedgerEventV2Store, 'read'>;
+  lifecycleKey: string;
+  lifecycleStatus: string;
+  ignoredResidualAssets?: string[];
+}): Promise<LifecycleAccountingClosureV2> {
+  const events = await input.store.read();
+  return buildLifecycleAccountingClosureV2({
+    lifecycleKey: input.lifecycleKey,
+    lifecycleStatus: input.lifecycleStatus,
+    events,
+    ignoredResidualAssets: input.ignoredResidualAssets
+  });
 }
 
 export const PnlBreakdownV2InputSchema = z.object({

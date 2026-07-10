@@ -2781,6 +2781,58 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('marks account-state partial when token or DLMM sources fail instead of pretending empty state is healthy', async () => {
+    const keypair = Keypair.generate();
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000,
+        getTokenAccountsByOwner: async () => {
+          throw new Error('token rpc down');
+        }
+      } as any,
+      dlmmClient: {
+        getPositionSnapshots: async () => {
+          throw new Error('dlmm rpc down');
+        }
+      } as any,
+      jupiterClient: {
+        buildSellQuoteParams: vi.fn(),
+        getQuote: vi.fn()
+      } as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+
+    const response = await fetch(`${server.origin}/account-state`, {
+      headers: {
+        authorization: 'Bearer test-token'
+      }
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.walletTokens).toEqual([]);
+    expect(payload.walletLpPositions).toEqual([]);
+    expect(payload.sourceQuality).toMatchObject({
+      chain: 'partial',
+      tokenAccounts: {
+        status: 'degraded',
+        reason: 'token rpc down'
+      },
+      dlmmPositions: {
+        status: 'degraded',
+        reason: 'dlmm rpc down'
+      },
+      journal: 'unavailable'
+    });
+
+    await server.stop();
+  });
+
   it('serves wallet LP positions with withdraw-simulation plus quote-only exit valuation', async () => {
     const keypair = Keypair.generate();
     const buildSellQuoteParams = vi.fn((mint: string, amount: number) => ({ mint, amount }));
@@ -3202,6 +3254,113 @@ describe('createSolanaExecutionServer', () => {
       balanceDeltaByAsset: { SOL: '-100000000' },
       finalizedEventCount: 1,
       sourceQuality: { ledger: 'healthy', chain: 'not_included' }
+    });
+
+    await server.stop();
+    await rm(stateRootDir, { recursive: true, force: true });
+  });
+
+  it('exposes lifecycle accounting closure from LedgerEventV2 replay only', async () => {
+    const keypair = Keypair.generate();
+    const stateRootDir = await mkdtemp(join(tmpdir(), 'lightld-solana-exec-lifecycle-closure-'));
+    const ledger = new LedgerEventV2Store(stateRootDir);
+    await ledger.append({
+      lifecycleKey: 'lifecycle-close-1',
+      signature: 'sig-open-close-1',
+      instructionIndex: 0,
+      account: keypair.publicKey.toBase58(),
+      asset: 'SOL',
+      mint: 'SOL',
+      slot: 50,
+      blockTime: '2026-07-10T00:00:00.000Z',
+      finality: 'finalized',
+      preAmountRaw: '1000000000',
+      postAmountRaw: '990000000',
+      baseFeeLamports: '5000',
+      priorityFeeLamports: '1000',
+      jitoTipLamports: '0',
+      rentLamports: '2039280',
+      source: 'transaction-meta'
+    });
+    await ledger.append({
+      lifecycleKey: 'lifecycle-close-1',
+      signature: 'sig-open-close-1',
+      instructionIndex: 1,
+      account: 'token-account-close-1',
+      asset: 'mint-close-1',
+      mint: 'mint-close-1',
+      slot: 50,
+      blockTime: '2026-07-10T00:00:00.000Z',
+      finality: 'finalized',
+      preAmountRaw: '0',
+      postAmountRaw: '10',
+      source: 'transaction-meta'
+    });
+    await ledger.append({
+      lifecycleKey: 'lifecycle-close-1',
+      signature: 'sig-close-close-1',
+      instructionIndex: 1,
+      account: 'token-account-close-1',
+      asset: 'mint-close-1',
+      mint: 'mint-close-1',
+      slot: 55,
+      blockTime: '2026-07-10T00:05:00.000Z',
+      finality: 'finalized',
+      preAmountRaw: '10',
+      postAmountRaw: '0',
+      source: 'transaction-meta'
+    });
+    await ledger.append({
+      lifecycleKey: 'other-lifecycle',
+      signature: 'sig-other-close-1',
+      instructionIndex: 0,
+      account: keypair.publicKey.toBase58(),
+      asset: 'SOL',
+      mint: 'SOL',
+      slot: 60,
+      blockTime: '2026-07-10T00:10:00.000Z',
+      finality: 'finalized',
+      preAmountRaw: '990000000',
+      postAmountRaw: '900000000',
+      source: 'transaction-meta'
+    });
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      stateRootDir,
+      keypair,
+      rpcClient: {
+        getBalance: async () => 2 * 1_000_000_000
+      } as any,
+      jupiterClient: {} as any,
+      authToken: 'test-token'
+    });
+
+    await server.start();
+    const response = await fetch(
+      server.origin + '/lifecycle-accounting-closure?lifecycleKey=lifecycle-close-1',
+      { headers: { authorization: 'Bearer test-token' } }
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      schemaVersion: 2,
+      source: 'ledger-event-v2',
+      lifecycleKey: 'lifecycle-close-1',
+      lifecycleStatus: 'finalized_closed',
+      finalizedEventCount: 3,
+      formalAccountingReady: true,
+      valuationConfidence: 'exact',
+      totalBaseFeeLamports: '5000',
+      totalPriorityFeeLamports: '1000',
+      totalRentLamports: '2039280',
+      blockingReasons: [],
+      sourceQuality: { ledger: 'healthy', chain: 'not_included' }
+    });
+    expect(payload.balanceDeltaByAssetRaw).toMatchObject({
+      SOL: '-10000000',
+      'mint-close-1': '0'
     });
 
     await server.stop();

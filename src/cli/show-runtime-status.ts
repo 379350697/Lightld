@@ -97,6 +97,13 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
       `researchDataStatus=${professional.researchDataStatus}`
     );
     for (const modePnl of professional.modePnl.modes) {
+      if (modePnl.mode === 'mechanical-soak') {
+        lines.push(
+          `pnl.${modePnl.mode}.display=disabled`,
+          `pnl.${modePnl.mode}.evidenceStatus=${modePnl.evidenceStatus}`
+        );
+        continue;
+      }
       lines.push(
         `pnl.${modePnl.mode}.grossPnlSol=${modePnl.grossPnlSol ?? 'unknown'}`,
         `pnl.${modePnl.mode}.netPnlSol=${modePnl.netPnlSol ?? 'unknown'}`,

@@ -9,6 +9,7 @@ type RpcTokenBalance = {
 };
 
 type RpcTransactionMeta = {
+  err?: unknown;
   fee?: number;
   preBalances?: number[];
   postBalances?: number[];
@@ -36,6 +37,20 @@ function rawAmount(balance: RpcTokenBalance | undefined) {
 function accountKey(keys: Array<{ pubkey?: string } | string>, index: number) {
   const entry = keys[index];
   return typeof entry === 'string' ? entry : entry?.pubkey ?? `account-index:${index}`;
+}
+
+function accountChangeFromRaw(pre: string | number | bigint | undefined, post: string | number | bigint | undefined) {
+  const preBig = BigInt(String(pre ?? '0'));
+  const postBig = BigInt(String(post ?? '0'));
+  if (preBig === 0n && postBig > 0n) return 'created' as const;
+  if (preBig > 0n && postBig === 0n) return 'closed' as const;
+  return 'unchanged' as const;
+}
+
+function tokenAccountChange(pre: RpcTokenBalance | undefined, post: RpcTokenBalance | undefined) {
+  if (!pre && post) return 'created' as const;
+  if (pre && !post) return 'closed' as const;
+  return accountChangeFromRaw(rawAmount(pre), rawAmount(post));
 }
 
 /**
@@ -68,6 +83,7 @@ export async function appendLedgerEventsFromTransactionMeta(input: {
   const blockTime = typeof transaction.blockTime === 'number'
     ? new Date(transaction.blockTime * 1000).toISOString()
     : new Date(0).toISOString();
+  const transactionStatus = meta.err ? 'failed' as const : 'succeeded' as const;
   const events: Array<Omit<LedgerEventV2, 'eventId'>> = [{
     lifecycleKey: input.lifecycleKey,
     signature: input.signature,
@@ -84,6 +100,9 @@ export async function appendLedgerEventsFromTransactionMeta(input: {
     priorityFeeLamports: '0',
     jitoTipLamports: '0',
     rentLamports: '0',
+    failedTransactionCostLamports: transactionStatus === 'failed' ? String(meta.fee ?? 0) : '0',
+    accountChange: accountChangeFromRaw(meta.preBalances[walletIndex], meta.postBalances[walletIndex]),
+    transactionStatus,
     source: 'transaction-meta'
   }];
   const preByAccountMint = new Map<string, RpcTokenBalance>();
@@ -119,6 +138,9 @@ export async function appendLedgerEventsFromTransactionMeta(input: {
       priorityFeeLamports: '0',
       jitoTipLamports: '0',
       rentLamports: '0',
+      failedTransactionCostLamports: '0',
+      accountChange: tokenAccountChange(pre, post),
+      transactionStatus,
       source: 'transaction-meta'
     });
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ModePnlBucketV2Schema,
   buildModeSeparatedPnlSnapshotV2,
   buildProfessionalRuntimeStatusV2
 } from '../../../src/runtime/professional-runtime-status-v2';
@@ -46,8 +47,27 @@ describe('professional runtime status V2', () => {
     expect(status.dailyPnlMode).toBe('canary');
     expect(status.dailyPnlSol).toBe(0.001);
     expect(status.modePnl.modes).toHaveLength(2);
+    expect(status.modePnl.modes.find((entry) => entry.mode === 'mechanical-soak')).toMatchObject({
+      grossPnlSol: null,
+      netPnlSol: null,
+      realizedPnlSol: null,
+      unrealizedPnlSol: null,
+      evidenceStatus: 'synthetic'
+    });
     expect(status).not.toHaveProperty('combinedPnlSol');
     expect(status).not.toHaveProperty('totalPnlSol');
+  });
+
+  it('rejects direct mechanical-soak PnL values at the public schema boundary', () => {
+    expect(() => ModePnlBucketV2Schema.parse({
+      mode: 'mechanical-soak',
+      grossPnlSol: 1,
+      netPnlSol: 1,
+      realizedPnlSol: 1,
+      unrealizedPnlSol: 0,
+      finalizedEpisodeCount: 1,
+      evidenceStatus: 'synthetic'
+    })).toThrow(/mechanical-soak may not expose PnL/i);
   });
 
   it('uses unknown instead of borrowing PnL from another mode', () => {

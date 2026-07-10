@@ -28,6 +28,18 @@ export {
   ValidationReportV2Store
 } from './stores.ts';
 export {
+  blockBootstrapGeometricReturnV2,
+  buildValidationMetricObservationsFromEconomicShadowV2,
+  buildValidationCoverageV2,
+  buildValidationMetricsV2,
+  geometricMeanReturn,
+  type BuildValidationMetricsV2Input,
+  type BlockBootstrapResultV2,
+  type BootstrapReturnObservationV2,
+  type ValidationCoverageEpisodeV2,
+  type ValidationMetricObservationV2
+} from './statistics.ts';
+export {
   PROFESSIONAL_VALIDATION_FLOORS_V2,
   evaluateProfessionalValidationV2,
   type ProfessionalValidationInputV2

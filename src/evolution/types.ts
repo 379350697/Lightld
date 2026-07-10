@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { LifecycleAccountingClosureV2Schema } from '../runtime/ledger-event-v2.ts';
+
 export const EvolutionStrategyIdSchema = z.enum(['new-token-v1', 'large-pool-v1']);
 export type EvolutionStrategyId = z.infer<typeof EvolutionStrategyIdSchema>;
 
@@ -267,6 +269,7 @@ export const LiveCycleOutcomeRecordSchema = z.object({
   exitReasons: z.array(z.string()).optional(),
   primaryReason: z.string().optional(),
   evidenceStatus: z.enum(['exact', 'partial', 'untrusted']).optional(),
+  lifecycleAccountingClosure: LifecycleAccountingClosureV2Schema.optional(),
   cycleId: z.string(),
   strategyId: EvolutionStrategyIdSchema,
   recordedAt: z.string(),
@@ -296,6 +299,104 @@ export const LiveCycleOutcomeRecordSchema = z.object({
 });
 export type LiveCycleOutcomeRecord = z.infer<typeof LiveCycleOutcomeRecordSchema>;
 export const LiveCycleOutcomeRecordArraySchema = z.array(LiveCycleOutcomeRecordSchema);
+
+export const ResearchGradeLiveCycleOutcomeV2Schema = LiveCycleOutcomeRecordSchema.superRefine((value, context) => {
+  const requireNonEmptyString = (field: keyof LiveCycleOutcomeRecord) => {
+    const current = value[field];
+    if (typeof current !== 'string' || current.trim().length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: [field],
+        message: `${String(field)} is required for research-grade V2 outcomes.`
+      });
+    }
+  };
+
+  if (value.schemaVersion !== 2) {
+    context.addIssue({
+      code: 'custom',
+      path: ['schemaVersion'],
+      message: 'Research outcomes must be schemaVersion 2.'
+    });
+  }
+
+  for (const field of [
+    'lifecycleKey',
+    'runId',
+    'configSnapshotId',
+    'openIntentId',
+    'chainPositionAddress',
+    'positionId',
+    'openedAt',
+    'closedAt'
+  ] as const) {
+    requireNonEmptyString(field);
+  }
+
+  if (value.finality !== 'finalized') {
+    context.addIssue({
+      code: 'custom',
+      path: ['finality'],
+      message: 'Research outcomes may only be written after finalized close.'
+    });
+  }
+
+  if (!Array.isArray(value.exitReasons) || value.exitReasons.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['exitReasons'],
+      message: 'Research outcomes require all exit reasons.'
+    });
+  }
+
+  if (value.exitReasons?.length && value.primaryReason !== value.exitReasons[0]) {
+    context.addIssue({
+      code: 'custom',
+      path: ['primaryReason'],
+      message: 'primaryReason must be the first exitReasons entry.'
+    });
+  }
+
+  if (value.evidenceStatus === undefined || value.evidenceStatus === 'untrusted') {
+    context.addIssue({
+      code: 'custom',
+      path: ['evidenceStatus'],
+      message: 'Research outcomes require trusted exact or partial evidence.'
+    });
+  }
+
+  if (value.lifecycleAccountingClosure?.lifecycleKey && value.lifecycleAccountingClosure.lifecycleKey !== value.lifecycleKey) {
+    context.addIssue({
+      code: 'custom',
+      path: ['lifecycleAccountingClosure', 'lifecycleKey'],
+      message: 'Accounting closure lifecycleKey must match the outcome lifecycleKey.'
+    });
+  }
+
+  if (value.lifecycleAccountingClosure?.valuationConfidence === 'untrusted') {
+    context.addIssue({
+      code: 'custom',
+      path: ['lifecycleAccountingClosure', 'valuationConfidence'],
+      message: 'Research outcomes cannot reference untrusted accounting closure.'
+    });
+  }
+
+  if (
+    value.evidenceStatus === 'exact'
+    && (
+      !value.lifecycleAccountingClosure
+      || !value.lifecycleAccountingClosure.formalAccountingReady
+      || value.lifecycleAccountingClosure.valuationConfidence !== 'exact'
+    )
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['lifecycleAccountingClosure'],
+      message: 'Exact research outcomes require an exact finalized accounting closure.'
+    });
+  }
+});
+export type ResearchGradeLiveCycleOutcomeV2 = z.infer<typeof ResearchGradeLiveCycleOutcomeV2Schema>;
 
 export const ProposalStatusSchema = z.enum([
   'draft',

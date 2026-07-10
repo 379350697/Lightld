@@ -103,6 +103,7 @@ export type {
   ParameterProposalRecord,
   ProposalKind,
   ProposalStatus,
+  ResearchGradeLiveCycleOutcomeV2,
   SessionPhase,
   TrackedWatchTokenRecord,
   WatchlistSnapshotRecord
@@ -137,6 +138,7 @@ export {
   ParameterProposalRecordSchema,
   ProposalKindSchema,
   ProposalStatusSchema,
+  ResearchGradeLiveCycleOutcomeV2Schema,
   SessionPhaseSchema,
   TrackedWatchTokenRecordArraySchema,
   TrackedWatchTokenRecordSchema,

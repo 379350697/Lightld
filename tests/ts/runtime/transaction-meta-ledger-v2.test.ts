@@ -35,10 +35,67 @@ describe('appendLedgerEventsFromTransactionMeta', () => {
 
     expect(events).toHaveLength(2);
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ asset: 'SOL', preAmountRaw: '1000000000', postAmountRaw: '989995000', baseFeeLamports: '5000' }),
-      expect.objectContaining({ asset: 'mint-1', preAmountRaw: '0', postAmountRaw: '2500000', baseFeeLamports: '0' })
+      expect.objectContaining({
+        asset: 'SOL',
+        preAmountRaw: '1000000000',
+        postAmountRaw: '989995000',
+        baseFeeLamports: '5000',
+        transactionStatus: 'succeeded',
+        accountChange: 'unchanged',
+        failedTransactionCostLamports: '0'
+      }),
+      expect.objectContaining({
+        asset: 'mint-1',
+        preAmountRaw: '0',
+        postAmountRaw: '2500000',
+        baseFeeLamports: '0',
+        transactionStatus: 'succeeded',
+        accountChange: 'created'
+      })
     ]));
     expect(await store.read()).toHaveLength(2);
+  });
+
+  it('records failed transaction costs and token account closures from transaction meta', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-meta-ledger-failed-'));
+    const store = new LedgerEventV2Store(root);
+    const events = await appendLedgerEventsFromTransactionMeta({
+      store,
+      lifecycleKey: 'lifecycle-2',
+      signature: 'signature-failed',
+      finality: 'confirmed',
+      walletAddress: 'wallet-1',
+      transaction: {
+        slot: 102,
+        blockTime: 1_784_534_401,
+        transaction: {
+          message: { accountKeys: [{ pubkey: 'wallet-1' }, { pubkey: 'token-account-1' }] }
+        },
+        meta: {
+          err: { InstructionError: [0, 'Custom'] },
+          fee: 5_000,
+          preBalances: [1_000_000_000, 2_039_280],
+          postBalances: [999_995_000, 0],
+          preTokenBalances: [{ accountIndex: 1, mint: 'mint-1', owner: 'wallet-1', uiTokenAmount: { amount: '2500000' } }],
+          postTokenBalances: []
+        }
+      }
+    });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        asset: 'SOL',
+        transactionStatus: 'failed',
+        failedTransactionCostLamports: '5000'
+      }),
+      expect.objectContaining({
+        asset: 'mint-1',
+        preAmountRaw: '2500000',
+        postAmountRaw: '0',
+        accountChange: 'closed',
+        transactionStatus: 'failed'
+      })
+    ]));
   });
 
   it('rejects finalized accounting when transaction meta is absent or token ownership is ambiguous', async () => {

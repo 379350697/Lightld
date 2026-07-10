@@ -4,7 +4,12 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { parseRunEvolutionReportArgs, runEvolutionReport } from '../../../src/cli/run-evolution-report';
+import {
+  PROFESSIONAL_EVOLUTION_MINIMUM_SAMPLE_SIZE,
+  parseRunEvolutionReportArgs,
+  resolveProfessionalEvolutionMinimumSampleSize,
+  runEvolutionReport
+} from '../../../src/cli/run-evolution-report';
 import { resolveEvolutionPaths } from '../../../src/evolution/paths';
 
 describe('runEvolutionReport V1 quarantine', () => {
@@ -18,6 +23,17 @@ describe('runEvolutionReport V1 quarantine', () => {
     expect(parseRunEvolutionReportArgs(['--forensics-allow-v1'])).toMatchObject({
       forensicsAllowV1: true
     });
+  });
+
+  it('raises requested sample thresholds below the professional effective gate', () => {
+    expect(parseRunEvolutionReportArgs([
+      '--minimum-sample-size',
+      '1'
+    ])).toMatchObject({
+      minimumSampleSize: 1
+    });
+    expect(resolveProfessionalEvolutionMinimumSampleSize(1)).toBe(PROFESSIONAL_EVOLUTION_MINIMUM_SAMPLE_SIZE);
+    expect(resolveProfessionalEvolutionMinimumSampleSize(750)).toBe(750);
   });
 
   it('rejects legacy evidence by default before writing report artifacts', async () => {

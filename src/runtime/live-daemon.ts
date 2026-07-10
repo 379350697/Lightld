@@ -73,6 +73,10 @@ import {
   selectCompatibilityPositionState,
   summarizePositionLedger
 } from './position-ledger.ts';
+import {
+  LedgerEventV2Store,
+  buildLifecycleAccountingClosureFromLedgerStoreV2
+} from './ledger-event-v2.ts';
 
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
@@ -2216,6 +2220,15 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   const evolutionOutcomeStore = options.evolutionOutcomeStore ?? new LiveCycleOutcomeStore(
     resolveEvolutionPaths(options.strategy, join(stateRootDir, 'evolution')).positionOutcomesPath
   );
+  const ledgerEventStore = new LedgerEventV2Store(stateRootDir);
+  const lifecycleAccountingClosureProvider: NonNullable<LiveCycleInput['lifecycleAccountingClosureProvider']> = {
+    buildClosure: async (input) => buildLifecycleAccountingClosureFromLedgerStoreV2({
+      store: ledgerEventStore,
+      lifecycleKey: input.lifecycleKey,
+      lifecycleStatus: input.lifecycleStatus,
+      ignoredResidualAssets: input.ignoredResidualAssets
+    })
+  };
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
@@ -2738,6 +2751,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           mirrorSink: mirrorRuntime,
           positionState,
           ...cycleInput,
+          lifecycleAccountingClosureProvider:
+            cycleInput.lifecycleAccountingClosureProvider ?? lifecycleAccountingClosureProvider,
           evolutionSink,
           accountState: effectiveAccountState,
           positionLedger,
@@ -2836,6 +2851,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
               runtimeMode: runtimeState.mode,
               mirrorSink: mirrorRuntime,
               ...newOpenCycleInput,
+              lifecycleAccountingClosureProvider:
+                newOpenCycleInput.lifecycleAccountingClosureProvider ?? lifecycleAccountingClosureProvider,
               evolutionSink,
               accountState: buildNewOpenExecutionAccountState(newOpenAccountState),
               positionState: undefined,
