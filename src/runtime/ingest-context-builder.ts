@@ -1257,8 +1257,7 @@ async function buildCandidatePoolBackedCycleInput(
   const candidate = {
     ...entry.candidate,
     hasInventory: false,
-    hasLpPosition: false,
-    safetyScore: entry.score
+    hasLpPosition: false
   };
   const selectedRequestedPositionSol = resolveCandidateRequestedPositionSol({
     strategy: input.strategy,

@@ -3,7 +3,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from 'zod';
 
 import { LocalLiveSigner } from './local-live-signer.ts';
-import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
+import {
+  LiveOrderIntentSchema,
+  validateLiveOrderIntentBoundary,
+  type ExecutionMode
+} from './live-order-intent-schema.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import {
   hasExpectedBearerToken,
@@ -19,11 +23,13 @@ const SignIntentRequestSchema = z.object({
 type LocalLiveSignerServerOptions = {
   host: string;
   port: number;
+  executionMode?: ExecutionMode;
   keypairPath: string;
   expectedPublicKey?: string;
   signerId?: string;
   authToken?: string;
   maxOutputSol?: number;
+  now?: () => Date;
 };
 
 export function createLocalLiveSignerServer(options: LocalLiveSignerServerOptions) {
@@ -34,6 +40,7 @@ export function createLocalLiveSignerServer(options: LocalLiveSignerServerOption
   });
   let server: Server | undefined;
   let origin = '';
+  const executionMode = options.executionMode ?? 'live';
 
   return {
     get origin() {
@@ -63,10 +70,15 @@ export function createLocalLiveSignerServer(options: LocalLiveSignerServerOption
 
             const body = await readBody(request);
             const payload = SignIntentRequestSchema.parse(JSON.parse(body));
+            const validatedIntent = validateLiveOrderIntentBoundary(payload.intent, {
+              mode: executionMode,
+              stage: 'sign',
+              now: options.now?.() ?? new Date()
+            });
 
             if (options.maxOutputSol !== undefined) {
               const allowlistResult = validateIntentAllowlist(
-                payload.intent,
+                validatedIntent,
                 { maxOutputSol: options.maxOutputSol }
               );
 
@@ -79,7 +91,7 @@ export function createLocalLiveSignerServer(options: LocalLiveSignerServerOption
               }
             }
 
-            const signed = await signer.sign(payload.intent);
+            const signed = await signer.sign(validatedIntent);
 
             writeJson(response, 200, {
               intent: signed.intent,

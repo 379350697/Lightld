@@ -5,7 +5,8 @@ import type { RuntimeLpPositionStatus } from './lp-position-visibility.ts';
 
 export type LiveAccountState = {
   walletSol: number;
-  journalSol: number;
+  /** Absent on the chain-only /account-state endpoint; journal projection is independently supplied. */
+  journalSol?: number;
   walletLpPositions?: Array<{
     poolAddress: string;
     positionAddress: string;

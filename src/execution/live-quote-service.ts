@@ -5,6 +5,11 @@ export type CollectLiveQuoteInput = {
   expectedOutSol: number;
   slippageBps: number;
   routeExists: boolean;
+  action?: 'buy' | 'sell' | 'add-lp' | 'withdraw-lp' | 'claim-fee' | 'rebalance-lp';
+  poolAddress?: string;
+  tokenMint?: string;
+  requestedPositionSol?: number;
+  chainPositionAddress?: string;
 };
 
 export interface LiveQuoteProvider {

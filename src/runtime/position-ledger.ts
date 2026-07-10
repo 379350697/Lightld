@@ -892,6 +892,7 @@ export function applyLiveCycleResultToLedger(input: {
   pendingSubmissionBeforeCycle?: PendingSubmissionSnapshot | null;
   persistedPendingSubmission?: PendingSubmissionSnapshot | null;
   actionIdentity?: {
+    lifecycleKey?: string;
     openIntentId?: string;
     positionId?: string;
     chainPositionAddress?: string;
@@ -900,6 +901,9 @@ export function applyLiveCycleResultToLedger(input: {
     idempotencyKey?: string;
     poolAddress?: string;
     tokenMint?: string;
+    runId?: string;
+    lifecycleKey?: string;
+    configSnapshotId?: string;
   };
   action: string;
   reason: string;
@@ -982,6 +986,9 @@ export function applyLiveCycleResultToLedger(input: {
     idempotencyKey: input.orderIntent?.idempotencyKey
       ?? input.persistedPendingSubmission?.idempotencyKey
       ?? input.pendingSubmissionBeforeCycle?.idempotencyKey,
+    lifecycleKey: input.actionIdentity?.lifecycleKey ?? input.orderIntent?.lifecycleKey,
+    runId: input.orderIntent?.runId,
+    configSnapshotId: input.orderIntent?.configSnapshotId,
     poolAddress: input.orderIntent?.poolAddress
       ?? input.persistedPendingSubmission?.poolAddress
       ?? input.pendingSubmissionBeforeCycle?.poolAddress
@@ -1026,6 +1033,9 @@ export function applyLiveCycleResultToLedger(input: {
         poolAddress: target.poolAddress,
         mint: target.tokenMint
       }),
+      lifecycleKey: target.lifecycleKey,
+      runId: target.runId,
+      configSnapshotId: target.configSnapshotId,
       openIntentId: target.openIntentId,
       idempotencyKey: target.idempotencyKey,
       positionId: target.positionId,
@@ -1050,6 +1060,9 @@ export function applyLiveCycleResultToLedger(input: {
   const record = records[index];
   const hasPending = Boolean(input.persistedPendingSubmission);
   const isConfirmed = input.confirmationStatus === 'confirmed';
+  // Legacy callers did not carry finality. Preserve their historical
+  // behaviour while V2 callers must explicitly present finalized evidence.
+  const isFinalized = isConfirmed && (input.finality === undefined || input.finality === 'finalized');
   const fullExit = input.action === 'withdraw-lp' || pendingOrderAction === 'withdraw-lp';
   const stillOnChain = hasActivePositionForRecord({
     record,
@@ -1069,19 +1082,21 @@ export function applyLiveCycleResultToLedger(input: {
       updatedAt: input.now
     };
   }
-  const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed)
+  const lifecycleState = fullExit && (isFinalized || terminalAlreadyClosed)
     ? 'closed'
     : hasPending && fullExit
       ? 'lp_exit_pending'
     : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')
       ? 'open_pending'
-      : isConfirmed && input.action === 'add-lp'
+      : isFinalized && input.action === 'add-lp'
         ? target.chainPositionAddress ? 'open' : 'open_pending'
         : record.lifecycleState;
 
-  const lastReason = fullExit && isConfirmed && input.exitTriggerReason
-    ? input.exitTriggerReason
-    : input.reason;
+  const lastReason = terminalAlreadyClosed && record.lifecycleState === 'closed'
+    ? record.lastReason
+    : fullExit && isFinalized && input.exitTriggerReason
+      ? input.exitTriggerReason
+      : input.reason;
 
   records[index] = {
     ...record,
@@ -1093,6 +1108,9 @@ export function applyLiveCycleResultToLedger(input: {
           mint: target.tokenMint ?? record.activeMint
         })
       : record.positionKey,
+    lifecycleKey: target.lifecycleKey ?? record.lifecycleKey,
+    runId: record.runId ?? target.runId,
+    configSnapshotId: record.configSnapshotId ?? target.configSnapshotId,
     openIntentId: target.openIntentId ?? record.openIntentId,
     idempotencyKey: target.idempotencyKey ?? record.idempotencyKey,
     positionId: target.chainPositionAddress
@@ -1104,16 +1122,16 @@ export function applyLiveCycleResultToLedger(input: {
     activeMint: target.tokenMint ?? record.activeMint,
     activePoolAddress: target.poolAddress ?? record.activePoolAddress,
     lifecycleState,
-    entrySol: input.action === 'add-lp' && isConfirmed
+    entrySol: input.action === 'add-lp' && isFinalized
       ? input.confirmedFill?.actualFilledSol ?? input.confirmedFill?.filledSol ?? record.entrySol
       : record.entrySol,
-    entrySolSource: input.action === 'add-lp' && isConfirmed && input.confirmedFill?.fillAmountSource === 'wallet-delta'
+    entrySolSource: input.action === 'add-lp' && isFinalized && input.confirmedFill?.fillAmountSource === 'wallet-delta'
       ? 'actual_fill'
       : record.entrySolSource,
-    entryFillSubmissionId: input.action === 'add-lp' && isConfirmed
+    entryFillSubmissionId: input.action === 'add-lp' && isFinalized
       ? input.confirmedFill?.submissionId ?? record.entryFillSubmissionId
       : record.entryFillSubmissionId,
-    openedAt: input.action === 'add-lp' && isConfirmed
+    openedAt: input.action === 'add-lp' && isFinalized
       ? input.confirmedFill?.recordedAt ?? record.openedAt ?? input.now
       : record.openedAt,
     lastAction: input.action,
@@ -1126,7 +1144,9 @@ export function applyLiveCycleResultToLedger(input: {
     residualCleanupStatus: input.residualCleanupStatus ?? record.residualCleanupStatus,
     residualCleanupValueSol: input.residualCleanupValueSol ?? record.residualCleanupValueSol,
     missingOnChainSince: stillOnChain ? undefined : record.missingOnChainSince,
-    lastClosedAt: lifecycleState === 'closed' ? input.now : record.lastClosedAt,
+    lastClosedAt: lifecycleState === 'closed'
+      ? (terminalAlreadyClosed && record.lifecycleState === 'closed' ? record.lastClosedAt : input.now)
+      : record.lastClosedAt,
     updatedAt: input.now
   };
 

@@ -18,6 +18,7 @@ export type LiveConfirmationResult = {
   status: ConfirmationStatus;
   finality: ConfirmationFinality;
   checkedAt: string;
+  slot?: number;
   reason?: string;
 };
 

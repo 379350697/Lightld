@@ -51,6 +51,13 @@ import { buildDecisionContext, type DecisionContextInput } from './build-decisio
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
+import { assertLifecycleIdentity, PositionLifecycleV2Store } from './position-lifecycle-v2.ts';
+import {
+  buildProfessionalOrderIntent,
+  type ProfessionalRunBinding
+} from './professional-order-intent.ts';
+import type { RiskLimitsV2 } from '../risk/risk-policy-v2.ts';
+import type { RiskStateV2 } from '../risk/risk-state-v2.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 import { RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS } from './ingest-candidate-selection.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
@@ -173,6 +180,10 @@ export type LiveCycleInput = {
     sourceReason: string;
     trackedSince?: string;
   }>;
+  /** Required for canary/live/economic-shadow; omitted inputs remain legacy mechanical-soak only. */
+  professionalRun?: ProfessionalRunBinding;
+  riskStateV2?: RiskStateV2;
+  riskLimitsV2?: RiskLimitsV2;
 };
 
 export type LiveCycleResult = {
@@ -188,12 +199,14 @@ export type LiveCycleResult = {
   liveOrderSubmitted: boolean;
   orderIntent?: LiveOrderIntent;
   actionIdentity?: {
+    lifecycleKey?: string;
     openIntentId?: string;
     positionId?: string;
     chainPositionAddress?: string;
   };
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
+  confirmationFinality?: ConfirmationFinality;
   confirmedFill?: LiveCycleConfirmedFill;
   nextLifecycleState?: PositionLifecycleState;
   aggregateLifecycleState?: PositionLifecycleState;
@@ -383,9 +396,12 @@ async function appendEvolutionOutcomeBestEffort(input: {
   context: ReturnType<typeof buildDecisionContext>;
   snapshot: Record<string, unknown>;
   positionState?: PositionStateSnapshot;
+  outcomePosition?: EvaluatedLpPosition;
   confirmedFill?: LiveCycleConfirmedFill;
   requestedPositionSol: number;
   quote?: SolExitQuote;
+  finality: 'finalized';
+  exitReasons?: string[];
 }) {
   if (!input.sink) {
     return;
@@ -393,14 +409,39 @@ async function appendEvolutionOutcomeBestEffort(input: {
 
   try {
     const recordedAt = new Date().toISOString();
-    const parameterSnapshot = buildEvolutionParameterSnapshot(input.config);
+    const currentParameterSnapshot = buildEvolutionParameterSnapshot(input.config);
+    const boundLedgerRecord = input.outcomePosition?.ledgerRecord;
+    const boundPosition = input.outcomePosition?.position;
+    if (boundLedgerRecord && boundPosition) {
+      assertLifecycleIdentity({
+        lifecycleKey: boundLedgerRecord.lifecycleKey ?? boundLedgerRecord.positionKey,
+        poolAddress: boundLedgerRecord.activePoolAddress ?? boundPosition.poolAddress,
+        tokenMint: boundLedgerRecord.activeMint ?? boundPosition.mint,
+        chainPositionAddress: firstString(
+          boundLedgerRecord.chainPositionAddress,
+          boundLedgerRecord.positionId
+        ) || undefined
+      }, {
+        poolAddress: boundPosition.poolAddress,
+        tokenMint: boundPosition.mint,
+        chainPositionAddress: firstString(
+          boundPosition.chainPositionAddress,
+          boundPosition.positionAddress,
+          boundPosition.positionId
+        ) || undefined
+      });
+    }
+    const parameterSnapshot = resolveOutcomeEntryParameterSnapshot(
+      currentParameterSnapshot,
+      boundLedgerRecord?.parameterSnapshotAtEntry
+    );
     const exitMetrics = buildEvolutionExitMetrics({
       context: input.context,
       snapshot: input.snapshot,
       requestedPositionSol: input.requestedPositionSol,
       quote: input.quote
     });
-    const entrySol = resolveOutcomeEntrySol({
+    const entrySol = input.outcomePosition?.entrySol ?? resolveOutcomeEntrySol({
       snapshot: input.snapshot,
       positionState: input.positionState,
       confirmedFill: input.confirmedFill
@@ -410,28 +451,56 @@ async function appendEvolutionOutcomeBestEffort(input: {
       entrySol,
       exitMetrics
     });
+    const boundChainPositionAddress = firstString(
+      boundPosition?.chainPositionAddress,
+      boundPosition?.positionAddress,
+      boundLedgerRecord?.chainPositionAddress,
+      boundPosition?.positionId,
+      boundLedgerRecord?.positionId
+    );
+    const v2IdentityReady = Boolean(
+      boundLedgerRecord?.lifecycleKey
+      && boundLedgerRecord.configSnapshotId
+      && boundChainPositionAddress
+    );
+    const exitReasons = [...new Set([
+      ...(input.exitReasons ?? []),
+      input.actualExitReason
+    ].filter(Boolean))];
 
     await input.sink.appendOutcome({
+      schemaVersion: v2IdentityReady ? 2 : 1,
+      lifecycleKey: v2IdentityReady ? boundLedgerRecord?.lifecycleKey : undefined,
+      runId: v2IdentityReady ? boundLedgerRecord?.runId : undefined,
+      configSnapshotId: v2IdentityReady ? boundLedgerRecord?.configSnapshotId : undefined,
+      openIntentId: v2IdentityReady ? boundLedgerRecord?.openIntentId : undefined,
+      chainPositionAddress: v2IdentityReady ? boundChainPositionAddress : undefined,
+      finality: v2IdentityReady ? input.finality : undefined,
+      exitReasons: v2IdentityReady ? exitReasons : undefined,
+      primaryReason: v2IdentityReady ? exitReasons[0] : undefined,
+      evidenceStatus: v2IdentityReady
+        ? resolveOutcomeEvidenceStatus(exitMetrics, input.confirmedFill)
+        : undefined,
       cycleId: input.logContext.cycleId,
       strategyId: input.logContext.strategyId,
       recordedAt,
-      tokenMint: input.logContext.tokenMint,
+      tokenMint: boundPosition?.mint ?? boundLedgerRecord?.activeMint ?? input.logContext.tokenMint,
       tokenSymbol: input.logContext.tokenSymbol,
-      poolAddress: input.logContext.poolAddress,
+      poolAddress: boundPosition?.poolAddress ?? boundLedgerRecord?.activePoolAddress ?? input.logContext.poolAddress,
       runtimeMode: input.logContext.runtimeMode,
       sessionPhase: input.logContext.sessionPhase,
-      positionId: resolveOutcomePositionId(input.logContext, input.positionState),
+      positionId: boundChainPositionAddress || resolveOutcomePositionId(input.logContext, input.positionState),
       action: input.action,
       actualExitReason: input.actualExitReason,
-      openedAt: resolveOutcomeOpenedAt({
+      openedAt: boundLedgerRecord?.openedAt ?? resolveOutcomeOpenedAt({
         positionState: input.positionState,
         recordedAt,
         holdTimeMs: exitMetrics.holdTimeMs
       }),
       closedAt: recordedAt,
       entrySol,
-      maxObservedUpsidePct: typeof observedReturnPct === 'number' ? Math.max(observedReturnPct, 0) : undefined,
-      maxObservedDrawdownPct: typeof observedReturnPct === 'number' ? Math.max(observedReturnPct * -1, 0) : undefined,
+      maxObservedUpsidePct: !v2IdentityReady && typeof observedReturnPct === 'number' ? Math.max(observedReturnPct, 0) : undefined,
+      maxObservedDrawdownPct: !v2IdentityReady && typeof observedReturnPct === 'number' ? Math.max(observedReturnPct * -1, 0) : undefined,
       actualExitMetricValue: resolveActualExitMetricValue(input.actualExitReason, input.action, exitMetrics),
       takeProfitPctAtEntry: parameterSnapshot.takeProfitPct,
       stopLossPctAtEntry: parameterSnapshot.stopLossPct,
@@ -448,6 +517,41 @@ async function appendEvolutionOutcomeBestEffort(input: {
       `[LiveCycle] Evolution outcome persistence failed; continuing without research evidence: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function resolveOutcomeEntryParameterSnapshot(
+  current: ReturnType<typeof buildEvolutionParameterSnapshot>,
+  entry: Record<string, unknown> | undefined
+) {
+  if (!entry) {
+    return current;
+  }
+  const readNumber = (key: string, fallback: number | undefined) =>
+    typeof entry[key] === 'number' && Number.isFinite(entry[key]) ? entry[key] as number : fallback;
+  return {
+    takeProfitPct: readNumber('takeProfitPct', current.takeProfitPct),
+    stopLossPct: readNumber('stopLossPct', current.stopLossPct),
+    lpEnabled: typeof entry.lpEnabled === 'boolean' ? entry.lpEnabled : current.lpEnabled,
+    lpStopLossNetPnlPct: readNumber('lpStopLossNetPnlPct', current.lpStopLossNetPnlPct),
+    lpTakeProfitNetPnlPct: readNumber('lpTakeProfitNetPnlPct', current.lpTakeProfitNetPnlPct),
+    lpSolDepletionExitBins: readNumber('lpSolDepletionExitBins', current.lpSolDepletionExitBins),
+    lpMinBinStep: readNumber('lpMinBinStep', current.lpMinBinStep),
+    lpMinVolume24hUsd: readNumber('lpMinVolume24hUsd', current.lpMinVolume24hUsd),
+    lpMinFeeTvlRatio24h: readNumber('lpMinFeeTvlRatio24h', current.lpMinFeeTvlRatio24h),
+    maxHoldHours: readNumber('maxHoldHours', current.maxHoldHours) ?? current.maxHoldHours
+  };
+}
+
+function resolveOutcomeEvidenceStatus(
+  exitMetrics: ReturnType<typeof buildEvolutionExitMetrics>,
+  confirmedFill?: LiveCycleConfirmedFill
+): 'exact' | 'partial' | 'untrusted' {
+  if (exitMetrics.valuationCompleteness !== 'complete') {
+    return 'untrusted';
+  }
+  return (confirmedFill as { fillAmountSource?: string } | undefined)?.fillAmountSource === 'chain-reconstructed'
+    ? 'exact'
+    : 'partial';
 }
 
 function resolveOutcomePositionId(
@@ -1996,7 +2100,30 @@ function buildEngineSnapshot(
       context.token.hasSolRoute
     ),
     liquidityUsd: firstNumber(context.pool.liquidityUsd, context.token.liquidityUsd),
-    poolCreatedAt: firstString(context.pool.capturedAt, context.pool.poolCreatedAt, context.token.capturedAt)
+    poolCreatedAt: firstString(context.pool.capturedAt, context.pool.poolCreatedAt, context.token.capturedAt),
+    requestedPositionSol: firstPositiveNumber(
+      context.route.requestedPositionSol,
+      context.route.expectedOutSol,
+      context.token.expectedOutSol,
+      context.pool.expectedOutSol
+    ),
+    expectedFeeSol: firstPositiveNumber(context.pool.expectedFeeSol, context.route.expectedFeeSol),
+    feeTvlRatio24h: firstPositiveNumber(context.pool.feeTvlRatio24h, context.token.feeTvlRatio24h),
+    adverseSelectionCostSol: firstPositiveNumber(context.pool.adverseSelectionCostSol, context.route.adverseSelectionCostSol),
+    adverseSelectionBps: firstPositiveNumber(context.pool.adverseSelectionBps, context.route.adverseSelectionBps),
+    impermanentLossCostSol: firstPositiveNumber(context.pool.impermanentLossCostSol, context.route.impermanentLossCostSol),
+    impermanentLossBps: firstPositiveNumber(context.pool.impermanentLossBps, context.route.impermanentLossBps),
+    roundTripCostSol: firstPositiveNumber(context.route.roundTripCostSol, context.pool.roundTripCostSol),
+    roundTripCostBps: firstPositiveNumber(context.route.roundTripCostBps, context.pool.roundTripCostBps),
+    roundtripImpactBps: firstPositiveNumber(context.route.roundtripImpactBps, context.route.roundTripImpactBps),
+    impactBps: firstPositiveNumber(context.route.impactBps, context.pool.impactBps),
+    slippageBps: firstPositiveNumber(context.route.slippageBps),
+    chainCostSol: firstPositiveNumber(context.route.chainCostSol, context.pool.chainCostSol),
+    chainCostBps: firstPositiveNumber(context.route.chainCostBps, context.pool.chainCostBps),
+    capitalChargeSol: firstPositiveNumber(context.pool.capitalChargeSol, context.route.capitalChargeSol),
+    capitalChargeBps: firstPositiveNumber(context.pool.capitalChargeBps, context.route.capitalChargeBps),
+    safetyMarginSol: firstPositiveNumber(context.pool.safetyMarginSol, context.route.safetyMarginSol),
+    safetyMarginBps: firstPositiveNumber(context.pool.safetyMarginBps, context.route.safetyMarginBps)
   };
 
   if (poolClass === 'new-token') {
@@ -2348,13 +2475,15 @@ function toConfirmationResult(
   reason?: string;
   finality: ConfirmationFinality;
   checkedAt: string;
+  slot?: number;
 } {
   return {
     status: result.status,
     submissionId: result.submissionId,
     reason: result.reason,
     finality: result.finality,
-    checkedAt: result.checkedAt
+    checkedAt: result.checkedAt,
+    slot: result.slot
   };
 }
 
@@ -2476,6 +2605,7 @@ function aggregateTrackedConfirmations(results: Array<{
   reason?: string;
   finality: ConfirmationFinality;
   checkedAt: string;
+  slot?: number;
 }>) {
   const allConfirmed = results.every((result) =>
     result.status === 'confirmed' && (result.finality === 'confirmed' || result.finality === 'finalized')
@@ -2496,7 +2626,8 @@ function aggregateTrackedConfirmations(results: Array<{
       confirmation: {
         status: 'confirmed' as const,
         submissionId: results[results.length - 1]?.submissionId,
-        reason: latestReason
+        reason: latestReason,
+        slot: results[results.length - 1]?.slot
       },
       finality: results.every((result) => result.finality === 'finalized') ? ('finalized' as const) : ('confirmed' as const),
       checkedAt: latestCheckedAt
@@ -3218,6 +3349,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       takeProfitPct: config.riskThresholds.takeProfitPct,
       stopLossPct: config.riskThresholds.stopLossPct,
       lpEnabled: config.lpConfig?.enabled ?? false,
+      requirePositiveExpectedEdge: config.poolClass === 'new-token'
+        && Boolean(input.professionalRun)
+        && input.professionalRun?.mode !== 'mechanical-soak',
     }
   });
   const lpEnabled = config.lpConfig?.enabled ?? false;
@@ -3263,6 +3397,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   if (engineResult.action === 'hold') {
     const blockedReason = liveLpValuation && liveLpValuation.valuationStatus !== 'ready'
       ? `valuation-unavailable:${liveLpValuation.valuationReason}`
+      : engineResult.audit.reason.startsWith('entry-edge-')
+        ? engineResult.audit.reason
       : 'hold';
     if (liveLpValuation && liveLpValuation.valuationStatus !== 'ready') {
       await appendIncident(journals, logContext, mirrorSink, {
@@ -3547,7 +3683,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const quote = await quoteProvider.collect({
     expectedOutSol: quotedPositionSol,
     slippageBps: routeSlippageBps,
-    routeExists
+    routeExists,
+    action: resolveOrderIntentSide(actionableAction) as NonNullable<Parameters<typeof buildOrderIntent>[0]['side']>,
+    poolAddress: actionableAction === 'dca-out' ? '' : poolAddress,
+    tokenMint: logContext.tokenMint,
+    requestedPositionSol: quotedPositionSol,
+    chainPositionAddress: actionableChainPositionAddress
   });
 
   const requestedPositionSol = resolveRequestedPositionSol({
@@ -3633,7 +3774,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       mirrorSink!.enqueue(toReconciliationMirrorEvent({
         cycleId: logContext.cycleId,
         walletSol: accountState!.walletSol,
-        journalSol: accountState!.journalSol,
+        journalSol: accountState!.journalSol ?? 0,
         deltaSol: reconciliation.deltaSol,
         tokenDeltaCount: reconciliation.tokenDeltas.length,
         ok: reconciliation.ok,
@@ -3721,7 +3862,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
-  const actionIdentity = resolveActionIdentity({
+  const actionIdentity: NonNullable<LiveCycleResult['actionIdentity']> = resolveActionIdentity({
     action: actionableAction,
     positionState: input.positionState,
     pendingSubmission,
@@ -3742,18 +3883,167 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       quoteCollected: true
     });
   }
-  const orderIntent = buildOrderIntent({
-    strategyId: input.strategy,
-    poolAddress: executionPlan.poolAddress,
-    outputSol: requestedPositionSol,
-    side: resolveOrderIntentSide(actionableAction),
-    tokenMint: logContext.tokenMint,
-    fullPositionExit: isFullPositionExitAction(actionableAction),
-    liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee',
-    openIntentId: actionIdentity.openIntentId,
-    positionId: actionIdentity.positionId,
-    chainPositionAddress: actionIdentity.chainPositionAddress
-  });
+  const professionalRun = input.professionalRun;
+  const professionalMode = professionalRun?.mode ?? 'mechanical-soak';
+  let lifecycleKey: string | undefined;
+  let lifecycleStore: PositionLifecycleV2Store | undefined;
+  if (professionalMode !== 'mechanical-soak') {
+    if (!professionalRun || !input.riskStateV2 || !input.riskLimitsV2) {
+      return blockCycle({
+        stage: 'runtime-policy',
+        action: actionableAction,
+        reason: 'professional-run-context-or-risk-state-unavailable',
+        audit: engineResult.audit,
+        requestedPositionSol,
+        quote,
+        executionPlan,
+        severity: 'error',
+        failureSource: 'runtime-policy',
+        quoteCollected: true
+      });
+    }
+
+    lifecycleStore = new PositionLifecycleV2Store(stateRootDir);
+    try {
+      if (actionableAction === 'add-lp') {
+        const lifecycle = await lifecycleStore.createOpen({
+          runId: professionalRun.runId,
+          strategyId: input.strategy,
+          openIntentId: actionIdentity.openIntentId ?? createOpenIntentId(),
+          poolAddress: executionPlan.poolAddress,
+          tokenMint: logContext.tokenMint,
+          configSnapshotId: professionalRun.configSnapshotId,
+          parameterSnapshot: professionalRun.parameterSnapshot,
+          openedAt: logContext.startedAt
+        });
+        actionIdentity.openIntentId = lifecycle.openIntentId;
+        lifecycleKey = lifecycle.lifecycleKey;
+      } else {
+        const ledgerLifecycleKey = multiLpExit?.ledgerRecord?.lifecycleKey
+          ?? input.positionLedger?.records.find((record) =>
+            record.chainPositionAddress === actionIdentity.chainPositionAddress
+            || (record.openIntentId && record.openIntentId === actionIdentity.openIntentId)
+          )?.lifecycleKey;
+        const existing = ledgerLifecycleKey
+          ? await lifecycleStore.find({ lifecycleKey: ledgerLifecycleKey })
+          : await lifecycleStore.find({
+              chainPositionAddress: actionIdentity.chainPositionAddress,
+              openIntentId: actionIdentity.openIntentId
+            });
+        if (existing) {
+          assertLifecycleIdentity(existing, {
+            poolAddress: executionPlan.poolAddress,
+            tokenMint: logContext.tokenMint,
+            chainPositionAddress: actionIdentity.chainPositionAddress
+          });
+          lifecycleKey = existing.lifecycleKey;
+          actionIdentity.openIntentId = existing.openIntentId;
+        } else {
+          const recoveryOpenIntentId = actionIdentity.openIntentId
+            ?? `recovery:${actionIdentity.chainPositionAddress ?? `${executionPlan.poolAddress}:${logContext.tokenMint}`}`;
+          const recovered = await lifecycleStore.createOpen({
+            runId: professionalRun.runId,
+            strategyId: input.strategy,
+            openIntentId: recoveryOpenIntentId,
+            poolAddress: executionPlan.poolAddress,
+            tokenMint: logContext.tokenMint,
+            configSnapshotId: professionalRun.configSnapshotId,
+            parameterSnapshot: multiLpExit?.ledgerRecord?.parameterSnapshotAtEntry ?? {},
+            openedAt: multiLpExit?.ledgerRecord?.openedAt ?? logContext.startedAt
+          });
+          await lifecycleStore.markReconcileRequired(
+            recovered.lifecycleKey,
+            'recovery-lifecycle-created-for-existing-chain-position',
+            logContext.startedAt
+          );
+          lifecycleKey = recovered.lifecycleKey;
+          actionIdentity.openIntentId = recovered.openIntentId;
+        }
+      }
+      actionIdentity.lifecycleKey = lifecycleKey;
+    } catch (error) {
+      return blockCycle({
+        stage: 'runtime-policy',
+        action: actionableAction,
+        reason: `lifecycle-identity-required:${error instanceof Error ? error.message : String(error)}`,
+        audit: engineResult.audit,
+        requestedPositionSol,
+        quote,
+        executionPlan,
+        actionIdentity,
+        severity: 'error',
+        failureSource: 'runtime-policy',
+        quoteCollected: true
+      });
+    }
+  }
+  const intentSide = resolveOrderIntentSide(actionableAction) as NonNullable<Parameters<typeof buildOrderIntent>[0]['side']>;
+  let orderIntent: LiveOrderIntent;
+  try {
+    orderIntent = professionalMode === 'mechanical-soak'
+      ? buildOrderIntent({
+        strategyId: input.strategy,
+        poolAddress: executionPlan.poolAddress,
+        outputSol: requestedPositionSol,
+        side: intentSide,
+        tokenMint: logContext.tokenMint,
+        fullPositionExit: isFullPositionExitAction(actionableAction),
+        liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee',
+        openIntentId: actionIdentity.openIntentId,
+        positionId: actionIdentity.positionId,
+        chainPositionAddress: actionIdentity.chainPositionAddress
+        })
+      : buildProfessionalOrderIntent({
+        strategyId: input.strategy,
+        action: intentSide,
+        poolAddress: executionPlan.poolAddress,
+        tokenMint: logContext.tokenMint,
+        requestedPositionSol,
+        quote: {
+          action: quote.action ?? intentSide,
+          poolAddress: quote.poolAddress ?? executionPlan.poolAddress,
+          tokenMint: quote.tokenMint ?? logContext.tokenMint,
+          requestedPositionSol: quote.requestedPositionSol ?? requestedPositionSol,
+          routeExists: quote.routeExists,
+          outputSol: quote.outputSol,
+          slippageBps: quote.slippageBps,
+          quotedAt: quote.quotedAt,
+          quoteSlot: quote.quoteSlot ?? -1,
+          impactBps: quote.impactBps ?? -1,
+          estimatedTotalFeeLamports: quote.estimatedTotalFeeLamports ?? -1,
+          maxTotalFeeLamports: quote.maxTotalFeeLamports ?? -1,
+          lastValidBlockHeight: quote.lastValidBlockHeight ?? -1,
+          expiresAt: quote.expiresAt ?? '',
+          stale: quote.stale,
+          quoteHash: quote.quoteHash
+        },
+        candidateObservedAt: firstString(context.token.capturedAt, context.pool.capturedAt) || undefined,
+        lifecycle: {
+          lifecycleKey: lifecycleKey!,
+          openIntentId: actionIdentity.openIntentId!,
+          positionId: actionIdentity.positionId,
+          chainPositionAddress: actionIdentity.chainPositionAddress
+        },
+        run: professionalRun!,
+        riskState: input.riskStateV2!,
+        riskLimits: input.riskLimitsV2!,
+          now: logContext.startedAt
+        });
+  } catch (error) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: actionableAction,
+      reason: `risk-bound-intent-rejected:${error instanceof Error ? error.message : String(error)}`,
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      actionIdentity,
+      severity: 'warning',
+      failureSource: 'runtime-policy',
+      quoteCollected: true
+    });
+  }
   currentActionIdentity = actionIdentity;
   const buildCurrentOrderLifecycleKey = () => buildMirrorLifecycleKey({
     tokenMint: logContext.tokenMint,
@@ -4041,6 +4331,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     status: ConfirmationStatus;
     submissionId?: string;
     reason?: string;
+    slot?: number;
   } = trackConfirmation({
     submissionId: broadcastResult.submissionId,
     confirmationSignature: broadcastResult.confirmationSignature
@@ -4305,6 +4596,54 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       });
     }
   }
+  if (
+    professionalMode !== 'mechanical-soak'
+    && lifecycleStore
+    && lifecycleKey
+    && confirmationFinality === 'finalized'
+  ) {
+    const finalizedSignature = broadcastResult.confirmationSignature ?? broadcastResult.submissionId;
+    try {
+      if (actionableAction === 'add-lp') {
+        if (!actionIdentity.chainPositionAddress || confirmation.slot === undefined) {
+          throw new Error('finalized open is missing chainPositionAddress or confirmation slot');
+        }
+        await lifecycleStore.bindChainPosition(lifecycleKey, {
+          chainPositionAddress: actionIdentity.chainPositionAddress,
+          openSignature: finalizedSignature,
+          openSlot: confirmation.slot,
+          confirmedAt: confirmationCheckedAt
+        });
+      } else if (isFullExitAction(actionableAction)) {
+        if (confirmation.slot === undefined) {
+          throw new Error('finalized close is missing confirmation slot');
+        }
+        await lifecycleStore.finalizeClose(lifecycleKey, {
+          closeSignature: finalizedSignature,
+          closeSlot: confirmation.slot,
+          closedAt: confirmationCheckedAt,
+          finalizedAt: confirmationCheckedAt,
+          exitReasons: (engineResult.audit.reasons ?? []).length > 0
+            ? engineResult.audit.reasons!
+            : [engineResult.audit.reason]
+        });
+      }
+    } catch (error) {
+      await lifecycleStore.markReconcileRequired(
+        lifecycleKey,
+        `finalized-lifecycle-update-failed:${error instanceof Error ? error.message : String(error)}`,
+        confirmationCheckedAt
+      );
+      await appendIncident(journals, logContext, mirrorSink, {
+        stage: 'recovery',
+        reason: `lifecycle-reconcile-required:${error instanceof Error ? error.message : String(error)}`,
+        severity: 'error',
+        requestedPositionSol,
+        quote,
+        submissionId: broadcastResult.submissionId
+      });
+    }
+  }
   await appendDecision(journals, logContext, {
     stage: 'broadcast',
     mode: 'LIVE',
@@ -4317,7 +4656,11 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  if (!fillEvidenceMissing && isFullExitAction(actionableAction)) {
+  if (
+    !fillEvidenceMissing
+    && isFullExitAction(actionableAction)
+    && (confirmationFinality === 'finalized' || professionalMode === 'mechanical-soak')
+  ) {
     await appendEvolutionOutcomeBestEffort({
       sink: input.evolutionSink,
       logContext,
@@ -4328,9 +4671,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       context,
       snapshot: updatedSnapshot,
       positionState: input.positionState,
+      outcomePosition: multiLpExit,
       confirmedFill,
       requestedPositionSol,
-      quote
+      quote,
+      finality: 'finalized',
+      exitReasons: engineResult.audit.reasons
     });
   }
 
@@ -4352,6 +4698,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       killSwitchState
     }),
     actionIdentity,
-    confirmedFill
+    confirmedFill,
+    confirmationFinality
   }, lifecycleSynchronouslyResolved);
 }

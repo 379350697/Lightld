@@ -127,7 +127,20 @@ export function runAccountReconciliationGate(accountState: LiveAccountState | un
     return null;
   }
 
-  return reconcileLiveState(accountState);
+  if (typeof accountState.journalSol !== 'number') {
+    return {
+      ok: false as const,
+      deltaSol: 0,
+      tokenDeltas: [],
+      lpPositionDeltas: [],
+      reason: 'journal-projection-unavailable' as const
+    };
+  }
+
+  return reconcileLiveState({
+    ...accountState,
+    journalSol: accountState.journalSol
+  });
 }
 
 function resolveLifecycleAfterRecovery(

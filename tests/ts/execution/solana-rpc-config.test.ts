@@ -89,6 +89,12 @@ describe('solana rpc config policy', () => {
     expect(defaults.okxDexChainIndex).toBe('501');
     expect(defaults.residualTokenMinValueSol).toBe(0.1);
     expect(defaults.residualTokenDustMaxUiAmount).toBe(0.00001);
+    expect(defaults.broadcastPolicy).toMatchObject({
+      schemaVersion: 2,
+      kind: 'standard_rpc_fanout',
+      privateFlow: false,
+      jitoBundle: false
+    });
     expect(defaults.dryRunAddLpRebuildOnBinSlippage).toBe(true);
     expect(defaults.dryRunAddLpRebuildMaxAttempts).toBe(1);
     expect(defaults.addLpBinSlippageCooldownMs).toBe(300_000);
@@ -133,6 +139,38 @@ describe('solana rpc config policy', () => {
     expect(config.dryRunAddLpRebuildOnBinSlippage).toBe(false);
     expect(config.dryRunAddLpRebuildMaxAttempts).toBe(2);
     expect(config.addLpBinSlippageCooldownMs).toBe(120_000);
+  });
+
+  it('requires Jito tips to use a private or bundle broadcast policy', () => {
+    expect(() => loadSolanaExecutionConfig(envBase({
+      JITO_TIP_LAMPORTS: '5000'
+    }))).toThrow(/Jito tip requires/i);
+
+    const privateRpc = loadSolanaExecutionConfig(envBase({
+      SOLANA_BROADCAST_POLICY: 'staked-private-rpc',
+      SOLANA_PRIVATE_RPC_URLS: 'https://private-rpc.example',
+      JITO_TIP_LAMPORTS: '5000'
+    }));
+
+    expect(privateRpc.broadcastPolicy).toMatchObject({
+      kind: 'staked_private_rpc',
+      privateFlow: true,
+      jitoBundle: false,
+      privateRpcUrls: ['https://private-rpc.example']
+    });
+
+    const bundle = loadSolanaExecutionConfig(envBase({
+      SOLANA_BROADCAST_POLICY: 'jito-bundle',
+      JITO_BLOCK_ENGINE_URL: 'https://block-engine.example',
+      JITO_TIP_LAMPORTS: '5000'
+    }));
+
+    expect(bundle.broadcastPolicy).toMatchObject({
+      kind: 'jito_bundle',
+      privateFlow: true,
+      jitoBundle: true,
+      blockEngineUrl: 'https://block-engine.example'
+    });
   });
 
   it('lets the solana residual token threshold override the daemon fallback', () => {

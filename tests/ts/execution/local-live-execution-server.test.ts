@@ -136,6 +136,7 @@ describe('createLocalLiveExecutionServer', () => {
     const server = createLocalLiveExecutionServer({
       host: '127.0.0.1',
       port: 0,
+      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       stateRootDir: join(root, 'execution-state'),
       accountStatePath,
@@ -232,6 +233,7 @@ describe('createLocalLiveExecutionServer', () => {
     const server = createLocalLiveExecutionServer({
       host: '127.0.0.1',
       port: 0,
+      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       stateRootDir: join(root, 'execution-state'),
       expectedSignerPublicKeys: [keypair.publicKey]
@@ -268,6 +270,7 @@ describe('createLocalLiveExecutionServer', () => {
     const server = createLocalLiveExecutionServer({
       host: '127.0.0.1',
       port: 0,
+      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       stateRootDir: join(root, 'execution-state'),
       expectedSignerPublicKeys: [keypair.publicKey]
@@ -292,6 +295,44 @@ describe('createLocalLiveExecutionServer', () => {
     });
 
     expect(response.status).toBe(401);
+    await server.stop();
+  });
+
+  it('rejects V1 broadcasts by default outside explicit mechanical-soak mode', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-local-execution-v1-reject-'));
+    directories.push(root);
+    const keypair = await createSolanaKeypairFile(root);
+    const signer = new LocalLiveSigner({
+      keypairPath: keypair.path,
+      expectedPublicKey: keypair.publicKey
+    });
+    const server = createLocalLiveExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'test-token',
+      stateRootDir: join(root, 'execution-state'),
+      expectedSignerPublicKeys: [keypair.publicKey]
+    });
+
+    await server.start();
+    const signedIntent = await signer.sign(buildOrderIntent({
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1
+    }));
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer test-token'
+      },
+      body: JSON.stringify({ intent: signedIntent })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/V1.*mechanical-soak/i)
+    });
     await server.stop();
   });
 });
