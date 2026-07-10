@@ -717,6 +717,58 @@ describe('position ledger', () => {
     expect(summarizePositionLedger(ledger).reconcileRequiredCount).toBe(1);
   });
 
+  it('closes missing paper shadow positions instead of leaving archived open blockers', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-08T05:15:00.000Z',
+        records: [{
+          positionKey: 'chain-position:paper-position',
+          positionId: 'paper-position',
+          chainPositionAddress: 'paper-position',
+          openIntentId: 'lp-open-intent:paper',
+          activeMint: 'mint-paper',
+          activePoolAddress: 'pool-paper',
+          lifecycleState: 'open',
+          entrySol: 1,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-paper',
+          openedAt: '2026-07-08T05:05:00.000Z',
+          importStatus: 'archived_missing_without_exit_evidence',
+          lastAction: 'add-lp',
+          lastReason: 'chain-position-missing-without-exit-evidence',
+          evidenceMissingReason: 'chain-position-missing-without-exit-evidence',
+          missingOnChainSince: '2026-07-08T05:10:00.000Z',
+          valuationSource: 'paper-shadow-dlmm-active-bin',
+          updatedAt: '2026-07-08T05:15:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      closeMissingActive: true,
+      now: '2026-07-08T05:16:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'closed',
+      importStatus: 'superseded_closed',
+      lastReason: 'paper-overlay-position-closed',
+      lastClosedAt: '2026-07-08T05:16:00.000Z'
+    });
+    expect(ledger.records[0].missingOnChainSince).toBeUndefined();
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      activeLpCount: 0,
+      reconcileRequiredCount: 0
+    });
+  });
+
   it('recovers recently misclassified reconcile records back to pending chain evidence', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
@@ -907,7 +959,7 @@ describe('position ledger', () => {
     });
   });
 
-  it('closes missing ledger records that already submitted full LP exits when requested by unified semantics', () => {
+  it('closes submitted exits and archives missing chain records without trusted entry as terminal', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
         version: 1,
@@ -977,10 +1029,14 @@ describe('position ledger', () => {
       missingOnChainSince: undefined
     });
     expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-missing-without-exit')).toMatchObject({
-      lifecycleState: 'open',
+      lifecycleState: 'failed_terminal',
       importStatus: 'archived_missing_without_exit_evidence',
-      lastReason: 'chain-position-missing-without-exit-evidence',
+      lastReason: 'chain-position-missing-without-trusted-entry',
       missingOnChainSince: '2026-06-29T00:03:00.000Z'
+    });
+    expect(summarizePositionLedger(ledger)).toMatchObject({
+      chainActiveLpCount: 1,
+      reconcileRequiredCount: 0
     });
   });
 

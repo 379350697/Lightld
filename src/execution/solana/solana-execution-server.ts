@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import type { Keypair } from '@solana/web3.js';
+import { PublicKey, Transaction, VersionedTransaction, type Keypair } from '@solana/web3.js';
 
 import { z } from 'zod';
 
@@ -25,7 +25,13 @@ import {
   signedIntentIdempotencyFingerprint,
   verifySignedIntent
 } from '../signed-intent-verifier.ts';
-import { LiveOrderIntentSchema } from '../live-order-intent-schema.ts';
+import {
+  LiveOrderIntentSchema,
+  computeIntentQuoteHash,
+  validateIntentExecutionEnvelope,
+  validateLiveOrderIntentBoundary,
+  type ExecutionMode
+} from '../live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from '../live-broadcaster.ts';
 import type { LiveConfirmationResult } from '../live-confirmation-provider.ts';
 import { collectLiveQuote } from '../live-quote-service.ts';
@@ -37,6 +43,15 @@ import {
 } from '../../shared/http-server.ts';
 import { reconstructOpenPositionEntryEvidence } from '../../history/solana-closed-position-reconstructor.ts';
 import { encodeBase58 } from '../../shared/base58.ts';
+import { DurableTransactionOutboxV2 } from '../../runtime/durable-transaction-outbox-v2.ts';
+import { LedgerEventV2Store, buildFinalizedLedgerProjection } from '../../runtime/ledger-event-v2.ts';
+import { appendLedgerEventsFromTransactionMeta } from '../../runtime/transaction-meta-ledger-v2.ts';
+import { ExecutionQuoteEvidenceStoreV2 } from '../quote-evidence-store-v2.ts';
+import { buildProfessionalQuoteCommitment } from '../../runtime/professional-order-intent.ts';
+import {
+  validateBroadcastPolicyForFees,
+  type BroadcastPolicyV2
+} from './broadcast-policy.ts';
 
 const BroadcastRequestSchema = z.object({
   intent: z.object({
@@ -144,6 +159,7 @@ type PaperDryRunPosition = z.infer<typeof PaperDryRunPositionSchema>;
 type SolanaExecutionServerOptions = {
   host: string;
   port: number;
+  executionMode?: ExecutionMode;
   stateRootDir?: string;
   keypair: Keypair;
   rpcClient: SolanaRpcClient;
@@ -157,6 +173,7 @@ type SolanaExecutionServerOptions = {
   defaultSlippageBps?: number;
   residualTokenMinValueSol?: number;
   residualTokenDustMaxUiAmount?: number;
+  broadcastPolicy?: BroadcastPolicyV2;
   jitoTipLamports?: number;
   dryRun?: boolean;
   dryRunAddLpRebuildOnBinSlippage?: boolean;
@@ -194,6 +211,32 @@ type BroadcastLogPayload = {
   upperBinIdAtBuild?: number;
   binSlippageBps?: number;
 };
+
+type OutboxSendContext = {
+  idempotencyKey: string;
+  txIndex: number;
+  role: 'main' | 'residual' | 'cleanup';
+};
+
+function signatureFromSignedTransaction(signedTransactionBase64: string, dryRun: boolean) {
+  if (dryRun) {
+    return encodeBase58(createHash('sha512').update('lightld-paper-dry-run-v1').update(signedTransactionBase64).digest());
+  }
+  const bytes = Buffer.from(signedTransactionBase64, 'base64');
+  try {
+    const transaction = VersionedTransaction.deserialize(bytes);
+    const signature = transaction.signatures[0];
+    if (signature) return encodeBase58(signature);
+  } catch {
+    try {
+      const transaction = Transaction.from(bytes);
+      if (transaction.signature) return encodeBase58(transaction.signature);
+    } catch {
+      // A non-decodable transaction is never acceptable for production send.
+    }
+  }
+  throw new Error('cannot derive transaction signature before broadcast; refusing send without durable identity');
+}
 
 const RESIDUAL_BALANCE_CHECK_DELAY_MS = 2_000;
 const WITHDRAW_CONFIRMATION_WAIT_ATTEMPTS = 6;
@@ -374,6 +417,122 @@ async function resolveTokenCurrentValueSol(input: {
   const outAmountLamports = Number(quoteResponse.outAmountLamports ?? 0);
   const outAmountSol = outAmountLamports / LAMPORTS_PER_SOL;
   return Number.isFinite(outAmountSol) && outAmountSol >= 0 ? outAmountSol : undefined;
+}
+
+function lamportsToSol(amountLamports: string | number | bigint | undefined) {
+  const normalized = normalizeLamportsAmount(amountLamports);
+  if (!normalized) return undefined;
+  const value = Number(normalized) / LAMPORTS_PER_SOL;
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function priceImpactPctToBps(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.ceil(value * 100);
+}
+
+async function readWalletTokenBalanceLamports(input: {
+  rpcClient: SolanaRpcClient;
+  walletPublicKey: string;
+  tokenMint: string;
+}) {
+  const tokenAccounts = await input.rpcClient.getTokenAccountsByOwner(input.walletPublicKey);
+  const account = tokenAccounts.find(
+    (entry) => entry.account.data.parsed.info.mint === input.tokenMint
+  );
+  const amount = account?.account.data.parsed.info.tokenAmount.amount;
+  if (typeof amount !== 'string' || !/^\d+$/.test(amount) || BigInt(amount) <= 0n) {
+    throw new Error(`No positive token balance found for mint ${input.tokenMint}`);
+  }
+  return amount;
+}
+
+async function quoteSwapRouteForProfessionalEvidence(input: {
+  swapProviderChain: SwapProviderChain;
+  walletPublicKey: string;
+  poolAddress: string;
+  tokenMint: string;
+  action: 'buy' | 'sell' | 'add-lp' | 'rebalance-lp';
+  requestedPositionSol: number;
+  slippageBps: number;
+  rpcClient: SolanaRpcClient;
+}) {
+  const amountLamports = input.action === 'sell'
+    ? await readWalletTokenBalanceLamports({
+      rpcClient: input.rpcClient,
+      walletPublicKey: input.walletPublicKey,
+      tokenMint: input.tokenMint
+    })
+    : normalizeLamportsAmount(input.requestedPositionSol * LAMPORTS_PER_SOL);
+  if (!amountLamports) {
+    throw new Error('professional quote requires a positive executable amount');
+  }
+  const quote = await input.swapProviderChain.quoteExactIn({
+    inputMint: input.action === 'sell' ? input.tokenMint : SOL_MINT,
+    outputMint: input.action === 'sell' ? SOL_MINT : input.tokenMint,
+    amountLamports,
+    walletPublicKey: input.walletPublicKey,
+    poolAddress: input.poolAddress,
+    slippageBps: input.slippageBps
+  });
+  const outputSol = input.action === 'sell'
+    ? lamportsToSol(quote.outAmountLamports)
+    : input.requestedPositionSol;
+  if (typeof outputSol !== 'number' || outputSol <= 0) {
+    throw new Error('professional swap quote returned no executable SOL value');
+  }
+  return {
+    routeExists: true,
+    outputSol,
+    impactBps: priceImpactPctToBps(quote.priceImpactPct)
+  };
+}
+
+async function quoteLpExitForProfessionalEvidence(input: {
+  dlmmClient?: MeteoraDlmmClient;
+  valuationProviderChain: ValuationProviderChain;
+  walletPublicKey: string;
+  poolAddress: string;
+  tokenMint: string;
+  chainPositionAddress?: string;
+  action: 'withdraw-lp' | 'claim-fee';
+  slippageBps: number;
+}) {
+  if (!input.dlmmClient) {
+    throw new Error('professional LP exit quote requires DLMM client');
+  }
+  if (!input.chainPositionAddress) {
+    throw new Error('professional LP exit quote requires chainPositionAddress');
+  }
+  const positions = (await input.dlmmClient.getPositionSnapshots(new PublicKey(input.walletPublicKey)))
+    .filter((position) =>
+      position.poolAddress === input.poolAddress
+      && position.mint === input.tokenMint
+      && (position.positionAddress === input.chainPositionAddress
+        || (position as { chainPositionAddress?: string }).chainPositionAddress === input.chainPositionAddress)
+    );
+  if (positions.length !== 1) {
+    throw new Error(`professional LP exit quote expected one matching position, found ${positions.length}`);
+  }
+  const [position] = await enrichLpExitValues({
+    positions,
+    valuationProviderChain: input.valuationProviderChain,
+    walletPublicKey: input.walletPublicKey,
+    defaultSlippageBps: input.slippageBps
+  });
+  const outputSol = input.action === 'claim-fee'
+    ? (nonnegativeFinite(position.unclaimedFeeValueSol) ?? 0) + (nonnegativeFinite(position.claimedFeeValueSol) ?? 0)
+    : nonnegativeFinite(position.exitQuoteValueSol);
+  if (typeof outputSol !== 'number' || outputSol <= 0) {
+    throw new Error(`professional LP exit quote unavailable: ${position.valuationReason ?? 'no executable exit quote'}`);
+  }
+  return {
+    routeExists: true,
+    outputSol,
+    impactBps: 0
+  };
 }
 
 type AccountStateLpPosition = MeteoraLpPositionSnapshot & {
@@ -1033,6 +1192,16 @@ class PaperDryRunStateStore {
 }
 
 export function createSolanaExecutionServer(options: SolanaExecutionServerOptions) {
+  if ((options.jitoTipLamports ?? 0) > 0 && !options.broadcastPolicy) {
+    throw new Error('Jito tip requires an explicit private RPC or Jito bundle broadcast policy.');
+  }
+  if (options.broadcastPolicy) {
+    validateBroadcastPolicyForFees({
+      policy: options.broadcastPolicy,
+      jitoTipLamports: options.jitoTipLamports
+    });
+  }
+
   const {
     keypair,
     rpcClient,
@@ -1041,16 +1210,37 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     dryRun = false
   } = options;
   const dryRunAddLpRebuildOnBinSlippage = options.dryRunAddLpRebuildOnBinSlippage ?? true;
+  const executionMode = options.executionMode ?? (dryRun ? 'mechanical-soak' : 'live');
   const dryRunAddLpRebuildMaxAttempts = options.dryRunAddLpRebuildMaxAttempts ?? 1;
   const addLpBinSlippageCooldownMs = options.addLpBinSlippageCooldownMs ?? 300_000;
   const walletPublicKey = keypair.publicKey.toBase58();
   let server: Server | undefined;
   let origin = '';
   const store = new SolanaExecutionStateStore(options.stateRootDir);
+  const durableOutbox = options.stateRootDir
+    ? new DurableTransactionOutboxV2(options.stateRootDir)
+    : undefined;
+  const ledgerEventStore = options.stateRootDir
+    ? new LedgerEventV2Store(options.stateRootDir)
+    : undefined;
+  const quoteEvidenceStore = options.stateRootDir
+    ? new ExecutionQuoteEvidenceStoreV2(options.stateRootDir)
+    : undefined;
   const paperDryRunStore = new PaperDryRunStateStore(options.stateRootDir);
   const expectedSignerPublicKeys = options.expectedSignerPublicKeys ?? [];
   const idempotencyLocks = new Map<string, Promise<void>>();
   const tokenValueCache = new Map<string, TokenValueCacheEntry>();
+  let outboxStartupRecovery: {
+    status: 'not_configured' | 'ready' | 'degraded';
+    checkedAt?: string;
+    recoveredTransactions: number;
+    pendingTransactions: number;
+    reason?: string;
+  } = {
+    status: durableOutbox ? 'ready' : 'not_configured',
+    recoveredTransactions: 0,
+    pendingTransactions: 0
+  };
   const swapProviderChain = options.swapProviderChain ?? createDefaultSwapProviderChain({
     providerOrder: ['meteora-direct', 'jupiter-v1'],
     jupiterClient,
@@ -1167,12 +1357,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     }
 
     const width = Math.max(1, input.upperBinId - input.lowerBinId);
+    const valuationBinId = Math.max(input.lowerBinId, Math.min(input.upperBinId, input.currentActiveBinId));
     const openOffset = input.solSide === 'tokenX'
       ? input.activeBinIdAtOpen - input.lowerBinId
       : input.upperBinId - input.activeBinIdAtOpen;
     const currentOffset = input.solSide === 'tokenX'
-      ? input.currentActiveBinId - input.lowerBinId
-      : input.upperBinId - input.currentActiveBinId;
+      ? valuationBinId - input.lowerBinId
+      : input.upperBinId - valuationBinId;
     const deltaBins = currentOffset - openOffset;
     const drift = deltaBins / width;
     const boundedDrift = Math.max(-1.5, Math.min(1.5, drift));
@@ -1365,6 +1556,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     currentValueSol: position.currentValueSol,
     withdrawSolAmount: position.currentValueSol,
     liquidityValueSol: position.currentValueSol,
+    unclaimedFeeValueSol: 0,
+    claimedFeeValueSol: 0,
+    recoverableRentSol: 0,
     lpTotalValueSol: position.currentValueSol,
     exitQuoteValueSol: position.currentValueSol,
     displayValueSol: position.currentValueSol,
@@ -1378,6 +1572,35 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     valuationSource: position.valuationSource ?? 'paper-dry-run-overlay',
     lastValuationAt: position.updatedAt
   });
+  const toPaperLpFill = (position: PaperDryRunPosition, submissions: SubmissionStore) => {
+    const submission = submissions.submissions.find((entry) => {
+      const intent = entry.signedIntent.intent;
+      return entry.result?.chainPositionAddress === position.chainPositionAddress
+        || intent.chainPositionAddress === position.chainPositionAddress
+        || (position.openIntentId && intent.openIntentId === position.openIntentId)
+        || (
+          intent.side === 'add-lp'
+          && intent.poolAddress === position.poolAddress
+          && intent.tokenMint === position.mint
+        );
+    });
+
+    return {
+      submissionId: submission?.result?.submissionId ?? submission?.result?.confirmationSignature,
+      confirmationSignature: submission?.result?.confirmationSignature,
+      openIntentId: position.openIntentId,
+      positionId: position.positionId,
+      chainPositionAddress: position.chainPositionAddress,
+      mint: position.mint,
+      side: 'add-lp' as const,
+      amount: position.entrySol ?? position.currentValueSol,
+      actualFilledSol: position.entrySol ?? position.currentValueSol,
+      actualWalletDeltaSol: -(position.entrySol ?? position.currentValueSol),
+      fillAmountSource: 'wallet-delta' as const,
+      hasFillEvidence: true,
+      recordedAt: position.openedAt
+    };
+  };
   const simulateDryRunRawTransaction = async (signedTransactionBase64: string) => {
     const simulator = rpcClient as SolanaRpcClient & {
       simulateRawTransaction?: (
@@ -1414,30 +1637,213 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
     return buildDryRunSignature(signedTransactionBase64);
   };
-  const submitRawTransaction = async (signedTransactionBase64: string) => {
-    if (dryRun) {
-      return simulateDryRunRawTransaction(signedTransactionBase64);
+  const submitRawTransaction = async (
+    signedTransactionBase64: string,
+    outboxContext?: OutboxSendContext
+  ) => {
+    let expectedSignature: string | undefined;
+    if (outboxContext) {
+      if (!durableOutbox) {
+        throw new Error('durable transaction outbox is unavailable; refusing production send');
+      }
+      const durableSignature = signatureFromSignedTransaction(signedTransactionBase64, dryRun);
+      expectedSignature = durableSignature;
+      const signedAt = new Date().toISOString();
+      await durableOutbox.recordSigned({
+        idempotencyKey: outboxContext.idempotencyKey,
+        txIndex: outboxContext.txIndex,
+        role: outboxContext.role,
+        signature: durableSignature,
+        signedTransactionBase64,
+        signedAt
+      });
+      await durableOutbox.beginSendAttempt({
+        idempotencyKey: outboxContext.idempotencyKey,
+        txIndex: outboxContext.txIndex,
+        endpoint: dryRun ? 'mechanical-simulator' : 'solana-rpc',
+        attemptedAt: new Date().toISOString()
+      });
     }
+    let signature: string;
+    if (dryRun) {
+      signature = await simulateDryRunRawTransaction(signedTransactionBase64);
+    } else {
+      const visibilitySender = rpcClient as SolanaRpcClient & {
+        sendRawTransactionAndWaitForVisibility?: (
+          base64Transaction: string
+        ) => Promise<{ signature: string }>;
+      };
 
-    const visibilitySender = rpcClient as SolanaRpcClient & {
-      sendRawTransactionAndWaitForVisibility?: (
-        base64Transaction: string
-      ) => Promise<{ signature: string }>;
-    };
-
-    if (typeof visibilitySender.sendRawTransactionAndWaitForVisibility === 'function') {
-      try {
-        return (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
-      } catch (error) {
-        throw classifyOperationError(error, 'rpc-send');
+      if (typeof visibilitySender.sendRawTransactionAndWaitForVisibility === 'function') {
+        try {
+          signature = (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+        } catch (error) {
+          throw classifyOperationError(error, 'rpc-send');
+        }
+      } else {
+        try {
+          signature = await rpcClient.sendRawTransaction(signedTransactionBase64);
+        } catch (error) {
+          throw classifyOperationError(error, 'rpc-send');
+        }
       }
     }
 
-    try {
-      return await rpcClient.sendRawTransaction(signedTransactionBase64);
-    } catch (error) {
-      throw classifyOperationError(error, 'rpc-send');
+    if (expectedSignature && signature !== expectedSignature) {
+      throw new Error(`RPC signature mismatch expected=${expectedSignature} observed=${signature}`);
     }
+    if (outboxContext && durableOutbox) {
+      await durableOutbox.recordSendAttempt({
+        idempotencyKey: outboxContext.idempotencyKey,
+        txIndex: outboxContext.txIndex,
+        signature,
+        endpoint: dryRun ? 'mechanical-simulator' : 'solana-rpc',
+        attemptedAt: new Date().toISOString(),
+        rpcAccepted: true,
+        rpcResponse: signature
+      });
+    }
+    return signature;
+  };
+  const recordOutboxConfirmation = async (input: {
+    signature: string;
+    slot: number;
+    finality: 'confirmed' | 'finalized';
+    checkedAt: string;
+  }) => {
+    if (!durableOutbox) return;
+    const record = (await durableOutbox.read()).find((candidate) =>
+      candidate.transactions.some((transaction) => transaction.signature === input.signature)
+    );
+    const transaction = record?.transactions.find((entry) => entry.signature === input.signature);
+    if (!record || !transaction) return;
+    if (input.finality === 'finalized') {
+      if (!ledgerEventStore) {
+        throw new Error('ledger event store requires stateRootDir');
+      }
+      const transactionMeta = await rpcClient.getTransaction(input.signature);
+      await appendLedgerEventsFromTransactionMeta({
+        store: ledgerEventStore,
+        lifecycleKey: record.lifecycleKey,
+        signature: input.signature,
+        finality: 'finalized',
+        walletAddress: walletPublicKey,
+        transaction: transactionMeta as Parameters<typeof appendLedgerEventsFromTransactionMeta>[0]['transaction']
+      });
+      await durableOutbox.recordFinalized({
+        idempotencyKey: record.idempotencyKey,
+        txIndex: transaction.txIndex,
+        signature: input.signature,
+        slot: input.slot,
+        finalizedAt: input.checkedAt
+      });
+      return;
+    }
+    await durableOutbox.recordConfirmed({
+      idempotencyKey: record.idempotencyKey,
+      txIndex: transaction.txIndex,
+      signature: input.signature,
+      slot: input.slot,
+      confirmedAt: input.checkedAt
+    });
+  };
+  const readSignatureStatusesForRecovery = async (signatures: string[]) => {
+    const reader = rpcClient as SolanaRpcClient & {
+      getSignatureStatusesAcrossReadEndpoints?: (
+        signatures: string[]
+      ) => Promise<{ value: Array<{
+        slot?: number;
+        err?: unknown;
+        confirmationStatus?: string | null;
+      } | null> }>;
+    };
+    if (typeof reader.getSignatureStatusesAcrossReadEndpoints === 'function') {
+      return reader.getSignatureStatusesAcrossReadEndpoints(signatures);
+    }
+    return rpcClient.getSignatureStatuses(signatures);
+  };
+  const recoverDurableOutboxFromChain = async () => {
+    if (!durableOutbox) {
+      outboxStartupRecovery = {
+        status: 'not_configured',
+        recoveredTransactions: 0,
+        pendingTransactions: 0
+      };
+      return;
+    }
+    const checkedAt = new Date().toISOString();
+    const pending = (await durableOutbox.recoverPendingTransactions())
+      .filter((entry) => typeof entry.transaction.signature === 'string' && entry.transaction.signature.length > 0);
+    let recoveredTransactions = 0;
+    let recoveryErrors = 0;
+
+    for (let offset = 0; offset < pending.length; offset += 100) {
+      const batch = pending.slice(offset, offset + 100);
+      const signatures = batch.map((entry) => entry.transaction.signature!);
+      const statuses = await readSignatureStatusesForRecovery(signatures);
+      for (let index = 0; index < batch.length; index += 1) {
+        const status = statuses.value[index];
+        if (!status) continue;
+        const entry = batch[index];
+        const signature = entry.transaction.signature!;
+        try {
+          if (status.err) {
+            await durableOutbox.recordRollback({
+              idempotencyKey: entry.idempotencyKey,
+              signature,
+              detectedAt: checkedAt,
+              reason: `transaction error observed during startup recovery: ${JSON.stringify(status.err)}`
+            });
+            recoveredTransactions += 1;
+            continue;
+          }
+          const slot = typeof status.slot === 'number' && Number.isInteger(status.slot)
+            ? status.slot
+            : 0;
+          if (status.confirmationStatus === 'finalized') {
+            await recordOutboxConfirmation({
+              signature,
+              slot,
+              finality: 'finalized',
+              checkedAt
+            });
+            recoveredTransactions += 1;
+          } else if (status.confirmationStatus === 'confirmed') {
+            await recordOutboxConfirmation({
+              signature,
+              slot,
+              finality: 'confirmed',
+              checkedAt
+            });
+            recoveredTransactions += 1;
+          } else {
+            await durableOutbox.recordVisible({
+              idempotencyKey: entry.idempotencyKey,
+              txIndex: entry.transaction.txIndex,
+              signature,
+              slot,
+              visibleAt: checkedAt
+            });
+            recoveredTransactions += 1;
+          }
+        } catch (error) {
+          recoveryErrors += 1;
+          console.warn('durable outbox startup recovery failed', {
+            idempotencyKey: entry.idempotencyKey,
+            signature,
+            reason: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+
+    outboxStartupRecovery = {
+      status: recoveryErrors > 0 ? 'degraded' : 'ready',
+      checkedAt,
+      recoveredTransactions,
+      pendingTransactions: pending.length,
+      reason: recoveryErrors > 0 ? `${recoveryErrors} pending transactions could not be recovered` : undefined
+    };
   };
   const withIdempotencyLock = async <T>(idempotencyKey: string, action: () => Promise<T>): Promise<T> => {
     const prior = idempotencyLocks.get(idempotencyKey) ?? Promise.resolve();
@@ -1597,7 +2003,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               status: 'ok',
               wallet: walletPublicKey,
               solBalance,
-              dryRun
+              dryRun,
+              outboxStartupRecovery
             });
             return;
           }
@@ -1612,7 +2019,59 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const body = await readBody(request);
             const payload = BroadcastRequestSchema.parse(JSON.parse(body));
             verifySignedIntent(payload.intent, expectedSignerPublicKeys);
+            const currentBlockHeight = payload.intent.intent.schemaVersion === 2
+              && executionMode !== 'mechanical-soak'
+              ? await rpcClient.getBlockHeight()
+              : undefined;
+            validateLiveOrderIntentBoundary(payload.intent.intent, {
+              mode: executionMode,
+              stage: 'broadcast',
+              currentBlockHeight
+            });
             const intent = payload.intent.intent;
+            const executionSlippageBps = intent.schemaVersion === 2
+              ? Math.min(defaultSlippageBps, intent.maxSlippageBps)
+              : defaultSlippageBps;
+
+            if (intent.schemaVersion === 2
+              && (options.jitoTipLamports ?? 0) > intent.maxTotalFeeLamports) {
+              throw new Error('configured Jito tip exceeds signed maxTotalFeeLamports');
+            }
+            if (intent.schemaVersion === 2) {
+              if (!quoteEvidenceStore) {
+                throw new Error('execution quote evidence store requires stateRootDir');
+              }
+              const issuedQuote = await quoteEvidenceStore.read(intent.quoteHash);
+              if (!issuedQuote) {
+                throw new Error('signed quote hash was not issued by this execution service');
+              }
+              if (
+                issuedQuote.action !== intent.side
+                || issuedQuote.poolAddress !== intent.poolAddress
+                || issuedQuote.tokenMint !== intent.tokenMint
+                || issuedQuote.requestedPositionSol !== intent.outputSol
+                || issuedQuote.quoteSlot !== intent.quoteSlot
+                || issuedQuote.lastValidBlockHeight !== intent.lastValidBlockHeight
+                || issuedQuote.maxTotalFeeLamports !== intent.maxTotalFeeLamports
+                || issuedQuote.estimatedTotalFeeLamports !== intent.estimatedTotalFeeLamports
+                || issuedQuote.impactBps !== intent.quotedImpactBps
+                || (issuedQuote.chainPositionAddress !== undefined
+                  && issuedQuote.chainPositionAddress !== intent.chainPositionAddress)
+              ) {
+                throw new Error('signed quote identity or execution envelope does not match issued quote evidence');
+              }
+              if (Date.parse(issuedQuote.expiresAt) <= Date.now()) {
+                throw new Error('issued quote evidence expired before broadcast');
+              }
+              validateIntentExecutionEnvelope(intent, {
+                actualInputSol: intent.maxInputSol,
+                actualOutputSol: intent.minOutputSol,
+                actualSlippageBps: executionSlippageBps,
+                actualImpactBps: issuedQuote.impactBps,
+                actualTotalFeeLamports: issuedQuote.estimatedTotalFeeLamports,
+                actualQuoteHash: issuedQuote.quoteHash
+              });
+            }
             const broadcastStartedAt = Date.now();
 
             // Allowlist check
@@ -1654,6 +2113,22 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 return;
               }
 
+              if (intent.schemaVersion === 2) {
+                if (!durableOutbox) {
+                  throw new Error('durable transaction outbox requires stateRootDir');
+                }
+                await durableOutbox.reserve({
+                  runId: intent.runId,
+                  lifecycleKey: intent.lifecycleKey,
+                  idempotencyKey: intent.idempotencyKey,
+                  intentId: `${intent.openIntentId}:${intent.side}`,
+                  intentSha256: createHash('sha256')
+                    .update(signedIntentIdempotencyFingerprint(payload.intent))
+                    .digest('hex'),
+                  reservedAt: new Date().toISOString()
+                });
+              }
+
             const side = intent.side ?? 'buy';
             const lifecycleResultIdentity = {
               openIntentId: intent.openIntentId,
@@ -1677,6 +2152,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let upperBinIdAtBuild: number | undefined;
             let binSlippageBps: number | undefined;
             let solSideAtBuild: 'tokenX' | 'tokenY' | undefined;
+            let nextOutboxTxIndex = 0;
+            const nextOutboxSendContext = (role: OutboxSendContext['role'] = 'main') => ({
+              idempotencyKey: intent.idempotencyKey,
+              txIndex: nextOutboxTxIndex++,
+              role
+            });
 
             try {
               let signedBase64 = '';
@@ -1721,7 +2202,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     amountLamports,
                     walletPublicKey,
                     poolAddress: intent.poolAddress,
-                    slippageBps: defaultSlippageBps,
+                    slippageBps: executionSlippageBps,
                     jitoTipLamports: options.jitoTipLamports
                   },
                   {
@@ -1729,7 +2210,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     rpcClient,
                     sendRawTransaction: async (signedTransactionBase64) => {
                       const sendStartedAt = Date.now();
-                      const signature = await submitRawTransaction(signedTransactionBase64);
+                      const signature = await submitRawTransaction(
+                        signedTransactionBase64,
+                        intent.schemaVersion === 2 ? nextOutboxSendContext() : undefined
+                      );
                       visibleBroadcastRecorded = true;
                       sendTxMs.push(durationMs(sendStartedAt));
                       return signature;
@@ -1875,6 +2359,23 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 throw new Error(`No Meteora transactions returned for side ${side}`);
               }
 
+              if (intent.schemaVersion === 2 && durableOutbox) {
+                await durableOutbox.recordBuilt({
+                  idempotencyKey: intent.idempotencyKey,
+                  buildId: createHash('sha256')
+                    .update([
+                      intent.idempotencyKey,
+                      side,
+                      String(txBatch.length),
+                      builtChainPositionAddress ?? intent.chainPositionAddress ?? ''
+                    ].join('\u0000'))
+                    .digest('hex'),
+                  transactionCount: txBatch.length,
+                  role: 'main',
+                  builtAt: new Date().toISOString()
+                });
+              }
+
               const blockhashStartedAt = Date.now();
               const { value: blockhash } = await rpcClient.getLatestBlockhash();
               blockhashMs = durationMs(blockhashStartedAt);
@@ -1888,7 +2389,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   txParams.sign(...signers);
                   signedBase64 = txParams.serialize().toString('base64');
                   const sendStartedAt = Date.now();
-                  txSignatures.push(await submitRawTransaction(signedBase64));
+                  txSignatures.push(await submitRawTransaction(
+                    signedBase64,
+                    intent.schemaVersion === 2 ? nextOutboxSendContext() : undefined
+                  ));
                   visibleBroadcastRecorded = true;
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
@@ -2090,9 +2594,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   swapProviderChain,
                   keypair,
                   walletPublicKey,
-                  defaultSlippageBps,
+                  defaultSlippageBps: executionSlippageBps,
                   jitoTipLamports: options.jitoTipLamports,
-                  sendRawTransaction: submitRawTransaction,
+                  sendRawTransaction: (signedTransactionBase64) => submitRawTransaction(
+                    signedTransactionBase64,
+                    intent.schemaVersion === 2 ? nextOutboxSendContext('residual') : undefined
+                  ),
                   sendTxMs,
                   acceptedSignatures: txSignatures,
                   poolAddressByMint: new Map([[intent.tokenMint, intent.poolAddress]]),
@@ -2299,12 +2806,21 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
               const finality = status.confirmationStatus ?? 'unknown';
               const isConfirmed = finality === 'confirmed' || finality === 'finalized';
+              if (finality === 'confirmed' || finality === 'finalized') {
+                await recordOutboxConfirmation({
+                  signature,
+                  slot: status.slot,
+                  finality,
+                  checkedAt
+                });
+              }
               const result: LiveConfirmationResult = {
                 submissionId: payload.submissionId,
                 confirmationSignature: signature,
                 status: isConfirmed ? 'confirmed' : 'submitted',
                 finality: finality as LiveConfirmationResult['finality'],
-                checkedAt
+                checkedAt,
+                slot: status.slot
               };
               writeJson(response, 200, result);
             } catch (error) {
@@ -2341,8 +2857,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           if (request.method === 'GET' && request.url === '/account-state') {
             if (dryRun) {
               const paperState = await revaluePaperDryRunState(await paperDryRunStore.read());
+              const submissions = await store.read();
               const walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
               const walletLpPositions = paperState.positions.map(toPaperLpPosition);
+              const fills = paperState.positions
+                .filter((position) => typeof position.entrySol === 'number' && position.entrySol > 0)
+                .map((position) => toPaperLpFill(position, submissions));
               writeJson(response, 200, {
                 walletSol,
                 journalSol: walletSol,
@@ -2350,7 +2870,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 journalLpPositions: walletLpPositions,
                 walletTokens: [],
                 journalTokens: [],
-                fills: []
+                fills
               });
               return;
             }
@@ -2435,12 +2955,40 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
             writeJson(response, 200, {
               walletSol,
-              journalSol: walletSol,
               walletLpPositions,
-              journalLpPositions: walletLpPositions,
               walletTokens,
-              journalTokens: walletTokens,
-              fills: []
+              fills: [],
+              sourceQuality: {
+                chain: 'healthy',
+                journal: 'unavailable',
+                note: 'account-state exposes chain observations only; ledger projection is independent'
+              }
+            });
+            return;
+          }
+
+          if (request.method === 'GET' && request.url === '/journal-projection') {
+            if (!ledgerEventStore) {
+              writeJson(response, 503, {
+                error: 'ledger projection unavailable',
+                sourceQuality: {
+                  ledger: 'unavailable',
+                  reason: 'stateRootDir is required for LedgerEventV2 replay'
+                }
+              });
+              return;
+            }
+            const events = await ledgerEventStore.read();
+            const projection = buildFinalizedLedgerProjection(events);
+            writeJson(response, 200, {
+              schemaVersion: 2,
+              source: 'ledger-event-v2',
+              sourceQuality: {
+                ledger: 'healthy',
+                chain: 'not_included',
+                note: 'journal projection is replayed from LedgerEventV2 only'
+              },
+              ...projection
             });
             return;
           }
@@ -2452,9 +3000,82 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const quote = await collectLiveQuote({
               expectedOutSol: payload.expectedOutSol ?? 0,
               slippageBps: payload.slippageBps ?? 50,
-              routeExists: payload.routeExists ?? true
+              routeExists: payload.routeExists ?? true,
+              action: payload.action,
+              poolAddress: payload.poolAddress,
+              tokenMint: payload.tokenMint,
+              requestedPositionSol: payload.requestedPositionSol,
+              chainPositionAddress: payload.chainPositionAddress
             });
-            writeJson(response, 200, quote);
+            if (executionMode === 'mechanical-soak') {
+              writeJson(response, 200, quote);
+              return;
+            }
+            if (!quoteEvidenceStore) {
+              throw new Error('execution quote evidence store requires stateRootDir');
+            }
+            if (
+              !payload.action
+              || !payload.poolAddress
+              || !payload.tokenMint
+              || !Number.isFinite(payload.requestedPositionSol)
+              || payload.requestedPositionSol <= 0
+            ) {
+              throw new Error('professional quote request requires action, poolAddress, tokenMint and requestedPositionSol');
+            }
+            const action = z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp'])
+              .parse(payload.action);
+            const slippageBps = Number.isFinite(payload.slippageBps)
+              ? Math.max(0, Number(payload.slippageBps))
+              : defaultSlippageBps;
+            const executionQuote = action === 'withdraw-lp' || action === 'claim-fee'
+              ? await quoteLpExitForProfessionalEvidence({
+                dlmmClient: options.dlmmClient,
+                valuationProviderChain,
+                walletPublicKey,
+                poolAddress: payload.poolAddress,
+                tokenMint: payload.tokenMint,
+                chainPositionAddress: payload.chainPositionAddress,
+                action,
+                slippageBps
+              })
+              : await quoteSwapRouteForProfessionalEvidence({
+                swapProviderChain,
+                walletPublicKey,
+                poolAddress: payload.poolAddress,
+                tokenMint: payload.tokenMint,
+                action,
+                requestedPositionSol: payload.requestedPositionSol,
+                slippageBps,
+                rpcClient
+              });
+            const [quoteSlot, blockhash] = await Promise.all([
+              rpcClient.getSlot(),
+              rpcClient.getLatestBlockhash()
+            ]);
+            const quotedAt = new Date().toISOString();
+            const expiresAt = new Date(Date.now() + 3_000).toISOString();
+            const estimatedTotalFeeLamports = 5_000 + (options.jitoTipLamports ?? 0);
+            const evidence = {
+              action: payload.action,
+              poolAddress: payload.poolAddress,
+              tokenMint: payload.tokenMint,
+              requestedPositionSol: payload.requestedPositionSol,
+              ...(payload.chainPositionAddress ? { chainPositionAddress: payload.chainPositionAddress } : {}),
+              routeExists: executionQuote.routeExists,
+              outputSol: executionQuote.outputSol,
+              slippageBps,
+              quotedAt,
+              quoteSlot,
+              impactBps: executionQuote.impactBps,
+              estimatedTotalFeeLamports,
+              maxTotalFeeLamports: Math.max(estimatedTotalFeeLamports, estimatedTotalFeeLamports * 2),
+              lastValidBlockHeight: blockhash.value.lastValidBlockHeight,
+              expiresAt
+            } as const;
+            const quoteHash = computeIntentQuoteHash(buildProfessionalQuoteCommitment(evidence));
+            const recorded = await quoteEvidenceStore.record({ ...evidence, quoteHash });
+            writeJson(response, 200, { ...quote, ...recorded, stale: false });
             return;
           }
 
@@ -2477,6 +3098,20 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
       }
 
       origin = `http://${options.host}:${address.port}`;
+      try {
+        await recoverDurableOutboxFromChain();
+      } catch (error) {
+        outboxStartupRecovery = {
+          status: 'degraded',
+          checkedAt: new Date().toISOString(),
+          recoveredTransactions: 0,
+          pendingTransactions: 0,
+          reason: error instanceof Error ? error.message : String(error)
+        };
+        console.warn('durable outbox startup recovery unavailable', {
+          reason: outboxStartupRecovery.reason
+        });
+      }
     },
     async stop() {
       if (!server) {

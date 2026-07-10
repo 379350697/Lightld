@@ -15,6 +15,7 @@ import {
   type WatchlistSnapshotRecord
 } from './types.ts';
 import { resolveEvolutionPaths } from './paths.ts';
+import { LegacyDatasetRejectedError } from './dataset-status.ts';
 
 export type EvolutionEvidence = {
   candidateScans: CandidateScanRecord[];
@@ -22,14 +23,19 @@ export type EvolutionEvidence = {
   outcomes: LiveCycleOutcomeRecord[];
 };
 
-type LoadEvolutionEvidenceInput = {
+export type LoadEvolutionEvidenceInput = {
   strategyId: 'new-token-v1' | 'large-pool-v1';
   stateRootDir?: string;
   mirrorPath?: string;
   evolutionRootDir?: string;
+  allowLegacyV1Forensics?: boolean;
 };
 
 export async function loadEvolutionEvidence(input: LoadEvolutionEvidenceInput): Promise<EvolutionEvidence> {
+  if (!input.allowLegacyV1Forensics) {
+    throw new LegacyDatasetRejectedError();
+  }
+
   const stateRootDir = input.stateRootDir ?? 'state';
   const paths = resolveEvolutionPaths(input.strategyId, input.evolutionRootDir ?? join(stateRootDir, 'evolution'));
   const mirroredCandidateScans = await readMirroredRows(

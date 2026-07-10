@@ -41,6 +41,58 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('spot-open-approved');
   });
 
+  it('blocks new-token entry when the expected after-cost edge is not positive', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: false,
+        hasSolRoute: true,
+        liquidityUsd: 15_000,
+        requestedPositionSol: 0.1,
+        expectedFeeSol: 0.0001,
+        roundtripImpactBps: 120,
+        adverseSelectionBps: 20,
+        impermanentLossBps: 20,
+        chainCostSol: 0.00001
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        requirePositiveExpectedEdge: true
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).toContain('entry-edge-not-positive');
+  });
+
+  it('allows new-token entry when expected edge remains positive after all costs', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: false,
+        hasSolRoute: true,
+        liquidityUsd: 15_000,
+        requestedPositionSol: 0.1,
+        feeTvlRatio24h: 0.12,
+        roundtripImpactBps: 80,
+        adverseSelectionBps: 20,
+        impermanentLossBps: 20,
+        chainCostSol: 0.00001
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        requirePositiveExpectedEdge: true
+      }
+    });
+
+    expect(result.action).toBe('deploy');
+    expect(result.audit.reason).toBe('spot-open-approved');
+  });
+
   it('lets existing new-token LP exits bypass entry hard gates', () => {
     const result = runEngineCycle({
       engine: 'new-token',
@@ -85,6 +137,35 @@ describe('runEngineCycle', () => {
 
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toBe('max-hold-with-lp-position');
+  });
+
+  it('passes every LP exit reason through the audit payload', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        hasLpPosition: true,
+        hasSolRoute: false,
+        liquidityUsd: 0,
+        lpRiskIntent: 'range-exit',
+        lpRiskReason: 'active-bin-out-of-range:above:9',
+        lpNetPnlPct: -6,
+        holdTimeMs: 10 * 60 * 1000,
+        pendingConfirmationStatus: 'confirmed'
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        lpEnabled: true,
+        lpStopLossNetPnlPct: 5,
+        lpTakeProfitNetPnlPct: 5
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+    expect(result.audit.reasons).toEqual(['lp-stop-loss', 'lp-range-exit:active-bin-out-of-range:above:9']);
   });
 
   it('returns hold when hard gates reject the snapshot', () => {

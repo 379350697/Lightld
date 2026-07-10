@@ -10,6 +10,8 @@ state/
 state-paper*/
 secrets/
 .venv/
+__pycache__/
+*.py[cod]
 *.sqlite
 *.env
 .env.*

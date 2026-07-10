@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { buildStatusView, readMirrorStatus } from '../observability/mirror-query-service.ts';
 import { refreshHealthReportFreshness } from '../runtime/health-report.ts';
+import { deriveProfessionalRuntimeStatusV2 } from '../runtime/professional-runtime-status-v2.ts';
 import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
 import { formatRuntimeStatus } from './show-runtime-status.ts';
 
@@ -68,11 +69,17 @@ async function main() {
       ? async () => readMirrorStatus(mirrorPath)
       : undefined
   });
-  const evolution = await readEvolutionSummary(args.stateRootDir, args.strategyId);
+  const [evolution, professionalV2] = await Promise.all([
+    readEvolutionSummary(args.stateRootDir, args.strategyId),
+    deriveProfessionalRuntimeStatusV2({
+      stateRootDir: args.stateRootDir,
+      strategyId: args.strategyId
+    })
+  ]);
 
   process.stdout.write(args.json
-    ? `${JSON.stringify({ ...view, evolution }, null, 2)}\n`
-    : `${formatRuntimeStatus({ ...view, evolution })}\n`);
+    ? `${JSON.stringify({ ...view, evolution, professionalV2 }, null, 2)}\n`
+    : `${formatRuntimeStatus({ ...view, evolution, professionalV2 })}\n`);
 }
 
 main().catch((error: unknown) => {

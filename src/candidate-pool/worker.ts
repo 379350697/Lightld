@@ -14,7 +14,12 @@ import {
   type PoolFeeYieldStore
 } from './pool-fee-yield.ts';
 import { buildFailedRouteObservation, buildGmgnObservation, buildMeteoraObservation } from './source-observations.ts';
-import type { CandidatePoolWriter, CandidateSourceAdapter } from './types.ts';
+import type {
+  CandidatePoolEntry,
+  CandidatePoolWriter,
+  CandidateSourceAdapter,
+  CandidateSourceObservation
+} from './types.ts';
 import { buildMeteoraCandidate, isMeteoraPoolPrefiltered } from './meteora-candidate-builder.ts';
 
 const STRATEGY_CONFIGS = {
@@ -70,6 +75,12 @@ function resolveGmgnCandidateBatch(candidates: IngestCandidate[], maxBatchSize: 
 
 function expiresAt(now: Date, ttlMs: number) {
   return new Date(now.getTime() + Math.max(0, ttlMs)).toISOString();
+}
+
+function isAwaitingSecuritySource(entry: CandidatePoolEntry, routeObservation: CandidateSourceObservation) {
+  return routeObservation.status === 'passed'
+    && entry.status === 'source_unavailable'
+    && entry.blockReason === 'missing-security-source';
 }
 
 export async function runCandidateWorkerTick(options: CandidateWorkerOptions): Promise<CandidateWorkerTickResult> {
@@ -155,9 +166,8 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
       observedAt: now.toISOString(),
       sourceObservations: [routeObservation]
     });
-    if (entry.openable) {
+    if (isAwaitingSecuritySource(entry, routeObservation)) {
       routeOpenableCandidates.push(candidate);
-      openableCount += 1;
     }
   }
 
@@ -169,18 +179,18 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
   const gmgnBatch = gmgnSourceMode === 'disabled'
     ? []
     : resolveGmgnCandidateBatch(routeOpenableCandidates, gmgnMaxBatchSize);
-  const hardOpenableCount = openableCount;
+  const routeSecurityPendingCount = routeOpenableCandidates.length;
   const hardCompletedAt = new Date();
   await options.writer.writeWorkerStatus({
     strategyId: options.strategy,
     status: 'ok',
     observedAt: hardCompletedAt.toISOString(),
     expiresAt: expiresAt(hardCompletedAt, workerLeaseMs),
-    details: `pools=${rows.length} prefilter=${prefiltered.length} lp=${lpEligible.length} openable=${hardOpenableCount} gmgnChecked=${gmgnBatch.length}${options.runSoftSourcesInBackground ? ' gmgn=background' : ''}`
+    details: `pools=${rows.length} prefilter=${prefiltered.length} lp=${lpEligible.length} openable=0 securityPending=${routeSecurityPendingCount} gmgnChecked=${gmgnBatch.length}${options.runSoftSourcesInBackground ? ' gmgn=background' : ''}`
   });
 
   const runGmgnSoftSource = async () => {
-    let gmgnBlockedCount = 0;
+    let finalOpenableCount = 0;
     const gmgnStartedAt = Date.now();
     try {
       const results = await (options.fetchTokenSafetyBatchImpl ?? ((mints) => fetchTokenSafetyBatch(mints, { maxBatchSize: gmgnMaxBatchSize })))(
@@ -205,15 +215,14 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
             })
           ]
         });
-        if (!entry.openable) {
-          gmgnBlockedCount += 1;
+        if (entry.openable) {
+          finalOpenableCount += 1;
         }
       }
     } catch (error) {
       options.logger?.warn(`[CandidateWorker] GMGN source failed soft: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const finalOpenableCount = Math.max(0, hardOpenableCount - gmgnBlockedCount);
     if (!options.runSoftSourcesInBackground) {
       const completedAt = new Date();
       await options.writer.writeWorkerStatus({

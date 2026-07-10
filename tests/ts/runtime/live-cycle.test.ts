@@ -115,6 +115,77 @@ describe('runLiveCycle', () => {
     expect(result).toEqual({ allowed: true });
   });
 
+  it('keeps secondary LP exit reasons eligible when all exit conditions are true', () => {
+    const result = validateLpWithdrawTriggerEligibility({
+      action: 'withdraw-lp',
+      reason: 'lp-range-exit:active-bin-out-of-range:above:9',
+      config: {
+        ...baseNewTokenConfig,
+        lpConfig: {
+          ...baseNewTokenConfig.lpConfig,
+          stopLossNetPnlPct: 5,
+          takeProfitNetPnlPct: 5
+        }
+      },
+      snapshot: {
+        hasLpPosition: true,
+        lpNetPnlPct: -6,
+        lpRiskIntent: 'range-exit',
+        lpRiskReason: 'active-bin-out-of-range:above:9',
+        valuationStatus: 'ready',
+        holdTimeMs: 10 * 60 * 1000,
+        pendingConfirmationStatus: 'confirmed'
+      }
+    });
+
+    expect(result).toEqual({ allowed: true });
+  });
+
+  it('blocks professional new-token opens when after-cost entry edge is not positive', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      professionalRun: {
+        runId: 'run-economic-shadow',
+        mode: 'economic-shadow',
+        configSnapshotId: 'config-1',
+        parameterSnapshot: {}
+      },
+      context: {
+        pool: {
+          address: 'pool-weak',
+          liquidityUsd: 10_000,
+          feeTvlRatio24h: 0.001
+        },
+        token: {
+          mint: 'mint-weak',
+          inSession: true,
+          hasSolRoute: true,
+          symbol: 'WEAK'
+        },
+        trader: {
+          hasInventory: false,
+          hasLpPosition: false
+        },
+        route: {
+          hasSolRoute: true,
+          expectedOutSol: 0.1,
+          slippageBps: 100,
+          roundtripImpactBps: 200,
+          chainCostSol: 0.00001
+        }
+      }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.action).toBe('hold');
+    expect(result.quoteCollected).toBe(false);
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(result.reason).toContain('entry-edge-not-positive');
+  });
+
   it('submits a live order for actionable new-token input and writes journals', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -1612,6 +1683,63 @@ describe('runLiveCycle', () => {
 
     expect(result.action).toBe('withdraw-lp');
     expect(result.audit.reason).toContain('lp-take-profit');
+    expect(result.context.trader.lpNetPnlPct).toBeCloseTo(31, 10);
+  });
+
+  it('derives lpNetPnlPct from paper exit-quote overlay values', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      positionState: activeLpPositionState({
+        entrySol: 1,
+        openedAt
+      }),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'position-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 20,
+          currentValueSol: 1.31,
+          liquidityValueSol: 1.31,
+          lpTotalValueSol: 1.31,
+          exitQuoteValueSol: 1.31,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationTrust: 'exit_quote',
+          valuationReason: '',
+          valuationSource: 'paper-shadow-dlmm-active-bin'
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect((result.audit as typeof result.audit & { reasons?: string[] }).reasons).toContain('lp-take-profit');
+    expect(result.context.trader.lpTradingValueSol).toBeCloseTo(1.31, 10);
     expect(result.context.trader.lpNetPnlPct).toBeCloseTo(31, 10);
   });
 
@@ -3157,5 +3285,146 @@ describe('runLiveCycle', () => {
     expect(result.audit.reason).toContain('lp-range-exit:active-bin-out-of-range:above:17');
     expect(result.context.trader.lpRiskIntent).toBe('range-exit');
     expect(result.context.trader.lpNetPnlPct).toBeGreaterThan(0);
+  });
+
+  it('binds finalized evolution outcomes to the selected ledger position and entry config', async () => {
+    const outcomes: LiveCycleOutcomeRecord[] = [];
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'stale-mint',
+        activePoolAddress: 'stale-pool',
+        positionId: 'stale-position',
+        chainPositionAddress: 'stale-position',
+        lifecycleState: 'open',
+        entrySol: 9,
+        entrySolSource: 'actual_fill',
+        openedAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z'
+      },
+      positionLedger: {
+        version: 1,
+        records: [{
+          positionKey: 'chain-position:target-position',
+          lifecycleKey: 'lifecycle-target',
+          openIntentId: 'open-target',
+          positionId: 'target-position',
+          chainPositionAddress: 'target-position',
+          activeMint: 'target-mint',
+          activePoolAddress: 'target-pool',
+          lifecycleState: 'open',
+          entrySol: 0.1,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'target-open-signature',
+          openedAt,
+          configSnapshotId: 'config-at-entry',
+          parameterSnapshotAtEntry: {
+            lpEnabled: true,
+            lpStopLossNetPnlPct: 7,
+            lpTakeProfitNetPnlPct: 9,
+            lpSolDepletionExitBins: 60,
+            lpMinBinStep: 80,
+            maxHoldHours: 8
+          },
+          lastAction: 'add-lp',
+          updatedAt: openedAt
+        }],
+        updatedAt: openedAt
+      } as any,
+      evolutionSink: {
+        appendOutcome: async (record) => {
+          outcomes.push(record);
+        }
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: '2026-07-10T02:00:05.000Z'
+        })
+      },
+      context: {
+        pool: { address: 'unrelated-candidate-pool', liquidityUsd: 50_000 },
+        token: { mint: 'unrelated-candidate-mint', inSession: true, hasSolRoute: true, symbol: 'TARGET' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'target-pool',
+          positionAddress: 'target-position',
+          chainPositionAddress: 'target-position',
+          mint: 'target-mint',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 178,
+          solSide: 'tokenX',
+          solDepletedBins: 0,
+          currentValueSol: 0.09,
+          liquidityValueSol: 0.09,
+          lpTotalValueSol: 0.09,
+          unclaimedFeeSol: 0,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete'
+        }],
+        journalLpPositions: [],
+        fills: [{
+          submissionId: 'target-open-signature',
+          openIntentId: 'open-target',
+          positionId: 'target-position',
+          chainPositionAddress: 'target-position',
+          mint: 'target-mint',
+          side: 'add-lp',
+          amount: 0.1,
+          actualFilledSol: 0.1,
+          actualWalletDeltaSol: -0.1,
+          fillAmountSource: 'chain-reconstructed',
+          hasFillEvidence: true,
+          recordedAt: openedAt
+        }]
+      },
+      accountProvider: {
+        readState: async () => ({
+          walletSol: 1.09,
+          journalSol: 1.09,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        })
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      schemaVersion: 2,
+      lifecycleKey: 'lifecycle-target',
+      openIntentId: 'open-target',
+      positionId: 'target-position',
+      chainPositionAddress: 'target-position',
+      poolAddress: 'target-pool',
+      tokenMint: 'target-mint',
+      openedAt,
+      configSnapshotId: 'config-at-entry',
+      finality: 'finalized',
+      lpStopLossNetPnlPctAtEntry: 7,
+      lpTakeProfitNetPnlPctAtEntry: 9
+    });
   });
 });

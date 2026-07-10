@@ -75,6 +75,43 @@ describe('formatRuntimeStatus', () => {
         approvalQueueCount: 2,
         outcomeReviewCount: 1,
         latestEvidenceWindow: 'last-24h'
+      },
+      professionalV2: {
+        schemaVersion: 2,
+        runId: 'run-canary',
+        configSnapshotId: 'config-canary',
+        runtimeMode: 'canary',
+        ledgerReconciliationStatus: 'matched',
+        riskMode: 'healthy',
+        dailyPnlMode: 'canary',
+        dailyPnlSol: 0.001,
+        drawdownPct: 0.1,
+        outboxPending: 0,
+        sourceQuality: 'healthy',
+        datasetVersion: 'research-v2/dataset-1',
+        researchDataStatus: 'valid',
+        modePnl: {
+          schemaVersion: 2,
+          asOf: '2026-07-10T04:02:00.000Z',
+          modes: [{
+            mode: 'canary',
+            grossPnlSol: 0.002,
+            netPnlSol: 0.001,
+            realizedPnlSol: 0.001,
+            unrealizedPnlSol: 0,
+            finalizedEpisodeCount: 2,
+            evidenceStatus: 'exact'
+          }, {
+            mode: 'mechanical-soak',
+            grossPnlSol: 99,
+            netPnlSol: 98,
+            realizedPnlSol: 98,
+            unrealizedPnlSol: 0,
+            finalizedEpisodeCount: 500,
+            evidenceStatus: 'synthetic'
+          }]
+        },
+        updatedAt: '2026-07-10T04:02:00.000Z'
       }
     });
 
@@ -92,5 +129,19 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('evolutionApprovalQueueCount=2');
     expect(output).toContain('evolutionOutcomeReviewCount=1');
     expect(output).toContain('evolutionLatestEvidenceWindow=last-24h');
+    expect(output).toContain('runId=run-canary');
+    expect(output).toContain('configSnapshotId=config-canary');
+    expect(output).toContain('ledgerReconciliationStatus=matched');
+    expect(output).toContain('riskMode=healthy');
+    expect(output).toContain('dailyPnlMode=canary');
+    expect(output).toContain('dailyPnlSol=0.001');
+    expect(output).toContain('drawdownPct=0.1');
+    expect(output).toContain('outboxPending=0');
+    expect(output).toContain('sourceQuality=healthy');
+    expect(output).toContain('datasetVersion=research-v2/dataset-1');
+    expect(output).toContain('researchDataStatus=valid');
+    expect(output).toContain('pnl.canary.netPnlSol=0.001');
+    expect(output).toContain('pnl.mechanical-soak.netPnlSol=98');
+    expect(output).not.toContain('totalPnlSol=');
   });
 });

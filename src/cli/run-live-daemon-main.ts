@@ -20,7 +20,18 @@ import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.t
 import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtime/lp-entry-evidence-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
+import {
+  initializeDaemonRunManifest,
+  parseRunModeV2,
+  selectRuntimeEnvironment
+} from '../runtime/run-manifest-v2.ts';
 import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
+import {
+  applyRiskObservation,
+  CANARY_RISK_LIMITS,
+  createInitialRiskStateV2
+} from '../risk/risk-policy-v2.ts';
+import { RiskStateV2Store } from '../risk/risk-state-v2.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -37,6 +48,23 @@ type ParsedArgs = {
   meteoraFilterBy?: string;
   maxActivePositions?: number;
 };
+
+function estimateAccountEquitySol(accountState: Awaited<ReturnType<HttpLiveAccountStateProvider['readState']>> | undefined) {
+  if (!accountState) return 0;
+  const tokenValue = (accountState.walletTokens ?? []).reduce(
+    (sum, token) => sum + (typeof token.currentValueSol === 'number' ? token.currentValueSol : 0),
+    0
+  );
+  const lpValue = (accountState.walletLpPositions ?? []).reduce(
+    (sum, position) => sum + (typeof position.lpTotalValueSol === 'number'
+      ? position.lpTotalValueSol
+      : typeof position.currentValueSol === 'number'
+        ? position.currentValueSol
+        : 0),
+    0
+  );
+  return Math.max(0, accountState.walletSol + tokenValue + lpValue);
+}
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
@@ -193,9 +221,6 @@ async function main() {
       maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
     });
 
-  if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
-    await new SpendingLimitsStore(args.stateRootDir).reset();
-  }
   const mirrorConfig = loadMirrorConfig({
     ...process.env,
     LIVE_STATE_DIR: args.stateRootDir,
@@ -207,6 +232,88 @@ async function main() {
   }
 
   const strategy = args.strategy;
+  const daemonSettings = {
+    residualTokenSweepIntervalMs: parsePositiveInteger(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS,
+      5 * 60_000
+    ),
+    residualTokenSweepCooldownMs: parsePositiveInteger(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS,
+      30 * 60_000
+    ),
+    residualTokenSweepMinValueSol: parsePositiveNumber(
+      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL,
+      0.1
+    ),
+    housekeepingIntervalMs: parsePositiveInteger(
+      process.env.LIVE_HOUSEKEEPING_INTERVAL_MS,
+      30 * 60_000
+    ),
+    retentionDays: {
+      decisionAudit: parsePositiveInteger(
+        process.env.LIVE_DECISION_AUDIT_RETENTION_DAYS,
+        DEFAULT_JOURNAL_RETENTION_DAYS.decisionAudit
+      ),
+      quotes: parsePositiveInteger(
+        process.env.LIVE_QUOTES_RETENTION_DAYS,
+        DEFAULT_JOURNAL_RETENTION_DAYS.quotes
+      ),
+      orders: parsePositiveInteger(
+        process.env.LIVE_ORDER_RETENTION_DAYS,
+        DEFAULT_JOURNAL_RETENTION_DAYS.orders
+      ),
+      fills: parsePositiveInteger(
+        process.env.LIVE_FILL_RETENTION_DAYS,
+        DEFAULT_JOURNAL_RETENTION_DAYS.fills
+      ),
+      incidents: parsePositiveInteger(
+        process.env.LIVE_INCIDENT_RETENTION_DAYS,
+        DEFAULT_JOURNAL_RETENTION_DAYS.incidents
+      )
+    },
+    candidatePoolReadEnabled: parseBoolean(process.env.LIVE_CANDIDATE_POOL_READ_ENABLED, true),
+    candidatePoolPath: process.env.LIVE_CANDIDATE_POOL_DB_PATH
+      ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite'),
+    candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
+    openAfterMaintenanceHold: parseBoolean(
+      process.env.LIVE_OPEN_AFTER_MAINTENANCE_HOLD,
+      (args.maxActivePositions ?? 5) > 1
+    ),
+    disableDynamicPositionSizing: parseBoolean(process.env.LIVE_DISABLE_DYNAMIC_POSITION_SIZING, false),
+    newCandidateSafetyMaxBatchSize: parsePositiveInteger(
+      process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE,
+      1
+    ),
+    newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
+    ignoreLivePositionSolLimit: parseBoolean(process.env.LIVE_IGNORE_POSITION_SOL_LIMIT, false),
+    ignoreSpendingLimits: parseBoolean(process.env.LIVE_IGNORE_SPENDING_LIMITS, false),
+    gmgnCacheMaxEntries: parsePositiveInteger(process.env.GMGN_CACHE_MAX_ENTRIES, 5_000)
+  };
+  const runManifestContext = await initializeDaemonRunManifest({
+    stateRootDir: args.stateRootDir,
+    mode: parseRunModeV2(process.env.LIGHTLD_RUN_MODE),
+    effectiveConfig: {
+      strategy,
+      daemon: {
+        ...args,
+        ...daemonSettings
+      },
+      runtime: runtimeConfig,
+      mirror: mirrorConfig,
+      spendingLimits: spendingLimitsConfig ?? null,
+      environmentOverrides: selectRuntimeEnvironment(process.env)
+    },
+    environment: process.env,
+    datasetVersion: process.env.LIGHTLD_DATASET_VERSION ?? '2',
+    candidateSnapshotId: process.env.LIGHTLD_CANDIDATE_SNAPSHOT_ID ?? 'unversioned-candidate-snapshot',
+    policyVariantId: process.env.LIGHTLD_POLICY_VARIANT_ID ?? 'baseline',
+    worktreeRoot: process.cwd()
+  });
+  const riskStateV2Store = new RiskStateV2Store(args.stateRootDir);
+
+  if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
+    await new SpendingLimitsStore(args.stateRootDir).reset();
+  }
 
   const executionAdapters = runtimeConfig.executionMode === 'http'
     ? {
@@ -248,120 +355,133 @@ async function main() {
     ? createMirrorRuntime({ config: mirrorConfig })
     : undefined;
   const housekeepingRunner = createHousekeepingRunner({
-    intervalMs: parsePositiveInteger(process.env.LIVE_HOUSEKEEPING_INTERVAL_MS, 30 * 60_000),
+    intervalMs: daemonSettings.housekeepingIntervalMs,
     runJournalCleanup: () =>
       cleanupRuntimeJournals({
         strategy,
         journalRootDir: args.journalRootDir,
-        retentionDays: {
-          decisionAudit: parsePositiveInteger(
-            process.env.LIVE_DECISION_AUDIT_RETENTION_DAYS,
-            DEFAULT_JOURNAL_RETENTION_DAYS.decisionAudit
-          ),
-          quotes: parsePositiveInteger(
-            process.env.LIVE_QUOTES_RETENTION_DAYS,
-            DEFAULT_JOURNAL_RETENTION_DAYS.quotes
-          ),
-          orders: parsePositiveInteger(
-            process.env.LIVE_ORDER_RETENTION_DAYS,
-            DEFAULT_JOURNAL_RETENTION_DAYS.orders
-          ),
-          fills: parsePositiveInteger(
-            process.env.LIVE_FILL_RETENTION_DAYS,
-            DEFAULT_JOURNAL_RETENTION_DAYS.fills
-          ),
-          incidents: parsePositiveInteger(
-            process.env.LIVE_INCIDENT_RETENTION_DAYS,
-            DEFAULT_JOURNAL_RETENTION_DAYS.incidents
-          )
-        }
+        retentionDays: daemonSettings.retentionDays
       }),
     runMirrorPrune: async () => (await mirrorRuntime?.pruneOnce?.({ force: true }))?.deletedRows ?? 0,
     runGmgnCacheSweep: () =>
       sweepTokenSafetyCache({
-        maxEntries: parsePositiveInteger(process.env.GMGN_CACHE_MAX_ENTRIES, 5_000)
+        maxEntries: daemonSettings.gmgnCacheMaxEntries
       })
   });
   const evolutionPaths = resolveEvolutionPaths(strategy, join(args.stateRootDir, 'evolution'));
   const candidateScanStore = new CandidateScanStore(evolutionPaths.candidateScansPath);
-  const candidatePoolReadEnabled = parseBoolean(process.env.LIVE_CANDIDATE_POOL_READ_ENABLED, true);
-  const openAfterMaintenanceHold = parseBoolean(
-    process.env.LIVE_OPEN_AFTER_MAINTENANCE_HOLD,
-    (args.maxActivePositions ?? 5) > 1
-  );
-  const candidatePoolReader = candidatePoolReadEnabled
+  const candidatePoolReader = daemonSettings.candidatePoolReadEnabled
     ? new SqliteCandidatePool({
-        path: process.env.LIVE_CANDIDATE_POOL_DB_PATH ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite'),
+        path: daemonSettings.candidatePoolPath,
         readOnly: true
       })
     : undefined;
 
-  await runLiveDaemon({
-    strategy,
-    stateRootDir: args.stateRootDir,
-    journalRootDir: args.journalRootDir,
-    tickIntervalMs: args.tickIntervalMs,
-    hotTickIntervalMs: args.hotTickIntervalMs,
-    residualTokenSweepIntervalMs: parsePositiveInteger(
-      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_INTERVAL_MS,
-      5 * 60_000
-    ),
-    residualTokenSweepCooldownMs: parsePositiveInteger(
-      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_COOLDOWN_MS,
-      30 * 60_000
-    ),
-    residualTokenSweepMinValueSol: parsePositiveNumber(
-      process.env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL,
-      0.1
-    ),
-    maxTicks: args.maxTicks,
-    accountProvider: executionAdapters.accountProvider,
-    lpEntryEvidenceProvider: executionAdapters.lpEntryEvidenceProvider,
-    signer: executionAdapters.signer,
-    broadcaster: executionAdapters.broadcaster,
-    confirmationProvider: executionAdapters.confirmationProvider,
-    mirrorRuntime,
-    housekeepingRunner,
-    maxActivePositions: args.maxActivePositions,
-    openAfterMaintenanceHold,
-    buildCycleInput: async (_tickCount, buildContext) => {
-      const accountState = buildContext?.accountState ?? (executionAdapters.accountProvider
-        ? await executionAdapters.accountProvider.readState()
-        : undefined);
+  try {
+    await runLiveDaemon({
+      strategy,
+      stateRootDir: args.stateRootDir,
+      journalRootDir: args.journalRootDir,
+      tickIntervalMs: args.tickIntervalMs,
+      hotTickIntervalMs: args.hotTickIntervalMs,
+      residualTokenSweepIntervalMs: daemonSettings.residualTokenSweepIntervalMs,
+      residualTokenSweepCooldownMs: daemonSettings.residualTokenSweepCooldownMs,
+      residualTokenSweepMinValueSol: daemonSettings.residualTokenSweepMinValueSol,
+      maxTicks: args.maxTicks,
+      accountProvider: executionAdapters.accountProvider,
+      lpEntryEvidenceProvider: executionAdapters.lpEntryEvidenceProvider,
+      signer: executionAdapters.signer,
+      broadcaster: executionAdapters.broadcaster,
+      confirmationProvider: executionAdapters.confirmationProvider,
+      mirrorRuntime,
+      housekeepingRunner,
+      maxActivePositions: args.maxActivePositions,
+      openAfterMaintenanceHold: daemonSettings.openAfterMaintenanceHold,
+      buildCycleInput: async (_tickCount, buildContext) => {
+        const accountState = buildContext?.accountState ?? (executionAdapters.accountProvider
+          ? await executionAdapters.accountProvider.readState()
+          : undefined);
 
-      const ingestInput = await buildLiveCycleInputFromIngest({
-        strategy,
-        traderWallet: args.traderWallet,
-        requestedPositionSol: args.requestedPositionSol,
-        candidateScanSink: candidateScanStore,
-        accountState,
-        meteoraPageSize: args.meteoraPageSize,
-        meteoraQuery: args.meteoraQuery,
-        meteoraSortBy: args.meteoraSortBy,
-        meteoraFilterBy: args.meteoraFilterBy,
-        maxActivePositions: args.maxActivePositions,
-        candidatePoolReader,
-        candidatePoolReadEnabled,
-        candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
-        disableDynamicPositionSizing: parseBoolean(process.env.LIVE_DISABLE_DYNAMIC_POSITION_SIZING, false),
-        newCandidateSafetyMaxBatchSize: parsePositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE, 1),
-        newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
-        positionState: buildContext?.positionState,
-        selectionMode: buildContext?.selectionMode as IngestSelectionMode | undefined,
-        skipMints: buildContext?.skipMints,
-        openCooldowns: buildContext?.openCooldowns
-      });
+        const ingestInput = await buildLiveCycleInputFromIngest({
+          strategy,
+          traderWallet: args.traderWallet,
+          requestedPositionSol: args.requestedPositionSol,
+          candidateScanSink: candidateScanStore,
+          accountState,
+          meteoraPageSize: args.meteoraPageSize,
+          meteoraQuery: args.meteoraQuery,
+          meteoraSortBy: args.meteoraSortBy,
+          meteoraFilterBy: args.meteoraFilterBy,
+          maxActivePositions: args.maxActivePositions,
+          candidatePoolReader,
+          candidatePoolReadEnabled: daemonSettings.candidatePoolReadEnabled,
+          candidatePoolMaxAgeMs: daemonSettings.candidatePoolMaxAgeMs,
+          disableDynamicPositionSizing: daemonSettings.disableDynamicPositionSizing,
+          newCandidateSafetyMaxBatchSize: daemonSettings.newCandidateSafetyMaxBatchSize,
+          newCandidateSafetyTimeoutMs: daemonSettings.newCandidateSafetyTimeoutMs,
+          positionState: buildContext?.positionState,
+          selectionMode: buildContext?.selectionMode as IngestSelectionMode | undefined,
+          skipMints: buildContext?.skipMints,
+          openCooldowns: buildContext?.openCooldowns
+        });
 
-      return {
-        ...executionAdapters,
-        accountState,
-        spendingLimitsConfig,
-        ignoreLivePositionSolLimit: parseBoolean(process.env.LIVE_IGNORE_POSITION_SOL_LIMIT, false),
-        ...ingestInput
-      };
-    },
-    alertSink
-  });
+        return {
+          ...executionAdapters,
+          accountState,
+          spendingLimitsConfig,
+          ignoreLivePositionSolLimit: daemonSettings.ignoreLivePositionSolLimit,
+          ...ingestInput,
+          professionalRun: {
+            runId: runManifestContext.manifest.runId,
+            mode: runManifestContext.manifest.mode,
+            configSnapshotId: runManifestContext.manifest.effectiveConfigSha256,
+            parameterSnapshot: {
+              strategy,
+              requestedPositionSol: ingestInput.requestedPositionSol,
+              maxActivePositions: args.maxActivePositions ?? 5
+            }
+          },
+          ...(runManifestContext.manifest.mode === 'mechanical-soak'
+            ? {}
+            : {
+                riskStateV2: await (async () => {
+                  const now = new Date().toISOString();
+                  const equitySol = estimateAccountEquitySol(accountState);
+                  const existing = await riskStateV2Store.read();
+                  const initial = existing ?? createInitialRiskStateV2({
+                    now,
+                    startOfDayEquitySol: equitySol,
+                    currentEquitySol: equitySol,
+                    availableSol: accountState?.walletSol ?? 0
+                  });
+                  const productionLike = runManifestContext.manifest.mode === 'canary'
+                    || runManifestContext.manifest.mode === 'live';
+                  const next = applyRiskObservation(initial, {
+                    now,
+                    currentEquitySol: equitySol,
+                    realizedPnlSol: initial.realizedPnlSol,
+                    unrealizedPnlSol: equitySol - initial.startOfDayEquitySol - initial.realizedPnlSol,
+                    availableSol: accountState?.walletSol ?? 0,
+                    activePositionCount: (accountState?.walletLpPositions ?? []).length,
+                    dailyNewRiskSol: initial.dailyNewRiskSol,
+                    dataQualityStatus: accountState ? 'trusted' : 'untrusted',
+                    reconciliationStatus: productionLike ? 'pending' : 'matched',
+                    outboxStatus: productionLike ? 'unknown' : 'settled',
+                    valuationStatus: (accountState?.walletLpPositions ?? []).every((position) =>
+                      position.valuationStatus === undefined || position.valuationStatus === 'ready'
+                    ) ? 'ready' : 'degraded'
+                  }, CANARY_RISK_LIMITS);
+                  return riskStateV2Store.write(next);
+                })(),
+                riskLimitsV2: CANARY_RISK_LIMITS
+              })
+        };
+      },
+      alertSink
+    });
+  } finally {
+    await runManifestContext.store.complete(runManifestContext.manifest.runId);
+  }
 }
 
 main().catch((error: unknown) => {

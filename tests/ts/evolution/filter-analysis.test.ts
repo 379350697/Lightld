@@ -45,7 +45,8 @@ describe('loadEvolutionEvidence', () => {
 
     const evidence = await loadEvolutionEvidence({
       strategyId: 'new-token-v1',
-      stateRootDir
+      stateRootDir,
+      allowLegacyV1Forensics: true
     });
 
     expect(evidence.candidateScans).toHaveLength(1);
@@ -92,7 +93,8 @@ describe('loadEvolutionEvidence', () => {
     const evidence = await loadEvolutionEvidence({
       strategyId: 'new-token-v1',
       stateRootDir,
-      mirrorPath
+      mirrorPath,
+      allowLegacyV1Forensics: true
     });
 
     expect(evidence.candidateScans).toEqual([

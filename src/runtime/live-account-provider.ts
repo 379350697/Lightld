@@ -5,7 +5,8 @@ import type { RuntimeLpPositionStatus } from './lp-position-visibility.ts';
 
 export type LiveAccountState = {
   walletSol: number;
-  journalSol: number;
+  /** Absent on the chain-only /account-state endpoint; journal projection is independently supplied. */
+  journalSol?: number;
   walletLpPositions?: Array<{
     poolAddress: string;
     positionAddress: string;
@@ -167,13 +168,23 @@ export class HttpLiveAccountStateProvider implements LiveAccountStateProvider {
 
   async readState(): Promise<LiveAccountState> {
     return executeWithRetry(async (signal) => {
-      const response = await (this.fetchImpl ?? fetch)(this.url, {
-        method: 'GET',
-        headers: {
-          ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {})
-        },
-        signal
-      });
+      let response: Response;
+      try {
+        response = await (this.fetchImpl ?? fetch)(this.url, {
+          method: 'GET',
+          headers: {
+            ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {})
+          },
+          signal
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.trim().toLowerCase() === 'fetch failed') {
+          throw new Error(`account-state-fetch-failed:${this.url}`);
+        }
+
+        throw error;
+      }
 
       if (!response.ok) {
         throw Object.assign(

@@ -18,6 +18,8 @@ async function cloneStrategyConfig(fileName: string) {
 
 describe('loadStrategyConfig', () => {
   afterEach(async () => {
+    delete process.env.LIVE_LP_STOP_LOSS_NET_PNL_PCT;
+    delete process.env.LIVE_LP_TAKE_PROFIT_NET_PNL_PCT;
     clearStrategyConfigCache();
     await rm(TEST_CONFIG_DIR, { recursive: true, force: true });
   });
@@ -55,6 +57,17 @@ describe('loadStrategyConfig', () => {
     const second = await loadStrategyConfig(path);
 
     expect(second.strategyId).toBe('new-token-v1');
+  });
+
+  it('applies runtime LP PnL threshold overrides without editing the YAML', async () => {
+    process.env.LIVE_LP_STOP_LOSS_NET_PNL_PCT = '5';
+    process.env.LIVE_LP_TAKE_PROFIT_NET_PNL_PCT = '5';
+
+    const path = await cloneStrategyConfig('new-token-v1.yaml');
+    const config = await loadStrategyConfig(path);
+
+    expect(config.lpConfig?.stopLossNetPnlPct).toBe(5);
+    expect(config.lpConfig?.takeProfitNetPnlPct).toBe(5);
   });
 
   it('fails fast when unsupported LP rebalance is enabled', async () => {

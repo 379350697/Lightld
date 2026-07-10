@@ -123,6 +123,7 @@ async function main() {
   const server = createSolanaExecutionServer({
     host: config.host,
     port: config.port,
+    executionMode: config.executionMode,
     stateRootDir: config.stateRootDir,
     keypair,
     rpcClient,
@@ -136,6 +137,7 @@ async function main() {
     defaultSlippageBps: config.defaultSlippageBps,
     residualTokenMinValueSol: config.residualTokenMinValueSol,
     residualTokenDustMaxUiAmount: config.residualTokenDustMaxUiAmount,
+    broadcastPolicy: config.broadcastPolicy,
     jitoTipLamports: config.jitoTipLamports,
     dryRun: config.dryRun,
     dryRunAddLpRebuildOnBinSlippage: config.dryRunAddLpRebuildOnBinSlippage,

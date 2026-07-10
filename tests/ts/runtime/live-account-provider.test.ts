@@ -79,4 +79,18 @@ describe('HttpLiveAccountStateProvider', () => {
     expect((provider as unknown as { timeoutMs: number }).timeoutMs).toBe(15_000);
     expect((provider as unknown as { maxRetries: number }).maxRetries).toBe(2);
   });
+
+  it('includes the account-state endpoint when a bare fetch failure reaches retry exhaustion', async () => {
+    const provider = new HttpLiveAccountStateProvider({
+      url: 'http://127.0.0.1:8791/account-state',
+      maxRetries: 0,
+      fetchImpl: async () => {
+        throw new TypeError('fetch failed');
+      }
+    });
+
+    await expect(provider.readState()).rejects.toThrow(
+      'account-state-fetch-failed:http://127.0.0.1:8791/account-state'
+    );
+  });
 });
