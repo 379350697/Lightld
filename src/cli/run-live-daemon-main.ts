@@ -20,6 +20,9 @@ import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.t
 import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtime/lp-entry-evidence-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
+import { DurableTransactionOutboxV2 } from '../runtime/durable-transaction-outbox-v2.ts';
+import { reconcileLiveState } from '../runtime/reconcile-live-state.ts';
+import { DeploymentGateV2Store, assertFundedModeAuthorizedV2 } from '../runtime/deployment-gate-v2.ts';
 import {
   initializeDaemonRunManifest,
   parseRunModeV2,
@@ -64,6 +67,46 @@ function estimateAccountEquitySol(accountState: Awaited<ReturnType<HttpLiveAccou
     0
   );
   return Math.max(0, accountState.walletSol + tokenValue + lpValue);
+}
+
+function accountExposure(accountState: Awaited<ReturnType<HttpLiveAccountStateProvider['readState']>> | undefined) {
+  const byMint: Record<string, number> = {};
+  const byPool: Record<string, number> = {};
+  let grossExposureSol = 0;
+  for (const token of accountState?.walletTokens ?? []) {
+    const value = token.currentValueSol ?? 0;
+    if (!Number.isFinite(value) || value <= 0) continue;
+    grossExposureSol += value;
+    byMint[token.mint] = (byMint[token.mint] ?? 0) + value;
+  }
+  for (const position of accountState?.walletLpPositions ?? []) {
+    const value = position.lpTotalValueSol ?? position.currentValueSol ?? 0;
+    if (!Number.isFinite(value) || value <= 0) continue;
+    grossExposureSol += value;
+    byMint[position.mint] = (byMint[position.mint] ?? 0) + value;
+    byPool[position.poolAddress] = (byPool[position.poolAddress] ?? 0) + value;
+  }
+  return { grossExposureSol, byMint, byPool };
+}
+
+function reconciliationForAccount(accountState: Awaited<ReturnType<HttpLiveAccountStateProvider['readState']>> | undefined) {
+  if (!accountState || typeof accountState.journalSol !== 'number') return 'pending' as const;
+  return reconcileLiveState({
+    walletSol: accountState.walletSol,
+    journalSol: accountState.journalSol,
+    walletTokens: accountState.walletTokens,
+    journalTokens: accountState.journalTokens,
+    walletLpPositions: accountState.walletLpPositions?.map((position) => ({
+      positionAddress: position.positionAddress,
+      poolAddress: position.poolAddress,
+      mint: position.mint
+    })),
+    journalLpPositions: accountState.journalLpPositions?.map((position) => ({
+      positionAddress: position.positionAddress,
+      poolAddress: position.poolAddress,
+      mint: position.mint
+    }))
+  }).ok ? 'matched' as const : 'mismatch' as const;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -309,6 +352,12 @@ async function main() {
     policyVariantId: process.env.LIGHTLD_POLICY_VARIANT_ID ?? 'baseline',
     worktreeRoot: process.cwd()
   });
+  if (runManifestContext.manifest.mode === 'canary' || runManifestContext.manifest.mode === 'live') {
+    assertFundedModeAuthorizedV2(
+      runManifestContext.manifest.mode,
+      await new DeploymentGateV2Store(args.stateRootDir).read()
+    );
+  }
   const riskStateV2Store = new RiskStateV2Store(args.stateRootDir);
 
   if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
@@ -454,19 +503,27 @@ async function main() {
                     currentEquitySol: equitySol,
                     availableSol: accountState?.walletSol ?? 0
                   });
-                  const productionLike = runManifestContext.manifest.mode === 'canary'
-                    || runManifestContext.manifest.mode === 'live';
+                  const outbox = await new DurableTransactionOutboxV2(args.stateRootDir).read();
+                  const outboxStatus = outbox.some((record) => (
+                    record.status !== 'finalized' && record.status !== 'failed_terminal'
+                  )) ? 'pending' as const : 'settled' as const;
+                  const exposure = accountExposure(accountState);
+                  const reconciliationStatus = reconciliationForAccount(accountState);
                   const next = applyRiskObservation(initial, {
                     now,
                     currentEquitySol: equitySol,
-                    realizedPnlSol: initial.realizedPnlSol,
-                    unrealizedPnlSol: equitySol - initial.startOfDayEquitySol - initial.realizedPnlSol,
+                    realizedPnlSol: 0,
+                    unrealizedPnlSol: equitySol - initial.startOfDayEquitySol,
                     availableSol: accountState?.walletSol ?? 0,
                     activePositionCount: (accountState?.walletLpPositions ?? []).length,
                     dailyNewRiskSol: initial.dailyNewRiskSol,
-                    dataQualityStatus: accountState ? 'trusted' : 'untrusted',
-                    reconciliationStatus: productionLike ? 'pending' : 'matched',
-                    outboxStatus: productionLike ? 'unknown' : 'settled',
+                    grossExposureSol: exposure.grossExposureSol,
+                    netExposureSol: exposure.grossExposureSol,
+                    exposureByMintSol: exposure.byMint,
+                    exposureByPoolSol: exposure.byPool,
+                    dataQualityStatus: accountState && reconciliationStatus === 'matched' ? 'trusted' : 'degraded',
+                    reconciliationStatus,
+                    outboxStatus,
                     valuationStatus: (accountState?.walletLpPositions ?? []).every((position) =>
                       position.valuationStatus === undefined || position.valuationStatus === 'ready'
                     ) ? 'ready' : 'degraded'

@@ -163,8 +163,17 @@ export function applyRiskObservation(
   observation: RiskObservationV2,
   limits: RiskLimitsV2
 ): RiskStateV2 {
-  const highWaterEquitySol = Math.max(previous.highWaterEquitySol, observation.currentEquitySol);
-  const dailyNetPnlSol = observation.realizedPnlSol + observation.unrealizedPnlSol;
+  const tradingDate = observation.now.slice(0, 10);
+  const isNewTradingDay = previous.tradingDate !== tradingDate;
+  // Daily limits are calendar-scoped.  Carrying yesterday's high water or
+  // newly-opened risk into today silently turns a daily guard into a lifetime
+  // guard and makes recovery non-deterministic.
+  const dayStartEquitySol = isNewTradingDay ? observation.currentEquitySol : previous.startOfDayEquitySol;
+  const priorHighWaterEquitySol = isNewTradingDay ? observation.currentEquitySol : previous.highWaterEquitySol;
+  const highWaterEquitySol = Math.max(priorHighWaterEquitySol, observation.currentEquitySol);
+  const realizedPnlSol = isNewTradingDay ? 0 : observation.realizedPnlSol;
+  const unrealizedPnlSol = isNewTradingDay ? 0 : observation.unrealizedPnlSol;
+  const dailyNetPnlSol = realizedPnlSol + unrealizedPnlSol;
   const drawdownPct = highWaterEquitySol > 0
     ? Math.max(0, ((highWaterEquitySol - observation.currentEquitySol) / highWaterEquitySol) * 100)
     : 0;
@@ -172,10 +181,12 @@ export function applyRiskObservation(
     ...previous,
     schemaVersion: 2,
     asOf: observation.now,
+    tradingDate,
+    startOfDayEquitySol: dayStartEquitySol,
     currentEquitySol: observation.currentEquitySol,
     highWaterEquitySol,
-    realizedPnlSol: observation.realizedPnlSol,
-    unrealizedPnlSol: observation.unrealizedPnlSol,
+    realizedPnlSol,
+    unrealizedPnlSol,
     dailyNetPnlSol,
     drawdownPct,
     availableSol: observation.availableSol,
@@ -186,7 +197,7 @@ export function applyRiskObservation(
     exposureByDeployerSol: observation.exposureByDeployerSol ?? previous.exposureByDeployerSol,
     consecutiveLosses: observation.consecutiveLosses ?? previous.consecutiveLosses,
     activePositionCount: observation.activePositionCount ?? previous.activePositionCount,
-    dailyNewRiskSol: observation.dailyNewRiskSol ?? previous.dailyNewRiskSol,
+    dailyNewRiskSol: observation.dailyNewRiskSol ?? (isNewTradingDay ? 0 : previous.dailyNewRiskSol),
     dataQualityStatus: observation.dataQualityStatus ?? previous.dataQualityStatus,
     reconciliationStatus: observation.reconciliationStatus ?? previous.reconciliationStatus,
     outboxStatus: observation.outboxStatus ?? previous.outboxStatus,

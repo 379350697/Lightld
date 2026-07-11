@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { join } from 'node:path';
+
+import { readJsonIfExists, writeJsonAtomically } from './atomic-file.ts';
 
 export const DeploymentGateBlockingReasonV2Schema = z.enum([
   'p0_not_accepted',
@@ -127,4 +130,35 @@ export function evaluateDeploymentGateV2(
     maxRiskIncreaseMultiple: MAX_RISK_INCREASE_MULTIPLE,
     disasterRateClaimAllowed
   });
+}
+
+/** A persisted gate is the only authorization for funded modes. */
+export class DeploymentGateV2Store {
+  private readonly path: string;
+
+  constructor(stateRootDir: string) {
+    this.path = join(stateRootDir, 'deployment-gate-v2.json');
+  }
+
+  read() {
+    return readJsonIfExists(this.path, DeploymentGateDecisionV2Schema);
+  }
+
+  async write(decision: z.input<typeof DeploymentGateDecisionV2Schema>) {
+    const parsed = DeploymentGateDecisionV2Schema.parse(decision);
+    await writeJsonAtomically(this.path, parsed);
+    return parsed;
+  }
+}
+
+export function assertFundedModeAuthorizedV2(
+  mode: 'canary' | 'live',
+  decision: DeploymentGateDecisionV2 | null
+) {
+  if (!decision) {
+    throw new Error(`Funded mode ${mode} is blocked: no approved DeploymentGateV2 decision is persisted.`);
+  }
+  if (decision.targetMode !== mode || decision.status === 'blocked') {
+    throw new Error(`Funded mode ${mode} is blocked by DeploymentGateV2: ${decision.blockingReasons.join(', ') || 'target-mode-mismatch'}.`);
+  }
 }

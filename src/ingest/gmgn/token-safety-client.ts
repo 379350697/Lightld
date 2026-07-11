@@ -213,7 +213,7 @@ export function primeTokenSafetyCacheForTests(
  */
 export async function fetchTokenSafetyBatch(
   mints: string[],
-  options: { timeoutMs?: number; pythonBin?: string; maxBatchSize?: number; safetyUrl?: string } = {}
+  options: { timeoutMs?: number; pythonBin?: string; maxBatchSize?: number; safetyUrl?: string; maxCacheAgeMs?: number } = {}
 ): Promise<TokenSafetyResult[]> {
   if (mints.length === 0) return [];
 
@@ -221,6 +221,7 @@ export async function fetchTokenSafetyBatch(
   const pythonBin = options.pythonBin ?? PYTHON_BIN;
   const safetyUrl = options.safetyUrl ?? GMGN_SAFETY_URL;
   const maxBatchSize = options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
+  const maxCacheAgeMs = options.maxCacheAgeMs ?? CACHE_TTL_MS;
 
   const finalResults: TokenSafetyResult[] = [];
   const uncachedMints: string[] = [];
@@ -233,7 +234,7 @@ export async function fetchTokenSafetyBatch(
   });
   for (const mint of mints) {
     const cached = safetyCache.get(mint);
-    if (cached && now - cached.cachedAt < CACHE_TTL_MS) {
+    if (cached && now - cached.cachedAt < maxCacheAgeMs) {
       finalResults.push(cached.result);
     } else {
       if (!uncachedMints.includes(mint)) {

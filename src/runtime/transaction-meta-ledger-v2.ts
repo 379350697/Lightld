@@ -96,10 +96,14 @@ export async function appendLedgerEventsFromTransactionMeta(input: {
     finality: input.finality,
     preAmountRaw: String(meta.preBalances[walletIndex]),
     postAmountRaw: String(meta.postBalances[walletIndex]),
-    baseFeeLamports: String(meta.fee ?? 0),
+    // RPC transaction meta reports the aggregate fee, but not a trustworthy
+    // base/priority/Jito split.  Keep it conservative: a failed transaction
+    // cost belongs exclusively to failedTransactionCostLamports, never both.
+    baseFeeLamports: transactionStatus === 'failed' ? '0' : String(meta.fee ?? 0),
     priorityFeeLamports: '0',
     jitoTipLamports: '0',
     rentLamports: '0',
+    feeAttribution: 'partial',
     failedTransactionCostLamports: transactionStatus === 'failed' ? String(meta.fee ?? 0) : '0',
     accountChange: accountChangeFromRaw(meta.preBalances[walletIndex], meta.postBalances[walletIndex]),
     transactionStatus,
@@ -138,6 +142,7 @@ export async function appendLedgerEventsFromTransactionMeta(input: {
       priorityFeeLamports: '0',
       jitoTipLamports: '0',
       rentLamports: '0',
+      feeAttribution: 'partial',
       failedTransactionCostLamports: '0',
       accountChange: tokenAccountChange(pre, post),
       transactionStatus,
