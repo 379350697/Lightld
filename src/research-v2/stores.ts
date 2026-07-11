@@ -6,10 +6,12 @@ import type { ZodType } from 'zod';
 import { readJsonLines } from '../journals/jsonl-writer.ts';
 import { stableStringify } from '../shared/canonical-json.ts';
 import {
+  CandidateOpportunityObservationV2Schema,
   ExecutableMarkV2Schema,
   ExperimentRegistryV2Schema,
   OpportunityEpisodeV2Schema,
   ValidationReportV2Schema,
+  type CandidateOpportunityObservationV2,
   type ExecutableMarkV2,
   type ExperimentRegistryV2,
   type OpportunityEpisodeV2,
@@ -76,6 +78,25 @@ export class OpportunityEpisodeV2Store {
   }
 
   append(record: OpportunityEpisodeV2) {
+    return this.store.append(record);
+  }
+
+  readAll() {
+    return this.store.readAll();
+  }
+}
+
+/** Immutable pre-filter universe; episodes are derived offline from this log. */
+export class CandidateOpportunityObservationV2Store {
+  private readonly store: ImmutableJsonlStore<CandidateOpportunityObservationV2>;
+
+  constructor(path: string) {
+    this.store = new ImmutableJsonlStore(path, CandidateOpportunityObservationV2Schema, {
+      primaryKey: (record) => record.observationId
+    });
+  }
+
+  append(record: CandidateOpportunityObservationV2) {
     return this.store.append(record);
   }
 

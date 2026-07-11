@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  CandidateOpportunityObservationV2Store,
   ExecutableMarkV2Store,
   ExperimentRegistryV2Store,
   OpportunityEpisodeV2Store,
   ValidationReportV2Store,
+  type CandidateOpportunityObservationV2,
   type ExecutableMarkV2,
   type ExperimentRegistryV2,
   type OpportunityEpisodeV2,
@@ -33,6 +35,23 @@ describe('research V2 immutable stores', () => {
 
     expect(await store.readAll()).toEqual([episode]);
     await expect(store.append({ ...episode, tokenSymbol: 'CHANGED' })).rejects.toThrow(/immutable conflict/i);
+  });
+
+  it('stores pre-filter candidate observations by immutable observation id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-research-v2-candidates-'));
+    directories.push(root);
+    const store = new CandidateOpportunityObservationV2Store(join(root, 'candidate-observations.jsonl'));
+    const observation = buildCandidateObservation();
+
+    await store.append(observation);
+    await store.append(observation);
+
+    expect(await store.readAll()).toEqual([observation]);
+    await expect(store.append({
+      ...observation,
+      selected: false,
+      hardRejectionReasons: ['liquidity-too-low']
+    })).rejects.toThrow(/immutable conflict/i);
   });
 
   it('enforces one immutable mark per episode and horizon', async () => {
@@ -87,6 +106,27 @@ function buildEpisode(): OpportunityEpisodeV2 {
     episodeId: 'episode-1',
     capturedAt: '2026-07-01T00:00:00.000Z',
     labelWindowEndsAt: '2026-07-02T00:00:00.000Z',
+    runId: 'run-1',
+    strategyId: 'new-token-v1',
+    tokenMint: 'mint-1',
+    tokenSymbol: 'ONE',
+    poolAddress: 'pool-1',
+    deployerAddress: 'deployer-1',
+    configSnapshotId: 'config-1',
+    policyVariantId: 'policy-1',
+    eligible: true,
+    selected: true,
+    hardRejectionReasons: [],
+    softRejectionReasons: [],
+    pointInTimeFeatures: { liquidityUsd: 10000 },
+    sourceObservations: []
+  };
+}
+
+function buildCandidateObservation(): CandidateOpportunityObservationV2 {
+  return {
+    observationId: 'observation-1',
+    observedAt: '2026-07-01T00:00:00.000Z',
     runId: 'run-1',
     strategyId: 'new-token-v1',
     tokenMint: 'mint-1',
