@@ -1,77 +1,9 @@
 export { resolveEvolutionPaths, type EvolutionPaths } from './paths.ts';
-export { CandidateSampleStore } from './candidate-sample-store.ts';
 export { CandidateScanStore } from './candidate-scan-store.ts';
 export { LiveCycleOutcomeStore } from './live-cycle-outcome-store.ts';
-export { PoolDecisionSampleStore } from './pool-decision-sample-store.ts';
 export { WatchlistStore } from './watchlist-store.ts';
-export {
-  buildPoolDecisionSamples,
-  type BuildPoolDecisionSamplesInput
-} from './pool-decision-sample-builder.ts';
 export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
-export {
-  analyzeCounterfactualSamples,
-  type CounterfactualAnalysisResult,
-  type CounterfactualAnalysisSummary,
-  type CounterfactualPathSummary
-} from './counterfactual-analyzer.ts';
-export {
-  replayParameterProposals,
-  type CounterfactualReplayRecord,
-  type CounterfactualReplaySliceSummary,
-  type CounterfactualReplayWindowSummary
-} from './counterfactual-replay.ts';
-export {
-  replayOutcomeProposals,
-  type OutcomeReplayRecord,
-  type OutcomeReplaySliceSummary,
-  type OutcomeReplayWindowSummary
-} from './outcome-replay.ts';
-export {
-  analyzeFilterEvidence,
-  type FilterAnalysisResult,
-  type FilterAnalysisSummary
-} from './filter-analysis.ts';
-export {
-  analyzeOutcomeEvidence,
-  type OutcomeAnalysisResult,
-  type OutcomeAnalysisSummary
-} from './outcome-analysis.ts';
-export {
-  generateEvolutionProposals,
-  type GenerateEvolutionProposalsInput,
-  type ProposalGenerationResult
-} from './proposal-engine.ts';
-export {
-  generatePatchDraft,
-  type PatchDraftResult
-} from './patch-draft.ts';
-export {
-  buildEvolutionAnalysisContext,
-  isDecisionReady,
-  PROPOSAL_MIN_COVERAGE_SCORE,
-  PROPOSAL_MIN_READINESS_SCORE,
-  PROPOSAL_MIN_REGIME_SCORE,
-  type EvolutionAnalysisContext,
-  type EvolutionCoverageBreakdown
-} from './scoring.ts';
-export { ApprovalStore } from './approval-store.ts';
-export {
-  validateParameterProposals,
-  type ProposalValidationRecord,
-  type ProposalValidationStatus
-} from './proposal-validator.ts';
-export {
-  renderEvolutionReport,
-  type EvolutionEvidenceSnapshot,
-  type EvolutionReport
-} from './report-render.ts';
 export type {
-  AnalysisConfidence,
-  AnalysisDirection,
-  AnalysisNoActionReason,
-  ApprovalDecision,
-  ApprovalDecisionRecord,
   CandidateRejectionStage,
   CandidateScanRecord,
   CandidateSampleRecord,
@@ -80,28 +12,11 @@ export type {
   LiveCycleExitMetrics,
   LiveCycleOutcomeRecord,
   LiveCycleParameterSnapshot,
-  OutcomeReviewRecord,
-  OutcomeReviewStatus,
-  PoolDecisionSampleCounterfactual,
-  PoolDecisionSampleDecision,
-  PoolDecisionSampleFeature,
-  PoolDecisionSampleFuturePath,
-  PoolDecisionSampleRecord,
-  ParameterFinding,
-  ParameterProposalRecord,
-  ProposalKind,
-  ProposalStatus,
   SessionPhase,
   TrackedWatchTokenRecord,
   WatchlistSnapshotRecord
 } from './types.ts';
 export {
-  AnalysisConfidenceSchema,
-  AnalysisDirectionSchema,
-  AnalysisNoActionReasonSchema,
-  ApprovalDecisionSchema,
-  ApprovalDecisionRecordArraySchema,
-  ApprovalDecisionRecordSchema,
   CandidateRejectionStageSchema,
   CandidateScanRecordArraySchema,
   CandidateScanRecordSchema,
@@ -112,19 +27,6 @@ export {
   LiveCycleOutcomeRecordSchema,
   LiveCycleOutcomeRecordArraySchema,
   LiveCycleParameterSnapshotSchema,
-  OutcomeReviewRecordArraySchema,
-  OutcomeReviewRecordSchema,
-  PoolDecisionSampleCounterfactualSchema,
-  PoolDecisionSampleDecisionSchema,
-  PoolDecisionSampleFeatureSchema,
-  PoolDecisionSampleFuturePathSchema,
-  PoolDecisionSampleRecordArraySchema,
-  PoolDecisionSampleRecordSchema,
-  ParameterFindingSchema,
-  ParameterProposalRecordArraySchema,
-  ParameterProposalRecordSchema,
-  ProposalKindSchema,
-  ProposalStatusSchema,
   SessionPhaseSchema,
   TrackedWatchTokenRecordArraySchema,
   TrackedWatchTokenRecordSchema,

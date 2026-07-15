@@ -437,6 +437,7 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
       database.prepare('DELETE FROM pool_fee_yield_samples WHERE observed_at < ?').run(retentionCutoff);
       database.prepare('DELETE FROM pool_fee_yield_retirements WHERE expires_at < ?').run(nowIso);
       database.exec('COMMIT');
+      database.exec('PRAGMA wal_checkpoint(PASSIVE)');
     } catch (error) {
       database.exec('ROLLBACK');
       throw error;

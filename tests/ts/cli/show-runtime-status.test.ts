@@ -70,11 +70,17 @@ describe('formatRuntimeStatus', () => {
           sourceReason: 'selected'
         }
       ],
-      evolution: {
-        proposalCount: 3,
-        approvalQueueCount: 2,
-        outcomeReviewCount: 1,
-        latestEvidenceWindow: 'last-24h'
+      research: {
+        activeExperiment: { experimentId: 'personal-test' },
+        snapshotCount: 3,
+        episodeCount: 8,
+        selectedEpisodeCount: 4,
+        paperOutcomeCount: 2,
+        marks: { '15': 8, '60': 7, '240': 6, '1440': 5 },
+        worker: {
+          status: 'ok',
+          heartbeatAt: '2026-03-22T00:00:04.000Z'
+        }
       }
     });
 
@@ -88,9 +94,12 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('mirrorPruneDeletedRows=4');
     expect(output).toContain('recentCandidateScans=1');
     expect(output).toContain('recentWatchlistSnapshots=1');
-    expect(output).toContain('evolutionProposalCount=3');
-    expect(output).toContain('evolutionApprovalQueueCount=2');
-    expect(output).toContain('evolutionOutcomeReviewCount=1');
-    expect(output).toContain('evolutionLatestEvidenceWindow=last-24h');
+    expect(output).toContain('researchExperiment=personal-test');
+    expect(output).toContain('researchSnapshotCount=3');
+    expect(output).toContain('researchEpisodeCount=8');
+    expect(output).toContain('researchSelectedEpisodeCount=4');
+    expect(output).toContain('researchPaperOutcomeCount=2');
+    expect(output).toContain('researchMark24h=5');
+    expect(output).toContain('researchWorkerStatus=ok');
   });
 });

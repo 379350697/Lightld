@@ -3206,7 +3206,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: projectionNow
         });
         const positionLedgerSummary = summarizePositionLedger(positionLedger);
-        const businessAllowNewOpens = runtimeAllowsNewOpens && resolvePositionBusinessSemantics({
+        const positionBusinessSemantics = resolvePositionBusinessSemantics({
           accountState: effectiveAccountState,
           positionState: {
             ...(positionState ?? {
@@ -3223,7 +3223,12 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           pendingSubmission: persistedPendingSubmission,
           residualTokenSweepMinValueSol,
           maxActivePositions: options.maxActivePositions ?? 5
-        }).canOpenNewPosition.allowed;
+        });
+        const closedTargetHasCapacity = positionClosed
+          && !persistedPendingSubmission
+          && lifecycleProjection.activeLpCount < (options.maxActivePositions ?? 5);
+        const businessAllowNewOpens = runtimeAllowsNewOpens
+          && (positionBusinessSemantics.canOpenNewPosition.allowed || closedTargetHasCapacity);
         report.allowNewOpens = businessAllowNewOpens;
         report.activeLpCount = lifecycleProjection.activeLpCount;
         report.chainActiveLpCount = lifecycleProjection.chainActiveLpCount;
@@ -3235,7 +3240,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         report.importFailedLpCount = lifecycleProjection.importFailedLpCount;
         if (lifecycleProjection.reconcileRequiredCount > 0) {
           report.mode = report.mode === 'healthy' ? 'degraded' : report.mode;
-          report.allowNewOpens = false;
+          if (!closedTargetHasCapacity) {
+            report.allowNewOpens = false;
+          }
           report.circuitReason = report.circuitReason || 'lifecycle-reconcile-required';
         }
         const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted

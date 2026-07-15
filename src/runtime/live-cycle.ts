@@ -148,6 +148,7 @@ export type LiveCycleInput = {
   requestedPositionSol?: number;
   journalRootDir?: string;
   stateRootDir?: string;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
   runtimeMode?: RuntimeMode;
   sessionPhase?: 'active' | 'flatten-only' | 'closed';
   reconciliationStatus?: 'matched' | 'balance-mismatch';
@@ -254,6 +255,7 @@ type LiveCycleLogContext = {
   poolAddress: string;
   tokenSymbol: string;
   tokenMint: string;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
   routeExists: boolean;
   routeSlippageBps: number;
   killSwitchEngaged: boolean;
@@ -418,6 +420,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
       tokenMint: input.logContext.tokenMint,
       tokenSymbol: input.logContext.tokenSymbol,
       poolAddress: input.logContext.poolAddress,
+      captureMode: input.logContext.captureMode,
       runtimeMode: input.logContext.runtimeMode,
       sessionPhase: input.logContext.sessionPhase,
       positionId: resolveOutcomePositionId(input.logContext, input.positionState),
@@ -1966,11 +1969,14 @@ function shouldApplyLpObservationToContext(
   observation: EvaluatedLpPosition,
   forced: boolean
 ) {
-  if (forced || observation.lifecycleBound) {
+  if (observation.lifecycleBound) {
     return true;
   }
 
   const contextPoolAddress = firstString(context.pool.address, context.route.poolAddress);
+  if (forced && context.trader.hasLpPosition !== true) {
+    return true;
+  }
   if (contextPoolAddress) {
     return observation.position.poolAddress === contextPoolAddress;
   }
@@ -2799,6 +2805,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     poolAddress,
     tokenSymbol,
     tokenMint: firstString(context.token.mint),
+    captureMode: input.captureMode,
     routeExists,
     routeSlippageBps,
     killSwitchEngaged: killSwitchState,
@@ -2938,12 +2945,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const lpEvaluations = config.poolClass === 'new-token'
     ? evaluateActiveLpPositions({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState, positionLedger: input.positionLedger })
     : [];
-  const multiLpExit = selectTriggeredLpExitFromEvaluations(lpEvaluations);
-  const observedLpPosition = multiLpExit ?? selectObservedLpPositionFromEvaluations(lpEvaluations);
-  if (
-    observedLpPosition
-    && shouldApplyLpObservationToContext(context, observedLpPosition, Boolean(multiLpExit))
-  ) {
+  const triggeredLpExit = selectTriggeredLpExitFromEvaluations(lpEvaluations);
+  const multiLpExit = triggeredLpExit
+    && shouldApplyLpObservationToContext(context, triggeredLpExit, true)
+    ? triggeredLpExit
+    : null;
+  const observedLpCandidate = multiLpExit ?? selectObservedLpPositionFromEvaluations(lpEvaluations);
+  const observedLpPosition = observedLpCandidate
+    && shouldApplyLpObservationToContext(context, observedLpCandidate, Boolean(multiLpExit))
+    ? observedLpCandidate
+    : null;
+  if (observedLpPosition) {
     applyLpObservationToContext(context, observedLpPosition);
   }
 
@@ -3200,6 +3212,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       (updatedSnapshot as any).lifecycleState = 'inventory_exit_ready';
     }
   }
+  if (typeof input.requestedPositionSol === 'number') {
+    (updatedSnapshot as any).requestedPositionSol = input.requestedPositionSol;
+  }
   const engineResult = multiLpExit?.decision ?? runEngineCycle({
     engine: config.poolClass,
     snapshot: updatedSnapshot,
@@ -3212,6 +3227,12 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       takeProfitPct: config.riskThresholds.takeProfitPct,
       stopLossPct: config.riskThresholds.stopLossPct,
       lpEnabled: config.lpConfig?.enabled ?? false,
+      entryEdgeEnabled: config.entryEdge?.enabled ?? false,
+      entryEdgeDefaultAdverseSelectionBps: config.entryEdge?.defaultAdverseSelectionBps,
+      entryEdgeDefaultImpermanentLossBps: config.entryEdge?.defaultImpermanentLossBps,
+      entryEdgeDefaultChainCostSol: config.entryEdge?.defaultChainCostSol,
+      entryEdgeDefaultCapitalChargeBps: config.entryEdge?.defaultCapitalChargeBps,
+      entryEdgeDefaultSafetyMarginBps: config.entryEdge?.defaultSafetyMarginBps,
     }
   });
   const lpEnabled = config.lpConfig?.enabled ?? false;

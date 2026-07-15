@@ -3,14 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { buildDashboardHtml } from '../../../src/dashboard/dashboard-html';
 
 describe('buildDashboardHtml', () => {
-  it('includes a dedicated evolution summary panel placeholders', () => {
+  it('includes the lightweight strategy research summary placeholders', () => {
     const html = buildDashboardHtml();
 
     expect(html).toContain('id="research-brief"');
     expect(html).toContain('id="research-window"');
     expect(html).toContain('id="research-scores"');
-    expect(html).toContain('id="research-latest-proposal"');
-    expect(html).toContain('id="research-latest-review"');
+    expect(html).toContain('id="research-marks"');
+    expect(html).toContain('id="research-worker"');
+    expect(html).toContain('Active Experiment');
+    expect(html).toContain('Mark Coverage');
+    expect(html).not.toContain('evolution proposal');
   });
 
   it('renders a real historical positions table shell instead of a hard-coded empty placeholder', () => {

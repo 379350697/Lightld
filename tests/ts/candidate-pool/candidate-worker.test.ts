@@ -137,6 +137,26 @@ describe('candidate worker', () => {
     ]);
   });
 
+  it('keeps candidate selection unchanged when research persistence fails', async () => {
+    const writer = new MemoryWriter();
+    const warn = vi.fn();
+    const result = await runCandidateWorkerTick({
+      strategy: 'new-token-v1',
+      writer,
+      routeSource: routeSource(true),
+      captureMode: 'mechanical-soak',
+      researchRecorder: { capture: async () => { throw new Error('research disk full'); } },
+      now: () => new Date('2026-06-21T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [meteoraRow()],
+      fetchTokenSafetyBatchImpl: async () => [],
+      gmgnSourceMode: 'disabled',
+      logger: { log: vi.fn(), warn, error: vi.fn() }
+    });
+
+    expect(result.openableCount).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('trading candidates unchanged'));
+  });
+
   it('does not run GMGN for candidates without a fresh Jupiter route', async () => {
     const writer = new MemoryWriter();
     const fetchTokenSafetyBatchImpl = vi.fn(async () => []);

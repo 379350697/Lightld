@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+if ($env:LIGHTLD_LIVE_CONFIRM -ne "I_UNDERSTAND_MAINNET") {
+    throw "Set LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET to confirm mainnet live trading"
+}
+$env:LIGHTLD_RUN_MODE = "live"
+$env:LIGHTLD_EXECUTION_MODE = "live"
+
 . (Join-Path $PSScriptRoot "scripts/load-env.ps1") -Root $PSScriptRoot
 Set-Location -LiteralPath $PSScriptRoot
 & (Join-Path $PSScriptRoot "scripts/stop-lightld.ps1") -Root $PSScriptRoot -Role all

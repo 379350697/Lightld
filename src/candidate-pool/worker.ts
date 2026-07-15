@@ -16,6 +16,7 @@ import {
 import { buildFailedRouteObservation, buildGmgnObservation, buildMeteoraObservation } from './source-observations.ts';
 import type { CandidatePoolWriter, CandidateSourceAdapter } from './types.ts';
 import { buildMeteoraCandidate, isMeteoraPoolPrefiltered } from './meteora-candidate-builder.ts';
+import type { CandidateResearchRecorder } from '../strategy-research/capture.ts';
 
 const STRATEGY_CONFIGS = {
   'new-token-v1': 'src/config/strategies/new-token-v1.yaml',
@@ -52,11 +53,14 @@ export type CandidateWorkerOptions = {
   poolFeeYieldSampleIntervalMs?: number;
   poolFeeYieldRetirementMs?: number;
   poolFeeYieldRetentionMs?: number;
+  poolFeeYieldMaximumPools?: number;
   fetchMeteoraPoolsImpl?: FetchMeteoraPoolsImpl;
   fetchTokenSafetyBatchImpl?: FetchTokenSafetyBatchImpl;
   routeSource: CandidateSourceAdapter;
   gmgnSourceMode?: 'soft' | 'disabled';
   runSoftSourcesInBackground?: boolean;
+  captureMode?: string;
+  researchRecorder?: CandidateResearchRecorder;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 };
 
@@ -99,7 +103,7 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
   if (options.poolFeeYieldStore) {
     feeYieldProfiles = await options.poolFeeYieldStore.recordPoolFeeYieldSamples({
       strategyId: options.strategy,
-      rows,
+      rows: rows.slice(0, options.poolFeeYieldMaximumPools ?? 250),
       observedAt: now,
       sampleIntervalMs: options.poolFeeYieldSampleIntervalMs,
       minTvlUsd: config.filters.minLiquidityUsd,
@@ -170,6 +174,17 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
     ? []
     : resolveGmgnCandidateBatch(routeOpenableCandidates, gmgnMaxBatchSize);
   const hardOpenableCount = openableCount;
+  if (options.researchRecorder) {
+    await options.researchRecorder.capture({
+      strategyId: options.strategy,
+      observedAt: now.toISOString(),
+      captureMode: options.captureMode ?? '',
+      baseConfig: config,
+      candidates: routeOpenableCandidates
+    }).catch((error) => {
+      options.logger?.warn(`[CandidateWorker] strategy research degraded; trading candidates unchanged: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
   const hardCompletedAt = new Date();
   await options.writer.writeWorkerStatus({
     strategyId: options.strategy,

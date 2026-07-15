@@ -1,6 +1,7 @@
 import { buildLargePoolDecision } from './engines/large-pool-engine.ts';
 import { buildNewTokenDecision } from './engines/new-token-engine.ts';
 import { evaluateHardGates } from './filtering/hard-gates.ts';
+import { evaluateEntryEconomicEdge } from './entry-edge.ts';
 
 type EngineName = 'new-token' | 'large-pool';
 
@@ -49,6 +50,37 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
     };
   }
 
+  const openingNewTokenPosition = input.engine === 'new-token'
+    && Boolean(input.snapshot.inSession)
+    && !Boolean(input.snapshot.hasInventory)
+    && !Boolean(input.snapshot.hasLpPosition);
+  if (openingNewTokenPosition) {
+    const edge = evaluateEntryEconomicEdge({
+      positionSol: typeof input.snapshot.requestedPositionSol === 'number' ? input.snapshot.requestedPositionSol : undefined,
+      expectedFeeSol: typeof input.snapshot.expectedFeeSol === 'number' ? input.snapshot.expectedFeeSol : undefined,
+      feeTvlRatio24h: typeof input.snapshot.feeTvlRatio24h === 'number' ? input.snapshot.feeTvlRatio24h : undefined,
+      adverseSelectionBps: typeof input.snapshot.adverseSelectionBps === 'number' ? input.snapshot.adverseSelectionBps : undefined,
+      impermanentLossBps: typeof input.snapshot.impermanentLossBps === 'number' ? input.snapshot.impermanentLossBps : undefined,
+      roundTripCostBps: typeof input.snapshot.roundTripCostBps === 'number' ? input.snapshot.roundTripCostBps : undefined,
+      chainCostSol: typeof input.snapshot.chainCostSol === 'number' ? input.snapshot.chainCostSol : undefined,
+      capitalChargeBps: typeof input.snapshot.capitalChargeBps === 'number' ? input.snapshot.capitalChargeBps : undefined,
+      safetyMarginBps: typeof input.snapshot.safetyMarginBps === 'number' ? input.snapshot.safetyMarginBps : undefined
+    }, {
+      enabled: input.config.entryEdgeEnabled === true,
+      defaultAdverseSelectionBps: number(input.config.entryEdgeDefaultAdverseSelectionBps),
+      defaultImpermanentLossBps: number(input.config.entryEdgeDefaultImpermanentLossBps),
+      defaultChainCostSol: number(input.config.entryEdgeDefaultChainCostSol),
+      defaultCapitalChargeBps: number(input.config.entryEdgeDefaultCapitalChargeBps),
+      defaultSafetyMarginBps: number(input.config.entryEdgeDefaultSafetyMarginBps)
+    });
+    if (!edge.accepted) {
+      return {
+        action: 'hold',
+        audit: { reason: `${edge.reason}|netEdgeSol=${edge.netEdgeSol.toFixed(9)}|requiredEdgeSol=${edge.requiredEdgeSol.toFixed(9)}` }
+      };
+    }
+  }
+
   const decision = input.engine === 'new-token'
       ? buildNewTokenDecision(
         {
@@ -90,4 +122,8 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
       reason: ('reason' in decision) ? (decision.reason as string) : 'decision-generated'
     }
   };
+}
+
+function number(value: unknown) {
+  return typeof value === 'number' ? value : undefined;
 }

@@ -184,6 +184,13 @@ function buildSpendingLimitsConfig(input: {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const runMode = process.env.LIGHTLD_RUN_MODE;
+  if (runMode !== 'live' && runMode !== 'mechanical-soak' && runMode !== 'economic-shadow') {
+    throw new Error('LIGHTLD_RUN_MODE must be explicitly set to live, mechanical-soak, or economic-shadow');
+  }
+  if (runMode === 'live' && process.env.LIGHTLD_LIVE_CONFIRM !== 'I_UNDERSTAND_MAINNET') {
+    throw new Error('Live mode requires LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET');
+  }
   const runtimeConfig = loadLiveRuntimeConfig();
   const spendingLimitsConfig = parseBoolean(process.env.LIVE_IGNORE_SPENDING_LIMITS, false)
     ? undefined
@@ -354,6 +361,7 @@ async function main() {
 
       return {
         ...executionAdapters,
+        captureMode: runMode,
         accountState,
         spendingLimitsConfig,
         ignoreLivePositionSolLimit: parseBoolean(process.env.LIVE_IGNORE_POSITION_SOL_LIMIT, false),

@@ -1,15 +1,20 @@
 import type { MirrorStatusExtras } from '../observability/mirror-query-service.ts';
 import type { HealthReport } from '../runtime/state-types.ts';
 
-type EvolutionStatusSummary = {
-  proposalCount: number;
-  approvalQueueCount: number;
-  outcomeReviewCount: number;
-  latestEvidenceWindow: string;
+type ResearchStatusSummary = {
+  activeExperiment?: { experimentId?: string } | null;
+  latestExperiment?: { experimentId?: string } | null;
+  experimentStatus?: string;
+  snapshotCount?: number;
+  episodeCount?: number;
+  selectedEpisodeCount?: number;
+  paperOutcomeCount?: number;
+  marks?: Record<string, number>;
+  worker?: { status?: string; heartbeatAt?: string } | null;
 };
 
 export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusExtras> & {
-  evolution?: EvolutionStatusSummary;
+  research?: ResearchStatusSummary | null;
 }) {
   const lines = [
     `mode=${report.mode}`,
@@ -69,12 +74,20 @@ export function formatRuntimeStatus(report: HealthReport & Partial<MirrorStatusE
     lines.push(`recentWatchlistSnapshots=${report.recentWatchlistSnapshots.length}`);
   }
 
-  if (report.evolution) {
+  if (report.research) {
     lines.push(
-      `evolutionProposalCount=${report.evolution.proposalCount}`,
-      `evolutionApprovalQueueCount=${report.evolution.approvalQueueCount}`,
-      `evolutionOutcomeReviewCount=${report.evolution.outcomeReviewCount}`,
-      `evolutionLatestEvidenceWindow=${report.evolution.latestEvidenceWindow}`
+      `researchExperiment=${report.research.activeExperiment?.experimentId ?? report.research.latestExperiment?.experimentId ?? 'none'}`,
+      `researchExperimentStatus=${report.research.experimentStatus ?? 'none'}`,
+      `researchSnapshotCount=${report.research.snapshotCount ?? 0}`,
+      `researchEpisodeCount=${report.research.episodeCount ?? 0}`,
+      `researchSelectedEpisodeCount=${report.research.selectedEpisodeCount ?? 0}`,
+      `researchPaperOutcomeCount=${report.research.paperOutcomeCount ?? 0}`,
+      `researchMark15m=${report.research.marks?.['15'] ?? 0}`,
+      `researchMark1h=${report.research.marks?.['60'] ?? 0}`,
+      `researchMark4h=${report.research.marks?.['240'] ?? 0}`,
+      `researchMark24h=${report.research.marks?.['1440'] ?? 0}`,
+      `researchWorkerStatus=${report.research.worker?.status ?? 'not-running'}`,
+      `researchWorkerHeartbeat=${report.research.worker?.heartbeatAt ?? ''}`
     );
   }
 

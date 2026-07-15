@@ -337,19 +337,19 @@ export function buildDashboardHtml(): string {
 
     <div class="research-brief" id="research-brief">
       <div class="research-card">
-        <div class="research-label">Research Window</div>
+        <div class="research-label">Active Experiment</div>
         <div class="research-main research-mono" id="research-window">--</div>
-        <div class="research-meta" id="research-scores">coverage=-- readiness=-- regime=--</div>
+        <div class="research-meta" id="research-scores">snapshots=-- episodes=-- selected=--</div>
       </div>
       <div class="research-card">
-        <div class="research-label">Latest Proposal</div>
-        <div class="research-main research-mono" id="research-latest-proposal">--</div>
-        <div class="research-meta" id="research-latest-proposal-meta">No evolution proposal yet.</div>
+        <div class="research-label">Mark Coverage</div>
+        <div class="research-main research-mono" id="research-marks">--</div>
+        <div class="research-meta" id="research-marks-meta">No paper marks yet.</div>
       </div>
       <div class="research-card">
-        <div class="research-label">Latest Review</div>
-        <div class="research-main research-mono" id="research-latest-review">--</div>
-        <div class="research-meta" id="research-latest-review-meta">No outcome review yet.</div>
+        <div class="research-label">Research Worker</div>
+        <div class="research-main research-mono" id="research-worker">--</div>
+        <div class="research-meta" id="research-worker-meta">Worker has not reported yet.</div>
       </div>
     </div>
 
@@ -791,35 +791,38 @@ export function buildDashboardHtml(): string {
           $('#stat-mode').textContent = status.mode || '--';
           $('#stat-lifecycle').textContent = status.lifecycleState || '--';
           $('#stat-circuit').textContent = status.circuitReason || '--';
-          var evolution = status.evolution || null;
-          $('#stat-research').textContent = evolution
-            ? ('proposals=' + String(evolution.proposalCount || 0)
-              + ' queue=' + String(evolution.approvalQueueCount || 0)
-              + ' scans=' + String(evolution.mirroredCandidateScanCount || 0)
-              + ' watch=' + String(evolution.mirroredWatchlistSnapshotCount || 0))
+          var research = status.research || null;
+          var experiment = research ? (research.activeExperiment || research.latestExperiment || null) : null;
+          var marks = research && research.marks ? research.marks : {};
+          $('#stat-research').textContent = research
+            ? ('experiment=' + String(experiment && experiment.experimentId ? experiment.experimentId : 'none')
+              + ' status=' + String(research.experimentStatus || 'none')
+              + ' episodes=' + String(research.episodeCount || 0)
+              + ' 24h=' + String(marks['1440'] || 0))
             : '--';
-          $('#research-window').textContent = evolution ? String(evolution.latestEvidenceWindow || '--') : '--';
-          $('#research-scores').innerHTML = evolution
+          $('#research-window').textContent = experiment ? String(experiment.experimentId || '--') : '--';
+          $('#research-scores').innerHTML = research
             ? (
               '<div class="research-score-row">'
-              + '<div class="research-score-chip">Coverage<b>' + escHtml(fmtMaybeScore(evolution.latestCoverageScore)) + '</b></div>'
-              + '<div class="research-score-chip">Readiness<b>' + escHtml(fmtMaybeScore(evolution.latestReadinessScore)) + '</b></div>'
-              + '<div class="research-score-chip">Regime<b>' + escHtml(fmtMaybeScore(evolution.latestRegimeScore)) + '</b></div>'
+              + '<div class="research-score-chip">Snapshots<b>' + escHtml(String(research.snapshotCount || 0)) + '</b></div>'
+              + '<div class="research-score-chip">Episodes<b>' + escHtml(String(research.episodeCount || 0)) + '</b></div>'
+              + '<div class="research-score-chip">Selected<b>' + escHtml(String(research.selectedEpisodeCount || 0)) + '</b></div>'
               + '</div>'
             )
-            : 'coverage=-- readiness=-- regime=--';
-          $('#research-latest-proposal').textContent = evolution && evolution.latestProposalPath
-            ? String(evolution.latestProposalPath)
+            : 'snapshots=-- episodes=-- selected=--';
+          $('#research-marks').textContent = research
+            ? ('15m=' + String(marks['15'] || 0) + ' 1h=' + String(marks['60'] || 0)
+              + ' 4h=' + String(marks['240'] || 0) + ' 24h=' + String(marks['1440'] || 0))
             : '--';
-          $('#research-latest-proposal-meta').textContent = evolution && evolution.latestProposalStatus
-            ? ('status=' + String(evolution.latestProposalStatus))
-            : 'No evolution proposal yet.';
-          $('#research-latest-review').textContent = evolution && evolution.latestReviewStatus
-            ? String(evolution.latestReviewStatus)
+          $('#research-marks-meta').textContent = research
+            ? ('paper outcomes=' + String(research.paperOutcomeCount || 0))
+            : 'No paper marks yet.';
+          $('#research-worker').textContent = research && research.worker
+            ? String(research.worker.status || '--')
             : '--';
-          $('#research-latest-review-meta').textContent = evolution && evolution.latestReviewProposalId
-            ? ('proposal=' + String(evolution.latestReviewProposalId))
-            : 'No outcome review yet.';
+          $('#research-worker-meta').textContent = research && research.worker
+            ? ('heartbeat=' + String(research.worker.heartbeatAt || '--'))
+            : 'Worker has not reported yet.';
           var walletSol = typeof status.walletSol === 'number' ? status.walletSol : 0;
           var openValue = Array.isArray(positions) ? positions.reduce(function(sum, p) { var value = lpTotalValueOrNull(p); return sum + (value !== null ? value : 0); }, 0) : 0;
           $('#net-worth-num').textContent = (walletSol + openValue).toFixed(4) + ' ';

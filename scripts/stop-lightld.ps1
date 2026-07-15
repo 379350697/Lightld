@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$AllRoles = @("signer", "execution", "gmgn", "candidate", "daemon", "dashboard")
+$AllRoles = @("signer", "execution", "gmgn", "candidate", "research", "daemon", "dashboard")
 if ($Role -contains "all") {
     $Role = $AllRoles
 }
@@ -15,6 +15,7 @@ $RolePatterns = @{
     execution = @("run:execution", "run:solana-execution", "local-live-execution", "solana-execution", "run-paper-realistic-component.ps1 -role execution")
     gmgn = @("gmgn-token-safety-server.py", "start-gmgn-safety.ps1", "lightld gmgn safety")
     candidate = @("run:candidate-worker", "candidate-worker", "run-paper-realistic-component.ps1 -role candidate")
+    research = @("run:research-worker", "run-research-worker-main", "run-paper-realistic-component.ps1 -role research")
     daemon = @("run:daemon", "live-daemon", "run-live-daemon-main", "run-paper-realistic-component.ps1 -role daemon")
     dashboard = @("run:dashboard", "dashboard-server")
 }

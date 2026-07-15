@@ -1,16 +1,17 @@
 # Lightweight Live Runtime
 
-This project is a lightweight Linux-friendly adaptation of the reference strategy system in [`liudx-ref/`](./liudx-ref). It keeps the strategy logic, trading logic, and main live execution flow, while removing:
+This project is a lightweight personal strategy and execution runtime adapted from [`liudx-ref/`](./liudx-ref). It keeps:
 
-- shadow runtime
-- paper runtime
-- Python replay and backtest tooling
+- the new-token and large-pool strategies
+- paper and live execution paths
+- a small SQLite-backed strategy research loop
+- the TypeScript-only runtime and analysis toolchain
 
 The current operating model is:
 
 - personal-use only
-- live automation first
-- no simulation or paper workflow required
+- strategy iteration first
+- paper evidence before manual live configuration changes
 - no whitelist dependency in the live trade path
 
 ## Requirements
@@ -42,10 +43,27 @@ npm install
 
 ## What Was Removed
 
-- `shadow-cycle`
-- `paper-cycle`
-- `src/paper/`
-- `python/`
+- Professional V2 P0/P1 certification, approval and deployment gates
+- permanent Parquet/DuckDB export and provenance pipelines
+- Python professional-statistics sidecars
+- automatic strategy configuration changes
+
+## Paper Strategy Research
+
+Start one experiment with the current strategy config as the locked baseline and up to three parameter variants:
+
+```bash
+npm run run:strategy-research -- start --spec experiment.yaml --state-root-dir state-paper-realistic
+npm run run:research-worker -- --state-root-dir state-paper-realistic
+npm run run:strategy-research -- status --state-root-dir state-paper-realistic
+npm run run:strategy-research -- analyze --state-root-dir state-paper-realistic
+npm run run:strategy-research -- export --format csv --state-root-dir state-paper-realistic
+npm run run:strategy-research -- stop --state-root-dir state-paper-realistic
+```
+
+All research data stays in `StateRoot/research/research.sqlite`. Analysis can always produce an exploratory report; `review` requires the configured sample, UTC-day, OOS, mark-coverage and target/2x-capacity thresholds. A patch draft is advisory and is never applied automatically.
+
+Paper launchers set both `LIGHTLD_RUN_MODE` and `LIGHTLD_EXECUTION_MODE` to `mechanical-soak`. Live startup requires `LIGHTLD_RUN_MODE=live` plus `LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET`.
 
 ## Run Tests
 
@@ -75,7 +93,7 @@ npm run run:strategy -- \
 
 The default runtime mode is `test`, which keeps using local test signer and broadcaster stubs.
 
-To switch the CLI into canary live integration mode, set:
+To switch the CLI into live integration mode, set:
 
 ```bash
 export LIVE_EXECUTION_MODE=http

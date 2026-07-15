@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${LIGHTLD_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ROLES=("$@")
 if [[ ${#ROLES[@]} -eq 0 || " ${ROLES[*]} " == *" all "* ]]; then
-  ROLES=(signer execution gmgn candidate daemon dashboard)
+  ROLES=(signer execution gmgn candidate research daemon dashboard)
 fi
 
 patterns_for_role() {
@@ -13,6 +13,7 @@ patterns_for_role() {
     execution) echo "run:execution|run:solana-execution|local-live-execution|solana-execution" ;;
     gmgn) echo "gmgn-token-safety-server.py" ;;
     candidate) echo "run:candidate-worker|candidate-worker" ;;
+    research) echo "run:research-worker|run-research-worker-main" ;;
     daemon) echo "run:daemon|live-daemon" ;;
     dashboard) echo "run:dashboard|dashboard-server" ;;
     *) echo "" ;;

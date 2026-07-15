@@ -14,11 +14,11 @@ $Root = (Resolve-Path -LiteralPath $Root).Path
 Set-Location $Root
 
 $stopScript = Join-Path $PSScriptRoot "stop-lightld.ps1"
-foreach ($role in @("signer", "execution", "candidate", "daemon")) {
+foreach ($role in @("signer", "execution", "candidate", "research", "daemon")) {
     & $stopScript -Root $Root -Role $role
 }
 
-$roles = @("signer", "execution", "candidate", "daemon")
+$roles = @("signer", "execution", "candidate", "research", "daemon")
 $started = @()
 foreach ($role in $roles) {
     $arguments = @(

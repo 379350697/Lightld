@@ -1,10 +1,9 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { buildStatusView, readMirrorStatus } from '../observability/mirror-query-service.ts';
 import { refreshHealthReportFreshness } from '../runtime/health-report.ts';
 import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
+import { StrategyResearchStore } from '../strategy-research/store.ts';
 import { formatRuntimeStatus } from './show-runtime-status.ts';
 
 type ParsedArgs = {
@@ -68,11 +67,11 @@ async function main() {
       ? async () => readMirrorStatus(mirrorPath)
       : undefined
   });
-  const evolution = await readEvolutionSummary(args.stateRootDir, args.strategyId);
+  const research = await readResearchSummary(args.stateRootDir);
 
   process.stdout.write(args.json
-    ? `${JSON.stringify({ ...view, evolution }, null, 2)}\n`
-    : `${formatRuntimeStatus({ ...view, evolution })}\n`);
+    ? `${JSON.stringify({ ...view, research }, null, 2)}\n`
+    : `${formatRuntimeStatus({ ...view, research })}\n`);
 }
 
 main().catch((error: unknown) => {
@@ -81,39 +80,14 @@ main().catch((error: unknown) => {
   process.exitCode = 1;
 });
 
-async function readEvolutionSummary(
-  stateRootDir: string,
-  strategyId: 'new-token-v1' | 'large-pool-v1'
-) {
-  const paths = resolveEvolutionPaths(strategyId, join(stateRootDir, 'evolution'));
-  const [proposalCatalog, approvalQueue, outcomeLedger, evidenceSnapshot] = await Promise.all([
-    readJsonIfExists<Array<unknown>>(paths.proposalCatalogPath),
-    readJsonIfExists<Array<unknown>>(paths.approvalQueuePath),
-    readJsonlCount(paths.outcomeLedgerPath),
-    readJsonIfExists<{ timeWindowLabel?: string }>(paths.evidenceSnapshotPath)
-  ]);
-
-  return {
-    proposalCount: proposalCatalog?.length ?? 0,
-    approvalQueueCount: approvalQueue?.length ?? 0,
-    outcomeReviewCount: outcomeLedger,
-    latestEvidenceWindow: evidenceSnapshot?.timeWindowLabel ?? 'none'
-  };
-}
-
-async function readJsonIfExists<T>(path: string): Promise<T | null> {
+async function readResearchSummary(stateRootDir: string) {
+  const store = new StrategyResearchStore(join(stateRootDir, 'research', 'research.sqlite'), true);
   try {
-    return JSON.parse(await readFile(path, 'utf8')) as T;
+    await store.open();
+    return store.status();
   } catch {
     return null;
-  }
-}
-
-async function readJsonlCount(path: string): Promise<number> {
-  try {
-    const content = await readFile(path, 'utf8');
-    return content.split(/\r?\n/).filter(Boolean).length;
-  } catch {
-    return 0;
+  } finally {
+    store.close();
   }
 }

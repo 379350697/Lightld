@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("signer", "execution", "candidate", "daemon")]
+    [ValidateSet("signer", "execution", "candidate", "research", "daemon")]
     [string]$Role,
     [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$StateRoot = "state-paper-realistic",
@@ -16,6 +16,8 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $Root).Path
 Set-Location $Root
 & (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root
+$env:LIGHTLD_RUN_MODE = "mechanical-soak"
+$env:LIGHTLD_EXECUTION_MODE = "mechanical-soak"
 
 $Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
 $env:LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL = "1000000"
@@ -36,7 +38,7 @@ if ($Role -eq "execution") {
 
 if ($Role -eq "candidate") {
     $env:LIVE_STATE_DIR = $StateRoot
-    $env:LIVE_CANDIDATE_POOL_DB_PATH = "state/lightld-candidate-pool.sqlite"
+    $env:LIVE_CANDIDATE_POOL_DB_PATH = (Join-Path $StateRoot "lightld-candidate-pool.sqlite")
     $env:LIVE_REQUESTED_POSITION_SOL = [string]$RequestedPositionSol
     $restartDelayMs = 5000
     $parsedRestartDelayMs = 0
@@ -55,11 +57,20 @@ if ($Role -eq "candidate") {
     }
 }
 
+if ($Role -eq "research") {
+    $env:LIVE_STATE_DIR = $StateRoot
+    while ($true) {
+        npm.cmd run run:research-worker -- --state-root-dir $StateRoot
+        Write-Warning "[PaperRealistic] research worker exited with code $LASTEXITCODE; restarting in 5 seconds"
+        Start-Sleep -Seconds 5
+    }
+}
+
 $env:LIVE_EXECUTION_MODE = "http"
 $env:LIVE_STATE_DIR = $StateRoot
 $env:LIVE_JOURNAL_DIR = $JournalRoot
 $env:LIVE_DB_MIRROR_PATH = (Join-Path $StateRoot "lightld-observability.sqlite")
-$env:LIVE_CANDIDATE_POOL_DB_PATH = "state/lightld-candidate-pool.sqlite"
+$env:LIVE_CANDIDATE_POOL_DB_PATH = (Join-Path $StateRoot "lightld-candidate-pool.sqlite")
 $env:LIVE_QUOTE_URL = "http://127.0.0.1:8791/quote"
 $env:LIVE_SIGN_URL = "http://127.0.0.1:8788/sign"
 $env:LIVE_BROADCAST_URL = "http://127.0.0.1:8791/broadcast"

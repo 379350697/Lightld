@@ -6,6 +6,8 @@ import { runCandidateWorker } from '../candidate-pool/worker.ts';
 import { JupiterClient } from '../execution/solana/jupiter-client.ts';
 import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
+import { SqliteCandidateResearchRecorder } from '../strategy-research/capture.ts';
+import { StrategyResearchStore } from '../strategy-research/store.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -20,6 +22,7 @@ type ParsedArgs = {
   poolFeeYieldSampleIntervalMs: number;
   poolFeeYieldRetirementMs: number;
   poolFeeYieldRetentionMs: number;
+  poolFeeYieldMaximumPools: number;
 };
 
 function parsePositiveInteger(value: string | undefined, fallback: number) {
@@ -50,9 +53,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     meteoraQuery: process.env.LIVE_METEORA_QUERY,
     meteoraSortBy: process.env.LIVE_METEORA_SORT_BY,
     meteoraFilterBy: process.env.LIVE_METEORA_FILTER_BY,
-    poolFeeYieldSampleIntervalMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_SAMPLE_INTERVAL_MS, 300_000),
+    poolFeeYieldSampleIntervalMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_SAMPLE_INTERVAL_MS, 15 * 60_000),
     poolFeeYieldRetirementMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_RETIREMENT_MS, 6 * 60 * 60 * 1000),
-    poolFeeYieldRetentionMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_RETENTION_MS, 7 * 24 * 60 * 60 * 1000)
+    poolFeeYieldRetentionMs: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_RETENTION_MS, 48 * 60 * 60 * 1000),
+    poolFeeYieldMaximumPools: parsePositiveInteger(process.env.LIVE_POOL_FEE_YIELD_MAX_POOLS, 250)
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -125,6 +129,7 @@ async function main() {
   const strategy = args.strategy as StrategyId;
   const dbPath = args.dbPath ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite');
   const writer = new SqliteCandidatePool({ path: dbPath });
+  const researchStore = new StrategyResearchStore(join(args.stateRootDir, 'research', 'research.sqlite'));
   const staleMs = parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000);
   const workerLeaseMs = parsePositiveInteger(
     process.env.LIVE_CANDIDATE_WORKER_LEASE_MS,
@@ -160,6 +165,7 @@ async function main() {
 
   try {
     await writer.open();
+    await researchStore.open();
     await runCandidateWorker({
       strategy,
       writer,
@@ -170,11 +176,14 @@ async function main() {
       gmgnMaxBatchSize: parsePositiveInteger(process.env.LIVE_GMGN_SOURCE_CONCURRENCY, 1),
       gmgnSourceMode: parseGmgnSourceMode(process.env.LIVE_GMGN_SOURCE_MODE),
       runSoftSourcesInBackground: true,
+      captureMode: process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE ?? '',
+      researchRecorder: new SqliteCandidateResearchRecorder(researchStore),
       routeSource,
       poolFeeYieldStore: writer,
       poolFeeYieldSampleIntervalMs: args.poolFeeYieldSampleIntervalMs,
       poolFeeYieldRetirementMs: args.poolFeeYieldRetirementMs,
       poolFeeYieldRetentionMs: args.poolFeeYieldRetentionMs,
+      poolFeeYieldMaximumPools: args.poolFeeYieldMaximumPools,
       meteoraPageSize: args.meteoraPageSize,
       meteoraQuery: args.meteoraQuery,
       meteoraSortBy: args.meteoraSortBy,
@@ -182,6 +191,7 @@ async function main() {
       logger: console
     });
   } finally {
+    researchStore.close();
     await writer.close();
   }
 }

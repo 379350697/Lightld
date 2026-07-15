@@ -137,6 +137,14 @@ export const StrategyConfigSchema = z.object({
     maxSlippageBps: z.number().int().nonnegative(),
     maxImpactBps: z.number().int().nonnegative()
   }),
+  entryEdge: z.object({
+    enabled: z.boolean().default(false),
+    defaultAdverseSelectionBps: z.number().nonnegative().default(25),
+    defaultImpermanentLossBps: z.number().nonnegative().default(25),
+    defaultChainCostSol: z.number().nonnegative().default(0.000005),
+    defaultCapitalChargeBps: z.number().nonnegative().default(5),
+    defaultSafetyMarginBps: z.number().nonnegative().default(10)
+  }).optional(),
   live: LiveConfigSchema
 });
 

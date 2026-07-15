@@ -12,13 +12,13 @@ import {
   buildHistoricalActivity
 } from './dashboard-metrics.ts';
 import type { ConfirmationStatus } from '../execution/confirmation-tracker.ts';
-import { resolveEvolutionPaths } from '../evolution/index.ts';
 import { readRotatedJsonTail } from '../journals/jsonl-writer.ts';
 import { toExecutionLifecycleStatus } from '../runtime/execution-lifecycle-status.ts';
 import { toExecutionTerminalStatus } from '../runtime/execution-terminal-status.ts';
 import { refreshHealthReportFreshness } from '../runtime/health-report.ts';
 import { HealthReportSchema } from '../runtime/state-types.ts';
 import type { PendingFinality } from '../runtime/state-types.ts';
+import { StrategyResearchStore } from '../strategy-research/store.ts';
 
 // ── Configuration ──
 
@@ -216,7 +216,6 @@ type ClosedPositionSnapshotRow = {
 };
 
 async function handleStatus(): Promise<StatusResponse> {
-  const evolutionPaths = resolveEvolutionPaths(STRATEGY_ID === 'large-pool-v1' ? 'large-pool-v1' : 'new-token-v1', join(STATE_ROOT_DIR, 'evolution'));
   const [rawHealth, position, runtime] = await Promise.all([
     readJsonSafe<unknown>(join(STATE_ROOT_DIR, 'health.json')),
     readJsonSafe<Record<string, unknown>>(join(STATE_ROOT_DIR, 'position-state.json')),
@@ -224,22 +223,13 @@ async function handleStatus(): Promise<StatusResponse> {
   ]);
   const parsedHealth = HealthReportSchema.safeParse(rawHealth);
   const health = parsedHealth.success ? refreshHealthReportFreshness(parsedHealth.data) : null;
-  const [proposalCatalog, approvalQueue] = await Promise.all([
-    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.proposalCatalogPath),
-    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.approvalQueuePath)
-  ]);
-  const [outcomeLedger, evidenceSnapshot] = await Promise.all([
-    readJsonSafe<Array<Record<string, unknown>>>(evolutionPaths.outcomeLedgerPath),
-    readJsonSafe<Record<string, unknown>>(evolutionPaths.evidenceSnapshotPath)
-  ]);
-  const [candidateScanCounts, watchlistSnapshotCounts] = await Promise.all([
+  const [candidateScanCounts, watchlistSnapshotCounts, research] = await Promise.all([
     queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM candidate_scans'),
-    queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots')
+    queryAll<{ count: number }>('SELECT COUNT(*) AS count FROM watchlist_snapshots'),
+    readResearchSummary()
   ]);
   const candidateScanCount = candidateScanCounts[0]?.count ?? 0;
   const watchlistSnapshotCount = watchlistSnapshotCounts[0]?.count ?? 0;
-  const latestProposal = sortByIsoDesc(proposalCatalog ?? [], 'updatedAt', 'createdAt')[0] ?? null;
-  const latestReview = sortByIsoDesc(outcomeLedger ?? [], 'reviewedAt')[0] ?? null;
 
   // Wallet SOL: prefer position-state.json (written every tick), fallback to SQLite reconciliations
   let walletSol: number | null = typeof position?.walletSol === 'number' ? position.walletSol : null;
@@ -332,32 +322,24 @@ async function handleStatus(): Promise<StatusResponse> {
     lastClosedAt: position?.lastClosedAt ?? '',
 
     walletSol,
-    evolution: {
-      proposalCount: proposalCatalog?.length ?? 0,
-      approvalQueueCount: approvalQueue?.length ?? 0,
+    research: research ? {
+      ...research,
       mirroredCandidateScanCount: candidateScanCount,
-      mirroredWatchlistSnapshotCount: watchlistSnapshotCount,
-      latestEvidenceWindow: typeof evidenceSnapshot?.timeWindowLabel === 'string' ? evidenceSnapshot.timeWindowLabel : 'all-available',
-      latestCoverageScore: typeof evidenceSnapshot?.coverageScore === 'number' ? evidenceSnapshot.coverageScore : null,
-      latestRegimeScore: typeof evidenceSnapshot?.regimeScore === 'number' ? evidenceSnapshot.regimeScore : null,
-      latestReadinessScore: typeof evidenceSnapshot?.proposalReadinessScore === 'number'
-        ? evidenceSnapshot.proposalReadinessScore
-        : null,
-      latestProposalPath: typeof latestProposal?.targetPath === 'string' ? latestProposal.targetPath : '',
-      latestProposalStatus: typeof latestProposal?.status === 'string' ? latestProposal.status : '',
-      latestReviewStatus: typeof latestReview?.status === 'string' ? latestReview.status : '',
-      latestReviewProposalId: typeof latestReview?.proposalId === 'string' ? latestReview.proposalId : ''
-    }
+      mirroredWatchlistSnapshotCount: watchlistSnapshotCount
+    } : null
   };
 }
 
-function sortByIsoDesc(rows: Array<Record<string, unknown>>, ...keys: string[]) {
-  return [...rows].sort((left, right) => {
-    const leftIso = keys.map((key) => String(left[key] ?? '')).find((value) => value.length > 0) ?? '';
-    const rightIso = keys.map((key) => String(right[key] ?? '')).find((value) => value.length > 0) ?? '';
-
-    return rightIso.localeCompare(leftIso);
-  });
+async function readResearchSummary() {
+  const store = new StrategyResearchStore(join(STATE_ROOT_DIR, 'research', 'research.sqlite'), true);
+  try {
+    await store.open();
+    return store.status();
+  } catch {
+    return null;
+  } finally {
+    store.close();
+  }
 }
 
 type PositionResponse = Array<{
