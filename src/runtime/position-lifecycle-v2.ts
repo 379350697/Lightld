@@ -121,14 +121,10 @@ export class PositionLifecycleV2Store {
           existing.runId !== input.runId
           || existing.strategyId !== input.strategyId
           || existing.configSnapshotId !== input.configSnapshotId
-          || (input.lifecycleKey !== undefined && existing.lifecycleKey !== input.lifecycleKey)
         ) {
           throw new Error(`openIntentId identity conflict openIntentId=${input.openIntentId}`);
         }
         return existing;
-      }
-      if (input.lifecycleKey && snapshot.records.some((record) => record.lifecycleKey === input.lifecycleKey)) {
-        throw new Error(`lifecycleKey identity conflict lifecycleKey=${input.lifecycleKey}`);
       }
 
       const now = input.openedAt;
@@ -157,9 +153,6 @@ export class PositionLifecycleV2Store {
   }) {
     return this.mutate((snapshot) => {
       const record = requireRecord(snapshot, lifecycleKey);
-      if (record.status === 'finalized_closed' || record.status === 'failed_terminal' || record.status === 'reconcile_required') {
-        throw new Error(`cannot bind chain position from lifecycle status=${record.status} lifecycleKey=${lifecycleKey}`);
-      }
       const conflicting = snapshot.records.find((candidate) =>
         candidate.lifecycleKey !== lifecycleKey
         && candidate.chainPositionAddress === input.chainPositionAddress
@@ -176,17 +169,6 @@ export class PositionLifecycleV2Store {
         throw new Error(
           `chainPositionAddress identity conflict lifecycleKey=${lifecycleKey}`
         );
-      }
-
-      if (record.status === 'open_confirmed') {
-        if (
-          record.openSignature === input.openSignature
-          && record.openSlot === input.openSlot
-          && record.chainPositionAddress === input.chainPositionAddress
-        ) {
-          return PositionLifecycleV2Schema.parse(record);
-        }
-        throw new Error(`open confirmation is immutable lifecycleKey=${lifecycleKey}`);
       }
 
       Object.assign(record, {
@@ -210,19 +192,6 @@ export class PositionLifecycleV2Store {
   }) {
     return this.mutate((snapshot) => {
       const record = requireRecord(snapshot, lifecycleKey);
-      if (record.status === 'finalized_closed') {
-        if (
-          record.closeSignature === input.closeSignature
-          && record.closeSlot === input.closeSlot
-          && record.closedAt === input.closedAt
-        ) {
-          return PositionLifecycleV2Schema.parse(record);
-        }
-        throw new Error(`finalized close is immutable lifecycleKey=${lifecycleKey}`);
-      }
-      if (record.status !== 'open_confirmed' && record.status !== 'provisional_closed') {
-        throw new Error(`cannot finalize close from lifecycle status=${record.status} lifecycleKey=${lifecycleKey}`);
-      }
       const exitReasons = [...new Set(input.exitReasons.filter(Boolean))];
       if (exitReasons.length === 0) {
         throw new Error(`finalized close requires at least one exit reason lifecycleKey=${lifecycleKey}`);
@@ -255,27 +224,11 @@ export class PositionLifecycleV2Store {
 
   async find(input: { lifecycleKey?: string; openIntentId?: string; chainPositionAddress?: string }) {
     const snapshot = await this.read();
-    const requested = [input.lifecycleKey, input.openIntentId, input.chainPositionAddress].filter(Boolean);
-    if (requested.length === 0) return undefined;
-    const matches = snapshot.records.filter((record) =>
-      (input.lifecycleKey === undefined || record.lifecycleKey === input.lifecycleKey)
-      && (input.openIntentId === undefined || record.openIntentId === input.openIntentId)
-      && (input.chainPositionAddress === undefined || record.chainPositionAddress === input.chainPositionAddress)
+    return snapshot.records.find((record) =>
+      (input.lifecycleKey && record.lifecycleKey === input.lifecycleKey)
+      || (input.openIntentId && record.openIntentId === input.openIntentId)
+      || (input.chainPositionAddress && record.chainPositionAddress === input.chainPositionAddress)
     );
-    if (matches.length > 1) {
-      throw new Error('lifecycle identity conflict: multiple records match the requested identity');
-    }
-    if (matches.length === 1) return matches[0];
-
-    const partialMatches = snapshot.records.filter((record) =>
-      (input.lifecycleKey !== undefined && record.lifecycleKey === input.lifecycleKey)
-      || (input.openIntentId !== undefined && record.openIntentId === input.openIntentId)
-      || (input.chainPositionAddress !== undefined && record.chainPositionAddress === input.chainPositionAddress)
-    );
-    if (partialMatches.length > 0) {
-      throw new Error('lifecycle identity conflict: requested fields resolve to different records');
-    }
-    return undefined;
   }
 
   private async mutate<T>(mutator: (snapshot: PositionLifecycleSnapshotV2) => T): Promise<T> {

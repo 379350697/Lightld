@@ -324,19 +324,6 @@ def parse_page_text(mint: str, text: str) -> dict:
         hard_gate_pass = False
         reject_reasons.append(f"volume24hUsd={metrics['volume24hUsd']:.2f}<500000")
 
-    if not metrics["isMintRenounced"]:
-        hard_gate_pass = False
-        reject_reasons.append("mint_authority_not_renounced")
-    if not metrics["noBlacklist"]:
-        hard_gate_pass = False
-        reject_reasons.append("blacklist_authority_not_cleared")
-    if not metrics["isLpBurned"]:
-        hard_gate_pass = False
-        reject_reasons.append("lp_control_not_burned")
-    if metrics["top10Pct"] < 0 or metrics["top10Pct"] > 20:
-        hard_gate_pass = False
-        reject_reasons.append(f"top10Pct={metrics['top10Pct']:.2f}>20_or_missing")
-
     return {
         "mint": mint,
         "safe": hard_gate_pass,

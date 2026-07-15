@@ -6,27 +6,6 @@ import {
 } from '../../../src/evolution';
 import type { LifecycleAccountingClosureV2 } from '../../../src/runtime/ledger-event-v2';
 
-const partialClosure: LifecycleAccountingClosureV2 = {
-  schemaVersion: 2,
-  lifecycleKey: 'lifecycle-1',
-  lifecycleStatus: 'finalized_closed',
-  finalizedEventCount: 1,
-  provisionalEventCount: 0,
-  rolledBackEventCount: 0,
-  compensationEventCount: 0,
-  balanceDeltaByAssetRaw: { SOL: '1000', 'mint-1': '0' },
-  residualAssetDeltas: [],
-  totalBaseFeeLamports: '5000',
-  totalPriorityFeeLamports: '0',
-  totalJitoTipLamports: '0',
-  totalRentLamports: '0',
-  totalFailedTransactionCostLamports: '0',
-  allAssetsClosed: true,
-  formalAccountingReady: false,
-  valuationConfidence: 'partial',
-  blockingReasons: ['fee_attribution_partial']
-};
-
 function researchGradeOutcome(overrides: Partial<LiveCycleOutcomeRecord> = {}): LiveCycleOutcomeRecord {
   return {
     schemaVersion: 2,
@@ -39,7 +18,6 @@ function researchGradeOutcome(overrides: Partial<LiveCycleOutcomeRecord> = {}): 
     exitReasons: ['lp-stop-loss', 'lp-range-exit:above:9'],
     primaryReason: 'lp-stop-loss',
     evidenceStatus: 'partial',
-    lifecycleAccountingClosure: partialClosure,
     cycleId: 'cycle-1',
     strategyId: 'new-token-v1',
     recordedAt: '2026-07-10T02:00:00.000Z',

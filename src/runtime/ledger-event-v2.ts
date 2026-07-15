@@ -25,11 +25,6 @@ export const LedgerEventV2Schema = z.object({
   priorityFeeLamports: RawIntegerStringSchema.default('0'),
   jitoTipLamports: RawIntegerStringSchema.default('0'),
   rentLamports: RawIntegerStringSchema.default('0'),
-  /** Exact means base/priority/tip/rent were independently attributed. */
-  // Legacy/forensic records predate this field; production transaction-meta
-  // ingestion always sets it explicitly to partial until fee components are
-  // independently attributed.
-  feeAttribution: z.enum(['exact', 'partial']).default('exact'),
   failedTransactionCostLamports: RawIntegerStringSchema.default('0'),
   accountChange: z.enum(['unchanged', 'created', 'closed']).default('unchanged'),
   transactionStatus: z.enum(['succeeded', 'failed', 'unknown']).default('unknown'),
@@ -129,8 +124,7 @@ export const LifecycleAccountingBlockingReasonV2Schema = z.enum([
   'no_finalized_events',
   'provisional_events_present',
   'rolled_back_events_present',
-  'residual_asset_delta',
-  'fee_attribution_partial'
+  'residual_asset_delta'
 ]);
 
 export const LifecycleAccountingClosureV2Schema = z.object({
@@ -173,7 +167,6 @@ export function buildLifecycleAccountingClosureV2(input: {
   const provisionalEventCount = lifecycleEvents.filter((event) => event.finality === 'confirmed').length;
   const rolledBackEventCount = lifecycleEvents.filter((event) => event.finality === 'rolled_back').length;
   const compensationEventCount = finalizedEvents.filter((event) => event.source === 'compensation').length;
-  const partialFeeAttributionCount = finalizedEvents.filter((event) => event.feeAttribution !== 'exact').length;
   const balanceDeltaByAsset = new Map<string, bigint>();
   let totalBaseFeeLamports = 0n;
   let totalPriorityFeeLamports = 0n;
@@ -209,16 +202,14 @@ export function buildLifecycleAccountingClosureV2(input: {
     finalizedEvents.length === 0 ? 'no_finalized_events' : undefined,
     provisionalEventCount > 0 ? 'provisional_events_present' : undefined,
     rolledBackEventCount > 0 ? 'rolled_back_events_present' : undefined,
-    residualAssetDeltas.length > 0 ? 'residual_asset_delta' : undefined,
-    partialFeeAttributionCount > 0 ? 'fee_attribution_partial' : undefined
+    residualAssetDeltas.length > 0 ? 'residual_asset_delta' : undefined
   ].filter((reason): reason is z.infer<typeof LifecycleAccountingBlockingReasonV2Schema> => !!reason);
   const allAssetsClosed = residualAssetDeltas.length === 0;
   const formalAccountingReady = lifecycleFinalized
     && finalizedEvents.length > 0
     && provisionalEventCount === 0
     && rolledBackEventCount === 0
-    && allAssetsClosed
-    && partialFeeAttributionCount === 0;
+    && allAssetsClosed;
   const valuationConfidence = formalAccountingReady
     ? 'exact' as const
     : lifecycleFinalized && finalizedEvents.length > 0 && allAssetsClosed

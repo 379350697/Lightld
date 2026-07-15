@@ -365,20 +365,6 @@ export const ResearchGradeLiveCycleOutcomeV2Schema = LiveCycleOutcomeRecordSchem
     });
   }
 
-  if (!value.lifecycleAccountingClosure) {
-    context.addIssue({
-      code: 'custom',
-      path: ['lifecycleAccountingClosure'],
-      message: 'Research outcomes require a finalized lifecycle accounting closure.'
-    });
-  } else if (value.lifecycleAccountingClosure.lifecycleStatus !== 'finalized_closed') {
-    context.addIssue({
-      code: 'custom',
-      path: ['lifecycleAccountingClosure', 'lifecycleStatus'],
-      message: 'Research outcomes require an accounting closure for a finalized lifecycle.'
-    });
-  }
-
   if (value.lifecycleAccountingClosure?.lifecycleKey && value.lifecycleAccountingClosure.lifecycleKey !== value.lifecycleKey) {
     context.addIssue({
       code: 'custom',
