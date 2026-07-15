@@ -1,10 +1,7 @@
 import { join } from 'node:path';
 
 import { loadStrategyConfig } from '../config/loader.ts';
-import {
-  ResearchGradeLiveCycleOutcomeV2Schema,
-  type LiveCycleOutcomeRecord
-} from '../evolution/index.ts';
+import type { LiveCycleOutcomeRecord } from '../evolution/index.ts';
 import {
   buildCycleRunMirrorPayload,
   buildOrderMirrorPayload,
@@ -59,7 +56,6 @@ import {
   buildProfessionalOrderIntent,
   type ProfessionalRunBinding
 } from './professional-order-intent.ts';
-import type { LifecycleAccountingClosureV2 } from './ledger-event-v2.ts';
 import type { RiskLimitsV2 } from '../risk/risk-policy-v2.ts';
 import type { RiskStateV2 } from '../risk/risk-state-v2.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
@@ -176,13 +172,6 @@ export type LiveCycleInput = {
   spendingLimitsConfig?: SpendingLimitsConfig;
   evolutionSink?: {
     appendOutcome(record: LiveCycleOutcomeRecord): Promise<void>;
-  };
-  lifecycleAccountingClosureProvider?: {
-    buildClosure(input: {
-      lifecycleKey: string;
-      lifecycleStatus: string;
-      ignoredResidualAssets?: string[];
-    }): Promise<LifecycleAccountingClosureV2 | undefined>;
   };
   evolutionWatchlistCandidates?: Array<{
     tokenMint: string;
@@ -413,8 +402,6 @@ async function appendEvolutionOutcomeBestEffort(input: {
   quote?: SolExitQuote;
   finality: 'finalized';
   exitReasons?: string[];
-  lifecycleAccountingClosureProvider?: LiveCycleInput['lifecycleAccountingClosureProvider'];
-  requireResearchGradeV2?: boolean;
 }) {
   if (!input.sink) {
     return;
@@ -473,33 +460,15 @@ async function appendEvolutionOutcomeBestEffort(input: {
     );
     const v2IdentityReady = Boolean(
       boundLedgerRecord?.lifecycleKey
-      && boundLedgerRecord.runId
       && boundLedgerRecord.configSnapshotId
-      && boundLedgerRecord.openIntentId
       && boundChainPositionAddress
     );
     const exitReasons = [...new Set([
       ...(input.exitReasons ?? []),
       input.actualExitReason
     ].filter(Boolean))];
-    const evidenceStatus = v2IdentityReady
-      ? resolveOutcomeEvidenceStatus(exitMetrics, input.confirmedFill)
-      : undefined;
-    let lifecycleAccountingClosure: LifecycleAccountingClosureV2 | undefined;
-    if (v2IdentityReady && input.lifecycleAccountingClosureProvider && boundLedgerRecord?.lifecycleKey) {
-      try {
-        lifecycleAccountingClosure = await input.lifecycleAccountingClosureProvider.buildClosure({
-          lifecycleKey: boundLedgerRecord.lifecycleKey,
-          lifecycleStatus: 'finalized_closed'
-        });
-      } catch (error) {
-        console.warn(
-          `[LiveCycle] Lifecycle accounting closure unavailable; continuing with schema gate: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
 
-    const outcomeRecord: LiveCycleOutcomeRecord = {
+    await input.sink.appendOutcome({
       schemaVersion: v2IdentityReady ? 2 : 1,
       lifecycleKey: v2IdentityReady ? boundLedgerRecord?.lifecycleKey : undefined,
       runId: v2IdentityReady ? boundLedgerRecord?.runId : undefined,
@@ -509,8 +478,9 @@ async function appendEvolutionOutcomeBestEffort(input: {
       finality: v2IdentityReady ? input.finality : undefined,
       exitReasons: v2IdentityReady ? exitReasons : undefined,
       primaryReason: v2IdentityReady ? exitReasons[0] : undefined,
-      evidenceStatus,
-      lifecycleAccountingClosure,
+      evidenceStatus: v2IdentityReady
+        ? resolveOutcomeEvidenceStatus(exitMetrics, input.confirmedFill)
+        : undefined,
       cycleId: input.logContext.cycleId,
       strategyId: input.logContext.strategyId,
       recordedAt,
@@ -541,13 +511,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
       liveOrderSubmitted: input.liveOrderSubmitted,
       parameterSnapshot,
       exitMetrics
-    };
-
-    if (input.requireResearchGradeV2 || outcomeRecord.schemaVersion === 2) {
-      ResearchGradeLiveCycleOutcomeV2Schema.parse(outcomeRecord);
-    }
-
-    await input.sink.appendOutcome(outcomeRecord);
+    });
   } catch (error) {
     console.warn(
       `[LiveCycle] Evolution outcome persistence failed; continuing without research evidence: ${error instanceof Error ? error.message : String(error)}`
@@ -4712,9 +4676,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       requestedPositionSol,
       quote,
       finality: 'finalized',
-      exitReasons: engineResult.audit.reasons,
-      lifecycleAccountingClosureProvider: input.lifecycleAccountingClosureProvider,
-      requireResearchGradeV2: professionalMode !== 'mechanical-soak'
+      exitReasons: engineResult.audit.reasons
     });
   }
 

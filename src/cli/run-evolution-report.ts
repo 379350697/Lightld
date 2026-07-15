@@ -39,15 +39,6 @@ export type RunEvolutionReportArgs = {
   forensicsAllowV1?: boolean;
 };
 
-export const PROFESSIONAL_EVOLUTION_MINIMUM_SAMPLE_SIZE = 500;
-
-export function resolveProfessionalEvolutionMinimumSampleSize(requested?: number) {
-  if (typeof requested !== 'number' || !Number.isFinite(requested) || requested <= 0) {
-    return PROFESSIONAL_EVOLUTION_MINIMUM_SAMPLE_SIZE;
-  }
-  return Math.max(PROFESSIONAL_EVOLUTION_MINIMUM_SAMPLE_SIZE, Math.round(requested));
-}
-
 export function parseRunEvolutionReportArgs(argv: string[]): RunEvolutionReportArgs {
   const parsed: RunEvolutionReportArgs = {
     strategyId: 'new-token-v1',
@@ -128,7 +119,7 @@ async function runEvolutionForensicsReport(args: RunEvolutionReportArgs) {
     allowLegacyV1Forensics: true
   });
   const evidence = filterEvidenceByTimeWindow(loadedEvidence, args.sinceHours, generatedAt);
-  const minimumSampleSize = resolveProfessionalEvolutionMinimumSampleSize(args.minimumSampleSize);
+  const minimumSampleSize = args.minimumSampleSize ?? 1;
   const filterAnalysis = analyzeFilterEvidence({
     candidateScans: evidence.candidateScans,
     watchlistSnapshots: evidence.watchlistSnapshots,

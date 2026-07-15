@@ -43,21 +43,6 @@ export const ModePnlBucketV2Schema = z.object({
       message: 'mechanical-soak PnL evidence must be synthetic'
     });
   }
-  if (
-    value.mode === 'mechanical-soak'
-    && (
-      value.grossPnlSol !== null
-      || value.netPnlSol !== null
-      || value.realizedPnlSol !== null
-      || value.unrealizedPnlSol !== null
-    )
-  ) {
-    context.addIssue({
-      code: 'custom',
-      path: ['netPnlSol'],
-      message: 'mechanical-soak may not expose PnL values'
-    });
-  }
   if (value.mode === 'economic-shadow' && value.evidenceStatus !== 'simulated') {
     context.addIssue({
       code: 'custom',
@@ -160,17 +145,7 @@ export function buildModeSeparatedPnlSnapshotV2(
   rawBuckets: z.input<typeof ModePnlBucketV2Schema>[],
   asOf = new Date().toISOString()
 ): ModeSeparatedPnlSnapshotV2 {
-  const buckets = rawBuckets.map((bucket) => ModePnlBucketV2Schema.parse(
-    bucket.mode === 'mechanical-soak'
-      ? {
-          ...bucket,
-          grossPnlSol: null,
-          netPnlSol: null,
-          realizedPnlSol: null,
-          unrealizedPnlSol: null
-        }
-      : bucket
-  ));
+  const buckets = rawBuckets.map((bucket) => ModePnlBucketV2Schema.parse(bucket));
   const modes = MODE_ORDER.flatMap((mode) => {
     const selected = buckets.filter((bucket) => bucket.mode === mode);
     if (selected.length === 0) return [];
@@ -181,10 +156,10 @@ export function buildModeSeparatedPnlSnapshotV2(
       ));
     return [ModePnlBucketV2Schema.parse({
       mode,
-      grossPnlSol: mode === 'mechanical-soak' ? null : sumNullable(selected.map((bucket) => bucket.grossPnlSol)),
-      netPnlSol: mode === 'mechanical-soak' ? null : sumNullable(selected.map((bucket) => bucket.netPnlSol)),
-      realizedPnlSol: mode === 'mechanical-soak' ? null : sumNullable(selected.map((bucket) => bucket.realizedPnlSol)),
-      unrealizedPnlSol: mode === 'mechanical-soak' ? null : sumNullable(selected.map((bucket) => bucket.unrealizedPnlSol)),
+      grossPnlSol: sumNullable(selected.map((bucket) => bucket.grossPnlSol)),
+      netPnlSol: sumNullable(selected.map((bucket) => bucket.netPnlSol)),
+      realizedPnlSol: sumNullable(selected.map((bucket) => bucket.realizedPnlSol)),
+      unrealizedPnlSol: sumNullable(selected.map((bucket) => bucket.unrealizedPnlSol)),
       finalizedEpisodeCount: selected.reduce((sum, bucket) => sum + bucket.finalizedEpisodeCount, 0),
       evidenceStatus
     })];

@@ -3289,7 +3289,6 @@ describe('runLiveCycle', () => {
 
   it('binds finalized evolution outcomes to the selected ledger position and entry config', async () => {
     const outcomes: LiveCycleOutcomeRecord[] = [];
-    const closureRequests: Array<{ lifecycleKey: string; lifecycleStatus: string }> = [];
     const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -3315,7 +3314,6 @@ describe('runLiveCycle', () => {
         records: [{
           positionKey: 'chain-position:target-position',
           lifecycleKey: 'lifecycle-target',
-          runId: 'run-target',
           openIntentId: 'open-target',
           positionId: 'target-position',
           chainPositionAddress: 'target-position',
@@ -3343,34 +3341,6 @@ describe('runLiveCycle', () => {
       evolutionSink: {
         appendOutcome: async (record) => {
           outcomes.push(record);
-        }
-      },
-      lifecycleAccountingClosureProvider: {
-        buildClosure: async (request) => {
-          closureRequests.push(request);
-          return {
-            schemaVersion: 2,
-            lifecycleKey: request.lifecycleKey,
-            lifecycleStatus: request.lifecycleStatus,
-            finalizedEventCount: 3,
-            provisionalEventCount: 0,
-            rolledBackEventCount: 0,
-            compensationEventCount: 0,
-            balanceDeltaByAssetRaw: {
-              SOL: '-100000000',
-              'target-mint': '0'
-            },
-            residualAssetDeltas: [],
-            totalBaseFeeLamports: '5000',
-            totalPriorityFeeLamports: '1000',
-            totalJitoTipLamports: '0',
-            totalRentLamports: '2039280',
-            totalFailedTransactionCostLamports: '0',
-            allAssetsClosed: true,
-            formalAccountingReady: true,
-            valuationConfidence: 'exact',
-            blockingReasons: []
-          };
         }
       },
       confirmationProvider: {
@@ -3441,15 +3411,10 @@ describe('runLiveCycle', () => {
     });
 
     expect(result.action).toBe('withdraw-lp');
-    expect(closureRequests).toEqual([{
-      lifecycleKey: 'lifecycle-target',
-      lifecycleStatus: 'finalized_closed'
-    }]);
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({
       schemaVersion: 2,
       lifecycleKey: 'lifecycle-target',
-      runId: 'run-target',
       openIntentId: 'open-target',
       positionId: 'target-position',
       chainPositionAddress: 'target-position',
@@ -3459,12 +3424,7 @@ describe('runLiveCycle', () => {
       configSnapshotId: 'config-at-entry',
       finality: 'finalized',
       lpStopLossNetPnlPctAtEntry: 7,
-      lpTakeProfitNetPnlPctAtEntry: 9,
-      lifecycleAccountingClosure: {
-        lifecycleKey: 'lifecycle-target',
-        formalAccountingReady: true,
-        valuationConfidence: 'exact'
-      }
+      lpTakeProfitNetPnlPctAtEntry: 9
     });
   });
 });

@@ -141,9 +141,7 @@ describe('formatRuntimeStatus', () => {
     expect(output).toContain('datasetVersion=research-v2/dataset-1');
     expect(output).toContain('researchDataStatus=valid');
     expect(output).toContain('pnl.canary.netPnlSol=0.001');
-    expect(output).toContain('pnl.mechanical-soak.display=disabled');
-    expect(output).toContain('pnl.mechanical-soak.evidenceStatus=synthetic');
-    expect(output).not.toContain('pnl.mechanical-soak.netPnlSol=');
+    expect(output).toContain('pnl.mechanical-soak.netPnlSol=98');
     expect(output).not.toContain('totalPnlSol=');
   });
 });

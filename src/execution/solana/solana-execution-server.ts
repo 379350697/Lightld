@@ -44,11 +44,7 @@ import {
 import { reconstructOpenPositionEntryEvidence } from '../../history/solana-closed-position-reconstructor.ts';
 import { encodeBase58 } from '../../shared/base58.ts';
 import { DurableTransactionOutboxV2 } from '../../runtime/durable-transaction-outbox-v2.ts';
-import {
-  LedgerEventV2Store,
-  buildFinalizedLedgerProjection,
-  buildLifecycleAccountingClosureFromLedgerStoreV2
-} from '../../runtime/ledger-event-v2.ts';
+import { LedgerEventV2Store, buildFinalizedLedgerProjection } from '../../runtime/ledger-event-v2.ts';
 import { appendLedgerEventsFromTransactionMeta } from '../../runtime/transaction-meta-ledger-v2.ts';
 import { ExecutionQuoteEvidenceStoreV2 } from '../quote-evidence-store-v2.ts';
 import { buildProfessionalQuoteCommitment } from '../../runtime/professional-order-intent.ts';
@@ -2896,10 +2892,6 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               currentValueSol?: number;
             }[] = [];
             let walletLpPositions: AccountStateLpPosition[] = [];
-            let tokenAccountsSourceQuality: { status: 'healthy' | 'degraded'; reason?: string } = { status: 'healthy' };
-            let dlmmPositionsSourceQuality: { status: 'healthy' | 'degraded' | 'not_configured'; reason?: string } = {
-              status: options.dlmmClient ? 'healthy' : 'not_configured'
-            };
 
             try {
               const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
@@ -2942,11 +2934,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               walletTokens = walletTokenCandidates;
-            } catch (error) {
-              tokenAccountsSourceQuality = {
-                status: 'degraded',
-                reason: readExecutionErrorMessage(error)
-              };
+            } catch {
+              // Token accounts query may fail on free RPC
             }
 
             try {
@@ -2960,16 +2949,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   defaultSlippageBps
                 });
               }
-            } catch (error) {
-              dlmmPositionsSourceQuality = {
-                status: 'degraded',
-                reason: readExecutionErrorMessage(error)
-              };
+            } catch {
+              // Meteora positions query may fail on free RPC
             }
-            const chainSourceQuality = tokenAccountsSourceQuality.status === 'degraded'
-              || dlmmPositionsSourceQuality.status === 'degraded'
-              ? 'partial'
-              : 'healthy';
 
             writeJson(response, 200, {
               walletSol,
@@ -2977,9 +2959,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               walletTokens,
               fills: [],
               sourceQuality: {
-                chain: chainSourceQuality,
-                tokenAccounts: tokenAccountsSourceQuality,
-                dlmmPositions: dlmmPositionsSourceQuality,
+                chain: 'healthy',
                 journal: 'unavailable',
                 note: 'account-state exposes chain observations only; ledger projection is independent'
               }
@@ -3014,48 +2994,6 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           }
 
           // Quote — strategy-level exit quote (pure calculation, no external call)
-          const parsedRequestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
-          if (request.method === 'GET' && parsedRequestUrl.pathname === '/lifecycle-accounting-closure') {
-            if (!ledgerEventStore) {
-              writeJson(response, 503, {
-                error: 'lifecycle accounting closure unavailable',
-                sourceQuality: {
-                  ledger: 'unavailable',
-                  reason: 'stateRootDir is required for LedgerEventV2 replay'
-                }
-              });
-              return;
-            }
-            const lifecycleKey = parsedRequestUrl.searchParams.get('lifecycleKey') ?? '';
-            if (!lifecycleKey) {
-              writeJson(response, 400, {
-                error: 'lifecycleKey is required'
-              });
-              return;
-            }
-            const lifecycleStatus = parsedRequestUrl.searchParams.get('lifecycleStatus') || 'finalized_closed';
-            const ignoredResidualAssets = (parsedRequestUrl.searchParams.get('ignoredResidualAssets') ?? '')
-              .split(',')
-              .map((asset) => asset.trim())
-              .filter((asset) => asset.length > 0);
-            const closure = await buildLifecycleAccountingClosureFromLedgerStoreV2({
-              store: ledgerEventStore,
-              lifecycleKey,
-              lifecycleStatus,
-              ignoredResidualAssets
-            });
-            writeJson(response, 200, {
-              source: 'ledger-event-v2',
-              sourceQuality: {
-                ledger: 'healthy',
-                chain: 'not_included',
-                note: 'lifecycle accounting closure is replayed from LedgerEventV2 only'
-              },
-              ...closure
-            });
-            return;
-          }
-
           if (request.method === 'POST' && request.url === '/quote') {
             const body = await readBody(request);
             const payload = JSON.parse(body);

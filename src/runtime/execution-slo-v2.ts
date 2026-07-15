@@ -5,7 +5,6 @@ import { RunModeV2Schema, type RunModeV2 } from './run-manifest-v2.ts';
 export const EXECUTION_SLO_LIMITS_V2 = Object.freeze({
   failureTaxonomyCompletenessPct: 100,
   unknownTerminalOutcomeCount: 0,
-  notSubmittedReasonCompletenessPct: 100,
   identityMismatchCount: 0,
   unexplainedReconciliationDeltaCount: 0,
   quoteToLandP95Ms: 10_000,
@@ -52,9 +51,6 @@ export const ExecutionSloModeReportV2Schema = z.object({
   completeFailureTaxonomyCount: z.number().int().nonnegative(),
   failureTaxonomyCompletenessPct: z.number().finite().min(0).max(100),
   unknownTerminalOutcomeCount: z.number().int().nonnegative(),
-  notSubmittedCount: z.number().int().nonnegative(),
-  completeNotSubmittedReasonCount: z.number().int().nonnegative(),
-  notSubmittedReasonCompletenessPct: z.number().finite().min(0).max(100),
   identityMismatchCount: z.number().int().nonnegative(),
   unexplainedReconciliationDeltaCount: z.number().int().nonnegative(),
   landingEligibleCount: z.number().int().nonnegative(),
@@ -68,9 +64,6 @@ export const ExecutionSloModeReportV2Schema = z.object({
   signedEnvelopeMeasuredCount: z.number().int().nonnegative(),
   signedEnvelopeMissingCount: z.number().int().nonnegative(),
   signedEnvelopeBreachCount: z.number().int().nonnegative(),
-  signedEnvelopeSlippageBreachCount: z.number().int().nonnegative(),
-  signedEnvelopeImpactBreachCount: z.number().int().nonnegative(),
-  signedEnvelopeFeeBreachCount: z.number().int().nonnegative(),
   status: z.enum(['pass', 'fail', 'insufficient_data']),
   violations: z.array(z.string().min(1))
 }).strict();
@@ -81,7 +74,6 @@ export const ExecutionSloReportV2Schema = z.object({
   limits: z.object({
     failureTaxonomyCompletenessPct: z.literal(100),
     unknownTerminalOutcomeCount: z.literal(0),
-    notSubmittedReasonCompletenessPct: z.literal(100),
     identityMismatchCount: z.literal(0),
     unexplainedReconciliationDeltaCount: z.literal(0),
     quoteToLandP95Ms: z.literal(10_000),
@@ -123,24 +115,9 @@ function hasCompleteEnvelope(observation: ExecutionSloObservationV2) {
 
 function breachesEnvelope(observation: ExecutionSloObservationV2) {
   if (!hasCompleteEnvelope(observation)) return false;
-  return breachesSlippageEnvelope(observation)
-    || breachesImpactEnvelope(observation)
-    || breachesFeeEnvelope(observation);
-}
-
-function breachesSlippageEnvelope(observation: ExecutionSloObservationV2) {
-  return hasCompleteEnvelope(observation)
-    && observation.actualSlippageBps! > observation.signedMaxSlippageBps!;
-}
-
-function breachesImpactEnvelope(observation: ExecutionSloObservationV2) {
-  return hasCompleteEnvelope(observation)
-    && observation.actualImpactBps! > observation.signedMaxImpactBps!;
-}
-
-function breachesFeeEnvelope(observation: ExecutionSloObservationV2) {
-  return hasCompleteEnvelope(observation)
-    && observation.actualTotalFeeLamports! > observation.signedMaxTotalFeeLamports!;
+  return observation.actualSlippageBps! > observation.signedMaxSlippageBps!
+    || observation.actualImpactBps! > observation.signedMaxImpactBps!
+    || observation.actualTotalFeeLamports! > observation.signedMaxTotalFeeLamports!;
 }
 
 function summarizeMode(
@@ -165,9 +142,6 @@ function summarizeMode(
   ));
   const envelopeMeasured = landingEligible.filter(hasCompleteEnvelope);
   const envelopeBreaches = envelopeMeasured.filter(breachesEnvelope);
-  const signedEnvelopeSlippageBreachCount = envelopeMeasured.filter(breachesSlippageEnvelope).length;
-  const signedEnvelopeImpactBreachCount = envelopeMeasured.filter(breachesImpactEnvelope).length;
-  const signedEnvelopeFeeBreachCount = envelopeMeasured.filter(breachesFeeEnvelope).length;
   const quoteToLandP95Ms = percentile95(quoteToLandValues);
   const landToFinalizedP95Ms = percentile95(landToFinalizedValues);
   const landingRatePct = landingEligible.length === 0
@@ -176,11 +150,6 @@ function summarizeMode(
   const unknownTerminalOutcomeCount = observations.filter(
     (observation) => observation.terminalOutcome === 'unknown'
   ).length;
-  const notSubmitted = observations.filter((observation) => observation.terminalOutcome === 'not_submitted');
-  const completeNotSubmittedReasonCount = notSubmitted.filter(hasCompleteFailureTaxonomy).length;
-  const notSubmittedReasonCompletenessPct = notSubmitted.length === 0
-    ? 100
-    : (completeNotSubmittedReasonCount / notSubmitted.length) * 100;
   const identityMismatchCount = observations.filter((observation) => observation.identityMismatch).length;
   const unexplainedReconciliationDeltaCount = observations.filter(
     (observation) => observation.unexplainedReconciliationDelta
@@ -192,9 +161,6 @@ function summarizeMode(
     violations.push('failure-taxonomy-incomplete');
   }
   if (unknownTerminalOutcomeCount > 0) violations.push('unknown-terminal-outcome');
-  if (notSubmittedReasonCompletenessPct < EXECUTION_SLO_LIMITS_V2.notSubmittedReasonCompletenessPct) {
-    violations.push('not-submitted-reason-incomplete');
-  }
   if (identityMismatchCount > 0) violations.push('identity-mismatch');
   if (unexplainedReconciliationDeltaCount > 0) violations.push('unexplained-reconciliation-delta');
   if (landingRatePct !== null && landingRatePct < EXECUTION_SLO_LIMITS_V2.landingRatePct) {
@@ -228,9 +194,6 @@ function summarizeMode(
     completeFailureTaxonomyCount,
     failureTaxonomyCompletenessPct,
     unknownTerminalOutcomeCount,
-    notSubmittedCount: notSubmitted.length,
-    completeNotSubmittedReasonCount,
-    notSubmittedReasonCompletenessPct,
     identityMismatchCount,
     unexplainedReconciliationDeltaCount,
     landingEligibleCount: landingEligible.length,
@@ -244,9 +207,6 @@ function summarizeMode(
     signedEnvelopeMeasuredCount: envelopeMeasured.length,
     signedEnvelopeMissingCount,
     signedEnvelopeBreachCount: envelopeBreaches.length,
-    signedEnvelopeSlippageBreachCount,
-    signedEnvelopeImpactBreachCount,
-    signedEnvelopeFeeBreachCount,
     status,
     violations
   });

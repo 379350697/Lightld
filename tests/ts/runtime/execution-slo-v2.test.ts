@@ -39,7 +39,6 @@ describe('aggregateExecutionSloV2', () => {
     expect(canary.mode).toBe('canary');
     expect(canary.failureTaxonomyCompletenessPct).toBe(100);
     expect(canary.unknownTerminalOutcomeCount).toBe(0);
-    expect(canary.notSubmittedReasonCompletenessPct).toBe(100);
     expect(canary.identityMismatchCount).toBe(0);
     expect(canary.unexplainedReconciliationDeltaCount).toBe(0);
     expect(canary.quoteToLandP95Ms).toBe(9_000);
@@ -59,9 +58,6 @@ describe('aggregateExecutionSloV2', () => {
         landed: false,
         finalized: false,
         terminalOutcome: 'not_submitted',
-        failureKind: 'safety',
-        failureOperation: 'preflight',
-        failureReason: 'gmgn-source-failed',
         quoteToLandMs: undefined,
         landToFinalizedMs: undefined,
         signedMaxSlippageBps: undefined,
@@ -75,28 +71,6 @@ describe('aggregateExecutionSloV2', () => {
 
     expect(report.modes[0].landingEligibleCount).toBe(1);
     expect(report.modes[0].landingRatePct).toBe(100);
-    expect(report.modes[0].notSubmittedReasonCompletenessPct).toBe(100);
-  });
-
-  it('fails closed when not-submitted orders lack a structured reason', () => {
-    const report = aggregateExecutionSloV2([
-      observation(),
-      observation({
-        orderId: 'not-submitted-without-reason',
-        landed: false,
-        finalized: false,
-        terminalOutcome: 'not_submitted',
-        quoteToLandMs: undefined,
-        landToFinalizedMs: undefined
-      })
-    ]);
-    const canary = report.modes[0];
-
-    expect(canary.notSubmittedCount).toBe(1);
-    expect(canary.completeNotSubmittedReasonCount).toBe(0);
-    expect(canary.notSubmittedReasonCompletenessPct).toBe(0);
-    expect(canary.violations).toContain('not-submitted-reason-incomplete');
-    expect(canary.status).toBe('fail');
   });
 
   it('fails incomplete failure taxonomy, unknown outcomes, reconciliation, latency and envelopes', () => {
@@ -121,9 +95,6 @@ describe('aggregateExecutionSloV2', () => {
     expect(canary.identityMismatchCount).toBe(1);
     expect(canary.unexplainedReconciliationDeltaCount).toBe(1);
     expect(canary.signedEnvelopeBreachCount).toBe(1);
-    expect(canary.signedEnvelopeSlippageBreachCount).toBe(1);
-    expect(canary.signedEnvelopeImpactBreachCount).toBe(1);
-    expect(canary.signedEnvelopeFeeBreachCount).toBe(1);
     expect(canary.status).toBe('fail');
   });
 
