@@ -22,7 +22,6 @@ export {
   type HorizonObservationClassificationV2
 } from './executable-mark.ts';
 export {
-  CandidateOpportunityObservationV2Store,
   ExecutableMarkV2Store,
   ExperimentRegistryV2Store,
   OpportunityEpisodeV2Store,
