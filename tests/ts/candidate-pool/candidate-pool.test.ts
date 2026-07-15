@@ -70,7 +70,7 @@ describe('candidate pool aggregation', () => {
       strategyId: 'new-token-v1',
       candidate: makeCandidate(),
       now: new Date('2026-06-21T10:00:00.000Z'),
-      observations: [observation('meteora'), observation('jupiter_route'), observation('gmgn')]
+      observations: [observation('meteora'), observation('jupiter_route')]
     });
 
     expect(entry.status).toBe('openable');
@@ -78,7 +78,7 @@ describe('candidate pool aggregation', () => {
     expect(entry.blockReason).toBe('');
   });
 
-  it('fails closed when the security source is missing', () => {
+  it('lets a missing GMGN soft source leave a hard-source candidate openable', () => {
     const entry = deriveCandidatePoolEntry({
       strategyId: 'new-token-v1',
       candidate: makeCandidate(),
@@ -86,9 +86,7 @@ describe('candidate pool aggregation', () => {
       observations: [observation('meteora'), observation('jupiter_route')]
     });
 
-    expect(entry.status).toBe('source_unavailable');
-    expect(entry.openable).toBe(false);
-    expect(entry.blockReason).toBe('missing-security-source');
+    expect(entry.status).toBe('openable');
   });
 
   it('marks LP-eligible candidates eligible until Jupiter route is fresh', () => {
@@ -104,7 +102,7 @@ describe('candidate pool aggregation', () => {
     expect(entry.blockReason).toBe('missing-jupiter_route');
   });
 
-  it('blocks on fresh explicit and stale GMGN security results', () => {
+  it('blocks on a fresh explicit GMGN rejection but ignores stale GMGN rejections', () => {
     const blocked = deriveCandidatePoolEntry({
       strategyId: 'new-token-v1',
       candidate: makeCandidate(),
@@ -132,33 +130,7 @@ describe('candidate pool aggregation', () => {
 
     expect(blocked.status).toBe('blocked');
     expect(blocked.blockReason).toContain('gmgn:holders=0<=1000');
-    expect(staleGmgn.status).toBe('stale');
-    expect(staleGmgn.openable).toBe(false);
-    expect(staleGmgn.blockReason).toBe('stale-gmgn');
-  });
-
-  it('allows a fresh chain safety source but does not let stale GMGN shorten freshness', () => {
-    const entry = deriveCandidatePoolEntry({
-      strategyId: 'new-token-v1',
-      candidate: makeCandidate(),
-      now: new Date('2026-06-21T10:00:00.000Z'),
-      observations: [
-        observation('meteora', { expiresAt: '2026-06-21T10:01:00.000Z' }),
-        observation('jupiter_route', { expiresAt: '2026-06-21T10:01:00.000Z' }),
-        observation('gmgn', {
-          status: 'stale',
-          expiresAt: '2026-06-21T09:59:00.000Z'
-        }),
-        observation('chain_fast_safety', {
-          score: 72,
-          expiresAt: '2026-06-21T10:00:30.000Z'
-        })
-      ]
-    });
-
-    expect(entry.status).toBe('openable');
-    expect(entry.candidate.safetyScore).toBe(72);
-    expect(entry.freshnessExpiresAt).toBe('2026-06-21T10:00:30.000Z');
+    expect(staleGmgn.status).toBe('openable');
   });
 
   it('blocks bad pool fee yield profiles without making fee yield a hard dependency', () => {
@@ -169,7 +141,6 @@ describe('candidate pool aggregation', () => {
       observations: [
         observation('meteora'),
         observation('jupiter_route'),
-        observation('gmgn'),
         observation('pool_fee_yield', {
           status: 'deferred',
           score: 0,
@@ -184,7 +155,6 @@ describe('candidate pool aggregation', () => {
       observations: [
         observation('meteora'),
         observation('jupiter_route'),
-        observation('gmgn'),
         observation('pool_fee_yield', {
           status: 'blocked',
           score: 0,
@@ -200,7 +170,6 @@ describe('candidate pool aggregation', () => {
       observations: [
         observation('meteora'),
         observation('jupiter_route'),
-        observation('gmgn'),
         observation('pool_fee_yield', {
           status: 'blocked',
           score: 0,
@@ -265,44 +234,12 @@ describe('candidate pool aggregation', () => {
       now,
       observations: [
         buildMeteoraObservation({ strategyId: 'new-token-v1', candidate, now, ttlMs: 60_000 }),
-        buildRouteObservation({ strategyId: 'new-token-v1', candidate, now, ttlMs: 60_000, routeExists: true }),
-        observation('gmgn')
+        buildRouteObservation({ strategyId: 'new-token-v1', candidate, now, ttlMs: 60_000, routeExists: true })
       ]
     });
 
     expect(entry.status).toBe('openable');
-    expect(entry.openable).toBe(true);
-    expect(entry.score).toBeLessThanOrEqual(230);
-    expect(entry.candidate.feeYieldScore).toBeLessThanOrEqual(40);
-  });
-
-  it('keeps composite selection score separate from raw safety score components', () => {
-    const candidate = makeCandidate({
-      poolFeeYieldScore: 22,
-      auxSignalScore: 7,
-      auxiliaryScore: 7
-    });
-    const entry = deriveCandidatePoolEntry({
-      strategyId: 'new-token-v1',
-      candidate,
-      now: new Date('2026-06-21T10:00:00.000Z'),
-      observations: [
-        observation('meteora', { score: 11 }),
-        observation('jupiter_route', { score: 12 }),
-        observation('gmgn', { score: 64 }),
-        observation('pool_fee_yield', { score: 18 })
-      ]
-    });
-
-    expect(entry.status).toBe('openable');
-    expect(entry.openable).toBe(true);
-    expect(entry.score).toBeGreaterThan(entry.candidate.safetyScore ?? 0);
-    expect(entry.candidate.safetyScore).toBe(64);
-    expect(entry.candidate.liquidityScore).toBe(11);
-    expect(entry.candidate.executionScore).toBe(12);
-    expect(entry.candidate.feeYieldScore).toBe(70);
-    expect(entry.candidate.auxiliaryScore).toBe(7);
-    expect(entry.candidate.selectionScore).toBe(entry.score);
+    expect(entry.score).toBeLessThanOrEqual(150);
   });
 });
 
@@ -317,7 +254,7 @@ describe('SqliteCandidatePool', () => {
       strategyId: 'new-token-v1',
       candidate: makeCandidate(),
       observedAt: '2026-06-21T10:00:00.000Z',
-      sourceObservations: [observation('meteora'), observation('jupiter_route'), observation('gmgn')]
+      sourceObservations: [observation('meteora'), observation('jupiter_route')]
     });
 
     await expect(pool.selectOpenableCandidate('new-token-v1', {
@@ -352,50 +289,6 @@ describe('SqliteCandidatePool', () => {
     await pool.close();
   });
 
-  it('returns raw safety components from sqlite instead of reusing composite score', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-candidate-pool-score-components-'));
-    roots.push(root);
-    const path = join(root, 'pool.sqlite');
-    const pool = new SqliteCandidatePool({ path });
-    const candidate = makeCandidate({
-      poolFeeYieldScore: 22,
-      auxSignalScore: 7,
-      auxiliaryScore: 7
-    });
-
-    await pool.upsertCandidate({
-      strategyId: 'new-token-v1',
-      candidate,
-      observedAt: '2026-06-21T10:00:00.000Z',
-      sourceObservations: [
-        observation('meteora', { score: 11 }),
-        observation('jupiter_route', { score: 12 }),
-        observation('gmgn', { score: 64 }),
-        observation('pool_fee_yield', { score: 18 })
-      ]
-    });
-    await pool.writeWorkerStatus({
-      strategyId: 'new-token-v1',
-      status: 'ok',
-      observedAt: '2026-06-21T10:00:00.000Z',
-      expiresAt: '2026-06-21T10:01:00.000Z'
-    });
-
-    const selected = await pool.selectOpenableCandidate('new-token-v1', {
-      now: new Date('2026-06-21T10:00:10.000Z')
-    });
-
-    expect(selected?.score).toBeGreaterThan(selected?.candidate.safetyScore ?? 0);
-    expect(selected?.candidate.safetyScore).toBe(64);
-    expect(selected?.candidate.liquidityScore).toBe(11);
-    expect(selected?.candidate.executionScore).toBe(12);
-    expect(selected?.candidate.feeYieldScore).toBe(70);
-    expect(selected?.candidate.auxiliaryScore).toBe(7);
-    expect(selected?.candidate.selectionScore).toBe(selected?.score);
-
-    await pool.close();
-  });
-
   it('skips only the exact open cooldown target when selecting from the candidate pool', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-candidate-pool-target-cooldown-'));
     roots.push(root);
@@ -413,8 +306,7 @@ describe('SqliteCandidatePool', () => {
       observedAt,
       sourceObservations: [
         observation('meteora', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 }),
-        observation('jupiter_route', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 }),
-        observation('gmgn', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 })
+        observation('jupiter_route', { poolAddress: 'pool-cooldown', tokenMint: 'mint-shared', score: 80 })
       ]
     });
     await pool.upsertCandidate({
@@ -427,8 +319,7 @@ describe('SqliteCandidatePool', () => {
       observedAt,
       sourceObservations: [
         observation('meteora', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 }),
-        observation('jupiter_route', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 }),
-        observation('gmgn', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 })
+        observation('jupiter_route', { poolAddress: 'pool-other', tokenMint: 'mint-shared', score: 10 })
       ]
     });
     await pool.writeWorkerStatus({
@@ -489,7 +380,7 @@ describe('SqliteCandidatePool', () => {
       strategyId: 'new-token-v1',
       candidate: makeCandidate(),
       observedAt: '2026-06-21T10:00:00.000Z',
-      sourceObservations: [observation('meteora'), observation('jupiter_route'), observation('gmgn')]
+      sourceObservations: [observation('meteora'), observation('jupiter_route')]
     });
     await pool.writeWorkerStatus({
       strategyId: 'new-token-v1',
@@ -535,8 +426,7 @@ describe('SqliteCandidatePool', () => {
       observedAt,
       sourceObservations: [
         observation('meteora', { poolAddress: 'pool-stale-current', tokenMint: 'mint-stale-current', observedAt, expiresAt: expiredAt }),
-        observation('jupiter_route', { poolAddress: 'pool-stale-current', tokenMint: 'mint-stale-current', observedAt, expiresAt: expiredAt }),
-        observation('gmgn', { poolAddress: 'pool-stale-current', tokenMint: 'mint-stale-current', observedAt, expiresAt: expiredAt })
+        observation('jupiter_route', { poolAddress: 'pool-stale-current', tokenMint: 'mint-stale-current', observedAt, expiresAt: expiredAt })
       ]
     });
     await pool.upsertCandidate({
@@ -545,8 +435,7 @@ describe('SqliteCandidatePool', () => {
       observedAt,
       sourceObservations: [
         observation('meteora', { poolAddress: 'pool-worker-current', tokenMint: 'mint-worker-current', observedAt, expiresAt: futureAt }),
-        observation('jupiter_route', { poolAddress: 'pool-worker-current', tokenMint: 'mint-worker-current', observedAt, expiresAt: futureAt }),
-        observation('gmgn', { poolAddress: 'pool-worker-current', tokenMint: 'mint-worker-current', observedAt, expiresAt: futureAt })
+        observation('jupiter_route', { poolAddress: 'pool-worker-current', tokenMint: 'mint-worker-current', observedAt, expiresAt: futureAt })
       ]
     });
     await pool.writeWorkerStatus({

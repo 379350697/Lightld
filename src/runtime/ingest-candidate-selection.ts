@@ -59,11 +59,6 @@ export type IngestCandidate = {
   tvlChange1hPct?: number | null;
   feeYieldObservedAt?: string;
   safetyScore?: number;
-  feeYieldScore?: number;
-  liquidityScore?: number;
-  executionScore?: number;
-  auxiliaryScore?: number;
-  selectionScore?: number;
 } & Partial<AuxiliarySignalFields>;
 
 export function countActiveInventoryPositions(accountState: LiveAccountState | undefined) {
@@ -169,8 +164,7 @@ export function selectCandidate(
 }
 
 function resolveNewTokenSelectionScore(candidate: IngestCandidate) {
-  return candidate.selectionScore
-    ?? ((candidate.safetyScore ?? 0) + (candidate.auxiliaryScore ?? candidate.auxSignalScore ?? 0));
+  return (candidate.safetyScore ?? 0) + (candidate.auxSignalScore ?? 0);
 }
 
 export function filterLpEligibleCandidates(
@@ -287,15 +281,10 @@ export async function applySafetyFilter(
 
     const filteredNewEntries = newEntryCandidates
       .filter((candidate) => safeMap.has(candidate.mint))
-      .map((candidate) => {
-        const safetyScore = safeMap.get(candidate.mint) ?? 0;
-        const feeYieldScore = resolveFeeTvlBonus(candidate.feeTvlRatio24h);
-        return {
-          ...candidate,
-          safetyScore,
-          feeYieldScore
-        };
-      });
+      .map((candidate) => ({
+        ...candidate,
+        safetyScore: (safeMap.get(candidate.mint) ?? 0) + resolveFeeTvlBonus(candidate.feeTvlRatio24h)
+      }));
     const filtered = [
       ...existingExposureCandidates,
       ...filteredNewEntries

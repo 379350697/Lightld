@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { appendJsonLine } from '../../../src/journals/jsonl-writer';
 import {
   parseRunEvolutionReportArgs,
-  runLegacyEvolutionReportUnsafeForTesting as runEvolutionReport
+  runEvolutionReport
 } from '../../../src/cli/run-evolution-report';
 import { ApprovalStore, resolveEvolutionPaths } from '../../../src/evolution';
 

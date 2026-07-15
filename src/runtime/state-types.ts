@@ -175,10 +175,6 @@ export type PositionLedgerImportStatus = z.infer<typeof PositionLedgerImportStat
 
 export const PositionLedgerRecordSchema = z.object({
   positionKey: z.string(),
-  lifecycleKey: z.string().optional(),
-  runId: z.string().optional(),
-  configSnapshotId: z.string().optional(),
-  parameterSnapshotAtEntry: z.record(z.string(), z.unknown()).optional(),
   openIntentId: z.string().optional(),
   idempotencyKey: z.string().optional(),
   positionId: z.string().optional(),

@@ -89,7 +89,6 @@ describe('createLocalLiveSignerServer', () => {
     const server = createLocalLiveSignerServer({
       host: '127.0.0.1',
       port: 0,
-      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       keypairPath: keypair.path,
       expectedPublicKey: keypair.publicKey
@@ -138,7 +137,6 @@ describe('createLocalLiveSignerServer', () => {
     const server = createLocalLiveSignerServer({
       host: '127.0.0.1',
       port: 0,
-      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       keypairPath: keypair.path,
       expectedPublicKey: keypair.publicKey
@@ -188,7 +186,6 @@ describe('createLocalLiveSignerServer', () => {
     const server = createLocalLiveSignerServer({
       host: '127.0.0.1',
       port: 0,
-      executionMode: 'mechanical-soak',
       authToken: 'test-token',
       keypairPath: keypair.path,
       expectedPublicKey: keypair.publicKey
@@ -213,43 +210,6 @@ describe('createLocalLiveSignerServer', () => {
     });
 
     expect(response.status).toBe(401);
-    await server.stop();
-  });
-
-  it('rejects V1 signing requests by default outside explicit mechanical-soak mode', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'lightld-local-signer-v1-reject-'));
-    directories.push(root);
-    const keypair = await createSolanaKeypairFile(root);
-    const server = createLocalLiveSignerServer({
-      host: '127.0.0.1',
-      port: 0,
-      authToken: 'test-token',
-      keypairPath: keypair.path,
-      expectedPublicKey: keypair.publicKey
-    });
-
-    await server.start();
-    const response = await fetch(`${server.origin}/sign`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer test-token'
-      },
-      body: JSON.stringify({
-        intent: {
-          strategyId: 'new-token-v1',
-          poolAddress: 'pool-1',
-          outputSol: 0.1,
-          createdAt: '2026-03-24T00:00:00.000Z',
-          idempotencyKey: 'legacy-v1'
-        }
-      })
-    });
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringMatching(/V1.*mechanical-soak/i)
-    });
     await server.stop();
   });
 });

@@ -27,8 +27,6 @@ export type LpExitPolicyConfig = {
 export type LpExitPolicyDecision = {
   action: 'withdraw-lp' | 'claim-fee' | 'rebalance-lp' | 'hold';
   reason: string;
-  reasons?: string[];
-  secondaryReason?: string;
 };
 
 export function buildLpExitPolicyDecision(
@@ -39,33 +37,22 @@ export function buildLpExitPolicyDecision(
     return { action: 'hold', reason: 'lp-position-missing' };
   }
 
-  const withdrawReasons: string[] = [];
-  const addWithdrawReason = (reason: string) => {
-    if (!withdrawReasons.includes(reason)) {
-      withdrawReasons.push(reason);
-    }
-  };
+  if (snapshot.lpRiskIntent === 'range-exit') {
+    return { action: 'withdraw-lp', reason: `lp-range-exit:${snapshot.lpRiskReason ?? 'range-risk'}` };
+  }
 
-  const rangeRiskReason = snapshot.lpRiskIntent === 'range-exit'
-    ? `lp-range-exit:${snapshot.lpRiskReason ?? 'range-risk'}`
-    : snapshot.lpRiskIntent === 'liquidity-exit'
-      ? `lp-liquidity-exit:${snapshot.lpRiskReason ?? 'liquidity-risk'}`
-      : snapshot.lpRiskIntent === 'volatility-exit'
-        ? `lp-volatility-exit:${snapshot.lpRiskReason ?? 'volatility-risk'}`
-        : undefined;
+  if (snapshot.lpRiskIntent === 'liquidity-exit') {
+    return { action: 'withdraw-lp', reason: `lp-liquidity-exit:${snapshot.lpRiskReason ?? 'liquidity-risk'}` };
+  }
 
-  const solDepletionReason = (
-    typeof config.lpSolDepletionExitBins === 'number' &&
-    typeof snapshot.lpSolDepletedBins === 'number' &&
-    snapshot.lpSolDepletedBins >= config.lpSolDepletionExitBins
-  ) || snapshot.lpSolExposureStatus === 'sol-depleted'
-    ? 'lp-sol-nearly-depleted'
-    : undefined;
+  if (snapshot.lpRiskIntent === 'volatility-exit') {
+    return { action: 'withdraw-lp', reason: `lp-volatility-exit:${snapshot.lpRiskReason ?? 'volatility-risk'}` };
+  }
 
   const maxHoldMs = (config.maxHoldHours ?? 18) * 60 * 60 * 1000;
-  const maxHoldReason = typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs
-    ? 'max-hold-with-lp-position'
-    : undefined;
+  if (typeof snapshot.holdTimeMs === 'number' && snapshot.holdTimeMs >= maxHoldMs) {
+    return { action: 'withdraw-lp', reason: 'max-hold-with-lp-position' };
+  }
 
   const pnlValuationReady = !snapshot.valuationStatus || snapshot.valuationStatus === 'ready';
   if (pnlValuationReady && typeof snapshot.lpNetPnlPct === 'number') {
@@ -77,16 +64,12 @@ export function buildLpExitPolicyDecision(
       && snapshot.holdTimeMs >= minHoldMsBeforeTakeProfit;
 
     if (snapshot.lpNetPnlPct <= -stopLoss) {
-      addWithdrawReason('lp-stop-loss');
+      return { action: 'withdraw-lp', reason: 'lp-stop-loss' };
     }
 
     if (snapshot.lpNetPnlPct >= takeProfit && canTakeProfit) {
-      addWithdrawReason('lp-take-profit');
+      return { action: 'withdraw-lp', reason: 'lp-take-profit' };
     }
-  }
-
-  if (rangeRiskReason) {
-    addWithdrawReason(rangeRiskReason);
   }
 
   if (
@@ -94,24 +77,19 @@ export function buildLpExitPolicyDecision(
     typeof snapshot.lpImpermanentLossPct === 'number' &&
     snapshot.lpImpermanentLossPct >= config.lpMaxImpermanentLossPct
   ) {
-    addWithdrawReason('lp-max-impermanent-loss');
+    return { action: 'withdraw-lp', reason: 'lp-max-impermanent-loss' };
   }
 
-  if (solDepletionReason) {
-    addWithdrawReason(solDepletionReason);
+  if (
+    typeof config.lpSolDepletionExitBins === 'number' &&
+    typeof snapshot.lpSolDepletedBins === 'number' &&
+    snapshot.lpSolDepletedBins >= config.lpSolDepletionExitBins
+  ) {
+    return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
   }
 
-  if (maxHoldReason) {
-    addWithdrawReason(maxHoldReason);
-  }
-
-  if (withdrawReasons.length > 0) {
-    return {
-      action: 'withdraw-lp',
-      reason: withdrawReasons[0],
-      reasons: withdrawReasons,
-      secondaryReason: withdrawReasons[1]
-    };
+  if (snapshot.lpSolExposureStatus === 'sol-depleted') {
+    return { action: 'withdraw-lp', reason: 'lp-sol-nearly-depleted' };
   }
 
   if (
@@ -119,12 +97,12 @@ export function buildLpExitPolicyDecision(
     typeof snapshot.lpUnclaimedFeeUsd === 'number' &&
     snapshot.lpUnclaimedFeeUsd >= config.lpClaimFeeThresholdUsd
   ) {
-    return { action: 'claim-fee', reason: 'lp-claim-fee-threshold', reasons: ['lp-claim-fee-threshold'] };
+    return { action: 'claim-fee', reason: 'lp-claim-fee-threshold' };
   }
 
   if (config.lpRebalanceOnOutOfRange && snapshot.lpActiveBinStatus === 'out-of-range') {
-    return { action: 'rebalance-lp', reason: 'lp-out-of-range', reasons: ['lp-out-of-range'] };
+    return { action: 'rebalance-lp', reason: 'lp-out-of-range' };
   }
 
-  return { action: 'hold', reason: 'lp-position-maintain', reasons: ['lp-position-maintain'] };
+  return { action: 'hold', reason: 'lp-position-maintain' };
 }

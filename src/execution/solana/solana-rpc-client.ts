@@ -431,14 +431,6 @@ export class SolanaRpcClient {
     return this.call('getLatestBlockhash', [{ commitment: 'confirmed' }]);
   }
 
-  async getBlockHeight(): Promise<number> {
-    return this.call('getBlockHeight', [{ commitment: 'confirmed' }]);
-  }
-
-  async getSlot(): Promise<number> {
-    return this.call('getSlot', [{ commitment: 'confirmed' }]);
-  }
-
   async getAddressLookupTable(address: string): Promise<AddressLookupTableAccount | null> {
     const result = await this.call<{ value: { data: [string, string] } | null }>(
       'getAccountInfo',

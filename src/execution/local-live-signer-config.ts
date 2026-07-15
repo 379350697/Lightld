@@ -1,12 +1,10 @@
 import { z } from 'zod';
 
 import { resolveEnvPath } from '../shared/env-path.ts';
-import { ExecutionModeSchema } from './live-order-intent-schema.ts';
 
 const LocalLiveSignerConfigSchema = z.object({
   host: z.string().min(1).default('127.0.0.1'),
   port: z.number().int().min(1).max(65535).default(8787),
-  executionMode: ExecutionModeSchema.default('live'),
   keypairPath: z.string().min(1),
   expectedPublicKey: z.string().min(1).optional(),
   signerId: z.string().min(1).optional(),
@@ -20,7 +18,6 @@ export function loadLocalLiveSignerConfig(env: Record<string, string | undefined
   return LocalLiveSignerConfigSchema.parse({
     host: env.LIVE_LOCAL_SIGNER_HOST ?? '127.0.0.1',
     port: env.LIVE_LOCAL_SIGNER_PORT ? Number(env.LIVE_LOCAL_SIGNER_PORT) : 8787,
-    executionMode: env.LIVE_LOCAL_SIGNER_EXECUTION_MODE ?? env.LIGHTLD_EXECUTION_MODE ?? 'live',
     keypairPath: resolveEnvPath(env.LIVE_LOCAL_SIGNER_KEYPAIR_PATH ?? env.SOLANA_KEYPAIR_PATH),
     expectedPublicKey: env.LIVE_LOCAL_SIGNER_EXPECTED_PUBLIC_KEY,
     signerId: env.LIVE_LOCAL_SIGNER_ID,

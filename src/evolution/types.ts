@@ -257,16 +257,6 @@ export const LiveCycleExitMetricsSchema = z.object({
 export type LiveCycleExitMetrics = z.infer<typeof LiveCycleExitMetricsSchema>;
 
 export const LiveCycleOutcomeRecordSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-  lifecycleKey: z.string().optional(),
-  runId: z.string().optional(),
-  configSnapshotId: z.string().optional(),
-  openIntentId: z.string().optional(),
-  chainPositionAddress: z.string().optional(),
-  finality: z.enum(['provisional', 'finalized']).optional(),
-  exitReasons: z.array(z.string()).optional(),
-  primaryReason: z.string().optional(),
-  evidenceStatus: z.enum(['exact', 'partial', 'untrusted']).optional(),
   cycleId: z.string(),
   strategyId: EvolutionStrategyIdSchema,
   recordedAt: z.string(),

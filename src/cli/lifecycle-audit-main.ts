@@ -341,9 +341,8 @@ function findClosedWithPendingSubmissionIssues(ledger: PositionLedgerSnapshot | 
 function findPaperReconcileClosedIssues(ledger: PositionLedgerSnapshot | null): PaperReconcileClosedIssue[] {
   return (ledger?.records ?? [])
     .filter((record) =>
-      (record.lifecycleState === 'open' || record.lifecycleState === 'reconcile_required')
+      record.lifecycleState === 'reconcile_required'
       && isPaperDryRunRecord(record)
-      && !isPaperDryRunOverlayRecord(record)
       && (
         Boolean(record.missingOnChainSince)
         || record.importStatus === 'archived_missing_without_exit_evidence'
@@ -467,20 +466,6 @@ export function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSub
           };
         }
 
-        if (paperReconcileClosedKeys.has(record.positionKey)) {
-          return {
-            ...record,
-            lifecycleState: 'closed' as const,
-            importStatus: 'superseded_closed' as const,
-            lastAction: record.lastAction ?? 'withdraw-lp',
-            lastReason: 'paper-overlay-position-closed',
-            evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
-            missingOnChainSince: undefined,
-            lastClosedAt: record.lastClosedAt ?? now,
-            updatedAt: now
-          };
-        }
-
         if (syntheticLiveWithoutChainKeys.has(record.positionKey)) {
           const isTerminalFailedAttempt = !record.entrySol
             || record.lastReason === 'http-400'
@@ -517,6 +502,20 @@ export function repairLedger(ledger: PositionLedgerSnapshot, pending: PendingSub
             pendingOrderAction: undefined,
             pendingConfirmationStatus: undefined,
             pendingFinality: undefined,
+            updatedAt: now
+          };
+        }
+
+        if (paperReconcileClosedKeys.has(record.positionKey)) {
+          return {
+            ...record,
+            lifecycleState: 'closed' as const,
+            importStatus: 'superseded_closed' as const,
+            lastAction: record.lastAction ?? 'withdraw-lp',
+            lastReason: 'paper-overlay-position-closed',
+            evidenceMissingReason: record.evidenceMissingReason ?? record.lastReason,
+            missingOnChainSince: undefined,
+            lastClosedAt: record.lastClosedAt ?? now,
             updatedAt: now
           };
         }

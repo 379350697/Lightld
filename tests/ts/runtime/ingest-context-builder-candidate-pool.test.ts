@@ -43,11 +43,7 @@ function makeEntry(candidate = makeCandidate()): CandidatePoolEntry {
     blockReason: '',
     freshnessExpiresAt: '2026-06-21T10:01:00.000Z',
     updatedAt: '2026-06-21T10:00:00.000Z',
-    candidate: {
-      safetyScore: 90,
-      selectionScore: 90,
-      ...candidate
-    }
+    candidate
   };
 }
 
@@ -103,29 +99,6 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
 
     expect(result.requestedPositionSol).toBe(1);
     expect(result.context.token?.expectedOutSol).toBe(1);
-  });
-
-  it('uses the candidate safety component, not the composite pool score, for dynamic sizing', async () => {
-    const reader: CandidatePoolReader = {
-      selectOpenableCandidate: vi.fn(async () => makeEntry(makeCandidate({
-        liquidityUsd: 55_000,
-        safetyScore: 68,
-        feeYieldScore: 40,
-        selectionScore: 140
-      })))
-    };
-
-    const result = await buildLiveCycleInputFromIngest({
-      strategy: 'new-token-v1',
-      requestedPositionSol: 0.3,
-      now: new Date('2026-06-21T10:00:00.000Z'),
-      candidatePoolReadEnabled: true,
-      candidatePoolReader: reader
-    });
-
-    expect(result.requestedPositionSol).toBe(0.07);
-    expect(result.context.token?.expectedOutSol).toBe(0.07);
-    expect(result.context.pool?.candidatePoolScore).toBe(90);
   });
 
   it('fails closed for new opens when candidate pool is enabled but unavailable', async () => {

@@ -8,11 +8,7 @@ import { z } from 'zod';
 import { readJsonIfExists, writeJsonAtomically } from '../runtime/atomic-file.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import { verifySignedIntent } from './signed-intent-verifier.ts';
-import {
-  LiveOrderIntentSchema,
-  validateLiveOrderIntentBoundary,
-  type ExecutionMode
-} from './live-order-intent-schema.ts';
+import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
@@ -185,15 +181,12 @@ type SubmissionStore = z.infer<typeof SubmissionStoreSchema>;
 type LocalLiveExecutionServerOptions = {
   host: string;
   port: number;
-  executionMode?: ExecutionMode;
   stateRootDir: string;
   accountStatePath?: string;
   authToken?: string;
   expectedSignerPublicKeys?: string[];
   autoFinalizeAfterMs?: number;
   maxOutputSol?: number;
-  now?: () => Date;
-  getCurrentBlockHeight?: () => number | Promise<number>;
 };
 
 function hashValue(value: string) {
@@ -292,7 +285,6 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
   const store = new LocalExecutionStateStore(options.stateRootDir);
   const expectedSignerPublicKeys = options.expectedSignerPublicKeys ?? [];
   const autoFinalizeAfterMs = options.autoFinalizeAfterMs ?? 5_000;
-  const executionMode = options.executionMode ?? 'live';
   let server: Server | undefined;
   let origin = '';
 
@@ -325,16 +317,6 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
             const body = await readBody(request);
             const payload = z.object({ intent: SignedIntentSchema }).parse(JSON.parse(body));
             verifySignedIntent(payload.intent, expectedSignerPublicKeys);
-            const currentBlockHeight = payload.intent.intent.schemaVersion === 2
-              && executionMode !== 'mechanical-soak'
-              ? await options.getCurrentBlockHeight?.()
-              : undefined;
-            validateLiveOrderIntentBoundary(payload.intent.intent, {
-              mode: executionMode,
-              stage: 'broadcast',
-              now: options.now?.() ?? new Date(),
-              currentBlockHeight
-            });
 
             if (options.maxOutputSol !== undefined) {
               const allowlistResult = validateIntentAllowlist(

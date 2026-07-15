@@ -3,8 +3,6 @@ import { dirname, join } from 'node:path';
 
 import {
   ApprovalStore,
-  DatasetStatusStore,
-  LegacyDatasetRejectedError,
   generatePatchDraft,
   resolveEvolutionPaths,
   type ProposalValidationRecord
@@ -74,10 +72,6 @@ export function parseRunEvolutionApprovalArgs(argv: string[]): RunEvolutionAppro
 export async function runEvolutionApproval(args: RunEvolutionApprovalArgs) {
   const evolutionRootDir = args.evolutionRootDir ?? join(args.stateRootDir, 'evolution');
   const paths = resolveEvolutionPaths(args.strategyId, evolutionRootDir);
-  if (await new DatasetStatusStore(paths.datasetStatusPath).read()) {
-    throw new LegacyDatasetRejectedError();
-  }
-
   const store = new ApprovalStore(paths.approvalQueuePath, {
     decisionLogPath: paths.approvalHistoryPath,
     outcomeLedgerPath: paths.outcomeLedgerPath

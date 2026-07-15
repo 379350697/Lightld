@@ -18,77 +18,40 @@ Set-Location $Root
 & (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root
 
 $Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
-$env:LIGHTLD_EXECUTION_MODE = "mechanical-soak"
 $env:LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL = "1000000"
 $env:LIVE_LOCAL_EXECUTION_MAX_OUTPUT_SOL = "1000000"
 $env:SOLANA_MAX_OUTPUT_SOL = "1000000"
-$env:LIVE_LP_STOP_LOSS_NET_PNL_PCT = "5"
-$env:LIVE_LP_TAKE_PROFIT_NET_PNL_PCT = "5"
-
-function Resolve-PaperRestartDelayMs {
-    param([string]$EnvName)
-
-    $restartDelayMs = 5000
-    $parsedRestartDelayMs = 0
-    $rawValue = [Environment]::GetEnvironmentVariable($EnvName)
-    if ([int]::TryParse($rawValue, [ref]$parsedRestartDelayMs) -and $parsedRestartDelayMs -gt 0) {
-        $restartDelayMs = $parsedRestartDelayMs
-    }
-
-    return $restartDelayMs
-}
-
-function Invoke-PaperRoleLoop {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RoleName,
-        [Parameter(Mandatory = $true)]
-        [string]$CommandName,
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Command,
-        [int]$RestartDelayMs = 5000
-    )
-
-    while ($true) {
-        $startedAt = (Get-Date).ToUniversalTime().ToString("o")
-        Write-Host "[PaperRealistic] $RoleName starting command=$CommandName at $startedAt"
-        try {
-            & $Command
-            $exitCode = $LASTEXITCODE
-            if ($null -eq $exitCode) {
-                $exitCode = 0
-            }
-        } catch {
-            $exitCode = 1
-            Write-Warning "[PaperRealistic] $RoleName crashed command=$CommandName error=$($_.Exception.Message)"
-        }
-
-        $stoppedAt = (Get-Date).ToUniversalTime().ToString("o")
-        Write-Warning "[PaperRealistic] $RoleName exited command=$CommandName code=$exitCode at $stoppedAt; restarting in ${RestartDelayMs}ms"
-        Start-Sleep -Milliseconds $RestartDelayMs
-    }
-}
 
 if ($Role -eq "signer") {
-    Invoke-PaperRoleLoop -RoleName "signer" -CommandName "run:signer" -RestartDelayMs (Resolve-PaperRestartDelayMs "LIVE_SIGNER_RESTART_DELAY_MS") -Command {
-        npm.cmd run run:signer
-    }
+    npm.cmd run run:signer
+    exit $LASTEXITCODE
 }
 
 if ($Role -eq "execution") {
     $env:SOLANA_EXECUTION_DRY_RUN = "true"
     $env:SOLANA_EXECUTION_STATE_DIR = (Join-Path $StateRoot "solana-execution")
-    Invoke-PaperRoleLoop -RoleName "execution" -CommandName "run:solana-execution" -RestartDelayMs (Resolve-PaperRestartDelayMs "SOLANA_EXECUTION_RESTART_DELAY_MS") -Command {
-        npm.cmd run run:solana-execution
-    }
+    npm.cmd run run:solana-execution
+    exit $LASTEXITCODE
 }
 
 if ($Role -eq "candidate") {
     $env:LIVE_STATE_DIR = $StateRoot
     $env:LIVE_CANDIDATE_POOL_DB_PATH = "state/lightld-candidate-pool.sqlite"
     $env:LIVE_REQUESTED_POSITION_SOL = [string]$RequestedPositionSol
-    Invoke-PaperRoleLoop -RoleName "candidate worker" -CommandName "run:candidate-worker" -RestartDelayMs (Resolve-PaperRestartDelayMs "LIVE_CANDIDATE_WORKER_RESTART_DELAY_MS") -Command {
+    $restartDelayMs = 5000
+    $parsedRestartDelayMs = 0
+    if ([int]::TryParse($env:LIVE_CANDIDATE_WORKER_RESTART_DELAY_MS, [ref]$parsedRestartDelayMs) -and $parsedRestartDelayMs -gt 0) {
+        $restartDelayMs = $parsedRestartDelayMs
+    }
+
+    while ($true) {
+        $startedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Host "[PaperRealistic] candidate worker starting at $startedAt"
         npm.cmd run run:candidate-worker -- --strategy new-token-v1 --state-root-dir $StateRoot --db-path $env:LIVE_CANDIDATE_POOL_DB_PATH
+        $exitCode = $LASTEXITCODE
+        $stoppedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Warning "[PaperRealistic] candidate worker exited with code $exitCode at $stoppedAt; restarting in ${restartDelayMs}ms"
+        Start-Sleep -Milliseconds $restartDelayMs
     }
 }
 
@@ -110,6 +73,5 @@ $env:LIVE_MAX_ACTIVE_POSITIONS = [string]$MaxActivePositions
 $env:LIVE_DAEMON_TICK_INTERVAL_MS = [string]$TickIntervalMs
 $env:LIVE_DAEMON_HOT_TICK_INTERVAL_MS = [string]$HotTickIntervalMs
 
-Invoke-PaperRoleLoop -RoleName "daemon" -CommandName "run:daemon" -RestartDelayMs (Resolve-PaperRestartDelayMs "LIVE_DAEMON_RESTART_DELAY_MS") -Command {
-    npm.cmd run run:daemon -- --strategy new-token-v1 --state-root-dir $StateRoot --journal-root-dir $JournalRoot --max-active-positions $MaxActivePositions --tick-interval-ms $TickIntervalMs --hot-tick-interval-ms $HotTickIntervalMs
-}
+npm.cmd run run:daemon -- --strategy new-token-v1 --state-root-dir $StateRoot --journal-root-dir $JournalRoot --max-active-positions $MaxActivePositions --tick-interval-ms $TickIntervalMs --hot-tick-interval-ms $HotTickIntervalMs
+exit $LASTEXITCODE

@@ -3174,7 +3174,6 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           exitTriggerReason: result.audit?.reason,
           liveOrderSubmitted: result.liveOrderSubmitted,
           confirmationStatus: result.confirmationStatus,
-          finality: result.confirmationFinality,
           residualCleanupStatus: residualCleanupStatusFromResult(result),
           residualCleanupValueSol: residualCleanupValueFromResult(result),
           confirmedFill: result.confirmedFill,

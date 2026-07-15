@@ -5,7 +5,6 @@ import { parse } from 'yaml';
 
 import {
   ApprovalStore,
-  LegacyDatasetRejectedError,
   type AnalysisNoActionReason,
   ParameterProposalRecordArraySchema,
   analyzeCounterfactualSamples,
@@ -36,7 +35,6 @@ export type RunEvolutionReportArgs = {
   minimumSampleSize?: number;
   sinceHours?: number;
   currentValuesOverride?: Record<string, number | string | boolean | null | undefined>;
-  forensicsAllowV1?: boolean;
 };
 
 export function parseRunEvolutionReportArgs(argv: string[]): RunEvolutionReportArgs {
@@ -88,11 +86,6 @@ export function parseRunEvolutionReportArgs(argv: string[]): RunEvolutionReportA
         parsed.sinceHours = parsedValue;
         index += 1;
       }
-      continue;
-    }
-
-    if (current === '--forensics-allow-v1') {
-      parsed.forensicsAllowV1 = true;
     }
   }
 
@@ -100,14 +93,6 @@ export function parseRunEvolutionReportArgs(argv: string[]): RunEvolutionReportA
 }
 
 export async function runEvolutionReport(args: RunEvolutionReportArgs) {
-  if (!args.forensicsAllowV1) {
-    throw new LegacyDatasetRejectedError();
-  }
-
-  return runEvolutionForensicsReport(args);
-}
-
-async function runEvolutionForensicsReport(args: RunEvolutionReportArgs) {
   const evolutionRootDir = args.evolutionRootDir ?? join(args.stateRootDir, 'evolution');
   const paths = resolveEvolutionPaths(args.strategyId, evolutionRootDir);
   const generatedAt = new Date().toISOString();
@@ -115,105 +100,7 @@ async function runEvolutionForensicsReport(args: RunEvolutionReportArgs) {
     strategyId: args.strategyId,
     stateRootDir: args.stateRootDir,
     mirrorPath: args.mirrorPath,
-    evolutionRootDir,
-    allowLegacyV1Forensics: true
-  });
-  const evidence = filterEvidenceByTimeWindow(loadedEvidence, args.sinceHours, generatedAt);
-  const minimumSampleSize = args.minimumSampleSize ?? 1;
-  const filterAnalysis = analyzeFilterEvidence({
-    candidateScans: evidence.candidateScans,
-    watchlistSnapshots: evidence.watchlistSnapshots,
-    minimumSampleSize
-  });
-  const outcomeAnalysis = analyzeOutcomeEvidence({
-    outcomes: evidence.outcomes,
-    watchlistSnapshots: evidence.watchlistSnapshots,
-    minimumSampleSize
-  });
-  const analysisContext = buildEvolutionAnalysisContext({
-    candidateScans: evidence.candidateScans.length,
-    watchlistSnapshots: evidence.watchlistSnapshots.length,
-    outcomes: evidence.outcomes.length,
-    filterAnalysis,
-    outcomeAnalysis
-  });
-  const poolDecisionSamples = buildPoolDecisionSamples(evidence);
-  const counterfactualAnalysis = analyzeCounterfactualSamples({
-    samples: poolDecisionSamples,
-    minimumSampleSize
-  });
-  const evidenceSnapshot = buildEvidenceSnapshot({
-    strategyId: args.strategyId,
-    generatedAt,
-    evidenceCounts: {
-      candidateScans: evidence.candidateScans.length,
-      poolDecisionSamples: poolDecisionSamples.length,
-      watchlistSnapshots: evidence.watchlistSnapshots.length,
-      outcomes: evidence.outcomes.length
-    },
-    strategyConfigPath: strategyConfigPathFor(args.strategyId),
-    timeWindowLabel: buildTimeWindowLabel(args.sinceHours),
-    analysisContext: {
-      ...analysisContext,
-      proposalReadinessScore: 0
-    },
-    filterAnalysis,
-    outcomeAnalysis,
-    proposalIds: []
-  });
-  const noActionReasons = [...new Set<AnalysisNoActionReason>([
-    ...filterAnalysis.noActionReasons,
-    ...outcomeAnalysis.noActionReasons,
-    'no_safe_parameter_proposal'
-  ])];
-  const rendered = renderEvolutionReport({
-    strategyId: args.strategyId,
-    generatedAt,
-    evidenceSnapshot,
-    evidenceCounts: {
-      candidateScans: evidence.candidateScans.length,
-      poolDecisionSamples: poolDecisionSamples.length,
-      watchlistSnapshots: evidence.watchlistSnapshots.length,
-      outcomes: evidence.outcomes.length
-    },
-    filterAnalysis,
-    outcomeAnalysis,
-    counterfactualAnalysis,
-    proposalValidations: [],
-    proposalReplays: [],
-    outcomeReplays: [],
-    parameterProposals: [],
-    systemProposals: [],
-    noActionReasons
-  });
-
-  return {
-    outputDir: paths.rootDir,
-    readOnly: true as const,
-    datasetStatus: 'research_invalid_v1' as const,
-    report: rendered.json
-  };
-}
-
-/**
- * Retains coverage of the retired V1 proposal pipeline while production entrypoints are fail-closed.
- * This function is deliberately unavailable outside the test process.
- * @internal
- */
-export async function runLegacyEvolutionReportUnsafeForTesting(args: RunEvolutionReportArgs) {
-  if (process.env.NODE_ENV !== 'test') {
-    throw new Error('Legacy V1 proposal generation is disabled outside automated tests');
-  }
-
-  const evolutionRootDir = args.evolutionRootDir ?? join(args.stateRootDir, 'evolution');
-  const paths = resolveEvolutionPaths(args.strategyId, evolutionRootDir);
-  const generatedAt = new Date().toISOString();
-  const loadedEvidence = await loadEvolutionEvidence({
-    strategyId: args.strategyId,
-    stateRootDir: args.stateRootDir,
-    mirrorPath: args.mirrorPath,
-    evolutionRootDir,
-    allowLegacyV1Forensics: true
+    evolutionRootDir
   });
   const evidence = filterEvidenceByTimeWindow(loadedEvidence, args.sinceHours, generatedAt);
   const minimumSampleSize = args.minimumSampleSize ?? 1;

@@ -8,19 +8,7 @@ export {
   buildPoolDecisionSamples,
   type BuildPoolDecisionSamplesInput
 } from './pool-decision-sample-builder.ts';
-export {
-  loadEvolutionEvidence,
-  type EvolutionEvidence,
-  type LoadEvolutionEvidenceInput
-} from './evidence-loader.ts';
-export {
-  DatasetStatusStore,
-  DatasetStatusV1Schema,
-  LegacyDatasetRejectedError,
-  buildLegacyDatasetStatus,
-  quarantineLegacyEvolutionDataset,
-  type DatasetStatusV1
-} from './dataset-status.ts';
+export { loadEvolutionEvidence, type EvolutionEvidence } from './evidence-loader.ts';
 export {
   analyzeCounterfactualSamples,
   type CounterfactualAnalysisResult,

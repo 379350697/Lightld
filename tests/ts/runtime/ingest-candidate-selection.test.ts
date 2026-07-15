@@ -264,9 +264,7 @@ describe('ingest candidate helpers', () => {
     });
 
     expect(filtered).toHaveLength(1);
-    expect(filtered[0]?.safetyScore).toBe(60);
-    expect(filtered[0]?.feeYieldScore).toBe(30);
-    expect(filtered[0]?.selectionScore).toBeUndefined();
+    expect(filtered[0]?.safetyScore).toBe(90);
     expect(logger.log).toHaveBeenCalled();
   });
 

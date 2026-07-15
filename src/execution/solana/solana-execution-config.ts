@@ -4,18 +4,10 @@ import { z } from 'zod';
 
 import { resolveEnvPath } from '../../shared/env-path.ts';
 import { resolveRpcEndpointPolicy } from './rpc-endpoint-policy.ts';
-import { ExecutionModeSchema } from '../live-order-intent-schema.ts';
-import {
-  BroadcastPolicyV2Schema,
-  buildBroadcastPolicyV2,
-  validateBroadcastPolicyForFees,
-  type BroadcastPolicyV2
-} from './broadcast-policy.ts';
 
 const SolanaExecutionConfigSchema = z.object({
   host: z.string().min(1).default('127.0.0.1'),
   port: z.number().int().min(1).max(65535).default(8791),
-  executionMode: ExecutionModeSchema.optional(),
   rpcUrl: z.string().url(),
   writeRpcUrls: z.array(z.string().url()).min(1),
   readRpcUrls: z.array(z.string().url()).min(1),
@@ -76,7 +68,6 @@ const SolanaExecutionConfigSchema = z.object({
   defaultSlippageBps: z.number().int().min(1).max(5000).default(100),
   residualTokenMinValueSol: z.number().finite().nonnegative().default(0.1),
   residualTokenDustMaxUiAmount: z.number().finite().nonnegative().default(0.00001),
-  broadcastPolicy: BroadcastPolicyV2Schema,
   jitoTipLamports: z.number().int().nonnegative().optional(),
   dryRun: z.boolean().default(false),
   dryRunAddLpRebuildOnBinSlippage: z.boolean().default(true),
@@ -97,42 +88,14 @@ function parseBooleanFlag(value: string | undefined) {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
 }
 
-function parseBroadcastPolicyKind(value: string | undefined): BroadcastPolicyV2['kind'] | undefined {
-  const normalized = (value ?? '').trim().toLowerCase().replaceAll('-', '_');
-  if (!normalized) {
-    return undefined;
-  }
-  if (
-    normalized === 'standard_rpc_fanout'
-    || normalized === 'staked_private_rpc'
-    || normalized === 'jito_bundle'
-  ) {
-    return normalized;
-  }
-  throw new Error(`Unsupported SOLANA_BROADCAST_POLICY: ${value}`);
-}
-
 export function loadSolanaExecutionConfig(
   env: Record<string, string | undefined> = process.env
 ): SolanaExecutionConfig {
   const rpcPolicy = resolveRpcEndpointPolicy(env);
-  const jitoTipLamports = env.JITO_TIP_LAMPORTS
-    ? Number(env.JITO_TIP_LAMPORTS)
-    : undefined;
-  const broadcastPolicy = validateBroadcastPolicyForFees({
-    policy: buildBroadcastPolicyV2({
-      kind: parseBroadcastPolicyKind(env.SOLANA_BROADCAST_POLICY),
-      writeRpcUrls: rpcPolicy.writeRpcUrls,
-      privateRpcUrls: splitCsv(env.SOLANA_PRIVATE_RPC_URLS),
-      blockEngineUrl: env.JITO_BLOCK_ENGINE_URL
-    }),
-    jitoTipLamports
-  });
 
   return SolanaExecutionConfigSchema.parse({
     host: env.SOLANA_EXECUTION_HOST ?? '127.0.0.1',
     port: env.SOLANA_EXECUTION_PORT ? Number(env.SOLANA_EXECUTION_PORT) : 8791,
-    executionMode: env.SOLANA_EXECUTION_MODE ?? env.LIGHTLD_EXECUTION_MODE,
     rpcUrl: rpcPolicy.writeRpcUrls[0],
     writeRpcUrls: rpcPolicy.writeRpcUrls,
     readRpcUrls: rpcPolicy.readRpcUrls,
@@ -230,8 +193,9 @@ export function loadSolanaExecutionConfig(
     residualTokenDustMaxUiAmount: env.SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT
       ? Number(env.SOLANA_RESIDUAL_TOKEN_DUST_MAX_UI_AMOUNT)
       : 0.00001,
-    broadcastPolicy,
-    jitoTipLamports,
+    jitoTipLamports: env.JITO_TIP_LAMPORTS
+      ? Number(env.JITO_TIP_LAMPORTS)
+      : undefined,
     dryRun: parseBooleanFlag(env.SOLANA_EXECUTION_DRY_RUN),
     dryRunAddLpRebuildOnBinSlippage: env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE
       ? parseBooleanFlag(env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE)

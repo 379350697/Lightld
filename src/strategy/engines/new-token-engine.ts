@@ -65,7 +65,7 @@ export type NewTokenAction = 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | '
 export function buildNewTokenDecision(
   snapshot: NewTokenSnapshot,
   config: NewTokenConfig = {}
-): { action: NewTokenAction; reason?: string; reasons?: string[]; secondaryReason?: string } {
+): { action: NewTokenAction; reason?: string } {
   if (!snapshot.inSession) {
     return { action: 'hold', reason: 'out-of-session' };
   }

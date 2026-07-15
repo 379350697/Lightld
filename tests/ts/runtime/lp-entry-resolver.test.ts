@@ -106,24 +106,6 @@ describe('lp entry resolver', () => {
     });
   });
 
-  it('matches paper overlay positions by chainPositionAddress when positionAddress is synthetic', () => {
-    expect(matchesPositionStateLifecycle({
-      poolAddress: 'pool-safe',
-      positionAddress: 'synthetic-position',
-      chainPositionAddress: 'current-chain-position',
-      mint: 'mint-safe'
-    }, {
-      allowNewOpens: true,
-      flattenOnly: false,
-      lastAction: 'hold',
-      activeMint: 'mint-safe',
-      activePoolAddress: 'pool-safe',
-      chainPositionAddress: 'current-chain-position',
-      lifecycleState: 'open',
-      updatedAt: '2026-06-25T02:32:09.860Z'
-    } as any)).toBe(true);
-  });
-
   it('does not treat matching pool and mint as lifecycle bound when chain position differs', () => {
     expect(matchesPositionStateLifecycle({
       poolAddress: 'pool-safe',

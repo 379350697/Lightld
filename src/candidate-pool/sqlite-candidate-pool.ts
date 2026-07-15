@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { IngestCandidate } from '../runtime/ingest-candidate-selection.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
-import { deriveCandidatePoolEntry, feeTvlScore } from './aggregator.ts';
+import { deriveCandidatePoolEntry } from './aggregator.ts';
 import {
   buildPoolFeeYieldProfile,
   parseMeteoraPoolFeeYieldSample,
@@ -506,19 +506,6 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
           continue;
         }
       }
-      const score = readNumber(candidateRow, 'score');
-      const observations = this.readObservations(this.database, strategyId, poolAddress, mint);
-      const passedScore = (sources: CandidateSourceObservation['source'][]) =>
-        observations
-          .filter((observation) => observation.status === 'passed' && sources.includes(observation.source))
-          .reduce((max, observation) => Math.max(max, observation.score), 0);
-      const rawSafetyScore = passedScore(['gmgn', 'chain_fast_safety']);
-      const feeYieldScore = feeTvlScore(candidate)
-        + passedScore(['pool_fee_yield'])
-        + (typeof candidate.poolFeeYieldScore === 'number' ? candidate.poolFeeYieldScore : 0);
-      const liquidityScore = passedScore(['meteora']);
-      const executionScore = passedScore(['jupiter_route']);
-      const auxiliaryScore = candidate.auxiliaryScore ?? candidate.auxSignalScore ?? 0;
 
       return {
         strategyId: readString(candidateRow, 'strategy_id') as StrategyId,
@@ -527,18 +514,14 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
         tokenSymbol: readString(candidateRow, 'token_symbol'),
         status: readString(candidateRow, 'status') as CandidatePoolEntry['status'],
         openable: readBoolean(candidateRow, 'openable'),
-        score,
+        score: readNumber(candidateRow, 'score'),
         blockReason: readString(candidateRow, 'block_reason'),
         freshnessExpiresAt: readString(candidateRow, 'freshness_expires_at'),
         updatedAt,
         candidate: {
           ...candidate,
-          safetyScore: rawSafetyScore,
-          feeYieldScore,
-          liquidityScore,
-          executionScore,
-          auxiliaryScore,
-          selectionScore: score
+          safetyScore: readNumber(candidateRow, 'score'),
+          poolFeeYieldScore: readNumber(candidateRow, 'score')
         }
       };
     }
