@@ -1135,6 +1135,105 @@ export function summarizePositionLedger(ledger?: PositionLedgerSnapshot | null) 
   };
 }
 
+function findCompatibilityPriorIndex(
+  records: PositionLedgerRecord[],
+  prior?: PositionStateSnapshot | null
+) {
+  if (!prior) {
+    return -1;
+  }
+
+  if (prior.chainPositionAddress) {
+    return records.findIndex((record) =>
+      record.chainPositionAddress === prior.chainPositionAddress
+      || record.positionId === prior.chainPositionAddress
+      || record.positionKey === `chain-position:${prior.chainPositionAddress}`
+    );
+  }
+
+  if (prior.positionId) {
+    return records.findIndex((record) =>
+      record.positionId === prior.positionId
+      || record.positionKey === `position:${prior.positionId}`
+    );
+  }
+
+  if (prior.openIntentId) {
+    return records.findIndex((record) =>
+      record.openIntentId === prior.openIntentId
+      || record.positionKey === `open-intent:${prior.openIntentId}`
+    );
+  }
+
+  if (!prior.activePoolAddress || !prior.activeMint) {
+    return -1;
+  }
+
+  const matches = records
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) =>
+      record.activePoolAddress === prior.activePoolAddress
+      && record.activeMint === prior.activeMint
+    );
+  return matches.length === 1 ? matches[0].index : -1;
+}
+
+function findCompatibilityPendingRecord(
+  records: PositionLedgerRecord[],
+  pendingSubmission?: PendingSubmissionSnapshot | null
+) {
+  if (!pendingSubmission || pendingSubmission.confirmationStatus === 'failed') {
+    return undefined;
+  }
+
+  if (pendingSubmission.chainPositionAddress) {
+    return records.find((record) =>
+      record.chainPositionAddress === pendingSubmission.chainPositionAddress
+      || record.positionId === pendingSubmission.chainPositionAddress
+      || record.positionKey === `chain-position:${pendingSubmission.chainPositionAddress}`
+    );
+  }
+
+  if (pendingSubmission.positionId) {
+    return records.find((record) =>
+      record.positionId === pendingSubmission.positionId
+      || record.positionKey === `position:${pendingSubmission.positionId}`
+    );
+  }
+
+  if (pendingSubmission.openIntentId) {
+    return records.find((record) =>
+      record.openIntentId === pendingSubmission.openIntentId
+      || record.positionKey === `open-intent:${pendingSubmission.openIntentId}`
+    );
+  }
+
+  const idempotencyMatch = records.find((record) =>
+    record.idempotencyKey === pendingSubmission.idempotencyKey
+    || record.lastOrderIdempotencyKey === pendingSubmission.idempotencyKey
+    || record.positionKey === `idempotency:${pendingSubmission.idempotencyKey}`
+  );
+  if (idempotencyMatch) {
+    return idempotencyMatch;
+  }
+
+  const submissionMatch = records.find((record) =>
+    record.pendingSubmissionId === pendingSubmission.submissionId
+  );
+  if (submissionMatch) {
+    return submissionMatch;
+  }
+
+  if (!pendingSubmission.poolAddress || !pendingSubmission.tokenMint) {
+    return undefined;
+  }
+  const poolMintMatches = records.filter((record) =>
+    record.activePoolAddress === pendingSubmission.poolAddress
+    && record.activeMint === pendingSubmission.tokenMint
+  );
+  return poolMintMatches.length === 1 ? poolMintMatches[0] : undefined;
+}
+
 export function selectCompatibilityPositionState(input: {
   ledger?: PositionLedgerSnapshot | null;
   pendingSubmission?: PendingSubmissionSnapshot | null;
@@ -1153,10 +1252,8 @@ export function selectCompatibilityPositionState(input: {
       (a.openedAt || a.updatedAt || '').localeCompare(b.openedAt || b.updatedAt || '')
       || a.positionKey.localeCompare(b.positionKey)
     );
-  const pendingRecord = input.pendingSubmission
-    ? activeRecords.find((record) => pendingSubmissionMatchesSyntheticOpen(record, input.pendingSubmission))
-    : undefined;
-  const criticalExitRecord = activeRecords
+  const pendingRecord = findCompatibilityPendingRecord(activeRecords, input.pendingSubmission);
+  const criticalExitRecords = activeRecords
     .filter((record) =>
       record.lifecycleState === 'lp_exit_pending'
       || record.lifecycleState === 'inventory_exit_pending'
@@ -1170,18 +1267,17 @@ export function selectCompatibilityPositionState(input: {
       || (b.lastRiskSentinel?.solDepletedRatio ?? 0) - (a.lastRiskSentinel?.solDepletedRatio ?? 0)
       || (a.openedAt || a.updatedAt || '').localeCompare(b.openedAt || b.updatedAt || '')
       || a.positionKey.localeCompare(b.positionKey)
-    )[0];
-  const priorIndex = activeRecords.findIndex((record) => Boolean(input.prior && (
-    (input.prior.chainPositionAddress && record.chainPositionAddress === input.prior.chainPositionAddress)
-    || (input.prior.positionId && record.positionId === input.prior.positionId)
-    || (input.prior.openIntentId && record.openIntentId === input.prior.openIntentId)
-    || (
-      input.prior.activePoolAddress
-      && input.prior.activeMint
-      && record.activePoolAddress === input.prior.activePoolAddress
-      && record.activeMint === input.prior.activeMint
-    )
-  )));
+    );
+  const priorIndex = findCompatibilityPriorIndex(activeRecords, input.prior);
+  const priorRecord = priorIndex >= 0 ? activeRecords[priorIndex] : undefined;
+  const priorCriticalIndex = priorRecord
+    ? criticalExitRecords.findIndex((record) => record.positionKey === priorRecord.positionKey)
+    : -1;
+  const criticalExitRecord = criticalExitRecords.length === 0
+    ? undefined
+    : input.advance && priorCriticalIndex >= 0
+      ? criticalExitRecords[(priorCriticalIndex + 1) % criticalExitRecords.length]
+      : criticalExitRecords[0];
   const normalRecord = priorIndex < 0
     ? activeRecords[0]
     : input.advance

@@ -1606,4 +1606,195 @@ describe('position ledger', () => {
       activePoolAddress: 'pool-b'
     });
   });
+
+  it('uses strong chain identity when multiple LPs share the same pool and mint', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      now: '2026-07-16T16:32:00.000Z',
+      prior: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        chainPositionAddress: 'pos-a',
+        activeMint: 'shared-mint',
+        activePoolAddress: 'shared-pool',
+        lifecycleState: 'open',
+        updatedAt: '2026-07-16T16:31:00.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-16T16:32:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-b',
+            positionId: 'pos-b',
+            chainPositionAddress: 'pos-b',
+            activeMint: 'shared-mint',
+            activePoolAddress: 'shared-pool',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T15:00:00.000Z',
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-a',
+            positionId: 'pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'shared-mint',
+            activePoolAddress: 'shared-pool',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:00:00.000Z',
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          }
+        ]
+      }
+    });
+
+    expect(state.chainPositionAddress).toBe('pos-a');
+  });
+
+  it('round-robins critical exits so one failing target cannot starve another', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      advance: true,
+      now: '2026-07-16T16:32:00.000Z',
+      prior: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        chainPositionAddress: 'pos-a',
+        activeMint: 'mint-a',
+        activePoolAddress: 'pool-a',
+        lifecycleState: 'open',
+        updatedAt: '2026-07-16T16:31:00.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-16T16:32:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:00:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'range-exit',
+              riskReason: 'active-bin-out-of-range:above:100',
+              outOfRangeBins: 100
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-b',
+            chainPositionAddress: 'pos-b',
+            activeMint: 'mint-b',
+            activePoolAddress: 'pool-b',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:10:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'range-exit',
+              riskReason: 'active-bin-out-of-range:above:5',
+              outOfRangeBins: 5
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          }
+        ]
+      }
+    });
+
+    expect(state.chainPositionAddress).toBe('pos-b');
+  });
+
+  it('keeps compatibility state bound to an unresolved pending LP exit', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: false,
+      flattenOnly: false,
+      lastAction: 'withdraw-lp',
+      advance: true,
+      now: '2026-07-16T16:32:00.000Z',
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'exit-b',
+        submissionId: 'submission-b',
+        chainPositionAddress: 'pos-b',
+        confirmationStatus: 'unknown',
+        createdAt: '2026-07-16T16:31:30.000Z',
+        updatedAt: '2026-07-16T16:31:30.000Z',
+        tokenMint: 'mint-b',
+        poolAddress: 'pool-b',
+        orderAction: 'withdraw-lp'
+      },
+      prior: {
+        allowNewOpens: false,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        chainPositionAddress: 'pos-b',
+        activeMint: 'mint-b',
+        activePoolAddress: 'pool-b',
+        lifecycleState: 'lp_exit_pending',
+        updatedAt: '2026-07-16T16:31:30.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-16T16:32:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:00:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'range-exit',
+              riskReason: 'active-bin-out-of-range:above:100',
+              outOfRangeBins: 100
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-b',
+            chainPositionAddress: 'pos-b',
+            activeMint: 'mint-b',
+            activePoolAddress: 'pool-b',
+            lifecycleState: 'lp_exit_pending',
+            importStatus: 'imported',
+            idempotencyKey: 'exit-b',
+            pendingSubmissionId: 'submission-b',
+            pendingOrderAction: 'withdraw-lp',
+            pendingConfirmationStatus: 'unknown',
+            lastAction: 'withdraw-lp',
+            openedAt: '2026-07-16T16:10:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'range-exit',
+              riskReason: 'active-bin-out-of-range:above:5',
+              outOfRangeBins: 5
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          }
+        ]
+      }
+    });
+
+    expect(state.chainPositionAddress).toBe('pos-b');
+  });
 });
