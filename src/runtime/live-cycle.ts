@@ -4059,22 +4059,43 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   let confirmationFinality: ConfirmationFinality = 'unknown';
   let confirmationCheckedAt = new Date().toISOString();
   const trackedBroadcastSubmissions = getBroadcastTrackedSubmissions(broadcastResult);
+  const broadcasterConfirmedMainExecution =
+    broadcastResult.mainExecutionStatus === 'confirmed'
+    && broadcastResult.batchStatus !== 'partial';
 
-  if (input.confirmationProvider && trackedBroadcastSubmissions.length > 0) {
-    const polledConfirmations = await Promise.all(
-      trackedBroadcastSubmissions.map((trackedSubmission) => input.confirmationProvider!.poll(trackedSubmission))
-    );
-    const normalizedConfirmations = polledConfirmations.map(toConfirmationResult);
-    const aggregateConfirmation = aggregateTrackedConfirmations(normalizedConfirmations);
+  if (
+    input.confirmationProvider
+    && trackedBroadcastSubmissions.length > 0
+    && !broadcasterConfirmedMainExecution
+  ) {
+    try {
+      const polledConfirmations = await Promise.all(
+        trackedBroadcastSubmissions.map((trackedSubmission) => input.confirmationProvider!.poll(trackedSubmission))
+      );
+      const normalizedConfirmations = polledConfirmations.map(toConfirmationResult);
+      const aggregateConfirmation = aggregateTrackedConfirmations(normalizedConfirmations);
 
-    confirmation = aggregateConfirmation.confirmation;
-    confirmationFinality = aggregateConfirmation.finality;
-    confirmationCheckedAt = aggregateConfirmation.checkedAt;
+      confirmation = aggregateConfirmation.confirmation;
+      confirmationFinality = aggregateConfirmation.finality;
+      confirmationCheckedAt = aggregateConfirmation.checkedAt;
+    } catch (error) {
+      const errorMessage = error instanceof Error && error.message.length > 0
+        ? error.message
+        : String(error);
+      confirmation = {
+        status: 'unknown',
+        submissionId:
+          trackedBroadcastSubmissions[trackedBroadcastSubmissions.length - 1]?.submissionId
+          ?? broadcastResult.submissionId,
+        reason: `confirmation-poll-failed: ${errorMessage}`
+      };
+      confirmationFinality = 'unknown';
+      confirmationCheckedAt = new Date().toISOString();
+    }
   }
 
   if (
-    broadcastResult.mainExecutionStatus === 'confirmed'
-    && broadcastResult.batchStatus !== 'partial'
+    broadcasterConfirmedMainExecution
     && confirmation.status !== 'failed'
   ) {
     confirmation = {

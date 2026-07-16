@@ -554,6 +554,137 @@ describe('runLiveCycle', () => {
     });
   });
 
+  it('trusts an execution broadcaster that already confirmed the main paper execution', async () => {
+    const confirmationPoll = vi.fn(async () => {
+      throw new Error('paper signatures are not available on the public RPC');
+    });
+    const accountProvider = {
+      readState: vi.fn(async () => ({
+        walletSol: 0.94,
+        journalSol: 0.94,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      }))
+    };
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider,
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted',
+          submissionId: 'paper-submission-1',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'paper-signature-1',
+          mainExecutionStatus: 'confirmed',
+          batchStatus: 'complete',
+          chainPositionAddress: 'paper-position-1'
+        })
+      },
+      confirmationProvider: {
+        poll: confirmationPoll
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const fillJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveFillPath);
+    const pendingSubmission = await new PendingSubmissionStore(TEST_STATE_DIR).read();
+
+    expect(confirmationPoll).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      mode: 'LIVE',
+      action: 'add-lp',
+      confirmationStatus: 'confirmed',
+      actionIdentity: {
+        chainPositionAddress: 'paper-position-1'
+      }
+    });
+    expect(orderJournal[0]).toMatchObject({
+      submissionId: 'paper-submission-1',
+      confirmationStatus: 'confirmed',
+      finality: 'confirmed',
+      chainPositionAddress: 'paper-position-1'
+    });
+    expect(fillJournal[0]).toMatchObject({
+      submissionId: 'paper-submission-1',
+      side: 'add-lp',
+      amount: 0.06,
+      hasFillEvidence: true,
+      chainPositionAddress: 'paper-position-1'
+    });
+    expect(pendingSubmission).toBeNull();
+  });
+
+  it('keeps submitted execution evidence when confirmation polling fails', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted',
+          submissionId: 'live-submission-unknown',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'live-signature-unknown'
+        })
+      },
+      confirmationProvider: {
+        poll: vi.fn(async () => {
+          throw new Error('rpc timeout');
+        })
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      }
+    });
+
+    const orderJournal = await readJsonLines<Record<string, unknown>>(result.journalPaths.liveOrderPath);
+    const pendingSubmission = await new PendingSubmissionStore(TEST_STATE_DIR).read();
+
+    expect(result).toMatchObject({
+      mode: 'LIVE',
+      action: 'add-lp',
+      confirmationStatus: 'unknown',
+      liveOrderSubmitted: true
+    });
+    expect(orderJournal[0]).toMatchObject({
+      submissionId: 'live-submission-unknown',
+      confirmationStatus: 'unknown',
+      finality: 'unknown'
+    });
+    expect(pendingSubmission).toMatchObject({
+      submissionId: 'live-submission-unknown',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      reason: 'confirmation-poll-failed: rpc timeout'
+    });
+  });
+
   it('records confirmed close fills only from real post-confirmation wallet delta', async () => {
     const accountProvider = {
       readState: vi.fn(async () => ({
