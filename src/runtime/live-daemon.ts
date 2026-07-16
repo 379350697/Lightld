@@ -237,6 +237,7 @@ type LiveDaemonOptions = {
   openAfterMaintenanceHold?: boolean;
   evolutionWatchlistStore?: Pick<WatchlistStore, 'readTrackedTokens' | 'writeTrackedTokens' | 'readSnapshots' | 'appendSnapshot'>;
   evolutionOutcomeStore?: Pick<LiveCycleOutcomeStore, 'appendOutcome'>;
+  onCycleResult?: (result: LiveCycleResult) => Promise<void> | void;
   sleep?: (delayMs: number) => Promise<void>;
 };
 
@@ -2863,6 +2864,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             } else {
               console.log(`[LiveDaemon] new-open-pass observed no actionable candidate reason=${newOpenResult.reason}`);
             }
+          }
+        }
+
+        if (options.onCycleResult) {
+          try {
+            await options.onCycleResult(result);
+          } catch (error) {
+            console.warn(`[LiveDaemon] optional cycle result sink failed: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 

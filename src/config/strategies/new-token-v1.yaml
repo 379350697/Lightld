@@ -53,6 +53,13 @@ sessionWindows:
 solRouteLimits:
   maxSlippageBps: 100
   maxImpactBps: 200
+entryEdge:
+  enabled: true
+  defaultAdverseSelectionBps: 25
+  defaultImpermanentLossBps: 25
+  defaultChainCostSol: 0.000005
+  defaultCapitalChargeBps: 5
+  defaultSafetyMarginBps: 10
 live:
   enabled: true
   maxLivePositionSol: 0.15

@@ -431,7 +431,7 @@ describe('runLiveCycle production adapters', () => {
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -587,7 +587,7 @@ describe('runLiveCycle production adapters', () => {
         maxDailySpendSol: 1
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }

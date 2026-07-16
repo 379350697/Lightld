@@ -471,7 +471,7 @@ describe('runLiveCycle', () => {
         })
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -530,7 +530,7 @@ describe('runLiveCycle', () => {
         })
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -901,7 +901,7 @@ describe('runLiveCycle', () => {
       requestedPositionSol: 0.1,
       runtimeMode: 'flatten_only',
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1004,7 +1004,7 @@ describe('runLiveCycle', () => {
         fills: []
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -1079,7 +1079,7 @@ describe('runLiveCycle', () => {
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: {
           mint: 'mint-safe',
           inSession: true,
@@ -1104,7 +1104,7 @@ describe('runLiveCycle', () => {
       requestedPositionSol: 2,
       ignoreLivePositionSolLimit: true,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: {
           mint: 'mint-safe',
           inSession: true,
@@ -1140,7 +1140,7 @@ describe('runLiveCycle', () => {
         updatedAt: '2026-06-29T17:00:00.000Z'
       },
       context: {
-        pool: { address: 'new-pool', liquidityUsd: 10_000 },
+        pool: { address: 'new-pool', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: {
           mint: 'new-mint',
           inSession: true,
@@ -1174,7 +1174,7 @@ describe('runLiveCycle', () => {
         maxDailySpendSol: 1
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1225,7 +1225,7 @@ describe('runLiveCycle', () => {
         maxDailySpendSol: 2
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }

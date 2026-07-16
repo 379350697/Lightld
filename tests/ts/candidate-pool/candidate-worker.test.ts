@@ -137,6 +137,26 @@ describe('candidate worker', () => {
     ]);
   });
 
+  it('captures research candidates after synchronous GMGN blocks are applied', async () => {
+    const writer = new MemoryWriter();
+    const capture = vi.fn(async () => undefined);
+    await runCandidateWorkerTick({
+      strategy: 'new-token-v1',
+      writer,
+      routeSource: routeSource(true),
+      captureMode: 'mechanical-soak',
+      runSoftSourcesInBackground: false,
+      researchRecorder: { capture },
+      now: () => new Date('2026-06-21T10:00:00.000Z'),
+      fetchMeteoraPoolsImpl: async () => [meteoraRow()],
+      fetchTokenSafetyBatchImpl: async () => [{
+        mint: 'mint-1', safe: false, safetyScore: 5, maxScore: 120, rejectReasons: ['top10-holders-too-high']
+      }],
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ candidates: [] }));
+  });
+
   it('keeps candidate selection unchanged when research persistence fails', async () => {
     const writer = new MemoryWriter();
     const warn = vi.fn();

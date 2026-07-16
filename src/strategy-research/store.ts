@@ -11,6 +11,10 @@ import type {
   ResearchMark,
   StrategyResearchSpec
 } from './types.ts';
+import {
+  RESEARCH_ENTRY_MAX_DELAY_MINUTES,
+  RESEARCH_HORIZON_TOLERANCE_MINUTES
+} from './types.ts';
 
 const HORIZONS = [15, 60, 240, 1440] as const;
 
@@ -86,12 +90,29 @@ const SCHEMA = `
     closed_at TEXT,
     runtime_mode TEXT NOT NULL,
     capture_mode TEXT NOT NULL DEFAULT 'unknown',
+    selection_id TEXT,
+    snapshot_id TEXT,
+    variant_id TEXT,
     entry_sol REAL,
     exit_value_sol REAL,
     fee_value_sol REAL,
     pnl_sol REAL,
     raw_json TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS paper_selections (
+    selection_id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    variant_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    pool_address TEXT NOT NULL,
+    token_mint TEXT NOT NULL,
+    selected_at TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_paper_selections_match
+    ON paper_selections(experiment_id,pool_address,token_mint,selected_at);
   CREATE TABLE IF NOT EXISTS reports (
     report_id TEXT PRIMARY KEY,
     experiment_id TEXT NOT NULL,
@@ -105,7 +126,8 @@ const SCHEMA = `
     status TEXT NOT NULL,
     due_count INTEGER NOT NULL,
     completed_count INTEGER NOT NULL,
-    unavailable_count INTEGER NOT NULL
+    unavailable_count INTEGER NOT NULL,
+    missed_count INTEGER NOT NULL DEFAULT 0
   );
 `;
 
@@ -131,6 +153,11 @@ export class StrategyResearchStore {
       database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
       database.exec(SCHEMA);
       ensureColumn(database, 'paper_outcomes', 'capture_mode', "TEXT NOT NULL DEFAULT 'unknown'");
+      ensureColumn(database, 'paper_outcomes', 'selection_id', 'TEXT');
+      ensureColumn(database, 'paper_outcomes', 'snapshot_id', 'TEXT');
+      ensureColumn(database, 'paper_outcomes', 'variant_id', 'TEXT');
+      ensureColumn(database, 'paper_selections', 'variant_id', "TEXT NOT NULL DEFAULT 'baseline'");
+      ensureColumn(database, 'worker_status', 'missed_count', 'INTEGER NOT NULL DEFAULT 0');
     }
     this.database = database;
   }
@@ -252,32 +279,39 @@ export class StrategyResearchStore {
     }
   }
 
-  dueEpisodes(now = new Date(), limit = 100): Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440 }> {
+  dueEpisodes(now = new Date(), limit = 100): Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440; missed: boolean }> {
     const rows = this.required().prepare(`
-      SELECT e.*, GROUP_CONCAT(m.horizon_minutes) AS completed_horizons
-      FROM episodes e LEFT JOIN marks m ON m.episode_id=e.episode_id
+      SELECT e.*, GROUP_CONCAT(CASE WHEN m.status<>'unavailable' THEN m.horizon_minutes END) AS completed_horizons
+      FROM episodes e
+      JOIN experiments x ON x.experiment_id=e.experiment_id AND x.status='active'
+      LEFT JOIN marks m ON m.episode_id=e.episode_id
       GROUP BY e.episode_id ORDER BY e.observed_at ASC
     `).all() as Row[];
-    const due: Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440 }> = [];
+    const due: Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440; missed: boolean }> = [];
     const scheduled = new Set<string>();
     for (const row of rows) {
       const episode = mapEpisode(row);
+      const ageMinutes = (now.getTime() - Date.parse(episode.observedAt)) / 60_000;
+      if (!Number.isFinite(ageMinutes) || ageMinutes < 0) continue;
       const entryStatus = row.entry_status === null || row.entry_status === undefined ? '' : String(row.entry_status);
       if ((!episode.targetTokenRaw || !episode.doubleTokenRaw) && (entryStatus === '' || entryStatus === 'unavailable')) {
         const key = `${episode.snapshotId}:${episode.poolAddress}:${episode.tokenMint}:0`;
         if (!scheduled.has(key)) {
           scheduled.add(key);
-          due.push({ episode, horizonMinutes: 0 });
+          due.push({ episode, horizonMinutes: 0, missed: ageMinutes > RESEARCH_ENTRY_MAX_DELAY_MINUTES });
         }
       } else if (episode.targetTokenRaw && episode.doubleTokenRaw) {
         const completed = new Set(String(row.completed_horizons ?? '').split(',').filter(Boolean).map(Number));
-        const ageMinutes = (now.getTime() - Date.parse(episode.observedAt)) / 60_000;
         const horizon = HORIZONS.find((value) => ageMinutes >= value && !completed.has(value));
         if (horizon) {
           const key = `${episode.snapshotId}:${episode.poolAddress}:${episode.tokenMint}:${horizon}`;
           if (!scheduled.has(key)) {
             scheduled.add(key);
-            due.push({ episode, horizonMinutes: horizon });
+            due.push({
+              episode,
+              horizonMinutes: horizon,
+              missed: ageMinutes > horizon + RESEARCH_HORIZON_TOLERANCE_MINUTES[horizon]
+            });
           }
         }
       }
@@ -313,7 +347,10 @@ export class StrategyResearchStore {
       FROM episodes source JOIN episodes grouped
         ON grouped.snapshot_id=source.snapshot_id AND grouped.pool_address=source.pool_address AND grouped.token_mint=source.token_mint
       WHERE source.episode_id=?
-      ON CONFLICT(episode_id,horizon_minutes) DO NOTHING
+      ON CONFLICT(episode_id,horizon_minutes) DO UPDATE SET
+        observed_at=excluded.observed_at,status=excluded.status,target_recovery_sol=excluded.target_recovery_sol,
+        double_recovery_sol=excluded.double_recovery_sol,target_impact_bps=excluded.target_impact_bps,
+        double_impact_bps=excluded.double_impact_bps,detail=excluded.detail
     `).run(
       mark.horizonMinutes, mark.observedAt, mark.status, mark.targetRecoverySol,
       mark.doubleRecoverySol, mark.targetImpactBps, mark.doubleImpactBps, mark.detail, mark.episodeId
@@ -341,23 +378,78 @@ export class StrategyResearchStore {
     }));
   }
 
+  snapshotTimes(experimentId: string): string[] {
+    return (this.required().prepare(`
+      SELECT observed_at AS observedAt FROM snapshots WHERE experiment_id=? ORDER BY observed_at
+    `).all(experimentId) as Array<{ observedAt: string }>).map((row) => row.observedAt);
+  }
+
+  recordPaperSelection(input: {
+    strategyId: string;
+    poolAddress: string;
+    tokenMint: string;
+    selectedAt: string;
+    action: string;
+    reason: string;
+  }) {
+    const selectedAtMs = Date.parse(input.selectedAt);
+    if (!Number.isFinite(selectedAtMs)) throw new Error(`Invalid paper selection time: ${input.selectedAt}`);
+    const snapshotCutoff = new Date(selectedAtMs - 30 * 60_000).toISOString();
+    const match = this.required().prepare(`
+      SELECT x.experiment_id AS experimentId,s.snapshot_id AS snapshotId,d.variant_id AS variantId
+      FROM experiments x
+      JOIN snapshots s ON s.experiment_id=x.experiment_id
+      JOIN decisions d ON d.snapshot_id=s.snapshot_id AND d.pool_address=? AND d.token_mint=?
+      WHERE x.status='active' AND x.strategy_id=? AND d.selected=1 AND s.observed_at>=? AND s.observed_at<=?
+      ORDER BY s.observed_at DESC,CASE WHEN d.variant_id='baseline' THEN 0 ELSE 1 END
+      LIMIT 1
+    `).get(input.poolAddress, input.tokenMint, input.strategyId, snapshotCutoff, input.selectedAt) as {
+      experimentId: string;
+      snapshotId: string;
+      variantId: string;
+    } | undefined;
+    if (!match) return null;
+    const selectionId = hashId('paper-selection', match.experimentId, match.snapshotId, input.poolAddress, input.tokenMint);
+    this.required().prepare(`
+      INSERT OR IGNORE INTO paper_selections(
+        selection_id,experiment_id,snapshot_id,variant_id,strategy_id,pool_address,token_mint,selected_at,action,reason
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      selectionId, match.experimentId, match.snapshotId, match.variantId, input.strategyId, input.poolAddress,
+      input.tokenMint, input.selectedAt, input.action, input.reason
+    );
+    return { selectionId, ...match };
+  }
+
   syncPaperOutcomes(experimentId: string, outcomes: LiveCycleOutcomeRecord[]) {
     const experiment = this.required().prepare(`
-      SELECT strategy_id AS strategyId,started_at AS startedAt FROM experiments WHERE experiment_id=?
-    `).get(experimentId) as { strategyId: string; startedAt: string } | undefined;
+      SELECT strategy_id AS strategyId,started_at AS startedAt,stopped_at AS stoppedAt FROM experiments WHERE experiment_id=?
+    `).get(experimentId) as { strategyId: string; startedAt: string; stoppedAt: string | null } | undefined;
     if (!experiment) throw new Error(`Unknown experiment ${experimentId}`);
     const insert = this.required().prepare(`
       INSERT OR REPLACE INTO paper_outcomes(
-        outcome_id,experiment_id,strategy_id,recorded_at,opened_at,closed_at,runtime_mode,capture_mode,
+        outcome_id,experiment_id,strategy_id,recorded_at,opened_at,closed_at,runtime_mode,capture_mode,selection_id,snapshot_id,variant_id,
         entry_sol,exit_value_sol,fee_value_sol,pnl_sol,raw_json
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     for (const outcome of outcomes) {
       if (outcome.strategyId !== experiment.strategyId
         || outcome.captureMode !== 'mechanical-soak'
-        || outcome.recordedAt < experiment.startedAt) {
+        || outcome.recordedAt < experiment.startedAt
+        || (experiment.stoppedAt !== null && outcome.recordedAt > experiment.stoppedAt)) {
         continue;
       }
+      const selectionTime = outcome.openedAt ?? outcome.recordedAt;
+      const selection = this.required().prepare(`
+        SELECT selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId
+        FROM paper_selections
+        WHERE experiment_id=? AND pool_address=? AND token_mint=? AND selected_at<=?
+        ORDER BY selected_at DESC LIMIT 1
+      `).get(experimentId, outcome.poolAddress, outcome.tokenMint, selectionTime) as {
+        selectionId: string;
+        snapshotId: string;
+        variantId: string;
+      } | undefined;
       const exitValue = outcome.exitMetrics.lpTotalValueSol
         ?? outcome.exitMetrics.lpCurrentValueSol
         ?? outcome.exitMetrics.quoteOutputSol;
@@ -366,8 +458,9 @@ export class StrategyResearchStore {
         ? exitValue + feeValue - outcome.entrySol
         : null;
       insert.run(
-        hashId('paper', outcome.strategyId, outcome.cycleId, outcome.recordedAt), experimentId, outcome.strategyId,
+        hashId('paper', experimentId, outcome.strategyId, outcome.cycleId, outcome.recordedAt), experimentId, outcome.strategyId,
         outcome.recordedAt, outcome.openedAt ?? null, outcome.closedAt ?? null, outcome.runtimeMode, outcome.captureMode,
+        selection?.selectionId ?? null, selection?.snapshotId ?? null, selection?.variantId ?? null,
         outcome.entrySol ?? null, exitValue ?? null, feeValue, pnl, stableJson(outcome)
       );
     }
@@ -385,13 +478,14 @@ export class StrategyResearchStore {
       .run(report.reportId, report.experimentId, report.createdAt, report.status, stableJson(report));
   }
 
-  recordWorkerStatus(input: { heartbeatAt: string; status: 'ok' | 'degraded'; due: number; completed: number; unavailable: number }) {
+  recordWorkerStatus(input: { heartbeatAt: string; status: 'ok' | 'degraded'; due: number; completed: number; unavailable: number; missed?: number }) {
     this.required().prepare(`
-      INSERT INTO worker_status(singleton,heartbeat_at,status,due_count,completed_count,unavailable_count)
-      VALUES(1,?,?,?,?,?)
+      INSERT INTO worker_status(singleton,heartbeat_at,status,due_count,completed_count,unavailable_count,missed_count)
+      VALUES(1,?,?,?,?,?,?)
       ON CONFLICT(singleton) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,status=excluded.status,
-        due_count=excluded.due_count,completed_count=excluded.completed_count,unavailable_count=excluded.unavailable_count
-    `).run(input.heartbeatAt, input.status, input.due, input.completed, input.unavailable);
+        due_count=excluded.due_count,completed_count=excluded.completed_count,unavailable_count=excluded.unavailable_count,
+        missed_count=excluded.missed_count
+    `).run(input.heartbeatAt, input.status, input.due, input.completed, input.unavailable, input.missed ?? 0);
   }
 
   status() {
@@ -402,10 +496,14 @@ export class StrategyResearchStore {
     const experimentId = displayed?.experimentId ?? '';
     const scalar = (sql: string) => Number((database.prepare(sql).get(experimentId) as { count?: number } | undefined)?.count ?? 0);
     const marks = database.prepare(`
-      SELECT m.horizon_minutes AS horizon,COUNT(*) AS count FROM marks m JOIN episodes e ON e.episode_id=m.episode_id
+      SELECT m.horizon_minutes AS horizon,
+        SUM(CASE WHEN m.status NOT IN ('unavailable','missed') THEN 1 ELSE 0 END) AS count,
+        SUM(CASE WHEN m.status='unavailable' THEN 1 ELSE 0 END) AS unavailable,
+        SUM(CASE WHEN m.status='missed' THEN 1 ELSE 0 END) AS missed
+      FROM marks m JOIN episodes e ON e.episode_id=m.episode_id
       WHERE e.experiment_id=? GROUP BY m.horizon_minutes
-    `).all(experimentId) as Array<{ horizon: number; count: number }>;
-    const worker = database.prepare('SELECT heartbeat_at AS heartbeatAt,status,due_count AS dueCount,completed_count AS completedCount,unavailable_count AS unavailableCount FROM worker_status WHERE singleton=1').get() ?? null;
+    `).all(experimentId) as Array<{ horizon: number; count: number; unavailable: number; missed: number }>;
+    const worker = database.prepare('SELECT heartbeat_at AS heartbeatAt,status,due_count AS dueCount,completed_count AS completedCount,unavailable_count AS unavailableCount,missed_count AS missedCount FROM worker_status WHERE singleton=1').get() ?? null;
     const summarizeExperiment = (spec: StrategyResearchSpec | null) => spec ? {
       experimentId: spec.experimentId,
       strategyId: spec.strategyId,
@@ -420,7 +518,9 @@ export class StrategyResearchStore {
       episodeCount: scalar('SELECT COUNT(*) AS count FROM episodes WHERE experiment_id=?'),
       selectedEpisodeCount: scalar('SELECT COUNT(*) AS count FROM episodes WHERE experiment_id=? AND selected=1'),
       paperOutcomeCount: scalar('SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=?'),
+      boundPaperOutcomeCount: scalar('SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=? AND selection_id IS NOT NULL'),
       marks: Object.fromEntries(marks.map((row) => [String(row.horizon), row.count])),
+      markFailures: Object.fromEntries(marks.map((row) => [String(row.horizon), { unavailable: row.unavailable, missed: row.missed }])),
       worker
     };
   }

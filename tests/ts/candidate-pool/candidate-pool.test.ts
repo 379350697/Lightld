@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { deriveCandidatePoolEntry } from '../../../src/candidate-pool/aggregator';
+import { buildMeteoraCandidate } from '../../../src/candidate-pool/meteora-candidate-builder';
 import { buildMeteoraObservation, buildRouteObservation } from '../../../src/candidate-pool/source-observations';
 import { SqliteCandidatePool } from '../../../src/candidate-pool/sqlite-candidate-pool';
 import type { CandidateSourceObservation } from '../../../src/candidate-pool/types';
@@ -65,6 +66,18 @@ afterEach(async () => {
 });
 
 describe('candidate pool aggregation', () => {
+  it('uses the pool creation timestamp rather than the mutable update timestamp', () => {
+    const candidate = buildMeteoraCandidate({
+      address: 'pool-time',
+      baseMint: 'mint-time',
+      baseSymbol: 'TIME',
+      quoteMint: 'So11111111111111111111111111111111111111112',
+      created_at: 1_751_328_000_000,
+      updatedAt: '2026-07-16T00:00:00.000Z'
+    });
+    expect(candidate.capturedAt).toBe('2025-07-01T00:00:00.000Z');
+  });
+
   it('marks candidates openable when hard sources are fresh and passed', () => {
     const entry = deriveCandidatePoolEntry({
       strategyId: 'new-token-v1',

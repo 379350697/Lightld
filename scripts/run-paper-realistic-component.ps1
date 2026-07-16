@@ -18,6 +18,7 @@ Set-Location $Root
 & (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root
 $env:LIGHTLD_RUN_MODE = "mechanical-soak"
 $env:LIGHTLD_EXECUTION_MODE = "mechanical-soak"
+$env:SOLANA_EXECUTION_DRY_RUN = "true"
 
 $Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
 $env:LIVE_LOCAL_SIGNER_MAX_OUTPUT_SOL = "1000000"
@@ -30,7 +31,6 @@ if ($Role -eq "signer") {
 }
 
 if ($Role -eq "execution") {
-    $env:SOLANA_EXECUTION_DRY_RUN = "true"
     $env:SOLANA_EXECUTION_STATE_DIR = (Join-Path $StateRoot "solana-execution")
     npm.cmd run run:solana-execution
     exit $LASTEXITCODE

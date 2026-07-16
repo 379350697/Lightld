@@ -6,6 +6,7 @@ import { runCandidateWorker } from '../candidate-pool/worker.ts';
 import { JupiterClient } from '../execution/solana/jupiter-client.ts';
 import { FileBackedSlidingWindowRateLimiter } from '../execution/solana/sliding-window-rate-limiter.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
+import { RuntimeStateStore } from '../runtime/runtime-state-store.ts';
 import { SqliteCandidateResearchRecorder } from '../strategy-research/capture.ts';
 import { StrategyResearchStore } from '../strategy-research/store.ts';
 
@@ -162,6 +163,7 @@ async function main() {
     slippageBps: parsePositiveInteger(process.env.SOLANA_DEFAULT_SLIPPAGE_BPS, 100),
     ttlMs: staleMs
   });
+  const runtimeStateStore = new RuntimeStateStore(args.stateRootDir);
 
   try {
     await writer.open();
@@ -175,9 +177,19 @@ async function main() {
       workerLeaseMs,
       gmgnMaxBatchSize: parsePositiveInteger(process.env.LIVE_GMGN_SOURCE_CONCURRENCY, 1),
       gmgnSourceMode: parseGmgnSourceMode(process.env.LIVE_GMGN_SOURCE_MODE),
-      runSoftSourcesInBackground: true,
+      runSoftSourcesInBackground: (process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE) === 'live',
       captureMode: process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE ?? '',
       researchRecorder: new SqliteCandidateResearchRecorder(researchStore),
+      readPriorityPoolAddresses: async () => {
+        const [state, ledger] = await Promise.all([
+          runtimeStateStore.readPositionState(),
+          runtimeStateStore.readPositionLedger()
+        ]);
+        return [
+          state?.activePoolAddress,
+          ...(ledger?.records.filter((record) => record.lifecycleState !== 'closed').map((record) => record.activePoolAddress) ?? [])
+        ].filter((address): address is string => Boolean(address));
+      },
       routeSource,
       poolFeeYieldStore: writer,
       poolFeeYieldSampleIntervalMs: args.poolFeeYieldSampleIntervalMs,

@@ -61,6 +61,7 @@ export type CandidateWorkerOptions = {
   runSoftSourcesInBackground?: boolean;
   captureMode?: string;
   researchRecorder?: CandidateResearchRecorder;
+  readPriorityPoolAddresses?: () => Promise<string[]>;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 };
 
@@ -101,9 +102,23 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
   const fetchLatencyMs = Date.now() - fetchStartedAt;
   let feeYieldProfiles = new Map<string, PoolFeeYieldProfile>();
   if (options.poolFeeYieldStore) {
+    const maximumPools = options.poolFeeYieldMaximumPools ?? 250;
+    const priorityAddresses = new Set([
+      ...(await options.poolFeeYieldStore.readPriorityPoolAddresses?.(options.strategy).catch(() => []) ?? []),
+      ...(await options.readPriorityPoolAddresses?.().catch(() => []) ?? [])
+    ]);
+    const feeRows = [...rows.slice(0, maximumPools)];
+    const sampledAddresses = new Set(feeRows.map((row) => buildMeteoraCandidate(row).address));
+    for (const row of rows) {
+      const address = buildMeteoraCandidate(row).address;
+      if (address && priorityAddresses.has(address) && !sampledAddresses.has(address)) {
+        feeRows.push(row);
+        sampledAddresses.add(address);
+      }
+    }
     feeYieldProfiles = await options.poolFeeYieldStore.recordPoolFeeYieldSamples({
       strategyId: options.strategy,
-      rows: rows.slice(0, options.poolFeeYieldMaximumPools ?? 250),
+      rows: feeRows,
       observedAt: now,
       sampleIntervalMs: options.poolFeeYieldSampleIntervalMs,
       minTvlUsd: config.filters.minLiquidityUsd,
@@ -174,17 +189,6 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
     ? []
     : resolveGmgnCandidateBatch(routeOpenableCandidates, gmgnMaxBatchSize);
   const hardOpenableCount = openableCount;
-  if (options.researchRecorder) {
-    await options.researchRecorder.capture({
-      strategyId: options.strategy,
-      observedAt: now.toISOString(),
-      captureMode: options.captureMode ?? '',
-      baseConfig: config,
-      candidates: routeOpenableCandidates
-    }).catch((error) => {
-      options.logger?.warn(`[CandidateWorker] strategy research degraded; trading candidates unchanged: ${error instanceof Error ? error.message : String(error)}`);
-    });
-  }
   const hardCompletedAt = new Date();
   await options.writer.writeWorkerStatus({
     strategyId: options.strategy,
@@ -196,6 +200,8 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
 
   const runGmgnSoftSource = async () => {
     let gmgnBlockedCount = 0;
+    const gmgnBlockedKeys = new Set<string>();
+    const gmgnSafetyScores = new Map<string, number>();
     const gmgnStartedAt = Date.now();
     try {
       const results = await (options.fetchTokenSafetyBatchImpl ?? ((mints) => fetchTokenSafetyBatch(mints, { maxBatchSize: gmgnMaxBatchSize })))(
@@ -222,6 +228,10 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
         });
         if (!entry.openable) {
           gmgnBlockedCount += 1;
+          gmgnBlockedKeys.add(`${candidate.address}\0${candidate.mint}`);
+        } else {
+          const safetyScore = resultsByMint.get(candidate.mint)?.safetyScore;
+          if (safetyScore !== undefined) gmgnSafetyScores.set(`${candidate.address}\0${candidate.mint}`, safetyScore);
         }
       }
     } catch (error) {
@@ -242,19 +252,40 @@ export async function runCandidateWorkerTick(options: CandidateWorkerOptions): P
     options.logger?.log(
       `[CandidateWorker] pools=${rows.length} prefilter=${prefiltered.length} lp=${lpEligible.length} openable=${finalOpenableCount} gmgnChecked=${gmgnBatch.length}`
     );
-    return finalOpenableCount;
+    const postGmgnCandidates = routeOpenableCandidates
+      .filter((candidate) => !gmgnBlockedKeys.has(`${candidate.address}\0${candidate.mint}`))
+      .map((candidate) => ({
+        ...candidate,
+        safetyScore: gmgnSafetyScores.get(`${candidate.address}\0${candidate.mint}`) ?? candidate.safetyScore
+      }));
+    return { finalOpenableCount, postGmgnCandidates };
   };
 
+  let researchCandidates = routeOpenableCandidates;
   if (gmgnBatch.length > 0 && options.runSoftSourcesInBackground) {
     void runGmgnSoftSource().catch((error) => {
       options.logger?.warn(`[CandidateWorker] GMGN source failed soft: ${error instanceof Error ? error.message : String(error)}`);
     });
   } else if (gmgnBatch.length > 0) {
-    openableCount = await runGmgnSoftSource();
+    const result = await runGmgnSoftSource();
+    openableCount = result.finalOpenableCount;
+    researchCandidates = result.postGmgnCandidates;
   } else {
     options.logger?.log(
       `[CandidateWorker] pools=${rows.length} prefilter=${prefiltered.length} lp=${lpEligible.length} openable=${openableCount} gmgnChecked=${gmgnBatch.length}`
     );
+  }
+
+  if (options.researchRecorder) {
+    await options.researchRecorder.capture({
+      strategyId: options.strategy,
+      observedAt: now.toISOString(),
+      captureMode: options.captureMode ?? '',
+      baseConfig: config,
+      candidates: researchCandidates
+    }).catch((error) => {
+      options.logger?.warn(`[CandidateWorker] strategy research degraded; trading candidates unchanged: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   return {

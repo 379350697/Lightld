@@ -5,12 +5,12 @@ if [[ "${LIGHTLD_LIVE_CONFIRM:-}" != "I_UNDERSTAND_MAINNET" ]]; then
   echo "Set LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET to confirm mainnet live trading" >&2
   exit 1
 fi
-export LIGHTLD_RUN_MODE=live
-export LIGHTLD_EXECUTION_MODE=live
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/load-env.sh"
+export LIGHTLD_RUN_MODE=live
+export LIGHTLD_EXECUTION_MODE=live
+export SOLANA_EXECUTION_DRY_RUN=false
 bash "$ROOT/scripts/stop-lightld.sh" all
 mkdir -p "$ROOT/logs"
 

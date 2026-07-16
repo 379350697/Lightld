@@ -4,7 +4,14 @@ import type { StrategyConfig } from '../config/schema.ts';
 import { pairedBlockBootstrap, summarizePnl } from './statistics.ts';
 import { applyStrategyPatch } from './spec.ts';
 import { StrategyResearchStore } from './store.ts';
-import type { ResearchEpisode, ResearchMark, StrategyResearchReportStatus, StrategyResearchSpec } from './types.ts';
+import {
+  RESEARCH_HORIZON_TOLERANCE_MINUTES,
+  RESEARCH_REVIEW_FLOORS,
+  type ResearchEpisode,
+  type ResearchMark,
+  type StrategyResearchReportStatus,
+  type StrategyResearchSpec
+} from './types.ts';
 
 type EconomicRow = {
   snapshotId: string;
@@ -29,6 +36,8 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
   const marks = store.listMarks(spec.experimentId);
   const marksByEpisode = new Map<string, ResearchMark[]>();
   for (const mark of marks) {
+    const episode = episodes.find((candidate) => candidate.episodeId === mark.episodeId);
+    if (!episode || !isOnTimeMark(episode, mark)) continue;
     const current = marksByEpisode.get(mark.episodeId) ?? [];
     current.push(mark);
     marksByEpisode.set(mark.episodeId, current);
@@ -81,21 +90,28 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
   const expectedMarks = selectedEpisodes * 4;
   const availableMarks = marks.filter((mark) => {
     const episode = episodes.find((item) => item.episodeId === mark.episodeId);
-    return Boolean(episode) && mark.status !== 'unavailable';
+    return Boolean(episode) && isOnTimeMark(episode!, mark) && mark.status !== 'unavailable' && mark.status !== 'missed';
   }).length;
   const markCoverage = expectedMarks ? availableMarks / expectedMarks : 0;
-  const utcDays = new Set(episodes.map((episode) => episode.observedAt.slice(0, 10))).size;
+  const observedUtcDays = new Set(episodes.map((episode) => episode.observedAt.slice(0, 10))).size;
+  const utcDays = countCompleteUtcDays(store.snapshotTimes(spec.experimentId));
+  const thresholds = {
+    minimumEpisodes: Math.max(spec.thresholds.minimumEpisodes, RESEARCH_REVIEW_FLOORS.minimumEpisodes),
+    minimumUtcDays: Math.max(spec.thresholds.minimumUtcDays, RESEARCH_REVIEW_FLOORS.minimumUtcDays),
+    minimumOosEpisodes: Math.max(spec.thresholds.minimumOosEpisodes, RESEARCH_REVIEW_FLOORS.minimumOosEpisodes),
+    minimumMarkCoverage: Math.max(spec.thresholds.minimumMarkCoverage, RESEARCH_REVIEW_FLOORS.minimumMarkCoverage)
+  };
   const best = [...comparisons].sort((left, right) => right.oos.meanPnlSol - left.oos.meanPnlSol)[0];
   const blockingReasons: string[] = [];
-  if (!best || best.pairCount < spec.thresholds.minimumEpisodes) blockingReasons.push('minimum_episodes_not_met');
-  if (utcDays < spec.thresholds.minimumUtcDays) blockingReasons.push('minimum_utc_days_not_met');
-  if (!best || best.oos.count < spec.thresholds.minimumOosEpisodes) blockingReasons.push('minimum_oos_episodes_not_met');
-  if (markCoverage < spec.thresholds.minimumMarkCoverage) blockingReasons.push('mark_coverage_not_met');
+  if (!best || best.pairCount < thresholds.minimumEpisodes) blockingReasons.push('minimum_episodes_not_met');
+  if (utcDays < thresholds.minimumUtcDays) blockingReasons.push('minimum_utc_days_not_met');
+  if (!best || best.oos.count < thresholds.minimumOosEpisodes) blockingReasons.push('minimum_oos_episodes_not_met');
+  if (markCoverage < thresholds.minimumMarkCoverage) blockingReasons.push('mark_coverage_not_met');
   let status: StrategyResearchReportStatus = 'insufficient';
   if (blockingReasons.length === 0 && best) {
     status = best.oos.meanPnlSol > 0
       && best.bootstrap.lower95 > 0
-      && best.capacityPassRate >= spec.thresholds.minimumMarkCoverage
+      && best.capacityPassRate >= thresholds.minimumMarkCoverage
       ? 'review'
       : 'reject';
   }
@@ -113,7 +129,7 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     createdAt,
     status,
     blockingReasons,
-    sample: { selectedEpisodes, utcDays, markCoverage, paperOutcomeCount: paperRows.length },
+    sample: { selectedEpisodes, utcDays, observedUtcDays, markCoverage, paperOutcomeCount: paperRows.length },
     variants: summaries,
     comparisons,
     paperRealized: summarizePnl(paperRows.map((row) => row.pnlSol)),
@@ -133,6 +149,7 @@ export function renderResearchMarkdown(report: ReturnType<typeof analyzeStrategy
     `- Strategy: ${report.strategyId}`,
     `- Selected episodes: ${report.sample.selectedEpisodes}`,
     `- UTC days: ${report.sample.utcDays}`,
+    `- Observed UTC dates: ${report.sample.observedUtcDays}`,
     `- Mark coverage: ${(report.sample.markCoverage * 100).toFixed(1)}%`,
     `- Paper realized outcomes: ${report.sample.paperOutcomeCount}`,
     ''
@@ -224,9 +241,12 @@ function economicAtMark(episode: ResearchEpisode, mark: ResearchMark, config: St
   const estimatedFeeSol = Number.isFinite(feeRatio) && feeRatio > 0
     ? episode.positionSol * feeRatio * mark.horizonMinutes / 1440
     : 0;
-  const recoveryRate = Math.max(targetRecoverySol / episode.positionSol, Number.EPSILON);
-  const impermanentLossFraction = Math.max(0, 1 - (2 * Math.sqrt(recoveryRate) / (1 + recoveryRate)));
-  const impermanentLossSol = episode.positionSol * impermanentLossFraction;
+  // A DLMM position cannot be valued with the constant-product IL formula. Until an
+  // actual paper position valuation is available, use the configured conservative
+  // range-loss allowance and label the report as modeled rather than observed PnL.
+  const impermanentLossSol = episode.positionSol
+    * (config.entryEdge?.defaultImpermanentLossBps ?? 25) / 10_000
+    * mark.horizonMinutes / 1440;
   const adverseSelectionSol = episode.positionSol * (config.entryEdge?.defaultAdverseSelectionBps ?? 25) / 10_000;
   const capitalChargeSol = episode.positionSol * (config.entryEdge?.defaultCapitalChargeBps ?? 5) / 10_000;
   const chainCostSol = config.entryEdge?.defaultChainCostSol ?? 0.000005;
@@ -272,4 +292,29 @@ function splitWithEmbargo<T extends { row: { observedAt: string } }>(rows: T[], 
   const oosBoundary = validationRaw.length ? Date.parse(validationRaw[validationRaw.length - 1]!.row.observedAt) + embargoMs : validationBoundary;
   const oos = rows.slice(validationEnd).filter((item) => Date.parse(item.row.observedAt) >= oosBoundary);
   return { train, validation: validationRaw, oos };
+}
+
+function isOnTimeMark(episode: ResearchEpisode, mark: ResearchMark) {
+  const elapsedMinutes = (Date.parse(mark.observedAt) - Date.parse(episode.observedAt)) / 60_000;
+  const tolerance = RESEARCH_HORIZON_TOLERANCE_MINUTES[mark.horizonMinutes];
+  return Number.isFinite(elapsedMinutes)
+    && elapsedMinutes >= mark.horizonMinutes
+    && elapsedMinutes <= mark.horizonMinutes + tolerance;
+}
+
+function countCompleteUtcDays(snapshotTimes: string[]) {
+  const bucketsByDay = new Map<string, Set<number>>();
+  for (const value of snapshotTimes) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) continue;
+    const date = new Date(timestamp);
+    const day = date.toISOString().slice(0, 10);
+    const bucket = date.getUTCHours() * 4 + Math.floor(date.getUTCMinutes() / 15);
+    const buckets = bucketsByDay.get(day) ?? new Set<number>();
+    buckets.add(bucket);
+    bucketsByDay.set(day, buckets);
+  }
+  return [...bucketsByDay.values()].filter((buckets) =>
+    buckets.size >= 86 && buckets.has(0) && buckets.has(95)
+  ).length;
 }

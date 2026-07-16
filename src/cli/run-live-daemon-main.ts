@@ -21,6 +21,7 @@ import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtim
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
 import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
+import { StrategyResearchStore } from '../strategy-research/store.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -191,6 +192,17 @@ async function main() {
   if (runMode === 'live' && process.env.LIGHTLD_LIVE_CONFIRM !== 'I_UNDERSTAND_MAINNET') {
     throw new Error('Live mode requires LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET');
   }
+  const executionMode = process.env.LIGHTLD_EXECUTION_MODE;
+  if (executionMode !== runMode) {
+    throw new Error(`LIGHTLD_EXECUTION_MODE must match LIGHTLD_RUN_MODE (${runMode})`);
+  }
+  const executionDryRun = parseBoolean(process.env.SOLANA_EXECUTION_DRY_RUN, false);
+  if (runMode === 'live' && executionDryRun) {
+    throw new Error('Live mode cannot run with SOLANA_EXECUTION_DRY_RUN=true');
+  }
+  if (runMode !== 'live' && !executionDryRun) {
+    throw new Error(`${runMode} requires SOLANA_EXECUTION_DRY_RUN=true`);
+  }
   const runtimeConfig = loadLiveRuntimeConfig();
   const spendingLimitsConfig = parseBoolean(process.env.LIVE_IGNORE_SPENDING_LIMITS, false)
     ? undefined
@@ -303,7 +315,12 @@ async function main() {
       })
     : undefined;
 
-  await runLiveDaemon({
+  const researchStore = runMode === 'live'
+    ? undefined
+    : new StrategyResearchStore(join(args.stateRootDir, 'research', 'research.sqlite'));
+  await researchStore?.open();
+  try {
+    await runLiveDaemon({
     strategy,
     stateRootDir: args.stateRootDir,
     journalRootDir: args.journalRootDir,
@@ -368,8 +385,25 @@ async function main() {
         ...ingestInput
       };
     },
-    alertSink
-  });
+      onCycleResult: researchStore ? (result) => {
+        if (result.action !== 'deploy' && result.action !== 'add-lp') return;
+        const poolAddress = typeof result.context?.pool?.address === 'string' ? result.context.pool.address : '';
+        const tokenMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
+        if (!poolAddress || !tokenMint) return;
+        researchStore.recordPaperSelection({
+          strategyId: strategy,
+          poolAddress,
+          tokenMint,
+          selectedAt: new Date().toISOString(),
+          action: result.action,
+          reason: result.reason
+        });
+      } : undefined,
+      alertSink
+    });
+  } finally {
+    researchStore?.close();
+  }
 }
 
 main().catch((error: unknown) => {

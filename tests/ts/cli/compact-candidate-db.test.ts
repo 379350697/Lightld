@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,6 +16,21 @@ afterEach(async () => {
 });
 
 describe('compact:candidate-db', () => {
+  it('blocks project writers while the maintenance lock is held', async () => {
+    const root = join(process.cwd(), `.tmp-candidate-lock-${process.pid}-${Date.now()}`);
+    roots.push(root);
+    await mkdir(root, { recursive: true });
+    const databasePath = join(root, 'lightld-candidate-pool.sqlite');
+    const pool = new SqliteCandidatePool({ path: databasePath });
+    await pool.open();
+    await writeFile(`${databasePath}.maintenance.lock`, 'test\n', 'utf8');
+    await expect(pool.writeWorkerStatus({
+      strategyId: 'new-token-v1', status: 'running', observedAt: new Date().toISOString(), expiresAt: new Date().toISOString()
+    })).rejects.toThrow('maintenance');
+    await rm(`${databasePath}.maintenance.lock`, { force: true });
+    await pool.close();
+  });
+
   it('backs up, prunes, checks and atomically replaces a stopped candidate database', async () => {
     const root = join(process.cwd(), `.tmp-candidate-compact-${process.pid}-${Date.now()}`);
     roots.push(root);

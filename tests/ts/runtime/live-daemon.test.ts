@@ -194,7 +194,7 @@ describe('runLiveDaemon', () => {
             requestedPositionSol: 0.08,
             accountState: baseAccountState,
             context: {
-              pool: { address: 'pool-fable', liquidityUsd: 10_000, score: 90 },
+              pool: { address: 'pool-fable', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
               token: { mint: 'mint-fable', inSession: true, hasSolRoute: true, symbol: 'FABLE', score: 90 },
               trader: { hasInventory: false, hasLpPosition: false },
               route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
@@ -693,7 +693,7 @@ describe('runLiveDaemon', () => {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000 },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.05 },
             token: {
               mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
               inSession: true,
@@ -816,7 +816,7 @@ describe('runLiveDaemon', () => {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000 },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.05 },
             token: {
               mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
               inSession: true,
@@ -1295,7 +1295,7 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
           token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
           trader: { hasInventory: true, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -2306,7 +2306,7 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
           token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -2348,7 +2348,7 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-failed', liquidityUsd: 10_000, score: 90 },
+          pool: { address: 'pool-failed', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
           token: { mint: 'mint-failed', inSession: true, hasSolRoute: true, symbol: 'FAIL', score: 90 },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }

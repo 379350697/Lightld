@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { rename, rm, stat } from 'node:fs/promises';
+import { open, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 
@@ -31,11 +31,19 @@ async function main() {
   const backupPath = `${base}.backup.sqlite`;
   const workingPath = `${base}.working.sqlite`;
   const compactPath = `${base}.compact.sqlite`;
+  const lockPath = `${databasePath}.maintenance.lock`;
   const beforeBytes = (await stat(databasePath)).size;
   let originalCounts: Record<string, number>;
   let originalLatest: string | null;
 
+  let lock;
   try {
+    try {
+      lock = await open(lockPath, 'wx');
+      await lock.writeFile(`${process.pid}\n`, 'utf8');
+    } catch (error) {
+      throw new Error(`Candidate database maintenance lock is already held: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const source = new DatabaseSync(databasePath);
     try {
       source.exec('PRAGMA busy_timeout=1000; PRAGMA wal_checkpoint(TRUNCATE);');
@@ -102,6 +110,10 @@ async function main() {
       quickCheck: 'ok'
     }, null, 2)}\n`);
   } finally {
+    if (lock) {
+      await lock.close().catch(() => undefined);
+      await rm(lockPath, { force: true });
+    }
     await rm(workingPath, { force: true });
     await rm(compactPath, { force: true });
   }

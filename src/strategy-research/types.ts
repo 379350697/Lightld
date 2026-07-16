@@ -2,6 +2,21 @@ import { z } from 'zod';
 
 import { StrategyConfigSchema } from '../config/schema.ts';
 
+export const RESEARCH_REVIEW_FLOORS = {
+  minimumEpisodes: 50,
+  minimumUtcDays: 7,
+  minimumOosEpisodes: 15,
+  minimumMarkCoverage: 0.9
+} as const;
+
+export const RESEARCH_ENTRY_MAX_DELAY_MINUTES = 5;
+export const RESEARCH_HORIZON_TOLERANCE_MINUTES = {
+  15: 5,
+  60: 10,
+  240: 30,
+  1440: 120
+} as const;
+
 export const ResearchStrategyIdSchema = z.enum(['new-token-v1', 'large-pool-v1']);
 
 export const ResearchVariantSchema = z.object({
@@ -16,10 +31,10 @@ export const StrategyResearchSpecSchema = z.object({
   baseConfig: StrategyConfigSchema.optional(),
   variants: z.array(ResearchVariantSchema).min(1).max(3),
   thresholds: z.object({
-    minimumEpisodes: z.number().int().positive().default(50),
-    minimumUtcDays: z.number().int().positive().default(7),
-    minimumOosEpisodes: z.number().int().positive().default(15),
-    minimumMarkCoverage: z.number().min(0).max(1).default(0.9)
+    minimumEpisodes: z.number().int().min(RESEARCH_REVIEW_FLOORS.minimumEpisodes).default(RESEARCH_REVIEW_FLOORS.minimumEpisodes),
+    minimumUtcDays: z.number().int().min(RESEARCH_REVIEW_FLOORS.minimumUtcDays).default(RESEARCH_REVIEW_FLOORS.minimumUtcDays),
+    minimumOosEpisodes: z.number().int().min(RESEARCH_REVIEW_FLOORS.minimumOosEpisodes).default(RESEARCH_REVIEW_FLOORS.minimumOosEpisodes),
+    minimumMarkCoverage: z.number().min(RESEARCH_REVIEW_FLOORS.minimumMarkCoverage).max(1).default(RESEARCH_REVIEW_FLOORS.minimumMarkCoverage)
   }).default({
     minimumEpisodes: 50,
     minimumUtcDays: 7,
@@ -65,7 +80,7 @@ export type CaptureResearchSnapshotInput = {
   decisions: ResearchDecision[];
 };
 
-export type ResearchMarkStatus = 'ok' | 'no_route' | 'dead_pool' | 'rug' | 'unavailable';
+export type ResearchMarkStatus = 'ok' | 'no_route' | 'dead_pool' | 'rug' | 'unavailable' | 'missed';
 
 export type ResearchEpisode = {
   episodeId: string;

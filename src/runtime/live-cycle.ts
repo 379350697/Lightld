@@ -284,6 +284,13 @@ function firstNumber(...values: unknown[]) {
   return 0;
 }
 
+function firstOptionalNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
 function firstPositiveNumber(...values: unknown[]) {
   for (const value of values) {
     if (typeof value === 'number' && value > 0) {
@@ -1996,7 +2003,19 @@ function buildEngineSnapshot(
       context.token.hasSolRoute
     ),
     liquidityUsd: firstNumber(context.pool.liquidityUsd, context.token.liquidityUsd),
-    poolCreatedAt: firstString(context.pool.capturedAt, context.pool.poolCreatedAt, context.token.capturedAt)
+    poolCreatedAt: firstString(context.pool.poolCreatedAt, context.pool.capturedAt, context.token.capturedAt),
+    requestedPositionSol: firstNumber(context.route.expectedOutSol, context.token.expectedOutSol),
+    expectedFeeSol: firstOptionalNumber(context.pool.expectedFeeSol, context.token.expectedFeeSol),
+    feeTvlRatio24h: firstOptionalNumber(context.pool.feeTvlRatio24h, context.token.feeTvlRatio24h),
+    roundTripCostBps: firstOptionalNumber(
+      context.route.roundTripCostBps,
+      typeof context.route.slippageBps === 'number' ? context.route.slippageBps * 2 : undefined
+    ),
+    adverseSelectionBps: firstOptionalNumber(context.pool.adverseSelectionBps, context.token.adverseSelectionBps),
+    impermanentLossBps: firstOptionalNumber(context.pool.impermanentLossBps, context.token.impermanentLossBps),
+    chainCostSol: firstOptionalNumber(context.route.chainCostSol),
+    capitalChargeBps: firstOptionalNumber(context.pool.capitalChargeBps),
+    safetyMarginBps: firstOptionalNumber(context.pool.safetyMarginBps)
   };
 
   if (poolClass === 'new-token') {

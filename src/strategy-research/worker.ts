@@ -115,16 +115,31 @@ export async function runResearchWorkerTick(input: {
   const due = input.store.dueEpisodes(input.now ?? new Date(), input.limit ?? 100);
   let completed = 0;
   let unavailable = 0;
+  let missed = 0;
   for (const task of due) {
     try {
       if (task.horizonMinutes === 0) {
-        const entry = await input.collector.collectEntry(task.episode);
+        const entry: EntryQuoteResult = task.missed
+          ? { status: 'missed', detail: 'entry quote collection window expired' }
+          : await input.collector.collectEntry(task.episode);
         input.store.recordEntryQuote({ episodeId: task.episode.episodeId, ...entry });
         if (entry.status === 'unavailable') unavailable += 1;
+        if (entry.status === 'missed') missed += 1;
       } else {
-        const mark = await input.collector.collectMark(task.episode, task.horizonMinutes);
+        const mark: ResearchMark = task.missed ? {
+          episodeId: task.episode.episodeId,
+          horizonMinutes: task.horizonMinutes,
+          observedAt: (input.now ?? new Date()).toISOString(),
+          status: 'missed',
+          targetRecoverySol: null,
+          doubleRecoverySol: null,
+          targetImpactBps: null,
+          doubleImpactBps: null,
+          detail: 'mark collection window expired'
+        } : await input.collector.collectMark(task.episode, task.horizonMinutes);
         input.store.recordMark(mark);
         if (mark.status === 'unavailable') unavailable += 1;
+        if (mark.status === 'missed') missed += 1;
       }
       completed += 1;
     } catch (error) {
@@ -134,14 +149,15 @@ export async function runResearchWorkerTick(input: {
   }
   input.store.recordWorkerStatus({
     heartbeatAt: (input.now ?? new Date()).toISOString(),
-    status: unavailable > 0 ? 'degraded' : 'ok',
+    status: unavailable > 0 || missed > 0 ? 'degraded' : 'ok',
     due: due.length,
     completed,
-    unavailable
+    unavailable,
+    missed
   });
   input.store.checkpoint();
-  input.logger?.log(`[StrategyResearch] due=${due.length} completed=${completed} unavailable=${unavailable}`);
-  return { due: due.length, completed, unavailable };
+  input.logger?.log(`[StrategyResearch] due=${due.length} completed=${completed} unavailable=${unavailable} missed=${missed}`);
+  return { due: due.length, completed, unavailable, missed };
 }
 
 export async function runResearchWorker(input: {
@@ -166,9 +182,16 @@ function impactBps(quote: JupiterQuoteResponse) {
   return Number.isFinite(percent) ? percent * 100 : null;
 }
 
-function classifyQuoteFailure(error: unknown): EntryQuoteResult {
+export function classifyQuoteFailure(error: unknown): EntryQuoteResult {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/rug|honeypot|mint authority|freeze authority|frozen token/i.test(message)) {
+    return { status: 'rug', detail: message };
+  }
+  if (/dead pool|pool closed|pool not found|insufficient liquidity/i.test(message)) {
+    return { status: 'dead_pool', detail: message };
+  }
   if (isJupiterNoRouteError(error)) {
     return { status: 'no_route', detail: error.message };
   }
-  return { status: 'unavailable', detail: error instanceof Error ? error.message : String(error) };
+  return { status: 'unavailable', detail: message };
 }

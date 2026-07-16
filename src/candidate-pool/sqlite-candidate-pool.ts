@@ -237,8 +237,24 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     return this.database;
   }
 
+  private assertMaintenanceUnlocked() {
+    if (!this.readOnly && existsSync(`${this.path}.maintenance.lock`)) {
+      throw new Error('candidate database maintenance is in progress');
+    }
+  }
+
+  async readPriorityPoolAddresses(strategyId: StrategyId) {
+    await this.open();
+    if (!this.database) return [];
+    return (this.database.prepare(`
+      SELECT pool_address AS poolAddress FROM candidate_pool
+      WHERE strategy_id=? AND openable=1
+    `).all(strategyId) as Array<{ poolAddress: string }>).map((row) => row.poolAddress);
+  }
+
   async upsertCandidate(input: CandidatePoolUpsert): Promise<CandidatePoolEntry> {
     await this.open();
+    this.assertMaintenanceUnlocked();
     const database = this.db();
     const existing = this.readObservations(database, input.strategyId, input.candidate.address, input.candidate.mint)
       .filter((observation) => !input.sourceObservations.some((item) => item.source === observation.source));
@@ -252,6 +268,7 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
 
     database.exec('BEGIN IMMEDIATE');
     try {
+      this.assertMaintenanceUnlocked();
       const sourceStmt = database.prepare(`
         INSERT INTO candidate_source_observations (
           strategy_id, pool_address, token_mint, source, status, observed_at, expires_at,
@@ -320,13 +337,18 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
 
   async markMissingOpenableStale(strategyId: StrategyId, observedAt: string, seenKeys: Array<{ poolAddress: string; tokenMint: string }>) {
     await this.open();
+    this.assertMaintenanceUnlocked();
     const database = this.db();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      this.assertMaintenanceUnlocked();
     if (seenKeys.length === 0) {
       database.prepare(`
         UPDATE candidate_pool
         SET status='stale', openable=0, block_reason='not-seen-this-cycle', updated_at=?
         WHERE strategy_id=? AND status!='stale'
       `).run(observedAt, strategyId);
+      database.exec('COMMIT');
       return;
     }
 
@@ -343,6 +365,11 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     for (const row of stale) {
       stmt.run(observedAt, strategyId, readString(row, 'pool_address'), readString(row, 'token_mint'));
     }
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async writeWorkerStatus(input: {
@@ -353,7 +380,11 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     details?: string;
   }) {
     await this.open();
+    this.assertMaintenanceUnlocked();
     const database = this.db();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      this.assertMaintenanceUnlocked();
     database.prepare(`
       INSERT INTO candidate_pool_worker_status (
         strategy_id, status, observed_at, expires_at, details
@@ -370,6 +401,11 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
       input.expiresAt,
       input.details ?? ''
     );
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async recordPoolFeeYieldSamples(input: {
@@ -382,6 +418,7 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     retentionMs?: number;
   }): Promise<Map<string, PoolFeeYieldProfile>> {
     await this.open();
+    this.assertMaintenanceUnlocked();
     if (!this.database || this.readOnly) {
       return new Map();
     }
@@ -397,6 +434,7 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
 
     database.exec('BEGIN IMMEDIATE');
     try {
+      this.assertMaintenanceUnlocked();
       for (const sample of samples) {
         const activeRetirement = this.readActivePoolFeeYieldRetirement(database, sample.poolAddress, nowIso);
         if (activeRetirement) {

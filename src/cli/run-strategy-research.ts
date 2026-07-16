@@ -39,8 +39,13 @@ export async function runStrategyResearchCli(
       return json({ command, status: changed ? 'stopped' : 'no-active-experiment' });
     }
     if (command === 'status') {
-      const databaseBytes = await stat(databasePath).then((entry) => entry.size).catch(() => 0);
-      return json({ command, ...store.status(), databasePath, databaseBytes });
+      const fileSizes = Object.fromEntries(await Promise.all([
+        ['database', databasePath],
+        ['wal', `${databasePath}-wal`],
+        ['shm', `${databasePath}-shm`]
+      ].map(async ([name, path]) => [name, await stat(path).then((entry) => entry.size).catch(() => 0)]))) as Record<string, number>;
+      const databaseBytes = Object.values(fileSizes).reduce((sum, value) => sum + Number(value), 0);
+      return json({ command, ...store.status(), databasePath, databaseBytes, fileSizes });
     }
     if (command === 'analyze') {
       const spec = resolveSpec(store, argv);

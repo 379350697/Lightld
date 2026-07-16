@@ -9,8 +9,8 @@ import { analyzeStrategyResearch } from '../../../src/strategy-research/analyzer
 import { buildSnapshot } from '../../../src/strategy-research/capture.ts';
 import { validateResearchSpecPatches } from '../../../src/strategy-research/spec.ts';
 import { StrategyResearchStore } from '../../../src/strategy-research/store.ts';
-import type { ResearchEpisode, ResearchMark } from '../../../src/strategy-research/types.ts';
-import { runResearchWorkerTick, type ResearchMarkCollector } from '../../../src/strategy-research/worker.ts';
+import { StrategyResearchSpecSchema, type ResearchEpisode, type ResearchMark } from '../../../src/strategy-research/types.ts';
+import { classifyQuoteFailure, runResearchWorkerTick, type ResearchMarkCollector } from '../../../src/strategy-research/worker.ts';
 
 const roots: string[] = [];
 
@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe('personal strategy research loop', () => {
-  it('captures one market snapshot, isolates variant decisions and produces a manual review draft', async () => {
+  it('captures one market snapshot, isolates variant decisions and remains exploratory below hard review floors', async () => {
     const root = join(process.cwd(), `.tmp-strategy-research-${process.pid}-${Date.now()}`);
     roots.push(root);
     await mkdir(root, { recursive: true });
@@ -45,18 +45,33 @@ describe('personal strategy research loop', () => {
       candidate('pool-a', 'mint-a', 10_000, 0.2),
       candidate('pool-b', 'mint-b', 100_000, 0.1)
     ], '2026-07-01T01:00:00.000Z', 'mechanical-soak'));
+    expect(store.recordPaperSelection({
+      strategyId: 'new-token-v1', poolAddress: 'pool-a', tokenMint: 'mint-a',
+      selectedAt: '2026-07-01T00:02:00.000Z', action: 'add-lp', reason: 'paper-open'
+    })).toMatchObject({ variantId: 'baseline' });
+    expect(store.recordPaperSelection({
+      strategyId: 'new-token-v1', poolAddress: 'pool-a', tokenMint: 'mint-a',
+      selectedAt: '2026-07-01T02:00:00.000Z', action: 'add-lp', reason: 'stale-snapshot'
+    })).toBeNull();
 
+    let markObservedAt = '2026-07-01T00:00:00.000Z';
     const collector: ResearchMarkCollector = {
       async collectEntry(episode) {
         return { status: 'ok', targetTokenRaw: '1000', doubleTokenRaw: '2000', targetImpactBps: 10, doubleImpactBps: 12 };
       },
       async collectMark(episode, horizonMinutes) {
-        return mark(episode, horizonMinutes, episode.tokenMint === 'mint-b' ? 0.13 : 0.08);
+        return mark(episode, horizonMinutes, episode.tokenMint === 'mint-b' ? 0.13 : 0.08, markObservedAt);
       }
     };
-    const now = new Date('2026-07-03T00:00:00.000Z');
-    for (let tick = 0; tick < 5; tick += 1) {
-      await runResearchWorkerTick({ store, collector, now });
+    for (const timestamp of [
+      '2026-07-01T00:01:00.000Z',
+      '2026-07-01T00:15:00.000Z',
+      '2026-07-01T01:00:00.000Z',
+      '2026-07-01T04:00:00.000Z',
+      '2026-07-02T00:00:00.000Z'
+    ]) {
+      markObservedAt = timestamp;
+      await runResearchWorkerTick({ store, collector, now: new Date(timestamp) });
     }
 
     const status = store.status();
@@ -64,9 +79,10 @@ describe('personal strategy research loop', () => {
     expect(status.selectedEpisodeCount).toBe(2);
     expect(status.marks).toEqual({ '15': 2, '60': 2, '240': 2, '1440': 2 });
     const report = analyzeStrategyResearch(store, spec);
-    expect(report.status).toBe('review');
-    expect(report.chosenVariant).toBe('deeper-pools');
-    expect(report.patchDraft).toEqual({ filters: { minLiquidityUsd: 50_000 } });
+    expect(report.status).toBe('insufficient');
+    expect(report.blockingReasons).toContain('minimum_episodes_not_met');
+    expect(report.chosenVariant).toBeNull();
+    expect(report.patchDraft).toBeNull();
     store.close();
   });
 
@@ -100,6 +116,7 @@ describe('personal strategy research loop', () => {
       thresholds: { minimumEpisodes: 1, minimumUtcDays: 1, minimumOosEpisodes: 1, minimumMarkCoverage: 0.9 }
     };
     store.startExperiment(spec, '2026-07-01T00:00:00.000Z');
+    store.stopExperiment('2026-07-02T12:00:00.000Z');
     const outcome = {
       cycleId: 'cycle-paper', strategyId: 'new-token-v1' as const, recordedAt: '2026-07-02T00:00:00.000Z',
       tokenMint: 'mint', tokenSymbol: 'MINT', poolAddress: 'pool', runtimeMode: 'healthy', sessionPhase: 'closed' as const,
@@ -110,7 +127,8 @@ describe('personal strategy research loop', () => {
     store.syncPaperOutcomes(spec.experimentId, [
       { ...outcome, captureMode: 'live' },
       { ...outcome, cycleId: 'cycle-shadow', captureMode: 'economic-shadow' },
-      { ...outcome, cycleId: 'cycle-paper', captureMode: 'mechanical-soak' }
+      { ...outcome, cycleId: 'cycle-paper', captureMode: 'mechanical-soak' },
+      { ...outcome, cycleId: 'cycle-after-stop', recordedAt: '2026-07-03T00:00:00.000Z', captureMode: 'mechanical-soak' }
     ]);
     expect(store.status().paperOutcomeCount).toBe(1);
     store.close();
@@ -159,6 +177,51 @@ describe('personal strategy research loop', () => {
     expect(store.dueEpisodes(new Date('2026-07-02T00:02:00.000Z')).length).toBe(1);
     store.close();
   });
+
+  it('fails late marks closed, stops scheduling stopped experiments and enforces review floors', async () => {
+    expect(() => StrategyResearchSpecSchema.parse({
+      experimentId: 'too-small',
+      strategyId: 'new-token-v1',
+      variants: [{ variantId: 'variant', parameterPatch: { filters: { minLiquidityUsd: 2000 } } }],
+      thresholds: { minimumEpisodes: 1, minimumUtcDays: 1, minimumOosEpisodes: 1, minimumMarkCoverage: 0.5 }
+    })).toThrow();
+
+    const root = join(process.cwd(), `.tmp-strategy-research-late-${process.pid}-${Date.now()}`);
+    roots.push(root);
+    const store = new StrategyResearchStore(join(root, 'research.sqlite'));
+    await store.open();
+    const config = await loadStrategyConfig('src/config/strategies/new-token-v1.yaml');
+    const spec = {
+      experimentId: 'late-marks',
+      strategyId: 'new-token-v1' as const,
+      positionSol: 0.1,
+      baseConfig: config,
+      variants: [{ variantId: 'same', parameterPatch: { filters: { minLiquidityUsd: 1000 } } }],
+      thresholds: { minimumEpisodes: 50, minimumUtcDays: 7, minimumOosEpisodes: 15, minimumMarkCoverage: 0.9 }
+    };
+    store.startExperiment(spec, '2026-07-01T00:00:00.000Z');
+    store.captureSnapshot(buildSnapshot(spec, config, [candidate('pool-late', 'mint-late', 100_000, 0.1)], '2026-07-01T00:00:00.000Z', 'mechanical-soak'));
+    let collectorCalls = 0;
+    await runResearchWorkerTick({
+      store,
+      now: new Date('2026-07-01T00:06:00.000Z'),
+      collector: {
+        async collectEntry() { collectorCalls += 1; return { status: 'ok', targetTokenRaw: '1', doubleTokenRaw: '2' }; },
+        async collectMark(episode, horizonMinutes) { collectorCalls += 1; return mark(episode, horizonMinutes, 0.1); }
+      }
+    });
+    expect(collectorCalls).toBe(0);
+    expect(store.listEpisodes(spec.experimentId).every((episode) => episode.entryStatus === 'missed')).toBe(true);
+    store.stopExperiment('2026-07-01T00:07:00.000Z');
+    expect(store.dueEpisodes(new Date('2026-07-03T00:00:00.000Z'))).toEqual([]);
+    store.close();
+  });
+
+  it('classifies business terminal quote failures separately from provider outages', () => {
+    expect(classifyQuoteFailure(new Error('pool closed: insufficient liquidity')).status).toBe('dead_pool');
+    expect(classifyQuoteFailure(new Error('honeypot / freeze authority detected')).status).toBe('rug');
+    expect(classifyQuoteFailure(new Error('upstream timeout')).status).toBe('unavailable');
+  });
 });
 
 function candidate(address: string, mint: string, liquidityUsd: number, feeTvlRatio24h: number): IngestCandidate {
@@ -180,11 +243,16 @@ function candidate(address: string, mint: string, liquidityUsd: number, feeTvlRa
   };
 }
 
-function mark(episode: ResearchEpisode, horizonMinutes: 15 | 60 | 240 | 1440, recovery: number): ResearchMark {
+function mark(
+  episode: ResearchEpisode,
+  horizonMinutes: 15 | 60 | 240 | 1440,
+  recovery: number,
+  observedAt = '2026-07-03T00:00:00.000Z'
+): ResearchMark {
   return {
     episodeId: episode.episodeId,
     horizonMinutes,
-    observedAt: '2026-07-03T00:00:00.000Z',
+    observedAt,
     status: 'ok',
     targetRecoverySol: recovery,
     doubleRecoverySol: recovery * 2,

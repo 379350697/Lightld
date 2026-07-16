@@ -48,6 +48,19 @@ function readBoolean(payload: RawRecord, keys: string[]) {
   return false;
 }
 
+function readTimestamp(payload: RawRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key];
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const milliseconds = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+      return new Date(milliseconds).toISOString();
+    }
+    if (typeof value === 'string' && Number.isFinite(Date.parse(value))) return new Date(value).toISOString();
+  }
+  return '';
+}
+
 function resolveNestedString(payload: RawRecord, objectKeys: string[], valueKeys: string[]) {
   for (const objectKey of objectKeys) {
     const objectValue = payload[objectKey];
@@ -113,7 +126,7 @@ export function buildMeteoraCandidate(row: RawRecord): IngestCandidate {
     quoteMint,
     liquidityUsd: readNumber(payload, ['liquidityUsd', 'liquidity', 'tvl', 'tvlUsd']),
     hasSolRoute: hasMeteoraSolRoute(row),
-    capturedAt: readString(payload, ['capturedAt', 'updatedAt', 'pool_created_at']),
+    capturedAt: readTimestamp(payload, ['created_at', 'createdAt', 'pool_created_at', 'capturedAt']),
     holders: readNumber(payload, ['holders']),
     hasInventory: false,
     hasLpPosition: false,

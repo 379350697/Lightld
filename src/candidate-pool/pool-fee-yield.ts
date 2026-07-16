@@ -53,6 +53,7 @@ export type PoolFeeYieldProfile = {
 };
 
 export type PoolFeeYieldStore = {
+  readPriorityPoolAddresses?(strategyId: StrategyId): Promise<string[]>;
   recordPoolFeeYieldSamples(input: {
     strategyId: StrategyId;
     rows: Record<string, unknown>[];
