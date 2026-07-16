@@ -2550,6 +2550,190 @@ describe('runLiveDaemon', () => {
     });
   });
 
+  it('switches maintenance to another LP that requires a critical exit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-priority-exit-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const seenActions: string[] = [];
+    const broadcastMints: string[] = [];
+
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      lastReason: 'hold',
+      positionId: 'pos-hold',
+      chainPositionAddress: 'pos-hold',
+      activeMint: 'mint-hold',
+      activePoolAddress: 'pool-hold',
+      lifecycleState: 'open',
+      entrySol: 1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'fill-hold',
+      openedAt: '2026-07-16T16:00:00.000Z',
+      updatedAt: '2026-07-16T16:00:00.000Z'
+    });
+    await runtimeStateStore.writePositionLedger({
+      version: 1,
+      updatedAt: '2026-07-16T16:30:00.000Z',
+      records: [
+        {
+          positionKey: 'chain-position:pos-hold',
+          positionId: 'pos-hold',
+          chainPositionAddress: 'pos-hold',
+          activeMint: 'mint-hold',
+          activePoolAddress: 'pool-hold',
+          lifecycleState: 'open',
+          importStatus: 'imported',
+          entrySol: 1,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-hold',
+          openedAt: '2026-07-16T16:00:00.000Z',
+          lastAction: 'hold',
+          lastRiskSentinel: {
+            observedAt: '2026-07-16T16:30:00.000Z',
+            riskIntent: 'hold',
+            riskReason: 'lp-risk-sentinel-hold'
+          },
+          updatedAt: '2026-07-16T16:30:00.000Z'
+        },
+        {
+          positionKey: 'chain-position:pos-exit',
+          positionId: 'pos-exit',
+          chainPositionAddress: 'pos-exit',
+          activeMint: 'mint-exit',
+          activePoolAddress: 'pool-exit',
+          lifecycleState: 'open',
+          importStatus: 'imported',
+          entrySol: 1,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'fill-exit',
+          openedAt: '2026-07-16T16:10:00.000Z',
+          lastAction: 'hold',
+          lastRiskSentinel: {
+            observedAt: '2026-07-16T16:30:00.000Z',
+            riskIntent: 'range-exit',
+            riskReason: 'active-bin-out-of-range:above:62',
+            outOfRangeSide: 'above',
+            outOfRangeBins: 62
+          },
+          updatedAt: '2026-07-16T16:30:00.000Z'
+        }
+      ]
+    });
+
+    await runLiveDaemon({
+      strategy: 'new-token-v1',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 2,
+      onCycleResult(result) {
+        seenActions.push(result.action);
+      },
+      buildCycleInput: async (_tick, buildContext) => {
+        const isExitTarget = buildContext?.positionState?.chainPositionAddress === 'pos-exit';
+        const mint = isExitTarget ? 'mint-exit' : 'mint-hold';
+        const poolAddress = isExitTarget ? 'pool-exit' : 'pool-hold';
+        return {
+          requestedPositionSol: 1,
+          accountState: {
+            walletSol: 10,
+            journalSol: 10,
+            walletTokens: [],
+            journalTokens: [],
+            walletLpPositions: [
+              {
+                poolAddress: 'pool-hold',
+                positionAddress: 'pos-hold',
+                chainPositionAddress: 'pos-hold',
+                mint: 'mint-hold',
+                currentValueSol: 1,
+                hasLiquidity: true,
+                solDepletedBins: 0
+              },
+              {
+                poolAddress: 'pool-exit',
+                positionAddress: 'pos-exit',
+                chainPositionAddress: 'pos-exit',
+                mint: 'mint-exit',
+                currentValueSol: 0.8,
+                hasLiquidity: true,
+                activeBinId: 230,
+                lowerBinId: 100,
+                upperBinId: 168,
+                solDepletedBins: 61
+              }
+            ],
+            journalLpPositions: [],
+            fills: [
+              {
+                submissionId: 'fill-hold',
+                mint: 'mint-hold',
+                side: 'add-lp' as const,
+                amount: 1,
+                filledSol: 1,
+                actualFilledSol: 1,
+                actualWalletDeltaSol: -1,
+                fillAmountSource: 'wallet-delta' as const,
+                hasFillEvidence: true,
+                recordedAt: '2026-07-16T16:00:00.000Z'
+              },
+              {
+                submissionId: 'fill-exit',
+                mint: 'mint-exit',
+                side: 'add-lp' as const,
+                amount: 1,
+                filledSol: 1,
+                actualFilledSol: 1,
+                actualWalletDeltaSol: -1,
+                fillAmountSource: 'wallet-delta' as const,
+                hasFillEvidence: true,
+                recordedAt: '2026-07-16T16:10:00.000Z'
+              }
+            ]
+          },
+          context: {
+            pool: { address: poolAddress, liquidityUsd: 10_000 },
+            token: { mint, inSession: true, hasSolRoute: true, symbol: mint },
+            trader: {
+              hasInventory: true,
+              hasLpPosition: true,
+              lpSolDepletedBins: isExitTarget ? 61 : 0
+            },
+            route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+          },
+          signer: {
+            sign: async (intent) => ({
+              intent,
+              signerId: 'test-signer',
+              signedAt: '2026-07-16T16:30:01.000Z',
+              signature: 'signed'
+            })
+          },
+          broadcaster: {
+            broadcast: async (signedIntent) => {
+              broadcastMints.push(signedIntent.intent.tokenMint ?? '');
+              return {
+                status: 'submitted' as const,
+                submissionId: 'close-exit',
+                idempotencyKey: signedIntent.intent.idempotencyKey,
+                confirmationSignature: 'close-exit-signature',
+                mainExecutionStatus: 'confirmed' as const,
+                batchStatus: 'complete' as const,
+                chainPositionAddress: signedIntent.intent.chainPositionAddress
+              };
+            }
+          }
+        };
+      }
+    });
+
+    expect(seenActions).toEqual(['hold', 'withdraw-lp']);
+    expect(broadcastMints).toEqual(['mint-exit']);
+  });
+
   it('recovers a missing active mint from the bound account LP position', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-recover-active-mint-'));
     const stateRootDir = join(root, 'state');

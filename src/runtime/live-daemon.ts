@@ -3394,6 +3394,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           ledger: positionLedger,
           pendingSubmission: persistedPendingSubmission,
           prior: nextPositionState,
+          advance: true,
           allowNewOpens: businessAllowNewOpens,
           flattenOnly: runtimeState.mode === 'flatten_only',
           lastAction: result.action,

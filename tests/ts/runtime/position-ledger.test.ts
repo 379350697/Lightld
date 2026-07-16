@@ -1481,4 +1481,129 @@ describe('position ledger', () => {
     });
     expect(state.activeMint).not.toBe('residual-mint');
   });
+
+  it('prioritizes a critical LP exit over the currently bound hold position', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      now: '2026-07-16T16:32:00.000Z',
+      prior: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        positionId: 'pos-hold',
+        chainPositionAddress: 'pos-hold',
+        activeMint: 'mint-hold',
+        activePoolAddress: 'pool-hold',
+        lifecycleState: 'open',
+        updatedAt: '2026-07-16T16:31:00.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-16T16:32:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-hold',
+            positionId: 'pos-hold',
+            chainPositionAddress: 'pos-hold',
+            activeMint: 'mint-hold',
+            activePoolAddress: 'pool-hold',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            entrySol: 1,
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:00:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'hold',
+              riskReason: 'lp-risk-sentinel-hold'
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-exit',
+            positionId: 'pos-exit',
+            chainPositionAddress: 'pos-exit',
+            activeMint: 'mint-exit',
+            activePoolAddress: 'pool-exit',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            entrySol: 1,
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:10:00.000Z',
+            lastRiskSentinel: {
+              observedAt: '2026-07-16T16:32:00.000Z',
+              riskIntent: 'range-exit',
+              riskReason: 'active-bin-out-of-range:above:62',
+              outOfRangeSide: 'above',
+              outOfRangeBins: 62
+            },
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          }
+        ]
+      }
+    });
+
+    expect(state).toMatchObject({
+      positionId: 'pos-exit',
+      chainPositionAddress: 'pos-exit',
+      activeMint: 'mint-exit',
+      activePoolAddress: 'pool-exit'
+    });
+  });
+
+  it('round-robins non-critical LP maintenance targets when advancing', () => {
+    const state = selectCompatibilityPositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'hold',
+      advance: true,
+      now: '2026-07-16T16:32:00.000Z',
+      prior: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'hold',
+        chainPositionAddress: 'pos-a',
+        activeMint: 'mint-a',
+        activePoolAddress: 'pool-a',
+        lifecycleState: 'open',
+        updatedAt: '2026-07-16T16:31:00.000Z'
+      },
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-16T16:32:00.000Z',
+        records: [
+          {
+            positionKey: 'chain-position:pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:00:00.000Z',
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          },
+          {
+            positionKey: 'chain-position:pos-b',
+            chainPositionAddress: 'pos-b',
+            activeMint: 'mint-b',
+            activePoolAddress: 'pool-b',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            lastAction: 'hold',
+            openedAt: '2026-07-16T16:10:00.000Z',
+            updatedAt: '2026-07-16T16:32:00.000Z'
+          }
+        ]
+      }
+    });
+
+    expect(state).toMatchObject({
+      chainPositionAddress: 'pos-b',
+      activeMint: 'mint-b',
+      activePoolAddress: 'pool-b'
+    });
+  });
 });

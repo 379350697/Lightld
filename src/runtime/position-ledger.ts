@@ -1139,6 +1139,7 @@ export function selectCompatibilityPositionState(input: {
   ledger?: PositionLedgerSnapshot | null;
   pendingSubmission?: PendingSubmissionSnapshot | null;
   prior?: PositionStateSnapshot | null;
+  advance?: boolean;
   allowNewOpens: boolean;
   flattenOnly: boolean;
   lastAction: string;
@@ -1146,9 +1147,47 @@ export function selectCompatibilityPositionState(input: {
   walletSol?: number;
   now: string;
 }): PositionStateSnapshot {
-  const activeRecord = [...(input.ledger?.records ?? [])]
+  const activeRecords = [...(input.ledger?.records ?? [])]
     .filter((record) => isPositionRecordBusinessActive(record, input.pendingSubmission, { now: input.now }))
-    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
+    .sort((a, b) =>
+      (a.openedAt || a.updatedAt || '').localeCompare(b.openedAt || b.updatedAt || '')
+      || a.positionKey.localeCompare(b.positionKey)
+    );
+  const pendingRecord = input.pendingSubmission
+    ? activeRecords.find((record) => pendingSubmissionMatchesSyntheticOpen(record, input.pendingSubmission))
+    : undefined;
+  const criticalExitRecord = activeRecords
+    .filter((record) =>
+      record.lifecycleState === 'lp_exit_pending'
+      || record.lifecycleState === 'inventory_exit_pending'
+      || record.lifecycleState === 'inventory_exit_ready'
+      || record.lastRiskSentinel?.riskIntent === 'range-exit'
+      || record.lastRiskSentinel?.riskIntent === 'liquidity-exit'
+      || record.lastRiskSentinel?.riskIntent === 'volatility-exit'
+    )
+    .sort((a, b) =>
+      (b.lastRiskSentinel?.outOfRangeBins ?? 0) - (a.lastRiskSentinel?.outOfRangeBins ?? 0)
+      || (b.lastRiskSentinel?.solDepletedRatio ?? 0) - (a.lastRiskSentinel?.solDepletedRatio ?? 0)
+      || (a.openedAt || a.updatedAt || '').localeCompare(b.openedAt || b.updatedAt || '')
+      || a.positionKey.localeCompare(b.positionKey)
+    )[0];
+  const priorIndex = activeRecords.findIndex((record) => Boolean(input.prior && (
+    (input.prior.chainPositionAddress && record.chainPositionAddress === input.prior.chainPositionAddress)
+    || (input.prior.positionId && record.positionId === input.prior.positionId)
+    || (input.prior.openIntentId && record.openIntentId === input.prior.openIntentId)
+    || (
+      input.prior.activePoolAddress
+      && input.prior.activeMint
+      && record.activePoolAddress === input.prior.activePoolAddress
+      && record.activeMint === input.prior.activeMint
+    )
+  )));
+  const normalRecord = priorIndex < 0
+    ? activeRecords[0]
+    : input.advance
+      ? activeRecords[(priorIndex + 1) % activeRecords.length]
+      : activeRecords[priorIndex];
+  const activeRecord = pendingRecord ?? criticalExitRecord ?? normalRecord;
 
   if (!activeRecord) {
     return {
