@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { deriveCandidatePoolEntry } from '../../../src/candidate-pool/aggregator';
-import { buildMeteoraCandidate } from '../../../src/candidate-pool/meteora-candidate-builder';
+import { buildMeteoraCandidate, isRecentMeteoraPool } from '../../../src/candidate-pool/meteora-candidate-builder';
 import { buildMeteoraObservation, buildRouteObservation } from '../../../src/candidate-pool/source-observations';
 import { SqliteCandidatePool } from '../../../src/candidate-pool/sqlite-candidate-pool';
 import type { CandidateSourceObservation } from '../../../src/candidate-pool/types';
@@ -76,6 +76,17 @@ describe('candidate pool aggregation', () => {
       updatedAt: '2026-07-16T00:00:00.000Z'
     });
     expect(candidate.capturedAt).toBe('2025-07-01T00:00:00.000Z');
+  });
+
+  it('accepts seconds, milliseconds and ISO pool creation times but rejects future pools', () => {
+    const now = new Date('2026-07-16T12:00:00.000Z');
+    const recent = Date.parse('2026-07-16T11:00:00.000Z');
+    const maxAgeMs = 2 * 60 * 60_000;
+
+    expect(isRecentMeteoraPool({ created_at: recent }, now, maxAgeMs)).toBe(true);
+    expect(isRecentMeteoraPool({ created_at: recent / 1000 }, now, maxAgeMs)).toBe(true);
+    expect(isRecentMeteoraPool({ created_at: '2026-07-16T11:00:00.000Z' }, now, maxAgeMs)).toBe(true);
+    expect(isRecentMeteoraPool({ created_at: '2026-07-16T13:00:00.000Z' }, now, maxAgeMs)).toBe(false);
   });
 
   it('marks candidates openable when hard sources are fresh and passed', () => {

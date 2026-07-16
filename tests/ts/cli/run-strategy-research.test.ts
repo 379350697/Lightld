@@ -35,13 +35,13 @@ describe('run:strategy-research', () => {
     const status = await runStrategyResearchCli(['status', '--state-root-dir', root], {});
     expect(JSON.parse(status.output).activeExperiment.experimentId).toBe('personal-test');
 
+    const stopped = await runStrategyResearchCli(['stop', '--state-root-dir', root], {});
+    expect(JSON.parse(stopped.output).status).toBe('stopped');
+
     const analysis = await runStrategyResearchCli(['analyze', '--state-root-dir', root], {});
     expect(JSON.parse(analysis.output).report.status).toBe('insufficient');
 
     const exported = await runStrategyResearchCli(['export', '--format', 'csv', '--state-root-dir', root], {});
     expect(JSON.parse(exported.output).rowCount).toBe(0);
-
-    const stopped = await runStrategyResearchCli(['stop', '--state-root-dir', root], {});
-    expect(JSON.parse(stopped.output).status).toBe('stopped');
   });
 });

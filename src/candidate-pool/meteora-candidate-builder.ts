@@ -73,8 +73,9 @@ function resolveNestedString(payload: RawRecord, objectKeys: string[], valueKeys
 
 export function isRecentMeteoraPool(row: RawRecord, now: Date, maxAgeMs: number) {
   const payload = rawRecord(row);
-  const createdAt = readNumber(payload, ['created_at', 'createdAt', 'pool_created_at']);
-  return createdAt > 0 && now.getTime() - createdAt <= maxAgeMs;
+  const createdAt = Date.parse(readTimestamp(payload, ['created_at', 'createdAt', 'pool_created_at']));
+  const ageMs = now.getTime() - createdAt;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= maxAgeMs;
 }
 
 export function hasMeteoraSolRoute(row: RawRecord) {

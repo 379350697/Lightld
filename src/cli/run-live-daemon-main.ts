@@ -315,10 +315,12 @@ async function main() {
       })
     : undefined;
 
-  const researchStore = runMode === 'live'
+  const researchStoreCandidate = runMode === 'live'
     ? undefined
     : new StrategyResearchStore(join(args.stateRootDir, 'research', 'research.sqlite'));
-  await researchStore?.open();
+  const researchStore = researchStoreCandidate && await researchStoreCandidate.openBestEffort(console)
+    ? researchStoreCandidate
+    : undefined;
   try {
     await runLiveDaemon({
     strategy,

@@ -83,8 +83,10 @@ export async function runStrategyResearchCli(
 
 function resolveSpec(store: StrategyResearchStore, argv: string[]) {
   const experimentId = value(argv, '--experiment-id');
-  const spec = experimentId ? store.experiment(experimentId) : store.activeExperiment();
-  if (!spec) throw new Error(experimentId ? `Unknown experiment ${experimentId}` : 'No active strategy research experiment');
+  const spec = experimentId
+    ? store.experiment(experimentId)
+    : store.activeExperiment() ?? store.latestExperiment()?.spec ?? null;
+  if (!spec) throw new Error(experimentId ? `Unknown experiment ${experimentId}` : 'No strategy research experiment');
   return spec;
 }
 

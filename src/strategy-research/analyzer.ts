@@ -101,25 +101,39 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     minimumOosEpisodes: Math.max(spec.thresholds.minimumOosEpisodes, RESEARCH_REVIEW_FLOORS.minimumOosEpisodes),
     minimumMarkCoverage: Math.max(spec.thresholds.minimumMarkCoverage, RESEARCH_REVIEW_FLOORS.minimumMarkCoverage)
   };
-  const best = [...comparisons].sort((left, right) => right.oos.meanPnlSol - left.oos.meanPnlSol)[0];
+  const sufficientlySampled = comparisons.filter((comparison) =>
+    comparison.pairCount >= thresholds.minimumEpisodes
+    && comparison.oos.count >= thresholds.minimumOosEpisodes
+  );
   const blockingReasons: string[] = [];
-  if (!best || best.pairCount < thresholds.minimumEpisodes) blockingReasons.push('minimum_episodes_not_met');
-  if (utcDays < thresholds.minimumUtcDays) blockingReasons.push('minimum_utc_days_not_met');
-  if (!best || best.oos.count < thresholds.minimumOosEpisodes) blockingReasons.push('minimum_oos_episodes_not_met');
-  if (markCoverage < thresholds.minimumMarkCoverage) blockingReasons.push('mark_coverage_not_met');
-  let status: StrategyResearchReportStatus = 'insufficient';
-  if (blockingReasons.length === 0 && best) {
-    status = best.oos.meanPnlSol > 0
-      && best.bootstrap.lower95 > 0
-      && best.capacityPassRate >= thresholds.minimumMarkCoverage
-      ? 'review'
-      : 'reject';
+  if (!comparisons.some((comparison) => comparison.pairCount >= thresholds.minimumEpisodes)) {
+    blockingReasons.push('minimum_episodes_not_met');
   }
-  const chosenVariant = status === 'review' ? best?.variantId ?? null : null;
+  if (utcDays < thresholds.minimumUtcDays) blockingReasons.push('minimum_utc_days_not_met');
+  if (!comparisons.some((comparison) => comparison.oos.count >= thresholds.minimumOosEpisodes)) {
+    blockingReasons.push('minimum_oos_episodes_not_met');
+  }
+  if (blockingReasons.length === 0 && sufficientlySampled.length === 0) {
+    blockingReasons.push('minimum_paired_oos_sample_not_met');
+  }
+  if (markCoverage < thresholds.minimumMarkCoverage) blockingReasons.push('mark_coverage_not_met');
+  const reviewCandidates = sufficientlySampled
+    .filter((comparison) =>
+      comparison.oos.meanPnlSol > 0
+      && comparison.bootstrap.lower95 > 0
+      && comparison.capacityPassRate >= thresholds.minimumMarkCoverage
+    )
+    .sort((left, right) => right.oos.meanPnlSol - left.oos.meanPnlSol);
+  let status: StrategyResearchReportStatus = 'insufficient';
+  if (blockingReasons.length === 0) {
+    status = reviewCandidates.length > 0 ? 'review' : 'reject';
+  }
+  const chosenVariant = status === 'review' ? reviewCandidates[0]?.variantId ?? null : null;
   const patchDraft = chosenVariant
     ? spec.variants.find((variant) => variant.variantId === chosenVariant)?.parameterPatch ?? null
     : null;
   const paperRows = store.paperOutcomes(spec.experimentId);
+  const boundPaperRows = paperRows.filter((row) => row.selectionId !== null);
   const createdAt = new Date().toISOString();
   const reportId = `research-report-${createHash('sha256').update(JSON.stringify({ experimentId: spec.experimentId, createdAt, comparisons })).digest('hex').slice(0, 24)}`;
   const report = {
@@ -129,10 +143,18 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     createdAt,
     status,
     blockingReasons,
-    sample: { selectedEpisodes, utcDays, observedUtcDays, markCoverage, paperOutcomeCount: paperRows.length },
+    sample: {
+      selectedEpisodes,
+      utcDays,
+      observedUtcDays,
+      markCoverage,
+      paperOutcomeCount: paperRows.length,
+      boundPaperOutcomeCount: boundPaperRows.length
+    },
     variants: summaries,
     comparisons,
-    paperRealized: summarizePnl(paperRows.map((row) => row.pnlSol)),
+    paperRealized: summarizePnl(boundPaperRows.map((row) => row.pnlSol)),
+    unboundPaperRealized: summarizePnl(paperRows.filter((row) => row.selectionId === null).map((row) => row.pnlSol)),
     chosenVariant,
     patchDraft,
     note: 'review means manual strategy consideration only; configuration is never changed automatically'
@@ -152,6 +174,7 @@ export function renderResearchMarkdown(report: ReturnType<typeof analyzeStrategy
     `- Observed UTC dates: ${report.sample.observedUtcDays}`,
     `- Mark coverage: ${(report.sample.markCoverage * 100).toFixed(1)}%`,
     `- Paper realized outcomes: ${report.sample.paperOutcomeCount}`,
+    `- Bound paper outcomes: ${report.sample.boundPaperOutcomeCount}`,
     ''
   ];
   if (report.blockingReasons.length) lines.push(`Blocking: ${report.blockingReasons.join(', ')}`, '');
@@ -176,10 +199,11 @@ export function renderResearchMarkdown(report: ReturnType<typeof analyzeStrategy
 
 function economicRow(episode: ResearchEpisode, marks: ResearchMark[], config: StrategyConfig): EconomicRow | null {
   if (episode.entryStatus === 'no_route' || episode.entryStatus === 'dead_pool' || episode.entryStatus === 'rug') {
-    return failedEconomicRow(episode, 0);
+    return noEntryEconomicRow(episode);
   }
   const ordered = [...marks].sort((left, right) => left.horizonMinutes - right.horizonMinutes);
-  const failure = ordered.find((mark) => mark.status === 'no_route' || mark.status === 'dead_pool' || mark.status === 'rug');
+  const failure = ordered.find((mark) => mark.status === 'dead_pool' || mark.status === 'rug')
+    ?? ordered.find((mark) => mark.horizonMinutes === 1440 && mark.status === 'no_route');
   if (failure) {
     return failedEconomicRow(episode, failure.horizonMinutes);
   }
@@ -196,6 +220,26 @@ function economicRow(episode: ResearchEpisode, marks: ResearchMark[], config: St
       && row.costBreakdown.impermanentLossSol / episode.positionSol * 100 >= maxImpermanentLossPct)
   ) ?? evaluated.find((row) => row.exitHorizonMinutes === 1440);
   return chosen ?? null;
+}
+
+function noEntryEconomicRow(episode: ResearchEpisode): EconomicRow {
+  return {
+    snapshotId: episode.snapshotId,
+    variantId: episode.variantId,
+    observedAt: episode.observedAt,
+    pnlSol: 0,
+    capacityPass: false,
+    regime: regime(episode),
+    exitHorizonMinutes: 0,
+    costBreakdown: {
+      routeAndPriceSol: 0,
+      estimatedFeeSol: 0,
+      impermanentLossSol: 0,
+      adverseSelectionSol: 0,
+      capitalChargeSol: 0,
+      chainCostSol: 0
+    }
+  };
 }
 
 function failedEconomicRow(episode: ResearchEpisode, exitHorizonMinutes: number): EconomicRow {

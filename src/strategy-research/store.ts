@@ -147,19 +147,37 @@ export class StrategyResearchStore {
     if (this.database) return;
     if (this.readOnly && !existsSync(this.path)) return;
     if (!this.readOnly) await mkdir(dirname(this.path), { recursive: true });
-    const database = new DatabaseSync(this.path, this.readOnly ? { readOnly: true } : {});
-    database.exec('PRAGMA busy_timeout=2000; PRAGMA temp_store=MEMORY;');
-    if (!this.readOnly) {
-      database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
-      database.exec(SCHEMA);
-      ensureColumn(database, 'paper_outcomes', 'capture_mode', "TEXT NOT NULL DEFAULT 'unknown'");
-      ensureColumn(database, 'paper_outcomes', 'selection_id', 'TEXT');
-      ensureColumn(database, 'paper_outcomes', 'snapshot_id', 'TEXT');
-      ensureColumn(database, 'paper_outcomes', 'variant_id', 'TEXT');
-      ensureColumn(database, 'paper_selections', 'variant_id', "TEXT NOT NULL DEFAULT 'baseline'");
-      ensureColumn(database, 'worker_status', 'missed_count', 'INTEGER NOT NULL DEFAULT 0');
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(this.path, this.readOnly ? { readOnly: true } : {});
+      database.exec('PRAGMA busy_timeout=2000; PRAGMA temp_store=MEMORY;');
+      if (!this.readOnly) {
+        database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
+        database.exec(SCHEMA);
+        ensureColumn(database, 'paper_outcomes', 'capture_mode', "TEXT NOT NULL DEFAULT 'unknown'");
+        ensureColumn(database, 'paper_outcomes', 'selection_id', 'TEXT');
+        ensureColumn(database, 'paper_outcomes', 'snapshot_id', 'TEXT');
+        ensureColumn(database, 'paper_outcomes', 'variant_id', 'TEXT');
+        ensureColumn(database, 'paper_selections', 'variant_id', "TEXT NOT NULL DEFAULT 'baseline'");
+        ensureColumn(database, 'worker_status', 'missed_count', 'INTEGER NOT NULL DEFAULT 0');
+      }
+      this.database = database;
+    } catch (error) {
+      database?.close();
+      throw error;
     }
-    this.database = database;
+  }
+
+  async openBestEffort(logger: Pick<Console, 'warn'> = console) {
+    try {
+      await this.open();
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Strategy research disabled because its database could not be opened: ${message}`);
+      this.close();
+      return false;
+    }
   }
 
   close() {
@@ -168,15 +186,20 @@ export class StrategyResearchStore {
   }
 
   startExperiment(spec: StrategyResearchSpec, startedAt = new Date().toISOString()) {
+    if (!spec.baseConfig) throw new Error('Strategy research experiment must lock its baseline config before start');
+    if (!Number.isFinite(Date.parse(startedAt))) throw new Error(`Invalid experiment start time: ${startedAt}`);
     const database = this.required();
     database.exec('BEGIN IMMEDIATE');
     try {
       database.prepare("UPDATE experiments SET status='stopped', stopped_at=? WHERE status='active' AND experiment_id<>?")
         .run(startedAt, spec.experimentId);
-      const existing = database.prepare('SELECT spec_json AS specJson FROM experiments WHERE experiment_id=?')
-        .get(spec.experimentId) as { specJson?: string } | undefined;
+      const existing = database.prepare('SELECT spec_json AS specJson,status FROM experiments WHERE experiment_id=?')
+        .get(spec.experimentId) as { specJson?: string; status?: string } | undefined;
       if (existing?.specJson && stableJson(JSON.parse(existing.specJson)) !== stableJson(spec)) {
         throw new Error(`Experiment ${spec.experimentId} already exists with a different spec`);
+      }
+      if (existing?.status === 'stopped') {
+        throw new Error(`Experiment ${spec.experimentId} is stopped; start a new experiment ID instead`);
       }
       database.prepare(`
         INSERT INTO experiments(experiment_id,strategy_id,status,started_at,stopped_at,spec_json)
@@ -225,6 +248,14 @@ export class StrategyResearchStore {
     const byCandidate = new Map(input.candidates.map((candidate) => [`${candidate.poolAddress}\0${candidate.tokenMint}`, candidate]));
     database.exec('BEGIN IMMEDIATE');
     try {
+      const experiment = database.prepare(`
+        SELECT strategy_id AS strategyId,status FROM experiments WHERE experiment_id=?
+      `).get(input.experimentId) as { strategyId: string; status: string } | undefined;
+      if (!experiment) throw new Error(`Unknown experiment ${input.experimentId}`);
+      if (experiment.status !== 'active') throw new Error(`Experiment ${input.experimentId} is not active`);
+      if (experiment.strategyId !== input.strategyId) {
+        throw new Error(`Research snapshot strategy does not match experiment ${input.experimentId}`);
+      }
       const existing = database.prepare('SELECT candidates_json AS candidatesJson FROM snapshots WHERE snapshot_id=?').get(input.snapshotId) as { candidatesJson?: string } | undefined;
       const candidatesJson = stableJson(input.candidates);
       if (existing?.candidatesJson && existing.candidatesJson !== candidatesJson) {
@@ -238,6 +269,10 @@ export class StrategyResearchStore {
         INSERT OR IGNORE INTO decisions(snapshot_id,variant_id,pool_address,token_mint,selected,eligible,reason,position_sol)
         VALUES(?,?,?,?,?,?,?,?)
       `);
+      const readDecision = database.prepare(`
+        SELECT selected,eligible,reason,position_sol AS positionSol FROM decisions
+        WHERE snapshot_id=? AND variant_id=? AND pool_address=? AND token_mint=?
+      `);
       const insertEpisode = database.prepare(`
         INSERT OR IGNORE INTO episodes(
           episode_id,snapshot_id,experiment_id,strategy_id,variant_id,pool_address,token_mint,token_symbol,
@@ -245,13 +280,22 @@ export class StrategyResearchStore {
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
       `);
       for (const decision of input.decisions) {
+        const candidate = byCandidate.get(`${decision.poolAddress}\0${decision.tokenMint}`);
+        if (!candidate) throw new Error('Research decision references a missing candidate');
         insertDecision.run(
           input.snapshotId, decision.variantId, decision.poolAddress, decision.tokenMint,
           Number(decision.selected), Number(decision.eligible), decision.reason, decision.positionSol
         );
+        const storedDecision = readDecision.get(
+          input.snapshotId, decision.variantId, decision.poolAddress, decision.tokenMint
+        ) as { selected: number; eligible: number; reason: string; positionSol: number };
+        if (storedDecision.selected !== Number(decision.selected)
+          || storedDecision.eligible !== Number(decision.eligible)
+          || storedDecision.reason !== decision.reason
+          || storedDecision.positionSol !== decision.positionSol) {
+          throw new Error(`Conflicting research decision for snapshot ${input.snapshotId}`);
+        }
         if (!decision.selected) continue;
-        const candidate = byCandidate.get(`${decision.poolAddress}\0${decision.tokenMint}`);
-        if (!candidate) throw new Error('Research decision references a missing candidate');
         const episodeId = hashId('episode', input.snapshotId, decision.variantId, decision.poolAddress, decision.tokenMint);
         const observedAtMs = Date.parse(input.observedAt);
         if (!Number.isFinite(observedAtMs)) throw new Error(`Invalid research observation time: ${input.observedAt}`);
@@ -334,9 +378,14 @@ export class StrategyResearchStore {
       WHERE snapshot_id=(SELECT snapshot_id FROM episodes WHERE episode_id=?)
         AND pool_address=(SELECT pool_address FROM episodes WHERE episode_id=?)
         AND token_mint=(SELECT token_mint FROM episodes WHERE episode_id=?)
+        AND EXISTS (
+          SELECT 1 FROM episodes source JOIN experiments x ON x.experiment_id=source.experiment_id
+          WHERE source.episode_id=? AND x.status='active'
+        )
     `).run(
       input.targetTokenRaw ?? null, input.doubleTokenRaw ?? null, input.targetImpactBps ?? null,
-      input.doubleImpactBps ?? null, input.status, input.detail ?? '', input.episodeId, input.episodeId, input.episodeId
+      input.doubleImpactBps ?? null, input.status, input.detail ?? '', input.episodeId, input.episodeId, input.episodeId,
+      input.episodeId
     );
   }
 
@@ -346,6 +395,7 @@ export class StrategyResearchStore {
       SELECT grouped.episode_id,?,?,?,?,?,?,?,?
       FROM episodes source JOIN episodes grouped
         ON grouped.snapshot_id=source.snapshot_id AND grouped.pool_address=source.pool_address AND grouped.token_mint=source.token_mint
+      JOIN experiments x ON x.experiment_id=source.experiment_id AND x.status='active'
       WHERE source.episode_id=?
       ON CONFLICT(episode_id,horizon_minutes) DO UPDATE SET
         observed_at=excluded.observed_at,status=excluded.status,target_recovery_sol=excluded.target_recovery_sol,
@@ -400,8 +450,9 @@ export class StrategyResearchStore {
       FROM experiments x
       JOIN snapshots s ON s.experiment_id=x.experiment_id
       JOIN decisions d ON d.snapshot_id=s.snapshot_id AND d.pool_address=? AND d.token_mint=?
-      WHERE x.status='active' AND x.strategy_id=? AND d.selected=1 AND s.observed_at>=? AND s.observed_at<=?
-      ORDER BY s.observed_at DESC,CASE WHEN d.variant_id='baseline' THEN 0 ELSE 1 END
+      WHERE x.status='active' AND x.strategy_id=? AND d.variant_id='baseline' AND d.selected=1
+        AND s.observed_at>=? AND s.observed_at<=?
+      ORDER BY s.observed_at DESC
       LIMIT 1
     `).get(input.poolAddress, input.tokenMint, input.strategyId, snapshotCutoff, input.selectedAt) as {
       experimentId: string;
@@ -440,16 +491,20 @@ export class StrategyResearchStore {
         continue;
       }
       const selectionTime = outcome.openedAt ?? outcome.recordedAt;
-      const selection = this.required().prepare(`
-        SELECT selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId
-        FROM paper_selections
-        WHERE experiment_id=? AND pool_address=? AND token_mint=? AND selected_at<=?
-        ORDER BY selected_at DESC LIMIT 1
-      `).get(experimentId, outcome.poolAddress, outcome.tokenMint, selectionTime) as {
-        selectionId: string;
-        snapshotId: string;
-        variantId: string;
-      } | undefined;
+      const selectionTimeMs = Date.parse(selectionTime);
+      const selectionCutoff = Number.isFinite(selectionTimeMs)
+        ? new Date(selectionTimeMs - 30 * 60_000).toISOString()
+        : '';
+      const selection = selectionCutoff ? this.required().prepare(`
+          SELECT selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId
+          FROM paper_selections
+          WHERE experiment_id=? AND pool_address=? AND token_mint=? AND selected_at>=? AND selected_at<=?
+          ORDER BY selected_at DESC LIMIT 1
+        `).get(experimentId, outcome.poolAddress, outcome.tokenMint, selectionCutoff, selectionTime) as {
+          selectionId: string;
+          snapshotId: string;
+          variantId: string;
+        } | undefined : undefined;
       const exitValue = outcome.exitMetrics.lpTotalValueSol
         ?? outcome.exitMetrics.lpCurrentValueSol
         ?? outcome.exitMetrics.quoteOutputSol;
@@ -466,11 +521,24 @@ export class StrategyResearchStore {
     }
   }
 
-  paperOutcomes(experimentId: string): Array<{ pnlSol: number; closedAt: string }> {
+  paperOutcomes(experimentId: string): Array<{
+    pnlSol: number;
+    closedAt: string;
+    selectionId: string | null;
+    snapshotId: string | null;
+    variantId: string | null;
+  }> {
     return (this.required().prepare(`
-      SELECT pnl_sol AS pnlSol,COALESCE(closed_at,recorded_at) AS closedAt
+      SELECT pnl_sol AS pnlSol,COALESCE(closed_at,recorded_at) AS closedAt,
+        selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId
       FROM paper_outcomes WHERE experiment_id=? AND pnl_sol IS NOT NULL ORDER BY closedAt
-    `).all(experimentId) as Array<{ pnlSol: number; closedAt: string }>);
+    `).all(experimentId) as Array<{
+      pnlSol: number;
+      closedAt: string;
+      selectionId: string | null;
+      snapshotId: string | null;
+      variantId: string | null;
+    }>);
   }
 
   saveReport(report: { reportId: string; experimentId: string; createdAt: string; status: string; [key: string]: unknown }) {

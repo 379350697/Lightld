@@ -131,6 +131,7 @@ async function main() {
   const dbPath = args.dbPath ?? join(args.stateRootDir, 'lightld-candidate-pool.sqlite');
   const writer = new SqliteCandidatePool({ path: dbPath });
   const researchStore = new StrategyResearchStore(join(args.stateRootDir, 'research', 'research.sqlite'));
+  const captureMode = process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE ?? '';
   const staleMs = parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000);
   const workerLeaseMs = parsePositiveInteger(
     process.env.LIVE_CANDIDATE_WORKER_LEASE_MS,
@@ -167,7 +168,8 @@ async function main() {
 
   try {
     await writer.open();
-    await researchStore.open();
+    const researchEnabled = (captureMode === 'mechanical-soak' || captureMode === 'economic-shadow')
+      && await researchStore.openBestEffort(console);
     await runCandidateWorker({
       strategy,
       writer,
@@ -178,8 +180,8 @@ async function main() {
       gmgnMaxBatchSize: parsePositiveInteger(process.env.LIVE_GMGN_SOURCE_CONCURRENCY, 1),
       gmgnSourceMode: parseGmgnSourceMode(process.env.LIVE_GMGN_SOURCE_MODE),
       runSoftSourcesInBackground: (process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE) === 'live',
-      captureMode: process.env.LIGHTLD_RUN_MODE ?? process.env.LIGHTLD_EXECUTION_MODE ?? '',
-      researchRecorder: new SqliteCandidateResearchRecorder(researchStore),
+      captureMode,
+      researchRecorder: researchEnabled ? new SqliteCandidateResearchRecorder(researchStore) : undefined,
       readPriorityPoolAddresses: async () => {
         const [state, ledger] = await Promise.all([
           runtimeStateStore.readPositionState(),

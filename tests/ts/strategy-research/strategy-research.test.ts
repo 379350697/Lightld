@@ -41,6 +41,10 @@ describe('personal strategy research loop', () => {
     ], '2026-07-01T00:00:00.000Z', 'mechanical-soak');
     store.captureSnapshot(snapshot);
     store.captureSnapshot(snapshot);
+    expect(() => store.captureSnapshot({
+      ...snapshot,
+      decisions: snapshot.decisions.map((decision, index) => index === 0 ? { ...decision, reason: 'conflict' } : decision)
+    })).toThrow('Conflicting research decision');
     store.captureSnapshot(buildSnapshot(spec, config, [
       candidate('pool-a', 'mint-a', 10_000, 0.2),
       candidate('pool-b', 'mint-b', 100_000, 0.1)
@@ -49,6 +53,10 @@ describe('personal strategy research loop', () => {
       strategyId: 'new-token-v1', poolAddress: 'pool-a', tokenMint: 'mint-a',
       selectedAt: '2026-07-01T00:02:00.000Z', action: 'add-lp', reason: 'paper-open'
     })).toMatchObject({ variantId: 'baseline' });
+    expect(store.recordPaperSelection({
+      strategyId: 'new-token-v1', poolAddress: 'pool-b', tokenMint: 'mint-b',
+      selectedAt: '2026-07-01T00:03:00.000Z', action: 'add-lp', reason: 'variant-only-candidate'
+    })).toBeNull();
     expect(store.recordPaperSelection({
       strategyId: 'new-token-v1', poolAddress: 'pool-a', tokenMint: 'mint-a',
       selectedAt: '2026-07-01T02:00:00.000Z', action: 'add-lp', reason: 'stale-snapshot'
@@ -108,14 +116,27 @@ describe('personal strategy research loop', () => {
     roots.push(root);
     const store = new StrategyResearchStore(join(root, 'research.sqlite'));
     await store.open();
+    const config = await loadStrategyConfig('src/config/strategies/new-token-v1.yaml');
     const spec = {
       experimentId: 'paper-isolation',
       strategyId: 'new-token-v1' as const,
       positionSol: 0.1,
+      baseConfig: config,
       variants: [{ variantId: 'test', parameterPatch: { filters: { minLiquidityUsd: 50_000 } } }],
       thresholds: { minimumEpisodes: 1, minimumUtcDays: 1, minimumOosEpisodes: 1, minimumMarkCoverage: 0.9 }
     };
     store.startExperiment(spec, '2026-07-01T00:00:00.000Z');
+    store.captureSnapshot(buildSnapshot(
+      spec,
+      config,
+      [candidate('pool', 'mint', 100_000, 0.1)],
+      '2026-07-01T00:00:00.000Z',
+      'mechanical-soak'
+    ));
+    expect(store.recordPaperSelection({
+      strategyId: 'new-token-v1', poolAddress: 'pool', tokenMint: 'mint',
+      selectedAt: '2026-07-01T00:02:00.000Z', action: 'add-lp', reason: 'paper-open'
+    })).not.toBeNull();
     store.stopExperiment('2026-07-02T12:00:00.000Z');
     const outcome = {
       cycleId: 'cycle-paper', strategyId: 'new-token-v1' as const, recordedAt: '2026-07-02T00:00:00.000Z',
@@ -128,13 +149,21 @@ describe('personal strategy research loop', () => {
       { ...outcome, captureMode: 'live' },
       { ...outcome, cycleId: 'cycle-shadow', captureMode: 'economic-shadow' },
       { ...outcome, cycleId: 'cycle-paper', captureMode: 'mechanical-soak' },
+      {
+        ...outcome,
+        cycleId: 'cycle-paper-bound',
+        openedAt: '2026-07-01T00:03:00.000Z',
+        recordedAt: '2026-07-01T00:10:00.000Z',
+        captureMode: 'mechanical-soak'
+      },
       { ...outcome, cycleId: 'cycle-after-stop', recordedAt: '2026-07-03T00:00:00.000Z', captureMode: 'mechanical-soak' }
     ]);
-    expect(store.status().paperOutcomeCount).toBe(1);
+    expect(store.status()).toMatchObject({ paperOutcomeCount: 2, boundPaperOutcomeCount: 1 });
+    expect(store.paperOutcomes(spec.experimentId).map((row) => row.selectionId === null)).toEqual([false, true]);
     store.close();
   });
 
-  it('counts no-route as a business loss while keeping source unavailability retryable', async () => {
+  it('counts a failed entry as no trade while keeping source unavailability retryable', async () => {
     const root = join(process.cwd(), `.tmp-strategy-research-failures-${process.pid}-${Date.now()}`);
     roots.push(root);
     const store = new StrategyResearchStore(join(root, 'research.sqlite'));
@@ -160,7 +189,7 @@ describe('personal strategy research loop', () => {
     });
     expect(store.listEpisodes(spec.experimentId).every((episode) => episode.entryStatus === 'no_route')).toBe(true);
     const report = analyzeStrategyResearch(store, spec);
-    expect(report.variants.every((variant) => variant.totalPnlSol === -0.1)).toBe(true);
+    expect(report.variants.every((variant) => variant.totalPnlSol === 0)).toBe(true);
 
     const unavailableSpec = { ...spec, experimentId: 'unavailable-semantics' };
     store.startExperiment(unavailableSpec, '2026-07-02T00:00:00.000Z');
@@ -176,6 +205,66 @@ describe('personal strategy research loop', () => {
     expect(worker.unavailable).toBe(1);
     expect(store.dueEpisodes(new Date('2026-07-02T00:02:00.000Z')).length).toBe(1);
     store.close();
+  });
+
+  it('does not turn a temporary intermediate no-route mark into a total capital loss', async () => {
+    const root = join(process.cwd(), `.tmp-strategy-research-route-gap-${process.pid}-${Date.now()}`);
+    roots.push(root);
+    const store = new StrategyResearchStore(join(root, 'research.sqlite'));
+    await store.open();
+    const config = await loadStrategyConfig('src/config/strategies/new-token-v1.yaml');
+    const spec = {
+      experimentId: 'temporary-route-gap',
+      strategyId: 'new-token-v1' as const,
+      positionSol: 0.1,
+      baseConfig: config,
+      variants: [{ variantId: 'same', parameterPatch: { filters: { minLiquidityUsd: 1000 } } }],
+      thresholds: { minimumEpisodes: 50, minimumUtcDays: 7, minimumOosEpisodes: 15, minimumMarkCoverage: 0.9 }
+    };
+    store.startExperiment(spec, '2026-07-01T00:00:00.000Z');
+    store.captureSnapshot(buildSnapshot(
+      spec,
+      config,
+      [candidate('pool-gap', 'mint-gap', 100_000, 0.1)],
+      '2026-07-01T00:00:00.000Z',
+      'mechanical-soak'
+    ));
+    const episode = store.listEpisodes(spec.experimentId)[0]!;
+    store.recordEntryQuote({ episodeId: episode.episodeId, status: 'ok', targetTokenRaw: '1000', doubleTokenRaw: '2000' });
+    store.recordMark({
+      ...mark(episode, 15, 0, '2026-07-01T00:15:00.000Z'),
+      status: 'no_route', targetRecoverySol: null, doubleRecoverySol: null
+    });
+    for (const [horizon, observedAt] of [
+      [60, '2026-07-01T01:00:00.000Z'],
+      [240, '2026-07-01T04:00:00.000Z'],
+      [1440, '2026-07-02T00:00:00.000Z']
+    ] as const) {
+      store.recordMark(mark(episode, horizon, 0.11, observedAt));
+    }
+    const report = analyzeStrategyResearch(store, spec);
+    expect(report.variants.every((variant) => variant.totalPnlSol > 0)).toBe(true);
+    store.close();
+  });
+
+  it('uses the same conservative round-trip slippage in research eligibility as the live engine', async () => {
+    const config = await loadStrategyConfig('src/config/strategies/new-token-v1.yaml');
+    const spec = {
+      experimentId: 'edge-consistency',
+      strategyId: 'new-token-v1' as const,
+      positionSol: 0.1,
+      baseConfig: config,
+      variants: [{ variantId: 'same', parameterPatch: { filters: { minLiquidityUsd: 1000 } } }],
+      thresholds: { minimumEpisodes: 50, minimumUtcDays: 7, minimumOosEpisodes: 15, minimumMarkCoverage: 0.9 }
+    };
+    const snapshot = buildSnapshot(
+      spec,
+      config,
+      [candidate('pool-edge', 'mint-edge', 100_000, 0.02)],
+      '2026-07-01T00:00:00.000Z',
+      'mechanical-soak'
+    );
+    expect(snapshot.decisions.every((decision) => !decision.eligible && !decision.selected)).toBe(true);
   });
 
   it('fails late marks closed, stops scheduling stopped experiments and enforces review floors', async () => {
@@ -214,7 +303,28 @@ describe('personal strategy research loop', () => {
     expect(store.listEpisodes(spec.experimentId).every((episode) => episode.entryStatus === 'missed')).toBe(true);
     store.stopExperiment('2026-07-01T00:07:00.000Z');
     expect(store.dueEpisodes(new Date('2026-07-03T00:00:00.000Z'))).toEqual([]);
+    expect(() => store.startExperiment(spec, '2026-07-01T00:08:00.000Z')).toThrow('start a new experiment ID');
+    expect(() => store.captureSnapshot(buildSnapshot(
+      spec,
+      config,
+      [candidate('pool-after-stop', 'mint-after-stop', 100_000, 0.1)],
+      '2026-07-01T01:00:00.000Z',
+      'mechanical-soak'
+    ))).toThrow('is not active');
+    const episode = store.listEpisodes(spec.experimentId)[0]!;
+    store.recordMark(mark(episode, 15, 0.1, '2026-07-01T00:15:00.000Z'));
+    expect(store.listMarks(spec.experimentId)).toEqual([]);
     store.close();
+  });
+
+  it('can degrade research storage without preventing its caller from continuing', async () => {
+    const root = join(process.cwd(), `.tmp-strategy-research-open-${process.pid}-${Date.now()}`);
+    roots.push(root);
+    await mkdir(root, { recursive: true });
+    const warnings: string[] = [];
+    const store = new StrategyResearchStore(root);
+    expect(await store.openBestEffort({ warn: (message) => warnings.push(String(message)) })).toBe(false);
+    expect(warnings[0]).toContain('Strategy research disabled');
   });
 
   it('classifies business terminal quote failures separately from provider outages', () => {

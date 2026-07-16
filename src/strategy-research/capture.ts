@@ -124,7 +124,8 @@ function isEntryEligible(candidate: IngestCandidate, config: StrategyConfig, pos
   if (!gates.accepted) return false;
   return evaluateEntryEconomicEdge({
     positionSol,
-    feeTvlRatio24h: candidate.feeTvlRatio24h
+    feeTvlRatio24h: candidate.feeTvlRatio24h,
+    roundTripCostBps: config.solRouteLimits.maxSlippageBps * 2
   }, config.entryEdge).accepted;
 }
 
