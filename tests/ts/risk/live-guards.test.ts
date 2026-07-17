@@ -35,6 +35,32 @@ describe('evaluateLiveGuards', () => {
     });
   });
 
+  it('keeps reduce-risk exits available while the business kill switch is engaged', () => {
+    expect(evaluateLiveGuards({
+      action: 'withdraw-lp',
+      symbol: 'TOKEN',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: true,
+      sessionPhase: 'closed'
+    })).toEqual({
+      allowed: true,
+      reason: 'allowed'
+    });
+
+    expect(evaluateLiveGuards({
+      action: 'dca-out',
+      symbol: 'TOKEN',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: true,
+      sessionPhase: 'closed'
+    })).toEqual({
+      allowed: true,
+      reason: 'allowed'
+    });
+  });
+
   it('allows an opening action within cap and without whitelist dependency', () => {
     const result = evaluateLiveGuards({
       action: 'add-lp',
@@ -103,6 +129,36 @@ describe('evaluateLiveGuards', () => {
     expect(result).toEqual({
       allowed: false,
       reason: 'hourly-spend-limit-exceeded'
+    });
+  });
+
+  it('blocks new exposure that the current wallet SOL balance cannot fund', () => {
+    expect(evaluateLiveGuards({
+      action: 'add-lp',
+      symbol: 'SAFE',
+      requestedPositionSol: 0.1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: false,
+      sessionPhase: 'active',
+      availableWalletSol: 0.09
+    })).toEqual({
+      allowed: false,
+      reason: 'insufficient-wallet-sol'
+    });
+  });
+
+  it('never lets wallet funding checks obstruct a risk-reducing exit', () => {
+    expect(evaluateLiveGuards({
+      action: 'withdraw-lp',
+      symbol: 'SAFE',
+      requestedPositionSol: 1,
+      maxLivePositionSol: 0.25,
+      killSwitchEngaged: false,
+      sessionPhase: 'closed',
+      availableWalletSol: 0
+    })).toEqual({
+      allowed: true,
+      reason: 'allowed'
     });
   });
 

@@ -12,6 +12,7 @@ export type LiveGuardInput = {
   maxDailySpendSol?: number;
   hourlySpendSol?: number;
   dailySpendSol?: number;
+  availableWalletSol?: number;
   
   // Rug protection checks
   mintAuthorityRevoked?: boolean;
@@ -36,6 +37,7 @@ export type LiveGuardResult =
         | 'single-order-limit-exceeded'
         | 'hourly-spend-limit-exceeded'
         | 'daily-spend-limit-exceeded'
+        | 'insufficient-wallet-sol'
         | 'mint-authority-not-revoked'
         | 'lp-burn-insufficient'
         | 'top-holders-concentrated';
@@ -44,6 +46,15 @@ export type LiveGuardResult =
 export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
   const actionClass = classifyAction(input.action);
 
+  // A business kill switch stops new exposure. It must never turn an
+  // already-owned position into an unexit-able position.
+  if (actionClass === 'reduce_risk') {
+    return {
+      allowed: true,
+      reason: 'allowed'
+    };
+  }
+
   if (input.killSwitchEngaged) {
     return {
       allowed: false,
@@ -51,10 +62,7 @@ export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
     };
   }
 
-  if (
-    actionClass !== 'reduce_risk'
-    && (input.sessionPhase === 'flatten-only' || input.sessionPhase === 'closed')
-  ) {
+  if (input.sessionPhase === 'flatten-only' || input.sessionPhase === 'closed') {
     return {
       allowed: false,
       reason: 'flatten-only'
@@ -104,6 +112,19 @@ export function evaluateLiveGuards(input: LiveGuardInput): LiveGuardResult {
     return {
       allowed: false,
       reason: 'hourly-spend-limit-exceeded'
+    };
+  }
+
+  if (
+    typeof input.availableWalletSol === 'number'
+    && (
+      !Number.isFinite(input.availableWalletSol)
+      || input.requestedPositionSol > input.availableWalletSol
+    )
+  ) {
+    return {
+      allowed: false,
+      reason: 'insufficient-wallet-sol'
     };
   }
 

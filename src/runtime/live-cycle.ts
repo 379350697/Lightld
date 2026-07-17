@@ -14,6 +14,7 @@ import {
 import type { MirrorEventSink, OrderBroadcastStatus } from '../observability/mirror-events.ts';
 import {
   ExecutionRequestError,
+  isDefinitelyNotSubmittedBroadcastError,
   type ExecutionFailureKind
 } from '../execution/error-classification.ts';
 import type {
@@ -51,6 +52,11 @@ import { buildDecisionContext, type DecisionContextInput } from './build-decisio
 import { KillSwitch } from './kill-switch.ts';
 import type { LiveAccountState, LiveAccountStateProvider } from './live-account-provider.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
+import {
+  PreparedBroadcastStore,
+  buildPreparedBroadcastSnapshot,
+  recoverPreparedBroadcast
+} from './prepared-broadcast-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 import { RECENTLY_CLOSED_MINT_REOPEN_COOLDOWN_MS } from './ingest-candidate-selection.ts';
 import { applyRuntimeActionPolicy } from './runtime-action-policy.ts';
@@ -87,16 +93,23 @@ import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { evaluateLpValuationState } from './lp-valuation.ts';
 import { computeSolDepletedBins, deriveLpSolExposureStatus } from './lp-sol-exposure.ts';
 import { evaluateLpRiskSentinel } from './lp-risk-sentinel.ts';
-import { hasAnyWalletEvidenceForPendingSubmission } from './pending-submission-wallet-evidence.ts';
+import {
+  hasAnyWalletEvidenceForPendingSubmission,
+  hasCompleteFreshAccountSnapshot,
+  hasFreshCompleteLpExitAbsenceEvidence
+} from './pending-submission-wallet-evidence.ts';
 import { hasActionableTokenAmount } from './token-inventory.ts';
 import {
   classifyLpEntryFillBinding,
   isTrustedFillAmountSource,
   isTrustedEntrySolSource,
   isTrustedLpOpenFill,
-  matchesPositionStateLifecycle,
   resolveTrustedLpEntry
 } from './lp-entry-resolver.ts';
+import {
+  hasLightldLpOwnershipEvidence,
+  positionStateOwnsLpPosition
+} from './lp-ownership.ts';
 import type {
   RuntimeMode,
   PositionStateSnapshot,
@@ -118,24 +131,162 @@ const STABLE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ]);
 
-function hasNonStableInventory(accountState: LiveAccountState | undefined) {
+function sumWalletTokenAmountRaw(
+  accountState: LiveAccountState | undefined,
+  tokenMint: string
+) {
+  if (!accountState || !tokenMint) {
+    return undefined;
+  }
+
+  let total = 0n;
+  for (const token of accountState.walletTokens ?? []) {
+    if (token.mint !== tokenMint) {
+      continue;
+    }
+
+    const raw = token.amountRaw
+      ?? (typeof token.amountLamports === 'number' && Number.isSafeInteger(token.amountLamports) && token.amountLamports >= 0
+        ? String(token.amountLamports)
+        : undefined);
+    if (!raw || !/^\d+$/.test(raw)) {
+      return undefined;
+    }
+    total += BigInt(raw);
+  }
+
+  return total.toString();
+}
+
+function sumOwnedResidualAmountRaw(
+  ledger: PositionLedgerSnapshot | undefined,
+  tokenMint: string
+) {
+  let total = 0n;
+  let found = false;
+  for (const record of ledger?.records ?? []) {
+    if (
+      record.activeMint !== tokenMint
+      || record.residualCleanupStatus !== 'residual_cleanup_pending'
+      || !record.residualCleanupAmountRaw
+      || !/^\d+$/.test(record.residualCleanupAmountRaw)
+    ) {
+      continue;
+    }
+    total += BigInt(record.residualCleanupAmountRaw);
+    found = true;
+  }
+  return found && total > 0n ? total.toString() : undefined;
+}
+
+function hasStrategyOwnedInventory(input: {
+  accountState: LiveAccountState | undefined;
+  activeMint?: string;
+  activePoolAddress?: string;
+}) {
+  if (!input.activeMint) {
+    return false;
+  }
+
   return Boolean(
-    accountState?.walletTokens?.some((token) =>
-      hasActionableTokenAmount(token) && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint)
+    input.accountState?.walletTokens?.some((token) =>
+      hasActionableTokenAmount(token) && token.mint === input.activeMint
     ) ||
-    accountState?.walletLpPositions?.some((position) =>
-      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && isManageableLpPosition(position)
+    input.accountState?.walletLpPositions?.some((position) =>
+      position.mint === input.activeMint
+      && (!input.activePoolAddress || position.poolAddress === input.activePoolAddress)
+      && isManageableLpPosition(position)
     ) ||
-    accountState?.journalLpPositions?.some((position) =>
-      position.mint !== SOL_MINT && !STABLE_MINTS.has(position.mint) && isManageableLpPosition(position)
+    input.accountState?.journalLpPositions?.some((position) =>
+      position.mint === input.activeMint
+      && (!input.activePoolAddress || position.poolAddress === input.activePoolAddress)
+      && isManageableLpPosition(position)
     )
   );
 }
 
-function findLargestNonStableInventory(accountState: LiveAccountState | undefined) {
-  return (accountState?.walletTokens ?? [])
-    .filter((token) => hasActionableTokenAmount(token) && token.mint !== SOL_MINT && !STABLE_MINTS.has(token.mint))
-    .sort((a, b) => b.amount - a.amount)[0];
+function findWalletTokenInventory(input: {
+  accountState: LiveAccountState | undefined;
+  activeMint?: string;
+}) {
+  if (!input.activeMint || input.activeMint === SOL_MINT || STABLE_MINTS.has(input.activeMint)) {
+    return undefined;
+  }
+
+  const matches = (input.accountState?.walletTokens ?? [])
+    .filter((token) => token.mint === input.activeMint && hasActionableTokenAmount(token));
+  if (matches.length === 0) {
+    return undefined;
+  }
+  const currentValues = matches.map((token) => token.currentValueSol);
+  return {
+    ...matches[0],
+    amount: matches.reduce((total, token) => total + token.amount, 0),
+    currentValueSol: currentValues.every((value) => typeof value === 'number' && Number.isFinite(value))
+      ? currentValues.reduce<number>((total, value) => total + (value ?? 0), 0)
+      : undefined
+  };
+}
+
+function resolveOwnedSpotInventory(input: {
+  accountState: LiveAccountState | undefined;
+  activeMint?: string;
+  ownedTokenAmountRaw?: string;
+}) {
+  const walletInventory = findWalletTokenInventory(input);
+  if (!input.activeMint || !walletInventory) {
+    return {
+      walletInventory,
+      ownedInventory: undefined,
+      reconcileReason: input.activeMint
+        ? input.ownedTokenAmountRaw
+          ? 'spot-ownership-reconcile-required:owned-token-not-in-wallet'
+          : 'spot-ownership-reconcile-required:owned-token-amount-missing'
+        : undefined
+    };
+  }
+
+  if (!input.ownedTokenAmountRaw || !/^\d+$/.test(input.ownedTokenAmountRaw) || BigInt(input.ownedTokenAmountRaw) <= 0n) {
+    return {
+      walletInventory,
+      ownedInventory: undefined,
+      reconcileReason: 'spot-ownership-reconcile-required:owned-token-amount-missing'
+    };
+  }
+
+  const walletAmountRaw = sumWalletTokenAmountRaw(input.accountState, input.activeMint);
+  if (!walletAmountRaw || !/^\d+$/.test(walletAmountRaw) || BigInt(walletAmountRaw) <= 0n) {
+    return {
+      walletInventory,
+      ownedInventory: undefined,
+      reconcileReason: 'spot-ownership-reconcile-required:wallet-token-raw-unavailable'
+    };
+  }
+
+  const ownedRaw = BigInt(input.ownedTokenAmountRaw);
+  const walletRaw = BigInt(walletAmountRaw);
+  if (ownedRaw > walletRaw) {
+    return {
+      walletInventory,
+      ownedInventory: undefined,
+      reconcileReason: 'spot-ownership-reconcile-required:wallet-balance-below-owned-amount'
+    };
+  }
+
+  const ratio = Number((ownedRaw * 1_000_000_000n) / walletRaw) / 1_000_000_000;
+  return {
+    walletInventory,
+    ownedInventory: {
+      ...walletInventory,
+      amount: walletInventory.amount * ratio,
+      amountLamports: ownedRaw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(ownedRaw) : undefined,
+      amountRaw: ownedRaw.toString(),
+      currentValueSol: typeof walletInventory.currentValueSol === 'number'
+        ? walletInventory.currentValueSol * ratio
+        : undefined
+    },
+    reconcileReason: undefined
+  };
 }
 
 
@@ -160,7 +311,7 @@ export type LiveCycleInput = {
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
   positionLedger?: PositionLedgerSnapshot;
-  ignoreLivePositionSolLimit?: boolean;
+  deferResolvedPendingClear?: boolean;
   residualTokenSweepMinValueSol?: number;
   mirrorSink?: MirrorEventSink;
   spendingLimitsConfig?: SpendingLimitsConfig;
@@ -196,6 +347,10 @@ export type LiveCycleResult = {
   broadcastResult?: LiveBroadcastResult;
   confirmationStatus?: ConfirmationStatus;
   confirmedFill?: LiveCycleConfirmedFill;
+  /** True only after authoritative post-submit evidence proves the submitted exit leg itself is resolved. */
+  submittedActionClosureProven?: boolean;
+  /** True only after authoritative post-submit evidence proves the strategy-owned position is fully closed. */
+  fullExitClosureProven?: boolean;
   nextLifecycleState?: PositionLifecycleState;
   aggregateLifecycleState?: PositionLifecycleState;
   failureKind?: ExecutionFailureKind;
@@ -219,6 +374,7 @@ export type LiveCycleConfirmedFill = {
   filledSol: number;
   actualFilledSol?: number;
   actualWalletDeltaSol?: number;
+  acquiredTokenAmountRaw?: string;
   fillAmountSource: ActualFillAmount['fillAmountSource'];
   recordedAt: string;
   hasFillEvidence: boolean;
@@ -241,6 +397,9 @@ type ActualFillAmount = {
   actualWalletDeltaSol?: number;
   preWalletSol?: number;
   postWalletSol?: number;
+  acquiredTokenAmountRaw?: string;
+  disposedTokenAmountRaw?: string;
+  postAccountState?: LiveAccountState;
   fillAmountSource: 'wallet-delta' | 'requested-position-fallback';
   hasFillEvidence: boolean;
 };
@@ -318,6 +477,13 @@ function firstValuationCompleteness(...values: unknown[]): 'complete' | 'incompl
     : undefined;
 }
 
+function firstValuationTrust(...values: unknown[]): 'exit_quote' | 'market_price' | 'fallback_display' | undefined {
+  const value = firstString(...values);
+  return value === 'exit_quote' || value === 'market_price' || value === 'fallback_display'
+    ? value
+    : undefined;
+}
+
 function roundSolLamports(value: number) {
   return Math.round(value * 1_000_000_000) / 1_000_000_000;
 }
@@ -357,6 +523,7 @@ function buildEvolutionExitMetrics(input: {
   snapshot: Record<string, unknown>;
   requestedPositionSol: number;
   quote?: SolExitQuote;
+  settlementEvidence?: LiveCycleOutcomeRecord['exitMetrics']['settlementEvidence'];
 }) {
   return {
     requestedPositionSol: input.requestedPositionSol,
@@ -378,7 +545,8 @@ function buildEvolutionExitMetrics(input: {
       input.context.trader.valuationCompleteness,
       input.context.trader.lpValuationCompleteness
     ),
-    valuationTrust: firstString(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust)
+    valuationTrust: firstValuationTrust(input.context.trader.valuationTrust, input.context.trader.lpValuationTrust),
+    settlementEvidence: input.settlementEvidence
   };
 }
 
@@ -395,6 +563,7 @@ async function appendEvolutionOutcomeBestEffort(input: {
   confirmedFill?: LiveCycleConfirmedFill;
   requestedPositionSol: number;
   quote?: SolExitQuote;
+  settlementEvidence?: LiveCycleOutcomeRecord['exitMetrics']['settlementEvidence'];
 }) {
   if (!input.sink) {
     return;
@@ -407,7 +576,8 @@ async function appendEvolutionOutcomeBestEffort(input: {
       context: input.context,
       snapshot: input.snapshot,
       requestedPositionSol: input.requestedPositionSol,
-      quote: input.quote
+      quote: input.quote,
+      settlementEvidence: input.settlementEvidence
     });
     const entrySol = resolveOutcomeEntrySol({
       snapshot: input.snapshot,
@@ -513,7 +683,7 @@ function resolveOutcomeEntrySol(input: {
   }
 
   if (
-    input.confirmedFill?.side === 'add-lp'
+    (input.confirmedFill?.side === 'add-lp' || input.confirmedFill?.side === 'deploy')
     && input.confirmedFill.fillAmountSource === 'wallet-delta'
     && input.confirmedFill.filledSol > 0
   ) {
@@ -738,6 +908,7 @@ function hasPositiveWalletTokenBalance(input: {
 
 async function resolveActualFillAmount(input: {
   action: LiveAction;
+  tokenMint: string;
   beforeAccountState?: LiveAccountState;
   accountProvider?: LiveAccountStateProvider;
   fallbackSol: number;
@@ -760,11 +931,39 @@ async function resolveActualFillAmount(input: {
 
     const actualWalletDeltaSol = roundSolLamports(afterAccountState.walletSol - input.beforeAccountState.walletSol);
     const actualFilledSol = absoluteWalletDeltaForFill(input.action, actualWalletDeltaSol);
+    const observesTokenDelta = input.action === 'deploy' || input.action === 'dca-out';
+    const beforeTokenAmountRaw = observesTokenDelta
+      ? sumWalletTokenAmountRaw(input.beforeAccountState, input.tokenMint)
+      : undefined;
+    const afterTokenAmountRaw = observesTokenDelta
+      ? sumWalletTokenAmountRaw(afterAccountState, input.tokenMint)
+      : undefined;
+    const acquiredTokenAmountRaw = beforeTokenAmountRaw !== undefined
+      && afterTokenAmountRaw !== undefined
+      && /^\d+$/.test(beforeTokenAmountRaw)
+      && /^\d+$/.test(afterTokenAmountRaw)
+      && BigInt(afterTokenAmountRaw) > BigInt(beforeTokenAmountRaw)
+        ? (BigInt(afterTokenAmountRaw) - BigInt(beforeTokenAmountRaw)).toString()
+        : undefined;
+    const disposedTokenAmountRaw = beforeTokenAmountRaw !== undefined
+      && afterTokenAmountRaw !== undefined
+      && /^\d+$/.test(beforeTokenAmountRaw)
+      && /^\d+$/.test(afterTokenAmountRaw)
+      && BigInt(beforeTokenAmountRaw) > BigInt(afterTokenAmountRaw)
+        ? (BigInt(beforeTokenAmountRaw) - BigInt(afterTokenAmountRaw)).toString()
+        : undefined;
 
-    if (typeof actualFilledSol !== 'number' || actualFilledSol <= 0) {
+    if (
+      typeof actualFilledSol !== 'number'
+      || actualFilledSol <= 0
+      || (input.action === 'deploy' && !acquiredTokenAmountRaw)
+    ) {
       return {
         ...fallback,
         actualWalletDeltaSol,
+        acquiredTokenAmountRaw,
+        disposedTokenAmountRaw,
+        postAccountState: afterAccountState,
         preWalletSol: roundSolLamports(input.beforeAccountState.walletSol),
         postWalletSol: roundSolLamports(afterAccountState.walletSol)
       };
@@ -774,6 +973,9 @@ async function resolveActualFillAmount(input: {
       filledSol: roundSolLamports(actualFilledSol),
       actualFilledSol: roundSolLamports(actualFilledSol),
       actualWalletDeltaSol,
+      acquiredTokenAmountRaw,
+      disposedTokenAmountRaw,
+      postAccountState: afterAccountState,
       preWalletSol: roundSolLamports(input.beforeAccountState.walletSol),
       postWalletSol: roundSolLamports(afterAccountState.walletSol),
       fillAmountSource: 'wallet-delta' as const,
@@ -789,7 +991,11 @@ function resolveActualExitMetricValue(
   exitMetrics: ReturnType<typeof buildEvolutionExitMetrics>
 ) {
   if (
-    (actualExitReason.includes('sol-depletion') || actualExitReason.includes('sol-nearly-depleted')) &&
+    (
+      actualExitReason.includes('sol-depletion')
+      || actualExitReason.includes('sol-depleted')
+      || actualExitReason.includes('sol-nearly-depleted')
+    ) &&
     typeof exitMetrics.lpSolDepletedBins === 'number'
   ) {
     return exitMetrics.lpSolDepletedBins;
@@ -1063,7 +1269,6 @@ function resolveLifecycleOpenFill(input: {
   position: NonNullable<LiveAccountState['walletLpPositions']>[number];
   positionState?: PositionStateSnapshot;
   ledgerRecord?: PositionLedgerRecord;
-  samePoolMintActiveCount?: number;
 }) {
   const entryFills = input.fills
     .filter((fill) => (fill.side === 'add-lp' || fill.side === 'buy') && fill.amount > 0);
@@ -1095,8 +1300,16 @@ function resolveLifecycleOpenFill(input: {
     return byLedgerSubmission;
   }
 
+  const chainPositionAddress = input.position.chainPositionAddress || input.position.positionAddress;
   const byChainAddress = entryFills
-    .filter((fill) => fill.chainPositionAddress === input.position.positionAddress)
+    .filter((fill) =>
+      isTrustedLpOpenFill(fill)
+      && Boolean(chainPositionAddress)
+      && (
+        fill.chainPositionAddress === chainPositionAddress
+        || fill.positionId === chainPositionAddress
+      )
+    )
     .sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt))[0];
 
   if (byChainAddress) {
@@ -1107,7 +1320,7 @@ function resolveLifecycleOpenFill(input: {
     return undefined;
   }
 
-  const boundByPositionState = matchesPositionStateLifecycle(input.position, input.positionState)
+  const boundByPositionState = positionStateOwnsLpPosition(input.position, input.positionState)
     ? entryFills
       .filter((fill) => classifyLpEntryFillBinding({
         fill,
@@ -1119,24 +1332,7 @@ function resolveLifecycleOpenFill(input: {
   if (boundByPositionState[0]) {
     return boundByPositionState[0];
   }
-
-  const uniquePoolMintCandidates = entryFills
-    .filter((fill) =>
-      isTrustedLpOpenFill(fill)
-      && fill.mint === input.position.mint
-      && input.position.poolAddress
-      && (
-        fill.positionId === `${input.position.poolAddress}:${input.position.mint}`
-        || fill.positionId?.startsWith(`${input.position.poolAddress}:`) === true
-      )
-    )
-    .sort((left, right) => Date.parse(left.recordedAt) - Date.parse(right.recordedAt));
-
-  if (input.samePoolMintActiveCount === 1 && uniquePoolMintCandidates.length > 0) {
-    return uniquePoolMintCandidates[uniquePoolMintCandidates.length - 1];
-  }
-
-  return uniquePoolMintCandidates.length === 1 ? uniquePoolMintCandidates[0] : undefined;
+  return undefined;
 }
 
 function resolvePositionStateOpenFill(input: {
@@ -1581,6 +1777,7 @@ export function validateLpWithdrawTriggerEligibility(input: {
   reason?: string;
   snapshot: Record<string, unknown>;
   config: Awaited<ReturnType<typeof loadStrategyConfig>>;
+  allowModeledPnl?: boolean;
 }): { allowed: true } | { allowed: false; reason: string } {
   if (input.action !== 'withdraw-lp') {
     return { allowed: true };
@@ -1601,6 +1798,13 @@ export function validateLpWithdrawTriggerEligibility(input: {
       : undefined,
     lpRiskReason: typeof input.snapshot.lpRiskReason === 'string' ? input.snapshot.lpRiskReason : undefined,
     lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
+    lpModeledNetPnlPct: input.allowModeledPnl === true && typeof input.snapshot.lpModeledNetPnlPct === 'number'
+      ? input.snapshot.lpModeledNetPnlPct
+      : undefined,
+    lpModeledPnlSource: input.allowModeledPnl === true
+      && input.snapshot.lpModeledPnlSource === 'paper-shadow-dlmm-active-bin-modeled'
+      ? input.snapshot.lpModeledPnlSource
+      : undefined,
     lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
     lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
     lpSolExposureStatus: input.snapshot.lpSolExposureStatus === 'sol-heavy'
@@ -1650,26 +1854,36 @@ type EvaluatedLpPosition = {
   holdTimeMs: number;
   priority: number;
   lifecycleBound: boolean;
+  ownershipEvidenced: boolean;
 };
 
 function findLedgerRecordForPosition(input: {
   ledger?: PositionLedgerSnapshot;
   position: ActiveLpPosition;
 }) {
-  const chainPositionAddress = firstString(input.position.chainPositionAddress, input.position.positionAddress, input.position.positionId);
-  return (input.ledger?.records ?? []).find((record) => {
-    const recordChainPositionAddress = firstString(record.chainPositionAddress, record.positionId);
-    if (chainPositionAddress && recordChainPositionAddress) {
-      return chainPositionAddress === recordChainPositionAddress;
-    }
-
-    return Boolean(
-      input.position.mint &&
-      input.position.poolAddress &&
-      record.activeMint === input.position.mint &&
-      record.activePoolAddress === input.position.poolAddress
+  const chainPositionAddress = firstString(
+    input.position.chainPositionAddress,
+    input.position.positionAddress
+  );
+  if (chainPositionAddress) {
+    return (input.ledger?.records ?? []).find((record) =>
+      record.chainPositionAddress === chainPositionAddress
+      || record.positionId === chainPositionAddress
+      || record.positionKey === `chain-position:${chainPositionAddress}`
     );
-  });
+  }
+
+  const concretePositionId = input.position.positionId?.includes(':')
+    ? undefined
+    : input.position.positionId;
+  if (!concretePositionId) {
+    return undefined;
+  }
+
+  return (input.ledger?.records ?? []).find((record) =>
+    record.positionId === concretePositionId
+    || record.positionKey === `position:${concretePositionId}`
+  );
 }
 
 function evaluateActiveLpPositions(input: {
@@ -1679,6 +1893,7 @@ function evaluateActiveLpPositions(input: {
   fills: LiveFillEntry[];
   positionState?: PositionStateSnapshot;
   positionLedger?: PositionLedgerSnapshot;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
 }): EvaluatedLpPosition[] {
   const evaluated: EvaluatedLpPosition[] = [];
   const activePositions = dedupeActiveLpPositions(input.accountState);
@@ -1689,7 +1904,7 @@ function evaluateActiveLpPositions(input: {
       continue;
     }
 
-    const lifecycleBound = matchesPositionStateLifecycle(rawPosition, input.positionState);
+    const lifecycleBound = positionStateOwnsLpPosition(rawPosition, input.positionState);
     const ledgerRecord = findLedgerRecordForPosition({
       ledger: input.positionLedger,
       position: rawPosition
@@ -1698,10 +1913,7 @@ function evaluateActiveLpPositions(input: {
       fills: input.fills,
       position: rawPosition,
       positionState: input.positionState,
-      ledgerRecord,
-      samePoolMintActiveCount: activePositions.filter((position) =>
-        position.poolAddress === rawPosition.poolAddress && position.mint === rawPosition.mint
-      ).length
+      ledgerRecord
     });
     const ledgerEntry = isTrustedEntrySolSource(ledgerRecord?.entrySolSource)
       && typeof ledgerRecord?.entrySol === 'number'
@@ -1718,6 +1930,23 @@ function evaluateActiveLpPositions(input: {
       openFill,
       lifecycleBound
     });
+    const ownershipEvidenced = hasLightldLpOwnershipEvidence({
+      position: rawPosition,
+      ledgerRecord,
+      positionState: input.positionState,
+      trustedOpenFillBound: Boolean(
+        openFill
+        && isTrustedLpOpenFill(openFill)
+        && openFill.submissionId
+      )
+    });
+    if (!ownershipEvidenced) {
+      // Wallet ownership is not strategy ownership. A hand-created or
+      // another strategy's LP may be visible to the same signer, but it must
+      // never become a withdraw/claim/rebalance target without a Lightld
+      // open-intent, idempotency, or trusted entry-fill binding.
+      continue;
+    }
     const entrySol = trustedEntry?.entrySol;
     const claimedFeeResolution = resolveClaimedFeeValueSol({
       fills: input.fills,
@@ -1791,11 +2020,31 @@ function evaluateActiveLpPositions(input: {
         config: input.config
       })
       : undefined;
-    const holdTimeMs = lifecycleBound && input.positionState?.openedAt
-      ? Math.max(0, input.nowMs - Date.parse(input.positionState.openedAt))
-      : openFill?.recordedAt
-        ? Math.max(0, input.nowMs - Date.parse(openFill.recordedAt))
-        : 0;
+    const lpModeledNetPnlPct = (
+      (input.captureMode === 'mechanical-soak' || input.captureMode === 'economic-shadow')
+      && position.valuationStatus === 'ready'
+      && position.valuationSource === 'paper-shadow-dlmm-active-bin-modeled'
+      && position.valuationTrust === 'fallback_display'
+      && position.valuationCompleteness === 'untrusted'
+      && typeof position.exitQuoteValueSol !== 'number'
+    )
+      ? computeTrustedLpNetPnlPct({
+        entrySol: trustedEntry?.entrySol,
+        currentValueSol,
+        // A simulated LP never creates a rent-bearing chain account. Keep the
+        // model explicit and use zero rent instead of borrowing live evidence.
+        recoverableRentSol: recoverableRentSol ?? 0,
+        config: input.config
+      })
+      : undefined;
+    const holdStartedAt = trustedEntry?.openedAt
+      ?? (lifecycleBound ? input.positionState?.openedAt : undefined)
+      ?? openFill?.recordedAt
+      ?? ledgerRecord?.firstSeenOnChainAt;
+    const holdStartedAtMs = holdStartedAt ? Date.parse(holdStartedAt) : Number.NaN;
+    const holdTimeMs = Number.isFinite(holdStartedAtMs)
+      ? Math.max(0, input.nowMs - holdStartedAtMs)
+      : 0;
     const snapshot: any = buildLpExitSnapshotFromPosition({
       position,
       holdTimeMs,
@@ -1813,6 +2062,10 @@ function evaluateActiveLpPositions(input: {
     }
     if (typeof lpNetPnlPct === 'number') {
       snapshot.lpNetPnlPct = lpNetPnlPct;
+    }
+    if (typeof lpModeledNetPnlPct === 'number') {
+      snapshot.lpModeledNetPnlPct = lpModeledNetPnlPct;
+      snapshot.lpModeledPnlSource = 'paper-shadow-dlmm-active-bin-modeled';
     }
 
     const decision = runEngineCycle({
@@ -1836,7 +2089,8 @@ function evaluateActiveLpPositions(input: {
       priority: decision.action === 'withdraw-lp' || decision.action === 'claim-fee' || decision.action === 'rebalance-lp'
         ? getLpExitPriority(decision.action, decision.audit.reason)
         : 0,
-      lifecycleBound
+      lifecycleBound,
+      ownershipEvidenced
     });
   }
 
@@ -1844,8 +2098,21 @@ function evaluateActiveLpPositions(input: {
 }
 
 function sortTriggeredLpExits(left: EvaluatedLpPosition, right: EvaluatedLpPosition) {
+  // Capital risk outranks fairness.  Fair rotation is only used between
+  // exits of the same severity so a fresh take-profit can never jump ahead
+  // of a stop-loss/range exit that already had one failed attempt.
   if (right.priority !== left.priority) {
     return right.priority - left.priority;
+  }
+
+  const leftAttemptedAt = left.ledgerRecord?.lastExitAttemptAt;
+  const rightAttemptedAt = right.ledgerRecord?.lastExitAttemptAt;
+  if (Boolean(leftAttemptedAt) !== Boolean(rightAttemptedAt)) {
+    return leftAttemptedAt ? 1 : -1;
+  }
+
+  if (leftAttemptedAt && rightAttemptedAt && leftAttemptedAt !== rightAttemptedAt) {
+    return leftAttemptedAt.localeCompare(rightAttemptedAt);
   }
 
   if (right.holdTimeMs !== left.holdTimeMs) {
@@ -1898,6 +2165,7 @@ function selectTriggeredLpExit(input: {
   fills: LiveFillEntry[];
   positionState?: PositionStateSnapshot;
   positionLedger?: PositionLedgerSnapshot;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
 }) {
   return selectTriggeredLpExitFromEvaluations(evaluateActiveLpPositions(input));
 }
@@ -1965,6 +2233,16 @@ function applyLpObservationToContext(
   } else {
     delete context.trader.lpNetPnlPct;
   }
+  if (typeof observation.snapshot.lpModeledNetPnlPct === 'number') {
+    context.trader.lpModeledNetPnlPct = observation.snapshot.lpModeledNetPnlPct;
+    context.trader.lpModeledPnlSource = observation.snapshot.lpModeledPnlSource;
+    // The active-bin model contains no fee accrual evidence. Drop any stale
+    // candidate-context fee value so paper cannot fabricate a claim action.
+    delete context.trader.lpUnclaimedFeeUsd;
+  } else {
+    delete context.trader.lpModeledNetPnlPct;
+    delete context.trader.lpModeledPnlSource;
+  }
   context.trader.lpActiveBinStatus = observation.snapshot.lpActiveBinStatus as
     | 'in-range'
     | 'out-of-range'
@@ -1977,6 +2255,10 @@ function shouldApplyLpObservationToContext(
   forced: boolean
 ) {
   if (observation.lifecycleBound) {
+    return true;
+  }
+
+  if (forced && observation.ownershipEvidenced) {
     return true;
   }
 
@@ -2064,7 +2346,12 @@ function buildEngineSnapshot(
   }
 
   return {
-    ...shared
+    ...shared,
+    inSession: firstBoolean(context.token.inSession, context.trader.inSession),
+    hasInventory: firstBoolean(context.trader.hasInventory, context.pool.hasInventory),
+    unrealizedPct: typeof context.trader.unrealizedPct === 'number' ? context.trader.unrealizedPct : undefined,
+    holdTimeMs: typeof context.trader.holdTimeMs === 'number' ? context.trader.holdTimeMs : undefined,
+    lifecycleState: typeof context.trader.lifecycleState === 'string' ? context.trader.lifecycleState : undefined
   };
 }
 
@@ -2255,6 +2542,13 @@ function resolveActionIdentity(input: {
   chainPositionAddress?: string;
 }) {
   if (input.action === 'dca-out') {
+    if (input.positionState?.ownedTokenAmountRaw) {
+      return {
+        openIntentId: input.positionState.openIntentId,
+        positionId: input.positionState.positionId,
+        chainPositionAddress: input.positionState.chainPositionAddress
+      };
+    }
     return {};
   }
 
@@ -2278,11 +2572,12 @@ function resolveActionIdentity(input: {
       )
     )
   );
-  const canReusePositionStateIdentity = input.action === 'add-lp'
+  const openingAction = input.action === 'add-lp' || input.action === 'deploy';
+  const canReusePositionStateIdentity = openingAction
     ? positionStateMatchesTarget && input.positionState?.lifecycleState !== 'closed'
     : positionStateMatchesTarget;
-  const canReusePendingIdentity = input.action === 'add-lp'
-    ? pendingSubmissionMatchesTarget && input.pendingSubmission?.orderAction === 'add-lp'
+  const canReusePendingIdentity = openingAction
+    ? pendingSubmissionMatchesTarget && input.pendingSubmission?.orderAction === input.action
     : pendingSubmissionMatchesTarget;
 
   const chainPositionAddress = firstString(
@@ -2299,7 +2594,7 @@ function resolveActionIdentity(input: {
     canReusePendingIdentity ? input.pendingSubmission?.openIntentId : undefined
   ) || undefined;
 
-  if (input.action === 'add-lp') {
+  if (openingAction) {
     return {
       openIntentId: openIntentId ?? createOpenIntentId(),
       positionId: positionId ?? createPositionId({
@@ -2566,6 +2861,7 @@ async function appendDecision(
       | 'live-config'
       | 'reconciliation'
       | 'guards'
+      | 'quote'
       | 'signer'
       | 'broadcast'
       | 'recovery'
@@ -2621,6 +2917,7 @@ async function appendIncident(
       | 'live-config'
       | 'reconciliation'
       | 'guards'
+      | 'quote'
       | 'signer'
       | 'broadcast'
       | 'recovery'
@@ -2753,7 +3050,37 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const historicalFills = mergeHistoricalFills(accountState, await journals.fills.readAll());
 
-  const forcedExitToken = findLargestNonStableInventory(accountState);
+  const walletTokenInventory = findWalletTokenInventory({
+    accountState,
+    activeMint: input.positionState?.activeMint
+  });
+  const largePoolSpotInventory = resolveOwnedSpotInventory({
+    accountState,
+    activeMint: input.positionState?.activeMint,
+    ownedTokenAmountRaw: input.positionState?.ownedTokenAmountRaw
+  });
+  const managedLargePoolInventory = config.poolClass === 'large-pool'
+    && input.positionState?.lifecycleState === 'open'
+      ? largePoolSpotInventory.walletInventory
+      : undefined;
+  const managedLargePoolOwnedInventory = config.poolClass === 'large-pool'
+    && input.positionState?.lifecycleState === 'open'
+      ? largePoolSpotInventory.ownedInventory
+      : undefined;
+  const forcedExitToken = (
+    input.positionState?.lifecycleState === 'inventory_exit_ready'
+    || input.positionState?.lifecycleState === 'inventory_exit_pending'
+  ) ? walletTokenInventory : undefined;
+  const residualExitIdentityMint = (
+    input.positionState?.lifecycleState === 'inventory_exit_ready'
+    || input.positionState?.lifecycleState === 'inventory_exit_pending'
+  ) ? input.positionState.activeMint : undefined;
+  const managedLargePoolUnrealizedPct = managedLargePoolOwnedInventory
+    && typeof managedLargePoolOwnedInventory.currentValueSol === 'number'
+    && typeof input.positionState?.entrySol === 'number'
+    && input.positionState.entrySol > 0
+      ? ((managedLargePoolOwnedInventory.currentValueSol - input.positionState.entrySol) / input.positionState.entrySol) * 100
+      : undefined;
   const context = buildDecisionContext(
     forcedExitToken
       ? {
@@ -2771,7 +3098,59 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
             lifecycleState: 'inventory_exit_ready'
           }
         }
-      : (input.context ?? {})
+      : residualExitIdentityMint
+        ? {
+            ...(input.context ?? {}),
+            token: {
+              ...((input.context?.token as Record<string, unknown> | undefined) ?? {}),
+              mint: residualExitIdentityMint,
+              hasInventory: true
+            },
+            trader: {
+              ...((input.context?.trader as Record<string, unknown> | undefined) ?? {}),
+              hasInventory: true,
+              hasLpPosition: false,
+              lifecycleState: 'inventory_exit_ready'
+            }
+          }
+      : managedLargePoolInventory
+        ? {
+            ...(input.context ?? {}),
+            pool: {
+              ...((input.context?.pool as Record<string, unknown> | undefined) ?? {}),
+              address: input.positionState?.activePoolAddress
+                ?? (input.context?.pool as Record<string, unknown> | undefined)?.address
+                ?? ''
+            },
+            token: {
+              ...((input.context?.token as Record<string, unknown> | undefined) ?? {}),
+              mint: managedLargePoolInventory.mint,
+              symbol: managedLargePoolInventory.symbol
+                ?? (input.context?.token as Record<string, unknown> | undefined)?.symbol
+                ?? '',
+              hasInventory: true
+            },
+            trader: {
+              ...((input.context?.trader as Record<string, unknown> | undefined) ?? {}),
+              hasInventory: true,
+              hasLpPosition: false,
+              unrealizedPct: managedLargePoolUnrealizedPct,
+              lifecycleState: input.positionState?.lifecycleState
+            }
+          }
+        : accountState
+          ? {
+              ...(input.context ?? {}),
+              trader: {
+                ...((input.context?.trader as Record<string, unknown> | undefined) ?? {}),
+                hasInventory: hasStrategyOwnedInventory({
+                  accountState,
+                  activeMint: input.positionState?.activeMint,
+                  activePoolAddress: input.positionState?.activePoolAddress
+                })
+              }
+            }
+          : (input.context ?? {})
   );
   const mirrorSink = input.mirrorSink;
   const killSwitch = input.killSwitch ?? new KillSwitch(false);
@@ -2793,14 +3172,14 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   });
   const snapshot = buildEngineSnapshot(config.poolClass, context);
   
-  if (config.poolClass === 'new-token') {
-    (snapshot as any).holdTimeMs = getHoldTimeMs({
+  const positionHoldTimeMs = getHoldTimeMs({
       fills: historicalFills,
       mint: firstString(context.token.mint),
       nowMs: Date.now(),
       positionState: input.positionState
     });
-  }
+  (snapshot as any).holdTimeMs = positionHoldTimeMs;
+  context.trader.holdTimeMs = positionHoldTimeMs;
 
   const routeExists = Boolean(snapshot.hasSolRoute);
   const routeSlippageBps = firstNumber(context.route.slippageBps, config.solRouteLimits.maxSlippageBps);
@@ -2812,6 +3191,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const pendingSubmissionStore = new PendingSubmissionStore(
     stateRootDir
   );
+  const preparedBroadcastStore = new PreparedBroadcastStore(stateRootDir);
+  const spendingLimitsStore = input.spendingLimitsConfig
+    ? new SpendingLimitsStore(
+        stateRootDir,
+        input.spendingLimitsConfig.dailySpendResetHour ?? 0
+      )
+    : undefined;
   const runtimeMode = input.runtimeMode ?? 'healthy';
   const startedAt = new Date().toISOString();
   const logContext: LiveCycleLogContext = {
@@ -2832,6 +3218,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     sessionPhase: input.sessionPhase ?? 'active',
     liveEnabled: config.live.enabled
   };
+  let activeMint = firstString(input.positionState?.activeMint, logContext.tokenMint, context.token.mint);
 
   let reconciliationOk = (input.reconciliationStatus ?? 'matched') === 'matched';
   let currentRequestedPositionSol = input.requestedPositionSol ?? 0;
@@ -2846,16 +3233,24 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       synchronouslyResolved
     );
 
+    if (result.reason.startsWith('spot-ownership-reconcile-required:')) {
+      nextLifecycleState = 'reconcile_required';
+    }
+
     const hasLivePendingSubmission = result.liveOrderSubmitted || pendingSubmission !== null;
 
     if (activeMint) {
       const unresolved = result.reason.includes('journal-open-unresolved') || result.reason.includes('mint-position-already-active:') || result.reason.includes('pending-open:');
       if (unresolved && hasLivePendingSubmission) {
         nextLifecycleState = 'open';
-      } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
+      } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasStrategyOwnedInventory({
+        accountState,
+        activeMint,
+        activePoolAddress: input.positionState?.activePoolAddress
+      })) {
         nextLifecycleState = 'closed';
       }
-    } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission && !hasNonStableInventory(accountState)) {
+    } else if (!result.liveOrderSubmitted && !hasLivePendingSubmission) {
       nextLifecycleState = 'closed';
     }
 
@@ -2886,7 +3281,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   };
   let currentActionIdentity: LiveCycleResult['actionIdentity'];
   const blockCycle = async (entry: {
-    stage: 'live-config' | 'reconciliation' | 'guards' | 'signer' | 'broadcast' | 'recovery' | 'runtime-policy';
+    stage: 'live-config' | 'reconciliation' | 'guards' | 'quote' | 'signer' | 'broadcast' | 'recovery' | 'runtime-policy';
     action: LiveAction;
     reason: string;
     failureDetail?: string;
@@ -2952,7 +3347,25 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       actionIdentity: entry.actionIdentity ?? currentActionIdentity
     });
   };
-  let pendingSubmission = await pendingSubmissionStore.read();
+  const preparedBroadcastRecovery = await recoverPreparedBroadcast({
+    preparedBroadcastStore,
+    pendingSubmissionStore,
+    broadcaster: input.broadcaster,
+    spendingLimitsStore
+  });
+  let pendingSubmission = preparedBroadcastRecovery.pendingSubmission;
+  if (preparedBroadcastRecovery.blocked) {
+    return blockCycle({
+      stage: 'recovery',
+      action: 'hold',
+      reason: preparedBroadcastRecovery.reason,
+      audit: { reason: preparedBroadcastRecovery.reason },
+      severity: 'error',
+      failureKind: 'unknown',
+      failureSource: 'recovery',
+      quoteCollected: false
+    });
+  }
   if (config.poolClass === 'new-token') {
     (snapshot as any).pendingConfirmationStatus = resolvePendingConfirmationStatus({
       pendingSubmission,
@@ -2962,7 +3375,15 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   }
 
   const lpEvaluations = config.poolClass === 'new-token'
-    ? evaluateActiveLpPositions({ accountState, config, nowMs: Date.now(), fills: historicalFills, positionState: input.positionState, positionLedger: input.positionLedger })
+    ? evaluateActiveLpPositions({
+      accountState,
+      config,
+      nowMs: Date.now(),
+      fills: historicalFills,
+      positionState: input.positionState,
+      positionLedger: input.positionLedger,
+      captureMode: input.captureMode
+    })
     : [];
   const triggeredLpExit = selectTriggeredLpExitFromEvaluations(lpEvaluations);
   const multiLpExit = triggeredLpExit
@@ -2978,7 +3399,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     applyLpObservationToContext(context, observedLpPosition);
   }
 
-  let activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
+  activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
   if (multiLpExit?.position.poolAddress) {
     poolAddress = multiLpExit.position.poolAddress;
     tokenSymbol = firstString(context.token.symbol, logContext.tokenSymbol, multiLpExit.position.mint);
@@ -3173,7 +3594,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     residualTokenSweepMinValueSol: input.residualTokenSweepMinValueSol
   });
 
-  if (preEngineMintAggregate.mustCleanupDust) {
+  if (config.poolClass === 'new-token' && preEngineMintAggregate.mustCleanupDust) {
     currentLifecycleState = 'inventory_exit_ready';
     context.trader.lifecycleState = currentLifecycleState;
     context.trader.hasInventory = true;
@@ -3209,6 +3630,10 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       : (snapshot as any).pendingConfirmationStatus;
     if (typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0) {
       (updatedSnapshot as any).entrySol = multiLpExit.snapshot.entrySol;
+    }
+    if (typeof multiLpExit?.snapshot.lpModeledNetPnlPct === 'number') {
+      (updatedSnapshot as any).lpModeledNetPnlPct = multiLpExit.snapshot.lpModeledNetPnlPct;
+      (updatedSnapshot as any).lpModeledPnlSource = multiLpExit.snapshot.lpModeledPnlSource;
     }
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
@@ -3267,6 +3692,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     `lpTradingValueSol=${typeof context.trader.lpTradingValueSol === 'number' ? context.trader.lpTradingValueSol.toFixed(9) : 'n/a'}`,
     `lpEntryTradingSol=${typeof context.trader.lpEntryTradingSol === 'number' ? context.trader.lpEntryTradingSol.toFixed(9) : 'n/a'}`,
     `lpNetPnlPct=${typeof context.trader.lpNetPnlPct === 'number' ? context.trader.lpNetPnlPct.toFixed(2) : 'n/a'}`,
+    `lpModeledNetPnlPct=${typeof context.trader.lpModeledNetPnlPct === 'number' ? context.trader.lpModeledNetPnlPct.toFixed(2) : 'n/a'}`,
+    `lpModeledPnlSource=${typeof context.trader.lpModeledPnlSource === 'string' ? context.trader.lpModeledPnlSource : 'n/a'}`,
     `lpRiskIntent=${typeof (updatedSnapshot as any).lpRiskIntent === 'string' ? (updatedSnapshot as any).lpRiskIntent : 'n/a'}`,
     `lpRiskReason=${typeof (updatedSnapshot as any).lpRiskReason === 'string' ? (updatedSnapshot as any).lpRiskReason : 'n/a'}`,
     `lpActiveBinId=${typeof (updatedSnapshot as any).lpActiveBinId === 'number' ? String((updatedSnapshot as any).lpActiveBinId) : 'n/a'}`,
@@ -3293,6 +3720,22 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   const engineAuditReason = engineAuditParts.join(' | ');
   logContext.engineReason = engineAuditReason;
+
+  if (
+    config.poolClass === 'large-pool'
+    && input.positionState?.lifecycleState === 'open'
+    && largePoolSpotInventory.reconcileReason
+  ) {
+    return blockCycle({
+      stage: 'runtime-policy',
+      action: 'hold',
+      reason: largePoolSpotInventory.reconcileReason,
+      audit: { reason: largePoolSpotInventory.reconcileReason },
+      severity: 'error',
+      failureSource: 'runtime-policy',
+      quoteCollected: false
+    });
+  }
 
   if (engineResult.action === 'hold') {
     const blockedReason = liveLpValuation && liveLpValuation.valuationStatus !== 'ready'
@@ -3476,7 +3919,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     action: actionableAction,
     reason: engineResult.audit.reason,
     snapshot: updatedSnapshot,
-    config
+    config,
+    allowModeledPnl: input.captureMode === 'mechanical-soak' || input.captureMode === 'economic-shadow'
   });
   if (!lpWithdrawTriggerEligibility.allowed) {
     return blockCycle({
@@ -3564,21 +4008,60 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
   const quotedPositionSol = firstNumber(
+    actionableAction === 'dca-out'
+      && config.poolClass === 'large-pool'
+      && typeof managedLargePoolOwnedInventory?.currentValueSol === 'number'
+      && managedLargePoolOwnedInventory.currentValueSol > 0
+        ? managedLargePoolOwnedInventory.currentValueSol
+        : undefined,
     activeLpExitTargetSol,
     context.route.expectedOutSol,
     context.token.expectedOutSol,
     context.pool.expectedOutSol,
     input.requestedPositionSol
   );
-  const quote = await quoteProvider.collect({
-    expectedOutSol: quotedPositionSol,
-    slippageBps: routeSlippageBps,
-    routeExists
-  });
+  let quote: SolExitQuote;
+  let quoteDegradedReason: string | undefined;
+  try {
+    quote = await quoteProvider.collect({
+      expectedOutSol: quotedPositionSol,
+      slippageBps: routeSlippageBps,
+      routeExists
+    });
+  } catch (error) {
+    const reason = error instanceof Error && error.message.length > 0
+      ? error.message
+      : String(error);
+    if (!isFullExitAction(actionableAction) && actionableAction !== 'claim-fee') {
+      return blockCycle({
+        stage: 'quote',
+        action: actionableAction,
+        reason: `quote-unavailable:${reason}`,
+        audit: engineResult.audit,
+        severity: 'warning',
+        failureKind: 'transient',
+        failureSource: 'quote',
+        quoteCollected: false
+      });
+    }
+
+    // The runtime quote is bookkeeping, not the executable swap build. Keep
+    // every risk-reducing action available and let the execution service make
+    // the exact token-size route attempt (and return a retryable failure when
+    // the real route is unavailable).
+    quoteDegradedReason = `quote-unavailable-reduce-risk-allowed:${reason}`;
+    quote = {
+      routeExists: false,
+      outputSol: Math.max(0, quotedPositionSol),
+      slippageBps: routeSlippageBps,
+      quotedAt: new Date().toISOString(),
+      stale: true
+    };
+  }
 
   const requestedPositionSol = resolveRequestedPositionSol({
     activeLpExitPositionSol,
-    requestedPositionSol: input.requestedPositionSol,
+    requestedPositionSol: actionableAction === 'dca-out' ? undefined : input.requestedPositionSol,
     quoteOutputSol: quote.outputSol
   });
   currentRequestedPositionSol = requestedPositionSol;
@@ -3590,18 +4073,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     requestedPositionSol,
     ...quote
   });
+  if (quoteDegradedReason) {
+    await appendIncident(journals, logContext, mirrorSink, {
+      stage: 'quote',
+      reason: quoteDegradedReason,
+      severity: 'warning',
+      requestedPositionSol,
+      quote
+    });
+  }
 
   const executionPoolAddress = actionableAction === 'dca-out' ? '' : poolAddress;
   const executionPlan = {
     strategyId: input.strategy,
     poolAddress: executionPoolAddress,
     exitMint: 'SOL',
-    maxSlippageBps: 100,
-    maxImpactBps: 200,
+    maxSlippageBps: config.solRouteLimits.maxSlippageBps,
+    maxImpactBps: config.solRouteLimits.maxImpactBps,
     solExitQuote: quote
   } satisfies ExecutionPlan;
 
-  if (!config.live.enabled) {
+  // `live.enabled` protects real capital.  A strategy that is intentionally
+  // disabled for live deployment must still be exercisable end-to-end in the
+  // signed simulate-only paper path.
+  if (!config.live.enabled && (input.captureMode ?? 'live') === 'live') {
     return blockCycle({
       stage: 'live-config',
       action: actionableAction,
@@ -3705,9 +4200,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
   }
 
-  const spendingLimitsStore = input.spendingLimitsConfig
-    ? new SpendingLimitsStore(stateRootDir)
-    : undefined;
   const spendingState = spendingLimitsStore
     ? await spendingLimitsStore.read()
     : undefined;
@@ -3716,7 +4208,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     action: actionableAction,
     symbol: tokenSymbol,
     requestedPositionSol,
-    maxLivePositionSol: input.ignoreLivePositionSolLimit ? Number.POSITIVE_INFINITY : config.live.maxLivePositionSol,
+    maxLivePositionSol: config.live.maxLivePositionSol,
     killSwitchEngaged: killSwitchState,
     sessionPhase: logContext.sessionPhase,
     maxSingleOrderSol: input.spendingLimitsConfig?.maxSingleOrderSol,
@@ -3724,6 +4216,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     maxDailySpendSol: input.spendingLimitsConfig?.maxDailySpendSol,
     hourlySpendSol: spendingState?.hourlySpendSol,
     dailySpendSol: spendingState?.dailySpendSol,
+    availableWalletSol: accountState?.walletSol,
     mintAuthorityRevoked: typeof context.token.mintAuthorityRevoked === 'boolean' ? context.token.mintAuthorityRevoked : undefined,
     requireMintAuthorityRevoked: config.live.requireMintAuthorityRevoked,
     lpBurnedPct: typeof context.token.lpBurnedPct === 'number' ? context.token.lpBurnedPct : undefined,
@@ -3768,14 +4261,57 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       quoteCollected: true
     });
   }
+  const ownedResidualAmountRaw = actionableAction === 'dca-out' && config.poolClass === 'new-token'
+    ? sumOwnedResidualAmountRaw(input.positionLedger, logContext.tokenMint)
+    : undefined;
+  const ownedSpotAmountRaw = actionableAction === 'dca-out' && config.poolClass === 'large-pool'
+    ? largePoolSpotInventory.ownedInventory?.amountRaw
+    : undefined;
+  const dcaInputAmountRaw = ownedSpotAmountRaw ?? ownedResidualAmountRaw;
+  if (
+    actionableAction === 'dca-out'
+    && !dcaInputAmountRaw
+  ) {
+    return blockCycle({
+      stage: 'guards',
+      action: actionableAction,
+      reason: config.poolClass === 'large-pool'
+        ? (largePoolSpotInventory.reconcileReason ?? 'spot-ownership-reconcile-required:owned-token-amount-missing')
+        : 'residual-ownership-amount-unknown',
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      severity: 'warning',
+      quoteCollected: true
+    });
+  }
   const orderIntent = buildOrderIntent({
     strategyId: input.strategy,
     poolAddress: executionPlan.poolAddress,
     outputSol: requestedPositionSol,
+    executionPolicy: input.captureMode === 'mechanical-soak' || input.captureMode === 'economic-shadow'
+      ? 'simulate-only'
+      : 'broadcast',
     side: resolveOrderIntentSide(actionableAction),
     tokenMint: logContext.tokenMint,
     fullPositionExit: isFullPositionExitAction(actionableAction),
     liquidateResidualTokenToSol: actionableAction === 'withdraw-lp' || actionableAction === 'claim-fee',
+    maxSlippageBps: executionPlan.maxSlippageBps,
+    maxImpactBps: executionPlan.maxImpactBps,
+    inputAmountRaw: actionableAction === 'dca-out' ? dcaInputAmountRaw : undefined,
+    preExitTokenAmountRaw: actionableAction === 'withdraw-lp'
+      || actionableAction === 'claim-fee'
+      || actionableAction === 'dca-out'
+      ? sumWalletTokenAmountRaw(accountState, logContext.tokenMint)
+      : undefined,
+    preEntryTokenAmountRaw: actionableAction === 'deploy'
+      ? sumWalletTokenAmountRaw(accountState, logContext.tokenMint)
+      : undefined,
+    preEntryWalletSol: (actionableAction === 'deploy' || actionableAction === 'add-lp')
+      && typeof accountState?.walletSol === 'number'
+      ? accountState.walletSol
+      : undefined,
     openIntentId: actionIdentity.openIntentId,
     positionId: actionIdentity.positionId,
     chainPositionAddress: actionIdentity.chainPositionAddress
@@ -3875,6 +4411,23 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   let signedIntent: SignedLiveOrderIntent;
   try {
     signedIntent = await signer.sign(orderIntent);
+    await preparedBroadcastStore.write(buildPreparedBroadcastSnapshot({
+      strategyId: input.strategy,
+      signedIntent,
+      action: actionableAction,
+      captureMode: input.captureMode,
+      openIntentId: actionIdentity.openIntentId,
+      positionId: actionIdentity.positionId,
+      chainPositionAddress: actionIdentity.chainPositionAddress,
+      poolAddress: executionPlan.poolAddress,
+      tokenMint: logContext.tokenMint,
+      tokenSymbol,
+      requestedPositionSol,
+      spendReservationRequired: Boolean(
+        spendingLimitsStore && actionableActionClass === 'open_risk'
+      ),
+      createdAt: logContext.startedAt
+    }));
   } catch (error) {
     const updatedAt = new Date().toISOString();
     const reason = error instanceof ExecutionRequestError
@@ -3909,15 +4462,66 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       quoteCollected: true
     });
   }
+
+  if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+    try {
+      // The signed request is already durable in the prepared-broadcast WAL.
+      // Book its full requested exposure before the first network call. A
+      // restart can therefore either observe this reservation or recreate it
+      // from the WAL before replaying the same idempotency key.
+      await spendingLimitsStore.reserveSpend(
+        orderIntent.idempotencyKey,
+        requestedPositionSol
+      );
+    } catch (error) {
+      const updatedAt = new Date().toISOString();
+      const reason = error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'spending-reservation-failed';
+      // No network call has happened. Persist the terminal disposition before
+      // deleting the WAL so a crash can never turn this rejected reservation
+      // into a future replay.
+      await preparedBroadcastStore.markNotSubmitted(reason);
+      await preparedBroadcastStore.clear();
+      await appendOrderLifecycleState({
+        broadcastStatus: 'not_submitted',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        exitTriggerReason: engineResult.audit.reason,
+        executionFailureReason: reason,
+        updatedAt
+      });
+
+      return blockCycle({
+        stage: 'recovery',
+        action: actionableAction,
+        reason,
+        audit: engineResult.audit,
+        requestedPositionSol,
+        quote,
+        executionPlan,
+        orderIntent,
+        confirmationStatus: 'unknown',
+        failureKind: 'hard',
+        failureSource: 'recovery',
+        severity: 'error',
+        quoteCollected: true
+      });
+    }
+  }
   let broadcastResult: LiveBroadcastResult;
 
   try {
     broadcastResult = await broadcaster.broadcast(signedIntent);
   } catch (error) {
-    if (error instanceof ExecutionRequestError && error.kind === 'unknown') {
+    if (!isDefinitelyNotSubmittedBroadcastError(error)) {
       const updatedAt = new Date().toISOString();
+      const unknownReason = error instanceof ExecutionRequestError
+        ? error.reason
+        : 'broadcast-outcome-unknown';
       pendingSubmission = buildUnknownPendingSubmissionSnapshot({
         strategyId: input.strategy,
+        captureMode: input.captureMode,
         idempotencyKey: orderIntent.idempotencyKey,
         openIntentId: actionIdentity.openIntentId,
         positionId: actionIdentity.positionId,
@@ -3928,8 +4532,13 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         poolAddress: executionPlan.poolAddress,
         tokenMint: logContext.tokenMint,
         tokenSymbol,
+        preEntryTokenAmountRaw: orderIntent.preEntryTokenAmountRaw,
+        preEntryWalletSol: orderIntent.preEntryWalletSol,
+        preExitTokenAmountRaw: orderIntent.preExitTokenAmountRaw,
+        requestedPositionSol,
+        inputAmountRaw: orderIntent.inputAmountRaw,
         orderAction: actionableAction,
-        reason: error.reason
+        reason: unknownReason
       });
       await pendingSubmissionStore.write(pendingSubmission);
       await appendOrderLifecycleState({
@@ -3937,23 +4546,23 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         confirmationStatus: 'unknown',
         finality: 'unknown',
         exitTriggerReason: engineResult.audit.reason,
-        executionFailureReason: error.reason,
-        executionFailureDetail: error.detail,
+        executionFailureReason: unknownReason,
+        executionFailureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
         updatedAt
       });
 
       return blockCycle({
         stage: 'broadcast',
         action: actionableAction,
-        reason: error.reason,
-        failureDetail: error.detail,
+        reason: unknownReason,
+        failureDetail: error instanceof ExecutionRequestError ? error.detail : undefined,
         audit: engineResult.audit,
         requestedPositionSol,
         quote,
         executionPlan,
         orderIntent,
         confirmationStatus: 'unknown',
-        failureKind: error.kind,
+        failureKind: error instanceof ExecutionRequestError ? error.kind : 'unknown',
         failureSource: 'broadcast',
         severity: 'error',
         quoteCollected: true
@@ -3961,11 +4570,15 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     }
 
     const updatedAt = new Date().toISOString();
-    const reason = error instanceof ExecutionRequestError
-      ? error.reason
-      : error instanceof Error && error.message.length > 0
-        ? error.message
-        : 'broadcast-request-failed';
+    const reason = error.reason;
+    await preparedBroadcastStore.markNotSubmitted(reason);
+    if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+      await spendingLimitsStore.releaseSpend(
+        orderIntent.idempotencyKey,
+        requestedPositionSol
+      );
+    }
+    await preparedBroadcastStore.clear();
     await appendOrderLifecycleState({
       broadcastStatus: 'not_submitted',
       confirmationStatus: 'unknown',
@@ -3994,7 +4607,70 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     });
   }
 
+  const broadcastResponseIdentityFailure = broadcastResult.idempotencyKey !== orderIntent.idempotencyKey
+    ? 'broadcast-response-idempotency-mismatch'
+    : broadcastResult.status === 'submitted' && !broadcastResult.submissionId
+      ? 'broadcast-response-missing-submission-id'
+      : '';
+  if (broadcastResponseIdentityFailure) {
+    const updatedAt = new Date().toISOString();
+    pendingSubmission = buildUnknownPendingSubmissionSnapshot({
+      strategyId: input.strategy,
+      captureMode: input.captureMode,
+      idempotencyKey: orderIntent.idempotencyKey,
+      openIntentId: actionIdentity.openIntentId,
+      positionId: actionIdentity.positionId,
+      chainPositionAddress: actionIdentity.chainPositionAddress,
+      createdAt: logContext.startedAt,
+      updatedAt,
+      timeoutAt: buildPendingTimeoutAt(logContext.startedAt),
+      poolAddress: executionPlan.poolAddress,
+      tokenMint: logContext.tokenMint,
+      tokenSymbol,
+      preEntryTokenAmountRaw: orderIntent.preEntryTokenAmountRaw,
+      preEntryWalletSol: orderIntent.preEntryWalletSol,
+      preExitTokenAmountRaw: orderIntent.preExitTokenAmountRaw,
+      requestedPositionSol,
+      inputAmountRaw: orderIntent.inputAmountRaw,
+      orderAction: actionableAction,
+      reason: broadcastResponseIdentityFailure
+    });
+    await pendingSubmissionStore.write(pendingSubmission);
+    await appendOrderLifecycleState({
+      broadcastStatus: 'unknown',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      exitTriggerReason: engineResult.audit.reason,
+      executionFailureReason: broadcastResponseIdentityFailure,
+      updatedAt
+    });
+    return blockCycle({
+      stage: 'broadcast',
+      action: actionableAction,
+      reason: broadcastResponseIdentityFailure,
+      audit: engineResult.audit,
+      requestedPositionSol,
+      quote,
+      executionPlan,
+      orderIntent,
+      broadcastResult,
+      confirmationStatus: 'unknown',
+      failureKind: 'unknown',
+      failureSource: 'broadcast',
+      severity: 'error',
+      quoteCollected: true
+    });
+  }
+
   if (broadcastResult.status !== 'submitted') {
+    await preparedBroadcastStore.markNotSubmitted(broadcastResult.reason);
+    if (spendingLimitsStore && actionableActionClass === 'open_risk') {
+      await spendingLimitsStore.releaseSpend(
+        orderIntent.idempotencyKey,
+        requestedPositionSol
+      );
+    }
+    await preparedBroadcastStore.clear();
     const normalizedFailureReason = normalizeNotSubmittedBroadcastReason({
       action: actionableAction,
       reason: broadcastResult.reason
@@ -4093,6 +4769,9 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       confirmationCheckedAt = new Date().toISOString();
     }
   }
+  if (config.poolClass === 'large-pool') {
+    (updatedSnapshot as any).holdTimeMs = (snapshot as any).holdTimeMs;
+  }
 
   if (
     broadcasterConfirmedMainExecution
@@ -4105,7 +4784,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     confirmationFinality = confirmationFinality === 'finalized' ? 'finalized' : 'confirmed';
   }
 
-  if (broadcastResult.batchStatus === 'partial' && !isConfirmedConfirmation(confirmation.status, confirmationFinality)) {
+  if (broadcastResult.batchStatus === 'partial') {
     confirmation = {
       status: 'unknown',
       submissionId: trackedBroadcastSubmissions[trackedBroadcastSubmissions.length - 1]?.submissionId ?? broadcastResult.submissionId,
@@ -4116,6 +4795,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
 
   pendingSubmission = buildTrackedPendingSubmissionSnapshot({
     strategyId: input.strategy,
+    captureMode: input.captureMode,
     idempotencyKey: orderIntent.idempotencyKey,
     submissionId: broadcastResult.submissionId,
     openIntentId: actionIdentity.openIntentId,
@@ -4134,23 +4814,62 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     poolAddress: executionPlan.poolAddress,
     tokenMint: logContext.tokenMint,
     tokenSymbol,
+    preEntryTokenAmountRaw: orderIntent.preEntryTokenAmountRaw,
+    preEntryWalletSol: orderIntent.preEntryWalletSol,
+    preExitTokenAmountRaw: orderIntent.preExitTokenAmountRaw,
+    requestedPositionSol,
+    inputAmountRaw: orderIntent.inputAmountRaw,
     orderAction: actionableAction,
+    batchStatus: broadcastResult.batchStatus,
+    residualSweepStatus: broadcastResult.residualSweepStatus,
+    residualUnsoldAmountsRaw: broadcastResult.residualUnsoldAmountsRaw,
     reason: confirmation.reason ?? broadcastResult.reason
   });
   await pendingSubmissionStore.write(pendingSubmission);
+  await preparedBroadcastStore.clear();
 
-  if (isResolvedConfirmation(confirmation.status, confirmationFinality)) {
+  let lpExitClosureProven = actionableAction !== 'withdraw-lp';
+  let postSubmitClosureAccountState: LiveAccountState | undefined;
+  if (
+    actionableAction === 'withdraw-lp'
+    && isResolvedConfirmation(confirmation.status, confirmationFinality)
+    && input.accountProvider
+  ) {
+    try {
+      const postSubmitAccountState = await input.accountProvider.readState();
+      postSubmitClosureAccountState = postSubmitAccountState;
+      lpExitClosureProven = hasFreshCompleteLpExitAbsenceEvidence(
+        pendingSubmission,
+        postSubmitAccountState
+      );
+    } catch {
+      lpExitClosureProven = false;
+    }
+  }
+
+  if (
+    actionableAction === 'withdraw-lp'
+    && isResolvedConfirmation(confirmation.status, confirmationFinality)
+    && !lpExitClosureProven
+  ) {
+    pendingSubmission = {
+      ...pendingSubmission,
+      reason: 'pending-withdraw-awaiting-account-closure-proof',
+      updatedAt: new Date().toISOString()
+    };
+    await pendingSubmissionStore.write(pendingSubmission);
+  }
+
+  if (
+    isResolvedConfirmation(confirmation.status, confirmationFinality)
+    && lpExitClosureProven
+    && actionableAction !== 'dca-out'
+    && input.deferResolvedPendingClear !== true
+  ) {
     await pendingSubmissionStore.clear();
     pendingSubmission = null;
   }
 
-  if (
-    spendingLimitsStore &&
-    actionableActionClass === 'open_risk' &&
-    (confirmation.status === 'submitted' || isResolvedConfirmation(confirmation.status, confirmationFinality))
-  ) {
-    await spendingLimitsStore.reserveSpend(orderIntent.idempotencyKey, requestedPositionSol);
-  }
   const residualCleanupStatus = resolveResidualCleanupStatus(broadcastResult);
   const residualExecutionReason = resolveResidualExecutionReason(broadcastResult);
   await appendOrderLifecycleState({
@@ -4207,25 +4926,6 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       submissionId: broadcastResult.submissionId
     });
 
-    if (isFullExitAction(actionableAction) && isConfirmedConfirmation(confirmation.status, confirmationFinality)) {
-      return finalize({
-        ...buildLiveSubmittedResult({
-          action: actionableAction,
-          reason: partialReason,
-          audit: engineResult.audit,
-          context,
-          quote,
-          executionPlan,
-          orderIntent,
-          broadcastResult,
-          confirmationStatus: confirmation.status,
-          journalPaths: journals.paths,
-          killSwitchState
-        }),
-        actionIdentity
-      }, true);
-    }
-
     return finalize({
       ...buildBlockedCycleResult({
         action: actionableAction,
@@ -4249,14 +4949,17 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
   const fillRecordedAt = new Date().toISOString();
   let fillEvidenceMissing = false;
   let confirmedFill: LiveCycleConfirmedFill | undefined;
+  let actualFillEvidence: ActualFillAmount | undefined;
   const isConfirmedFill = isConfirmedConfirmation(confirmation.status, confirmationFinality);
   if (isConfirmedFill) {
     const actualFill = await resolveActualFillAmount({
       action: actionableAction,
+      tokenMint: logContext.tokenMint,
       beforeAccountState: accountState,
       accountProvider: input.accountProvider,
       fallbackSol: requestedPositionSol
     });
+    actualFillEvidence = actualFill;
     if (!actualFill.hasFillEvidence) {
       fillEvidenceMissing = true;
       await appendIncident(journals, logContext, mirrorSink, {
@@ -4276,6 +4979,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         filledSol: mirroredFilledSol,
         actualFilledSol: actualFill.actualFilledSol,
         actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+        acquiredTokenAmountRaw: actualFill.acquiredTokenAmountRaw,
         fillAmountSource: actualFill.fillAmountSource,
         recordedAt: fillRecordedAt,
         hasFillEvidence: actualFill.hasFillEvidence
@@ -4297,6 +5001,7 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
         filledSol: mirroredFilledSol,
         actualFilledSol: actualFill.actualFilledSol,
         actualWalletDeltaSol: actualFill.actualWalletDeltaSol,
+        acquiredTokenAmountRaw: actualFill.acquiredTokenAmountRaw,
         preWalletSol: actualFill.preWalletSol,
         postWalletSol: actualFill.postWalletSol,
         fillAmountSource: actualFill.fillAmountSource,
@@ -4349,7 +5054,57 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     liveOrderSubmitted: true
   });
 
-  if (!fillEvidenceMissing && isFullExitAction(actionableAction)) {
+  const hasActionablePostExitTargetToken = [
+    ...(postSubmitClosureAccountState?.walletTokens ?? []),
+    ...(postSubmitClosureAccountState?.journalTokens ?? [])
+  ].some((token) => token.mint === logContext.tokenMint && hasActionableTokenAmount(token));
+  const residualSweepClosureProven = broadcastResult.residualSweepStatus === 'complete'
+    || broadcastResult.residualSweepStatus === 'dust_ignored'
+    || (
+      broadcastResult.residualSweepStatus === undefined
+      && !hasActionablePostExitTargetToken
+    );
+  const withdrawFullExitClosureProven = actionableAction === 'withdraw-lp'
+    && lpExitClosureProven
+    && residualSweepClosureProven;
+  const expectedOwnedExitAmountRaw = input.positionState?.ownedTokenAmountRaw ?? ownedResidualAmountRaw;
+  const spotFullExitClosureProven = actionableAction === 'dca-out'
+    && isConfirmedFill
+    && confirmedFill?.hasFillEvidence === true
+    && Boolean(expectedOwnedExitAmountRaw)
+    && (input.positionState?.activeMint === logContext.tokenMint || residualExitIdentityMint === logContext.tokenMint)
+    && orderIntent.fullPositionExit === true
+    && orderIntent.inputAmountRaw === expectedOwnedExitAmountRaw
+    && actualFillEvidence?.disposedTokenAmountRaw === orderIntent.inputAmountRaw
+    && hasCompleteFreshAccountSnapshot(
+      { createdAt: logContext.startedAt },
+      actualFillEvidence?.postAccountState
+    );
+  const fullExitClosureProven = withdrawFullExitClosureProven || spotFullExitClosureProven;
+  const submittedActionClosureProven = actionableAction === 'withdraw-lp'
+    ? lpExitClosureProven
+    : actionableAction === 'dca-out'
+      ? spotFullExitClosureProven
+      : undefined;
+
+  if (
+    actionableAction === 'dca-out'
+    && isResolvedConfirmation(confirmation.status, confirmationFinality)
+  ) {
+    if (fullExitClosureProven && input.deferResolvedPendingClear !== true) {
+      await pendingSubmissionStore.clear();
+      pendingSubmission = null;
+    } else if (!fullExitClosureProven && pendingSubmission) {
+      pendingSubmission = {
+        ...pendingSubmission,
+        reason: 'pending-dca-out-awaiting-exact-token-delta-proof',
+        updatedAt: new Date().toISOString()
+      };
+      await pendingSubmissionStore.write(pendingSubmission);
+    }
+  }
+
+  if (!fillEvidenceMissing && fullExitClosureProven) {
     await appendEvolutionOutcomeBestEffort({
       sink: input.evolutionSink,
       logContext,
@@ -4362,12 +5117,30 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       positionState: input.positionState,
       confirmedFill,
       requestedPositionSol,
-      quote
+      quote,
+      settlementEvidence: logContext.captureMode === 'mechanical-soak'
+        ? actionableAction === 'withdraw-lp'
+          ? 'paper-synthetic-lp-lifecycle'
+          : actionableAction === 'dca-out'
+            && broadcastResult.reason === 'paper-dry-run-quoted-shadow-settlement'
+            ? 'paper-executable-spot-quote'
+            : undefined
+        : confirmedFill?.hasFillEvidence === true
+          && confirmedFill.fillAmountSource === 'wallet-delta'
+          ? 'on-chain-wallet-delta'
+          : undefined
     });
   }
 
+  const exitClosureSynchronouslyResolved = actionableAction === 'withdraw-lp'
+    ? lpExitClosureProven
+    : actionableAction === 'dca-out'
+      ? fullExitClosureProven
+      : true;
   const lifecycleSynchronouslyResolved = isConfirmedConfirmation(confirmation.status, confirmationFinality)
-    && (!fillEvidenceMissing || isFullExitAction(actionableAction));
+    && (pendingSubmission === null || input.deferResolvedPendingClear === true)
+    && (!fillEvidenceMissing || isFullExitAction(actionableAction))
+    && exitClosureSynchronouslyResolved;
 
   return finalize({
     ...buildLiveSubmittedResult({
@@ -4384,6 +5157,8 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       killSwitchState
     }),
     actionIdentity,
-    confirmedFill
+    confirmedFill,
+    submittedActionClosureProven,
+    fullExitClosureProven
   }, lifecycleSynchronouslyResolved);
 }

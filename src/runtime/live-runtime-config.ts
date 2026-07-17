@@ -12,16 +12,14 @@ const HttpExecutionConfigSchema = z.object({
   authToken: z.string().min(1).optional(),
   maxSingleOrderSol: z.number().finite().positive().optional(),
   maxDailySpendSol: z.number().finite().positive().optional(),
-  maxHourlySpendSol: z.number().finite().positive().optional(),
-  resetSpendingLimitsOnStartup: z.boolean().optional()
+  maxHourlySpendSol: z.number().finite().positive().optional()
 });
 
 const TestExecutionConfigSchema = z.object({
   executionMode: z.literal('test'),
   maxSingleOrderSol: z.number().finite().positive().optional(),
   maxDailySpendSol: z.number().finite().positive().optional(),
-  maxHourlySpendSol: z.number().finite().positive().optional(),
-  resetSpendingLimitsOnStartup: z.boolean().optional()
+  maxHourlySpendSol: z.number().finite().positive().optional()
 });
 
 export const LiveRuntimeConfigSchema = z.discriminatedUnion('executionMode', [
@@ -36,22 +34,6 @@ function parsePositiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseOptionalBoolean(value: string | undefined) {
-  if (value === undefined || value.length === 0) {
-    return undefined;
-  }
-
-  if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) {
-    return true;
-  }
-
-  if (['0', 'false', 'no', 'off'].includes(value.toLowerCase())) {
-    return false;
-  }
-
-  return undefined;
-}
-
 export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = process.env): LiveRuntimeConfig {
   const maxSingleOrderSol = env.LIVE_MAX_SINGLE_ORDER_SOL
     ? Number(env.LIVE_MAX_SINGLE_ORDER_SOL)
@@ -62,8 +44,6 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
   const maxHourlySpendSol = env.LIVE_MAX_HOURLY_SPEND_SOL
     ? Number(env.LIVE_MAX_HOURLY_SPEND_SOL)
     : undefined;
-  const resetSpendingLimitsOnStartup = parseOptionalBoolean(env.LIVE_RESET_SPENDING_LIMITS_ON_START);
-
   if ((env.LIVE_EXECUTION_MODE ?? 'test') === 'http') {
     return LiveRuntimeConfigSchema.parse({
       executionMode: 'http',
@@ -77,8 +57,7 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
       authToken: env.LIVE_AUTH_TOKEN,
       maxSingleOrderSol,
       maxDailySpendSol,
-      maxHourlySpendSol,
-      resetSpendingLimitsOnStartup
+      maxHourlySpendSol
     });
   }
 
@@ -86,8 +65,7 @@ export function loadLiveRuntimeConfig(env: Record<string, string | undefined> = 
     executionMode: 'test',
     maxSingleOrderSol,
     maxDailySpendSol,
-    maxHourlySpendSol,
-    resetSpendingLimitsOnStartup
+    maxHourlySpendSol
   });
 }
 

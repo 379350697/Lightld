@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Keypair } from '@solana/web3.js';
@@ -25,7 +25,10 @@ import {
   signedIntentIdempotencyFingerprint,
   verifySignedIntent
 } from '../signed-intent-verifier.ts';
-import { LiveOrderIntentSchema } from '../live-order-intent-schema.ts';
+import {
+  LiveOrderIntentSchema,
+  PersistedLiveOrderIntentSchema
+} from '../live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from '../live-broadcaster.ts';
 import type { LiveConfirmationResult } from '../live-confirmation-provider.ts';
 import { collectLiveQuote } from '../live-quote-service.ts';
@@ -81,6 +84,7 @@ const BroadcastResultSchema = z.object({
   mainExecutionStatus: z.enum(['submitted', 'confirmed']).optional(),
   residualSweepStatus: z.enum(['complete', 'incomplete', 'dust_ignored']).optional(),
   residualUnsoldMints: z.array(z.string()).optional(),
+  residualUnsoldAmountsRaw: z.record(z.string(), z.string().regex(/^\d+$/)).optional(),
   residualIgnoredMints: z.array(z.string()).optional(),
   residualFailureReasons: z.array(z.string()).optional(),
   residualEstimatedValueSol: z.number().finite().nonnegative().optional(),
@@ -94,11 +98,31 @@ const BroadcastResultSchema = z.object({
   binSlippageBps: z.number().finite().nonnegative().optional()
 });
 
+const SubmissionBroadcastEvidenceSchema = z.object({
+  transactionHash: z.string().regex(/^[0-9a-f]{64}$/),
+  transactionSignature: z.string().min(1).optional(),
+  rpcAcceptedSignature: z.string().min(1).optional(),
+  sendStartedAt: z.string().min(1),
+  rpcAcceptedAt: z.string().min(1).optional()
+});
+
 const SubmissionEntrySchema = z.object({
   idempotencyKey: z.string().min(1),
   signedIntentFingerprint: z.string().min(1),
-  signedIntent: BroadcastRequestSchema.shape.intent,
+  signedIntent: z.object({
+    intent: PersistedLiveOrderIntentSchema,
+    signerId: z.string().min(1),
+    signedAt: z.string().min(1),
+    signature: z.string().min(1)
+  }),
   status: z.enum(['pending', 'submitted']).default('submitted'),
+  // Pending entries written before the recoverable state machine deliberately
+  // have no phase. They are treated as outcome-unknown and remain fail-closed.
+  // Only a reservation from an earlier execution-server instance that never
+  // crossed `broadcast_started` is safe to resume after restart.
+  phase: z.enum(['reserved', 'broadcast_started']).optional(),
+  reservationOwnerId: z.string().min(1).optional(),
+  broadcastEvidence: z.array(SubmissionBroadcastEvidenceSchema).optional(),
   result: BroadcastResultSchema.optional(),
   receivedAt: z.string().min(1),
   updatedAt: z.string().min(1).optional()
@@ -130,16 +154,39 @@ const PaperDryRunPositionSchema = z.object({
   updatedAt: z.string().min(1)
 });
 
+const PaperDryRunTokenSchema = z.object({
+  strategyId: z.string().min(1),
+  poolAddress: z.string().min(1),
+  mint: z.string().min(1),
+  openIntentId: z.string().min(1).optional(),
+  positionId: z.string().min(1).optional(),
+  amountRaw: z.string().regex(/^\d+$/),
+  entrySol: z.number().finite().nonnegative(),
+  maxSlippageBps: z.number().int().nonnegative().optional(),
+  maxImpactBps: z.number().int().nonnegative().optional(),
+  currentValueSol: z.number().finite().nonnegative().optional(),
+  valuationStatus: z.enum(['ready', 'unavailable', 'stale', 'invalid']).optional(),
+  valuationReason: z.string().optional(),
+  lastValuationAt: z.string().min(1).optional(),
+  openedAt: z.string().min(1),
+  updatedAt: z.string().min(1)
+});
+
 const PaperDryRunStateSchema = z.object({
   version: z.literal(1),
   walletSolDelta: z.number().finite().default(0),
-  positions: z.array(PaperDryRunPositionSchema)
+  positions: z.array(PaperDryRunPositionSchema),
+  // Optional-on-disk via default so paper state written before spot overlays
+  // remains readable without a migration.
+  tokens: z.array(PaperDryRunTokenSchema).default([]),
+  appliedSwapKeys: z.array(z.string().min(1)).default([])
 });
 
 type SubmissionStore = z.infer<typeof SubmissionStoreSchema>;
 type SignedBroadcastIntent = z.infer<typeof BroadcastRequestSchema>['intent'];
 type PaperDryRunState = z.infer<typeof PaperDryRunStateSchema>;
 type PaperDryRunPosition = z.infer<typeof PaperDryRunPositionSchema>;
+type PaperDryRunToken = z.infer<typeof PaperDryRunTokenSchema>;
 
 type SolanaExecutionServerOptions = {
   host: string;
@@ -201,7 +248,6 @@ const WITHDRAW_CONFIRMATION_WAIT_DELAY_MS = 2_000;
 const RESIDUAL_TOKEN_SWEEP_PASSES = 3;
 const RESIDUAL_TOKEN_DISCOVERY_PASSES = 6;
 const RESIDUAL_TOKEN_MIN_SOL_VALUE = 0;
-const PAPER_DRY_RUN_WALLET_SOL = 1_000_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -354,6 +400,7 @@ async function resolveTokenCurrentValueSol(input: {
   mint: string;
   amountLamports: number | string | bigint;
   defaultSlippageBps: number;
+  maxImpactBps?: number;
   poolAddress?: string;
   skipBalanceDependentProviders?: boolean;
 }) {
@@ -369,6 +416,7 @@ async function resolveTokenCurrentValueSol(input: {
     walletPublicKey: input.walletPublicKey,
     poolAddress: input.poolAddress,
     slippageBps: input.defaultSlippageBps,
+    maxImpactBps: input.maxImpactBps,
     skipBalanceDependentProviders: input.skipBalanceDependentProviders
   });
   const outAmountLamports = Number(quoteResponse.outAmountLamports ?? 0);
@@ -430,10 +478,6 @@ function isBareFetchFailure(error: unknown) {
 
 function isDlmmBinSlippageMessage(message: string) {
   return /ExceededBinSlippageTolerance|custom program error:\s*0x1774|\"Custom\":6004|Custom.*6004/i.test(message);
-}
-
-function isPaperDryRunWalletFundingMessage(message: string) {
-  return /insufficient lamports|insufficient funds for rent|attempt to debit an account/i.test(message);
 }
 
 function classifyOperationError(error: unknown, operation: string) {
@@ -530,6 +574,7 @@ async function enrichLpExitValues(input: {
   valuationProviderChain: ValuationProviderChain;
   walletPublicKey: string;
   defaultSlippageBps: number;
+  maxImpactBps?: number;
 }): Promise<AccountStateLpPosition[]> {
   return Promise.all(input.positions.map(async (position) => {
     const withdrawSolAmount = nonnegativeFinite(position.withdrawSolAmount);
@@ -692,6 +737,7 @@ function isRateLimitLikeError(error: unknown) {
 
 type ResidualTokenSweepResult = {
   unsoldMints: string[];
+  unsoldAmountsRaw: Record<string, string>;
   ignoredMints: string[];
   failureReasons: string[];
   ignoredReasons: string[];
@@ -703,12 +749,14 @@ async function liquidateResidualTokensToSol(input: {
   keypair: Keypair;
   walletPublicKey: string;
   defaultSlippageBps: number;
+  maxImpactBps?: number;
   jitoTipLamports?: number;
   sendRawTransaction: (signedTransactionBase64: string) => Promise<string>;
   sendTxMs: number[];
   acceptedSignatures?: string[];
   excludedMints?: string[];
   poolAddressByMint?: Map<string, string>;
+  preExistingAmountRawByMint?: Map<string, string>;
   residualTokenMinValueSol: number;
   residualTokenDustMaxUiAmount: number;
 }): Promise<ResidualTokenSweepResult> {
@@ -716,30 +764,69 @@ async function liquidateResidualTokensToSol(input: {
   const ignoredMints = new Set<string>();
   const failureReasonByMint = new Map<string, string>();
   const ignoredReasonByMint = new Map<string, string>();
+  const expectedMints = Array.from(input.poolAddressByMint?.keys() ?? []);
+  const expectedMintSet = new Set(expectedMints);
 
   type SellableResidualToken = {
     mint: string;
-    amount: number;
+    amountRaw: string;
     uiAmount?: number;
+    ownershipBlockedReason?: string;
   };
 
   const listSellableTokens = async () => {
     const tokenAccounts = await input.rpcClient.getTokenAccountsByOwner(input.walletPublicKey);
-    return tokenAccounts
-      .map((account) => {
-        const info = account.account.data.parsed.info;
-        return {
-          mint: info.mint as string,
-          amount: Number(info.tokenAmount.amount),
-          uiAmount: typeof info.tokenAmount.uiAmount === 'number' ? info.tokenAmount.uiAmount : undefined
-        };
-      })
-      .filter((token) =>
-        token.mint !== SOL_MINT &&
-        token.amount > 0 &&
-        !soldMints.has(token.mint) &&
-        !ignoredMints.has(token.mint)
-      );
+    const totals = new Map<string, { amountRaw: bigint; uiAmount?: number }>();
+
+    for (const account of tokenAccounts) {
+      const info = account.account.data.parsed.info;
+      const mint = String(info.mint ?? '');
+      if (!mint || mint === SOL_MINT || !expectedMintSet.has(mint)) {
+        continue;
+      }
+
+      const raw = String(info.tokenAmount.amount ?? '0');
+      if (!/^\d+$/.test(raw)) {
+        continue;
+      }
+      const existing = totals.get(mint) ?? { amountRaw: 0n };
+      existing.amountRaw += BigInt(raw);
+      if (typeof info.tokenAmount.uiAmount === 'number' && Number.isFinite(info.tokenAmount.uiAmount)) {
+        existing.uiAmount = (existing.uiAmount ?? 0) + info.tokenAmount.uiAmount;
+      }
+      totals.set(mint, existing);
+    }
+
+    return Array.from(totals.entries()).flatMap<SellableResidualToken>(([mint, total]) => {
+      if (soldMints.has(mint) || ignoredMints.has(mint)) {
+        return [];
+      }
+
+      const preExistingRaw = input.preExistingAmountRawByMint?.get(mint);
+      if (preExistingRaw === undefined || !/^\d+$/.test(preExistingRaw)) {
+        return total.amountRaw > 0n ? [{
+          mint,
+          amountRaw: total.amountRaw.toString(),
+          uiAmount: total.uiAmount,
+          ownershipBlockedReason: `${mint}: missing pre-exit token balance; refusing to sell wallet-owned balance`
+        } satisfies SellableResidualToken] : [];
+      }
+
+      const preExisting = BigInt(preExistingRaw);
+      const ownedResidual = total.amountRaw > preExisting ? total.amountRaw - preExisting : 0n;
+      if (ownedResidual <= 0n) {
+        return [];
+      }
+
+      const ownedUiAmount = typeof total.uiAmount === 'number' && total.amountRaw > 0n
+        ? total.uiAmount * (Number(ownedResidual) / Number(total.amountRaw))
+        : undefined;
+      return [{
+        mint,
+        amountRaw: ownedResidual.toString(),
+        uiAmount: Number.isFinite(ownedUiAmount) ? ownedUiAmount : undefined
+      } satisfies SellableResidualToken];
+    });
   };
 
   const classifyUnsoldResidual = async (token: SellableResidualToken) => {
@@ -750,8 +837,9 @@ async function liquidateResidualTokensToSol(input: {
         swapProviderChain: input.swapProviderChain,
         walletPublicKey: input.walletPublicKey,
         mint: token.mint,
-        amountLamports: token.amount,
+        amountLamports: token.amountRaw,
         defaultSlippageBps: input.defaultSlippageBps,
+        maxImpactBps: input.maxImpactBps,
         poolAddress,
         skipBalanceDependentProviders: true
       });
@@ -808,6 +896,11 @@ async function liquidateResidualTokensToSol(input: {
 
     return {
       unsoldMints,
+      unsoldAmountsRaw: Object.fromEntries(
+        sellable
+          .filter((token) => unsoldMints.includes(token.mint))
+          .map((token) => [token.mint, token.amountRaw])
+      ),
       ignoredMints: ignoredMintList,
       failureReasons: unsoldMints
         .map((mint) => failureReasonByMint.get(mint))
@@ -818,7 +911,6 @@ async function liquidateResidualTokensToSol(input: {
     };
   };
 
-  const expectedMints = Array.from(input.poolAddressByMint?.keys() ?? []);
   const maxPasses = expectedMints.length > 0
     ? Math.max(RESIDUAL_TOKEN_SWEEP_PASSES, RESIDUAL_TOKEN_DISCOVERY_PASSES)
     : RESIDUAL_TOKEN_SWEEP_PASSES;
@@ -837,6 +929,7 @@ async function liquidateResidualTokensToSol(input: {
 
       return {
         unsoldMints: [],
+        unsoldAmountsRaw: {},
         ignoredMints: Array.from(ignoredMints),
         failureReasons: [],
         ignoredReasons: Array.from(ignoredReasonByMint.values())
@@ -848,15 +941,21 @@ async function liquidateResidualTokensToSol(input: {
     for (const token of sellable) {
       const poolAddress = input.poolAddressByMint?.get(token.mint);
 
+      if (token.ownershipBlockedReason) {
+        failureReasonByMint.set(token.mint, token.ownershipBlockedReason);
+        continue;
+      }
+
       try {
         const swapResponse = await input.swapProviderChain.executeExactIn(
           {
             inputMint: token.mint,
             outputMint: SOL_MINT,
-            amountLamports: String(token.amount),
+            amountLamports: token.amountRaw,
             walletPublicKey: input.walletPublicKey,
             poolAddress,
             slippageBps: input.defaultSlippageBps,
+            maxImpactBps: input.maxImpactBps,
             jitoTipLamports: input.jitoTipLamports
           },
           {
@@ -908,6 +1007,46 @@ function durationMs(startedAt: number) {
   return Math.max(0, Date.now() - startedAt);
 }
 
+function extractPrimarySolanaTransactionSignature(signedTransactionBase64: string) {
+  const transaction = Buffer.from(signedTransactionBase64, 'base64');
+  if (transaction.length < 65) {
+    return undefined;
+  }
+
+  // A serialized Solana transaction starts with a shortvec signature count,
+  // followed by 64-byte Ed25519 signatures. This prefix is shared by legacy
+  // and versioned transactions, so the transaction id is available before the
+  // RPC call and can be durably recorded at the broadcast boundary.
+  let signatureCount = 0;
+  let shift = 0;
+  let offset = 0;
+  let shortvecComplete = false;
+  while (offset < transaction.length && offset < 3) {
+    const byte = transaction[offset];
+    signatureCount |= (byte & 0x7f) << shift;
+    offset += 1;
+    if ((byte & 0x80) === 0) {
+      shortvecComplete = true;
+      break;
+    }
+    shift += 7;
+  }
+
+  if (
+    !shortvecComplete
+    || signatureCount < 1
+    || offset + signatureCount * 64 > transaction.length
+  ) {
+    return undefined;
+  }
+
+  const signature = transaction.subarray(offset, offset + 64);
+  if (signature.every((byte) => byte === 0)) {
+    return undefined;
+  }
+  return encodeBase58(signature);
+}
+
 function logBroadcastOutcome(payload: BroadcastLogPayload) {
   const line = JSON.stringify(payload);
 
@@ -956,7 +1095,13 @@ class SolanaExecutionStateStore {
 
 class PaperDryRunStateStore {
   private readonly path: string | undefined;
-  private memoryStore: PaperDryRunState = { version: 1, walletSolDelta: 0, positions: [] };
+  private memoryStore: PaperDryRunState = {
+    version: 1,
+    walletSolDelta: 0,
+    positions: [],
+    tokens: [],
+    appliedSwapKeys: []
+  };
 
   constructor(rootDir: string | undefined) {
     this.path = rootDir ? join(rootDir, 'paper-dry-run-state.json') : undefined;
@@ -970,7 +1115,9 @@ class PaperDryRunStateStore {
     return (await readJsonIfExists(this.path, PaperDryRunStateSchema)) ?? {
       version: 1,
       walletSolDelta: 0,
-      positions: []
+      positions: [],
+      tokens: [],
+      appliedSwapKeys: []
     };
   }
 
@@ -996,7 +1143,7 @@ class PaperDryRunStateStore {
       ? position.entrySol
       : position.currentValueSol;
     await this.write({
-      version: 1,
+      ...store,
       walletSolDelta: store.walletSolDelta - entrySol,
       positions
     });
@@ -1009,27 +1156,254 @@ class PaperDryRunStateStore {
     tokenMint?: string;
   }) {
     const store = await this.read();
-    const identityMatch = store.positions.find((position) =>
-      (input.chainPositionAddress && position.chainPositionAddress === input.chainPositionAddress)
-      || (input.positionId && position.positionId === input.positionId)
-    );
+    const samePoolAndMint = (position: PaperDryRunPosition) =>
+      position.poolAddress === input.poolAddress
+      && (!input.tokenMint || position.mint === input.tokenMint);
+    // The on-chain position address is the strongest LP identity. Recovery can
+    // legitimately normalize `positionId` to that address while an older paper
+    // overlay still carries the original logical pool:mint id. Requiring both
+    // values to agree strands the exact position. Keep this fail-closed by also
+    // requiring the signed pool/mint, and only consult positionId when no chain
+    // address was supplied.
+    let identityMatch: PaperDryRunPosition | undefined;
+    if (input.chainPositionAddress) {
+      const chainMatches = store.positions.filter((position) =>
+        position.chainPositionAddress === input.chainPositionAddress
+        && samePoolAndMint(position)
+      );
+      if (chainMatches.length === 1) {
+        const chainMatch = chainMatches[0];
+        const positionIdConflictsWithAnotherOverlay = Boolean(
+          input.positionId
+          && store.positions.some((position) =>
+            position !== chainMatch && position.positionId === input.positionId
+          )
+        );
+        if (!positionIdConflictsWithAnotherOverlay) {
+          identityMatch = chainMatch;
+        }
+      }
+    } else if (input.positionId) {
+      const positionIdMatches = store.positions.filter((position) =>
+        position.positionId === input.positionId
+        && samePoolAndMint(position)
+      );
+      if (positionIdMatches.length === 1) {
+        identityMatch = positionIdMatches[0];
+      }
+    }
+    const hasExplicitIdentity = Boolean(input.chainPositionAddress || input.positionId);
     const poolMintCandidates = store.positions.filter((position) =>
-      position.poolAddress === input.poolAddress && (!input.tokenMint || position.mint === input.tokenMint)
+      samePoolAndMint(position)
     );
-    const match = identityMatch ?? (poolMintCandidates.length === 1 ? poolMintCandidates[0] : undefined);
+    // Once the caller has a lifecycle identity, falling back to pool+mint can
+    // close a different position after stale recovery state. The fallback is
+    // only safe for legacy callers that have no identity at all.
+    const match = hasExplicitIdentity
+      ? identityMatch
+      : (poolMintCandidates.length === 1 ? poolMintCandidates[0] : undefined);
 
     if (!match) {
       return undefined;
     }
 
     await this.write({
-      version: 1,
-      walletSolDelta: store.walletSolDelta + match.currentValueSol,
+      ...store,
+      // A dry-run LP never exists on chain, so the active-bin shadow value is
+      // display-only and must not be booked as realised paper PnL.  Cost-after
+      // economics are produced by the strategy-research marks instead.
+      walletSolDelta: store.walletSolDelta + (match.entrySol ?? match.currentValueSol),
       positions: store.positions.filter((position) => position.chainPositionAddress !== match.chainPositionAddress)
     });
 
     return match;
   }
+
+  async readSellableToken(input: {
+    mint: string;
+    poolAddress: string;
+    openIntentId?: string;
+    positionId?: string;
+  }) {
+    const store = await this.read();
+    const matches = this.matchTokens(store.tokens, input);
+    const amountRaw = matches.reduce((total, token) => total + BigInt(token.amountRaw), 0n);
+    return {
+      amountRaw,
+      matches
+    };
+  }
+
+  async applyTokenBuy(input: {
+    idempotencyKey: string;
+    strategyId: string;
+    poolAddress: string;
+    mint: string;
+    openIntentId?: string;
+    positionId?: string;
+    amountRaw: string;
+    inputSol: number;
+    maxSlippageBps?: number;
+    maxImpactBps?: number;
+    recordedAt: string;
+  }) {
+    if (!/^\d+$/.test(input.amountRaw) || BigInt(input.amountRaw) <= 0n) {
+      throw new Error(`Paper buy quote returned invalid token amount ${input.amountRaw}`);
+    }
+
+    const store = await this.read();
+    if (store.appliedSwapKeys.includes(input.idempotencyKey)) {
+      return store.tokens.find((token) =>
+        token.strategyId === input.strategyId
+        && token.poolAddress === input.poolAddress
+        && token.mint === input.mint
+        && token.openIntentId === input.openIntentId
+        && token.positionId === input.positionId
+      );
+    }
+    const matchingIndex = store.tokens.findIndex((token) =>
+      token.strategyId === input.strategyId
+      && token.poolAddress === input.poolAddress
+      && token.mint === input.mint
+      && token.openIntentId === input.openIntentId
+      && token.positionId === input.positionId
+    );
+    const tokens = [...store.tokens];
+    const prior = matchingIndex >= 0 ? tokens[matchingIndex] : undefined;
+    const token: PaperDryRunToken = {
+      strategyId: input.strategyId,
+      poolAddress: input.poolAddress,
+      mint: input.mint,
+      openIntentId: input.openIntentId,
+      positionId: input.positionId,
+      amountRaw: ((prior ? BigInt(prior.amountRaw) : 0n) + BigInt(input.amountRaw)).toString(),
+      entrySol: (prior?.entrySol ?? 0) + input.inputSol,
+      maxSlippageBps: input.maxSlippageBps ?? prior?.maxSlippageBps,
+      maxImpactBps: input.maxImpactBps ?? prior?.maxImpactBps,
+      // A fresh reverse quote is required before this is treated as a current
+      // paper value. The entry cost is not an executable exit value.
+      valuationStatus: 'stale',
+      valuationReason: 'paper-sell-quote-pending',
+      openedAt: prior?.openedAt ?? input.recordedAt,
+      updatedAt: input.recordedAt
+    };
+    if (matchingIndex >= 0) {
+      tokens[matchingIndex] = token;
+    } else {
+      tokens.push(token);
+    }
+
+    await this.write({
+      ...store,
+      walletSolDelta: store.walletSolDelta - input.inputSol,
+      tokens,
+      appliedSwapKeys: [...store.appliedSwapKeys, input.idempotencyKey]
+    });
+    return token;
+  }
+
+  async applyTokenSell(input: {
+    idempotencyKey: string;
+    mint: string;
+    poolAddress: string;
+    openIntentId?: string;
+    positionId?: string;
+    amountRaw: string;
+    outputSol: number;
+    recordedAt: string;
+  }) {
+    if (!/^\d+$/.test(input.amountRaw) || BigInt(input.amountRaw) <= 0n) {
+      throw new Error(`Paper sell amount is invalid: ${input.amountRaw}`);
+    }
+
+    const store = await this.read();
+    if (store.appliedSwapKeys.includes(input.idempotencyKey)) {
+      return;
+    }
+    const matches = this.matchTokens(store.tokens, input);
+    const availableRaw = matches.reduce((total, token) => total + BigInt(token.amountRaw), 0n);
+    let remaining = BigInt(input.amountRaw);
+    if (availableRaw < remaining) {
+      throw new Error(
+        `Paper token balance changed before sell for mint ${input.mint}: requested=${remaining} available=${availableRaw}`
+      );
+    }
+
+    const matchSet = new Set(matches);
+    const tokens: PaperDryRunToken[] = [];
+    for (const token of store.tokens) {
+      if (!matchSet.has(token) || remaining <= 0n) {
+        tokens.push(token);
+        continue;
+      }
+
+      const tokenRaw = BigInt(token.amountRaw);
+      const consumed = tokenRaw < remaining ? tokenRaw : remaining;
+      remaining -= consumed;
+      const leftover = tokenRaw - consumed;
+      if (leftover > 0n) {
+        const retainedRatio = Number(leftover) / Number(tokenRaw);
+        tokens.push({
+          ...token,
+          amountRaw: leftover.toString(),
+          entrySol: Number.isFinite(retainedRatio) ? token.entrySol * retainedRatio : token.entrySol,
+          currentValueSol: undefined,
+          valuationStatus: 'stale',
+          valuationReason: 'paper-partial-sell-requote-pending',
+          lastValuationAt: undefined,
+          updatedAt: input.recordedAt
+        });
+      }
+    }
+
+    await this.write({
+      ...store,
+      walletSolDelta: store.walletSolDelta + input.outputSol,
+      tokens,
+      appliedSwapKeys: [...store.appliedSwapKeys, input.idempotencyKey]
+    });
+  }
+
+  private matchTokens(tokens: PaperDryRunToken[], input: {
+    mint: string;
+    poolAddress: string;
+    openIntentId?: string;
+    positionId?: string;
+  }) {
+    const mintPoolMatches = tokens.filter((token) =>
+      token.mint === input.mint
+      && (!input.poolAddress || token.poolAddress === input.poolAddress)
+    );
+    if (input.positionId) {
+      return mintPoolMatches.filter((token) => token.positionId === input.positionId);
+    }
+    if (input.openIntentId) {
+      return mintPoolMatches.filter((token) => token.openIntentId === input.openIntentId);
+    }
+    return mintPoolMatches;
+  }
+}
+
+class UnknownBroadcastOutcomeError extends StructuredExecutionError {
+  constructor(error: unknown) {
+    const message = readExecutionErrorMessage(error);
+    super(`rpc-send-outcome-unknown: ${message}`, {
+      executionFailureKind: 'broadcast_outcome_unknown',
+      executionFailureOperation: 'rpc-send',
+      retryable: false
+    });
+    this.name = 'UnknownBroadcastOutcomeError';
+  }
+}
+
+function isDefiniteRpcSendRejection(error: unknown) {
+  const message = readExecutionErrorMessage(error);
+  return /Solana RPC sendTransaction error:/i.test(message)
+    || /Solana transaction failed pre-confirmation:/i.test(message)
+    || /Transaction simulation failed/i.test(message)
+    || /signature verification (?:failed|failure)/i.test(message)
+    || /blockhash not found/i.test(message)
+    || /Solana RPC sendTransaction failed: (?:400|401|403|404|422)\b/i.test(message);
 }
 
 export function createSolanaExecutionServer(options: SolanaExecutionServerOptions) {
@@ -1049,7 +1423,23 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   const store = new SolanaExecutionStateStore(options.stateRootDir);
   const paperDryRunStore = new PaperDryRunStateStore(options.stateRootDir);
   const expectedSignerPublicKeys = options.expectedSignerPublicKeys ?? [];
+  const executionInstanceId = randomUUID();
   const idempotencyLocks = new Map<string, Promise<void>>();
+  let submissionStoreMutationTail = Promise.resolve();
+  const withSubmissionStoreMutation = async <T>(action: () => Promise<T>): Promise<T> => {
+    const prior = submissionStoreMutationTail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    submissionStoreMutationTail = prior.catch(() => undefined).then(() => current);
+    await prior.catch(() => undefined);
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  };
   const tokenValueCache = new Map<string, TokenValueCacheEntry>();
   const swapProviderChain = options.swapProviderChain ?? createDefaultSwapProviderChain({
     providerOrder: ['meteora-direct', 'jupiter-v1'],
@@ -1071,6 +1461,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     mainExecutionStatus?: 'submitted' | 'confirmed';
     residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
     residualUnsoldMints?: string[];
+    residualUnsoldAmountsRaw?: Record<string, string>;
     residualIgnoredMints?: string[];
     residualFailureReasons?: string[];
     residualEstimatedValueSol?: number;
@@ -1094,6 +1485,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     mainExecutionStatus: input.mainExecutionStatus,
     residualSweepStatus: input.residualSweepStatus,
     residualUnsoldMints: input.residualUnsoldMints,
+    residualUnsoldAmountsRaw: input.residualUnsoldAmountsRaw,
     residualIgnoredMints: input.residualIgnoredMints,
     residualFailureReasons: input.residualFailureReasons,
     residualEstimatedValueSol: input.residualEstimatedValueSol,
@@ -1299,7 +1691,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           currentValueSol,
           valuationStatus: 'ready' as const,
           valuationReason: '',
-          valuationSource: 'paper-shadow-dlmm-active-bin',
+          valuationSource: 'paper-shadow-dlmm-active-bin-modeled',
           updatedAt: new Date().toISOString()
         };
         changed = changed
@@ -1314,7 +1706,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           ...positionWithEvidence,
           valuationStatus: 'unavailable' as const,
           valuationReason: error instanceof Error ? error.message : String(error),
-          valuationSource: position.valuationSource ?? 'paper-shadow-dlmm-active-bin',
+          valuationSource: position.valuationSource ?? 'paper-shadow-dlmm-active-bin-modeled',
           updatedAt: new Date().toISOString()
         };
         changed = changed
@@ -1329,6 +1721,73 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     if (changed) {
       await paperDryRunStore.write(nextStore);
     }
+    return nextStore;
+  };
+  const revaluePaperDryRunTokens = async (paperState: PaperDryRunState): Promise<PaperDryRunState> => {
+    if (!dryRun || paperState.tokens.length === 0) {
+      return paperState;
+    }
+
+    const now = Date.now();
+    let remainingQuoteBudget = ACCOUNT_STATE_TOKEN_VALUE_MAX_QUOTES_PER_REQUEST;
+    let changed = false;
+    const tokens: PaperDryRunToken[] = [];
+    for (const token of paperState.tokens) {
+      const lastValuationMs = token.lastValuationAt ? Date.parse(token.lastValuationAt) : Number.NaN;
+      if (
+        Number.isFinite(lastValuationMs)
+        && now - lastValuationMs <= ACCOUNT_STATE_TOKEN_VALUE_CACHE_TTL_MS
+      ) {
+        tokens.push(token);
+        continue;
+      }
+      if (remainingQuoteBudget <= 0) {
+        tokens.push(token);
+        continue;
+      }
+      remainingQuoteBudget -= 1;
+
+      const valuedAt = new Date().toISOString();
+      try {
+        const currentValueSol = await resolveTokenCurrentValueSol({
+          swapProviderChain,
+          walletPublicKey,
+          mint: token.mint,
+          amountLamports: token.amountRaw,
+          defaultSlippageBps: token.maxSlippageBps ?? defaultSlippageBps,
+          maxImpactBps: token.maxImpactBps,
+          poolAddress: token.poolAddress,
+          skipBalanceDependentProviders: true
+        });
+        if (typeof currentValueSol !== 'number') {
+          throw new Error('paper sell quote did not include a valid SOL output amount');
+        }
+        tokens.push({
+          ...token,
+          currentValueSol,
+          valuationStatus: 'ready',
+          valuationReason: '',
+          lastValuationAt: valuedAt,
+          updatedAt: valuedAt
+        });
+      } catch (error) {
+        tokens.push({
+          ...token,
+          currentValueSol: undefined,
+          valuationStatus: 'unavailable',
+          valuationReason: error instanceof Error ? error.message : String(error),
+          lastValuationAt: valuedAt,
+          updatedAt: valuedAt
+        });
+      }
+      changed = true;
+    }
+
+    if (!changed) {
+      return paperState;
+    }
+    const nextStore = { ...paperState, tokens };
+    await paperDryRunStore.write(nextStore);
     return nextStore;
   };
   const computePaperSolDepletedBins = (position: PaperDryRunPosition) => {
@@ -1363,13 +1822,11 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     solSide: position.solSide ?? 'tokenX',
     solDepletedBins: computePaperSolDepletedBins(position),
     currentValueSol: position.currentValueSol,
-    withdrawSolAmount: position.currentValueSol,
-    liquidityValueSol: position.currentValueSol,
-    lpTotalValueSol: position.currentValueSol,
-    exitQuoteValueSol: position.currentValueSol,
     displayValueSol: position.currentValueSol,
-    valuationTrust: 'exit_quote',
-    valuationCompleteness: 'complete',
+    // The position was intentionally not created on chain, therefore this is
+    // not an executable withdraw quote and must never drive TP/SL decisions.
+    valuationTrust: 'fallback_display',
+    valuationCompleteness: 'untrusted',
     positionStatus: 'active',
     hasLiquidity: true,
     hasClaimableFees: false,
@@ -1378,6 +1835,27 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     valuationSource: position.valuationSource ?? 'paper-dry-run-overlay',
     lastValuationAt: position.updatedAt
   });
+  const toPaperWalletToken = (token: PaperDryRunToken) => {
+    const amountLamports = Number(token.amountRaw);
+    return {
+      mint: token.mint,
+      symbol: '',
+      // The overlay cannot infer SPL decimals from a transaction that was not
+      // submitted. Presence and ownership use amountRaw; amount is therefore a
+      // positive display fallback only.
+      amount: Number.isFinite(amountLamports) ? amountLamports : 1,
+      amountLamports: Number.isSafeInteger(amountLamports) ? amountLamports : undefined,
+      amountRaw: token.amountRaw,
+      currentValueSol: token.currentValueSol,
+      valuationStatus: token.valuationStatus,
+      valuationReason: token.valuationReason,
+      valuationSource: 'paper-executable-sell-quote',
+      lastValuationAt: token.lastValuationAt,
+      poolAddress: token.poolAddress,
+      openIntentId: token.openIntentId,
+      positionId: token.positionId
+    };
+  };
   const simulateDryRunRawTransaction = async (signedTransactionBase64: string) => {
     const simulator = rpcClient as SolanaRpcClient & {
       simulateRawTransaction?: (
@@ -1406,18 +1884,24 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           retryable: true
         });
       }
-      if (isPaperDryRunWalletFundingMessage(rawReason)) {
-        return buildDryRunSignature(signedTransactionBase64);
-      }
       throw new Error(rawReason);
     }
 
     return buildDryRunSignature(signedTransactionBase64);
   };
-  const submitRawTransaction = async (signedTransactionBase64: string) => {
+  const submitRawTransaction = async (
+    signedIntent: SignedBroadcastIntent,
+    signedTransactionBase64: string
+  ) => {
     if (dryRun) {
       return simulateDryRunRawTransaction(signedTransactionBase64);
     }
+
+    // Persist the signed transaction identity before invoking sendTransaction.
+    // Therefore a prior-instance `reserved` record proves the send boundary
+    // was never crossed, while `broadcast_started` is always fail-closed and
+    // carries the signature needed for confirmation/reconciliation.
+    const evidence = await markIdempotencyBroadcastStarted(signedIntent, signedTransactionBase64);
 
     const visibilitySender = rpcClient as SolanaRpcClient & {
       sendRawTransactionAndWaitForVisibility?: (
@@ -1427,16 +1911,41 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
 
     if (typeof visibilitySender.sendRawTransactionAndWaitForVisibility === 'function') {
       try {
-        return (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+        const signature = (await visibilitySender.sendRawTransactionAndWaitForVisibility(signedTransactionBase64)).signature;
+        try {
+          await markIdempotencyBroadcastAccepted(signedIntent, evidence.transactionHash, signature);
+        } catch (error) {
+          throw new UnknownBroadcastOutcomeError(error);
+        }
+        return signature;
       } catch (error) {
-        throw classifyOperationError(error, 'rpc-send');
+        const classified = classifyOperationError(error, 'rpc-send');
+        if (isDefiniteRpcSendRejection(classified)) {
+          throw classified;
+        }
+        // A timeout/transport failure after sendTransaction started does not
+        // prove that the cluster rejected the signed transaction. Keep the
+        // execution idempotency reservation pending so the daemon cannot build
+        // a fresh transaction and accidentally perform the economic action
+        // twice.
+        throw new UnknownBroadcastOutcomeError(classified);
       }
     }
 
     try {
-      return await rpcClient.sendRawTransaction(signedTransactionBase64);
+      const signature = await rpcClient.sendRawTransaction(signedTransactionBase64);
+      try {
+        await markIdempotencyBroadcastAccepted(signedIntent, evidence.transactionHash, signature);
+      } catch (error) {
+        throw new UnknownBroadcastOutcomeError(error);
+      }
+      return signature;
     } catch (error) {
-      throw classifyOperationError(error, 'rpc-send');
+      const classified = classifyOperationError(error, 'rpc-send');
+      if (isDefiniteRpcSendRejection(classified)) {
+        throw classified;
+      }
+      throw new UnknownBroadcastOutcomeError(classified);
     }
   };
   const withIdempotencyLock = async <T>(idempotencyKey: string, action: () => Promise<T>): Promise<T> => {
@@ -1461,104 +1970,243 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
   };
 
   const reserveIdempotencySubmission = async (signedIntent: SignedBroadcastIntent) => {
-    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
-    const idempotencyKey = signedIntent.intent.idempotencyKey;
-    const snapshot = await store.read();
-    const existing = snapshot.submissions.find(
-      (submission) => submission.idempotencyKey === idempotencyKey
-    );
+    return withSubmissionStoreMutation(async () => {
+      const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+      const idempotencyKey = signedIntent.intent.idempotencyKey;
+      const snapshot = await store.read();
+      const existing = snapshot.submissions.find(
+        (submission) => submission.idempotencyKey === idempotencyKey
+      );
 
-    if (existing) {
-      if (existing.signedIntentFingerprint !== signedIntentFingerprint) {
+      if (existing) {
+        if (existing.signedIntentFingerprint !== signedIntentFingerprint) {
+          return {
+            status: 'conflict' as const
+          };
+        }
+
+        if (existing.status === 'submitted' && existing.result) {
+          return {
+            status: 'replay' as const,
+            result: existing.result
+          };
+        }
+
+        if (
+          existing.status === 'pending'
+          && existing.phase === 'reserved'
+          && existing.reservationOwnerId
+          && existing.reservationOwnerId !== executionInstanceId
+        ) {
+          const now = new Date().toISOString();
+          await store.write({
+            submissions: snapshot.submissions.map((submission) =>
+              submission.idempotencyKey === idempotencyKey
+                ? {
+                    ...submission,
+                    reservationOwnerId: executionInstanceId,
+                    updatedAt: now
+                  }
+                : submission
+            )
+          });
+          return {
+            status: 'reserved' as const,
+            recovered: true as const
+          };
+        }
+
         return {
-          status: 'conflict' as const
+          status: 'pending' as const,
+          phase: existing.phase,
+          broadcastEvidence: existing.broadcastEvidence ?? []
         };
       }
 
-      if (existing.status === 'submitted' && existing.result) {
-        return {
-          status: 'replay' as const,
-          result: existing.result
-        };
-      }
+      const now = new Date().toISOString();
+      await store.write({
+        submissions: [
+          ...snapshot.submissions,
+          {
+            idempotencyKey,
+            signedIntentFingerprint,
+            signedIntent,
+            status: 'pending',
+            phase: 'reserved',
+            reservationOwnerId: executionInstanceId,
+            broadcastEvidence: [],
+            receivedAt: now,
+            updatedAt: now
+          }
+        ]
+      });
 
       return {
-        status: 'pending' as const
+        status: 'reserved' as const
       };
-    }
+    });
+  };
 
-    const now = new Date().toISOString();
-    await store.write({
-      submissions: [
-        ...snapshot.submissions,
-        {
-          idempotencyKey,
-          signedIntentFingerprint,
-          signedIntent,
-          status: 'pending',
-          receivedAt: now,
-          updatedAt: now
-        }
-      ]
+  const markIdempotencyBroadcastStarted = async (
+    signedIntent: SignedBroadcastIntent,
+    signedTransactionBase64: string
+  ) => {
+    const transactionHash = createHash('sha256')
+      .update(Buffer.from(signedTransactionBase64, 'base64'))
+      .digest('hex');
+    const transactionSignature = extractPrimarySolanaTransactionSignature(signedTransactionBase64);
+
+    await withSubmissionStoreMutation(async () => {
+      const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+      const idempotencyKey = signedIntent.intent.idempotencyKey;
+      const snapshot = await store.read();
+      const existing = snapshot.submissions.find(
+        (submission) => submission.idempotencyKey === idempotencyKey
+      );
+      if (
+        !existing
+        || existing.status !== 'pending'
+        || existing.signedIntentFingerprint !== signedIntentFingerprint
+        || existing.reservationOwnerId !== executionInstanceId
+      ) {
+        throw new Error(`Cannot persist broadcast boundary for unowned reservation ${idempotencyKey}`);
+      }
+
+      const now = new Date().toISOString();
+      const evidence = existing.broadcastEvidence ?? [];
+      const alreadyRecorded = evidence.some((entry) => entry.transactionHash === transactionHash);
+      await store.write({
+        submissions: snapshot.submissions.map((submission) =>
+          submission.idempotencyKey === idempotencyKey
+            ? {
+                ...submission,
+                phase: 'broadcast_started' as const,
+                broadcastEvidence: alreadyRecorded
+                  ? evidence
+                  : [
+                      ...evidence,
+                      {
+                        transactionHash,
+                        transactionSignature,
+                        sendStartedAt: now
+                      }
+                    ],
+                updatedAt: now
+              }
+            : submission
+        )
+      });
     });
 
-    return {
-      status: 'reserved' as const
-    };
+    return { transactionHash, transactionSignature };
+  };
+
+  const markIdempotencyBroadcastAccepted = async (
+    signedIntent: SignedBroadcastIntent,
+    transactionHash: string,
+    rpcAcceptedSignature: string
+  ) => {
+    await withSubmissionStoreMutation(async () => {
+      const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+      const idempotencyKey = signedIntent.intent.idempotencyKey;
+      const snapshot = await store.read();
+      const existing = snapshot.submissions.find(
+        (submission) => submission.idempotencyKey === idempotencyKey
+      );
+      if (
+        !existing
+        || existing.status !== 'pending'
+        || existing.signedIntentFingerprint !== signedIntentFingerprint
+        || existing.reservationOwnerId !== executionInstanceId
+      ) {
+        throw new Error(`Cannot persist accepted broadcast for unowned reservation ${idempotencyKey}`);
+      }
+
+      const evidence = existing.broadcastEvidence ?? [];
+      const matched = evidence.some((entry) => entry.transactionHash === transactionHash);
+      if (!matched) {
+        throw new Error(`Cannot persist accepted broadcast without send evidence for ${idempotencyKey}`);
+      }
+      const now = new Date().toISOString();
+      await store.write({
+        submissions: snapshot.submissions.map((submission) =>
+          submission.idempotencyKey === idempotencyKey
+            ? {
+                ...submission,
+                phase: 'broadcast_started' as const,
+                broadcastEvidence: evidence.map((entry) =>
+                  entry.transactionHash === transactionHash
+                    ? {
+                        ...entry,
+                        rpcAcceptedSignature,
+                        rpcAcceptedAt: now
+                      }
+                    : entry
+                ),
+                updatedAt: now
+              }
+            : submission
+        )
+      });
+    });
   };
 
   const completeIdempotencySubmission = async (
     signedIntent: SignedBroadcastIntent,
     result: LiveBroadcastResult
   ) => {
-    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
-    const idempotencyKey = signedIntent.intent.idempotencyKey;
-    const snapshot = await store.read();
-    const now = new Date().toISOString();
-    const parsedResult = BroadcastResultSchema.parse(result);
-    let replaced = false;
-    const submissions = snapshot.submissions.map((submission) => {
-      if (submission.idempotencyKey !== idempotencyKey) {
-        return submission;
+    await withSubmissionStoreMutation(async () => {
+      const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+      const idempotencyKey = signedIntent.intent.idempotencyKey;
+      const snapshot = await store.read();
+      const now = new Date().toISOString();
+      const parsedResult = BroadcastResultSchema.parse(result);
+      let replaced = false;
+      const submissions = snapshot.submissions.map((submission) => {
+        if (submission.idempotencyKey !== idempotencyKey) {
+          return submission;
+        }
+
+        replaced = true;
+        return {
+          ...submission,
+          signedIntentFingerprint,
+          signedIntent,
+          status: 'submitted' as const,
+          result: parsedResult,
+          updatedAt: now
+        };
+      });
+
+      if (!replaced) {
+        submissions.push({
+          idempotencyKey,
+          signedIntentFingerprint,
+          signedIntent,
+          status: 'submitted',
+          result: parsedResult,
+          receivedAt: now,
+          updatedAt: now
+        });
       }
 
-      replaced = true;
-      return {
-        ...submission,
-        signedIntentFingerprint,
-        signedIntent,
-        status: 'submitted' as const,
-        result: parsedResult,
-        updatedAt: now
-      };
+      await store.write({ submissions });
     });
-
-    if (!replaced) {
-      submissions.push({
-        idempotencyKey,
-        signedIntentFingerprint,
-        signedIntent,
-        status: 'submitted',
-        result: parsedResult,
-        receivedAt: now,
-        updatedAt: now
-      });
-    }
-
-    await store.write({ submissions });
   };
 
   const releaseIdempotencyReservation = async (signedIntent: SignedBroadcastIntent) => {
-    const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
-    const idempotencyKey = signedIntent.intent.idempotencyKey;
-    const snapshot = await store.read();
+    await withSubmissionStoreMutation(async () => {
+      const signedIntentFingerprint = signedIntentIdempotencyFingerprint(signedIntent);
+      const idempotencyKey = signedIntent.intent.idempotencyKey;
+      const snapshot = await store.read();
 
-    await store.write({
-      submissions: snapshot.submissions.filter((submission) => !(
-        submission.idempotencyKey === idempotencyKey
-        && submission.signedIntentFingerprint === signedIntentFingerprint
-        && submission.status === 'pending'
-      ))
+      await store.write({
+        submissions: snapshot.submissions.filter((submission) => !(
+          submission.idempotencyKey === idempotencyKey
+          && submission.signedIntentFingerprint === signedIntentFingerprint
+          && submission.status === 'pending'
+        ))
+      });
     });
   };
 
@@ -1615,6 +2263,15 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             const intent = payload.intent.intent;
             const broadcastStartedAt = Date.now();
 
+            const requiredExecutionPolicy = dryRun ? 'simulate-only' : 'broadcast';
+            if (intent.executionPolicy !== requiredExecutionPolicy) {
+              writeJson(response, 409, {
+                error: 'execution policy mismatch',
+                detail: `Signed intent requires ${intent.executionPolicy ?? 'missing'} but this service is ${requiredExecutionPolicy}`
+              });
+              return;
+            }
+
             // Allowlist check
             if (options.maxOutputSol !== undefined) {
               const allowlistResult = validateIntentAllowlist(intent, {
@@ -1642,9 +2299,31 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               if (reservation.status === 'pending') {
+                const recoverableSignatures = reservation.broadcastEvidence
+                  .map((evidence) => evidence.rpcAcceptedSignature ?? evidence.transactionSignature)
+                  .filter((signature): signature is string => Boolean(signature));
+                if (recoverableSignatures.length > 0) {
+                  // Do not rebroadcast an outcome-unknown signed transaction.
+                  // Return its durable transaction id so the caller can move
+                  // into the normal confirmation path instead of being stuck
+                  // behind an opaque 409 forever. The pending store entry is
+                  // deliberately retained until a later result is proven.
+                  writeJson(response, 200, buildSubmittedBroadcastResult({
+                    idempotencyKey: intent.idempotencyKey,
+                    signatures: [...new Set(recoverableSignatures)],
+                    batchStatus: 'partial',
+                    reason: 'broadcast-outcome-unknown',
+                    openIntentId: intent.openIntentId,
+                    positionId: intent.positionId,
+                    chainPositionAddress: intent.chainPositionAddress
+                  }));
+                  return;
+                }
                 writeJson(response, 409, {
                   error: 'idempotency key pending',
-                  detail: `Submission ${intent.idempotencyKey} is reserved but has no recorded result`
+                  detail: `Submission ${intent.idempotencyKey} crossed an unknown or legacy boundary without a queryable transaction signature`,
+                  phase: reservation.phase ?? 'legacy_unknown',
+                  broadcastEvidence: reservation.broadcastEvidence
                 });
                 return;
               }
@@ -1677,6 +2356,56 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
             let upperBinIdAtBuild: number | undefined;
             let binSlippageBps: number | undefined;
             let solSideAtBuild: 'tokenX' | 'tokenY' | undefined;
+            const resolveAddLpPositionAddress = (result: any) => {
+              const returnedAddress = typeof result?.positionAddress === 'string' && result.positionAddress.trim().length > 0
+                ? result.positionAddress.trim()
+                : undefined;
+              const signerAddress = result?.newPositionKeypair?.publicKey?.toBase58?.();
+
+              if (returnedAddress && signerAddress && returnedAddress !== signerAddress) {
+                throw new StructuredExecutionError(
+                  `DLMM add-liquidity position identity mismatch: returned ${returnedAddress}, signer ${signerAddress}`,
+                  {
+                    executionFailureKind: 'dlmm_position_identity_mismatch',
+                    executionFailureOperation: 'dlmm-build',
+                    retryable: false
+                  }
+                );
+              }
+
+              const builtAddress = returnedAddress ?? signerAddress;
+              if (
+                intent.chainPositionAddress
+                && builtAddress
+                && intent.chainPositionAddress !== builtAddress
+              ) {
+                throw new StructuredExecutionError(
+                  `DLMM add-liquidity position identity mismatch: intent ${intent.chainPositionAddress}, built ${builtAddress}`,
+                  {
+                    executionFailureKind: 'dlmm_position_identity_mismatch',
+                    executionFailureOperation: 'dlmm-build',
+                    retryable: false
+                  }
+                );
+              }
+
+              const resolvedAddress = builtAddress ?? intent.chainPositionAddress;
+              if (resolvedAddress) {
+                return resolvedAddress;
+              }
+              if (dryRun) {
+                return buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
+              }
+
+              throw new StructuredExecutionError(
+                'DLMM add-liquidity build did not return the chain position address',
+                {
+                  executionFailureKind: 'dlmm_position_identity_missing',
+                  executionFailureOperation: 'dlmm-build',
+                  retryable: false
+                }
+              );
+            };
 
             try {
               let signedBase64 = '';
@@ -1695,51 +2424,156 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     throw new Error('Sell intent must explicitly declare fullPositionExit=true');
                   }
 
-                  // Sell: query actual token balance and sell all
-                  const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
-                  const tokenAccount = tokenAccounts.find(
-                    (a) => a.account.data.parsed.info.mint === tokenMint
-                  );
-                  if (!tokenAccount) {
-                    throw new Error(`No token account found for mint ${tokenMint}`);
+                  let availableRaw: bigint;
+                  if (dryRun) {
+                    // Paper is a strategy-owned overlay. Never let a simulated
+                    // exit discover or consume an unrelated real-wallet token.
+                    const paperInventory = await paperDryRunStore.readSellableToken({
+                      mint: tokenMint,
+                      poolAddress: intent.poolAddress,
+                      openIntentId: intent.openIntentId,
+                      positionId: intent.positionId
+                    });
+                    availableRaw = paperInventory.amountRaw;
+                    if (availableRaw <= 0n) {
+                      throw new StructuredExecutionError(
+                        `No paper token overlay found for mint ${tokenMint} in pool ${intent.poolAddress}`,
+                        {
+                          executionFailureKind: 'paper_inventory_missing',
+                          executionFailureOperation: 'paper-sell-ownership',
+                          retryable: false
+                        }
+                      );
+                    }
+                  } else {
+                    // Live sells only the amount explicitly owned by this
+                    // strategy when supplied. This branch is intentionally
+                    // unchanged by the paper overlay.
+                    const tokenAccounts = await rpcClient.getTokenAccountsByOwner(walletPublicKey);
+                    const matchingAccounts = tokenAccounts.filter(
+                      (account) => account.account.data.parsed.info.mint === tokenMint
+                    );
+                    if (matchingAccounts.length === 0) {
+                      throw new Error(`No token account found for mint ${tokenMint}`);
+                    }
+                    availableRaw = matchingAccounts.reduce((total, account) => {
+                      const raw = String(account.account.data.parsed.info.tokenAmount.amount ?? '0');
+                      if (!/^\d+$/.test(raw)) {
+                        throw new Error(`Invalid token balance for mint ${tokenMint}`);
+                      }
+                      return total + BigInt(raw);
+                    }, 0n);
+                    if (availableRaw <= 0n) {
+                      throw new Error(`Token balance is zero for mint ${tokenMint}`);
+                    }
                   }
-                  const tokenLamports = Number(tokenAccount.account.data.parsed.info.tokenAmount.amount);
-                  if (tokenLamports <= 0) {
-                    throw new Error(`Token balance is zero for mint ${tokenMint}`);
+
+                  const requestedRaw = intent.inputAmountRaw ? BigInt(intent.inputAmountRaw) : availableRaw;
+                  if (requestedRaw > availableRaw) {
+                    throw new StructuredExecutionError(
+                      `Requested token amount exceeds ${dryRun ? 'paper overlay' : 'wallet'} balance for mint ${tokenMint}: requested=${requestedRaw} available=${availableRaw}`,
+                      dryRun
+                        ? {
+                            executionFailureKind: 'paper_inventory_insufficient',
+                            executionFailureOperation: 'paper-sell-ownership',
+                            retryable: false
+                          }
+                        : {}
+                    );
                   }
 
                   inputMint = tokenMint;
                   outputMint = SOL_MINT;
-                  amountLamports = String(tokenLamports);
+                  amountLamports = requestedRaw.toString();
                 }
 
                 const swapStartedAt = Date.now();
-                const swapResult = await swapProviderChain.executeExactIn(
-                  {
-                    inputMint,
-                    outputMint,
-                    amountLamports,
-                    walletPublicKey,
-                    poolAddress: intent.poolAddress,
-                    slippageBps: defaultSlippageBps,
-                    jitoTipLamports: options.jitoTipLamports
-                  },
-                  {
-                    keypair,
-                    rpcClient,
-                    sendRawTransaction: async (signedTransactionBase64) => {
-                      const sendStartedAt = Date.now();
-                      const signature = await submitRawTransaction(signedTransactionBase64);
-                      visibleBroadcastRecorded = true;
-                      sendTxMs.push(durationMs(sendStartedAt));
-                      return signature;
-                    }
-                  }
-                );
+                const swapRequest = {
+                  inputMint,
+                  outputMint,
+                  amountLamports,
+                  walletPublicKey,
+                  poolAddress: intent.poolAddress || undefined,
+                  slippageBps: intent.maxSlippageBps ?? defaultSlippageBps,
+                  maxImpactBps: intent.maxImpactBps,
+                  jitoTipLamports: options.jitoTipLamports,
+                  skipBalanceDependentProviders: dryRun && side === 'sell'
+                };
+                // A paper buy can build, sign and simulate the exact live
+                // transaction because its input SOL exists on chain. After
+                // that buy is deliberately not broadcast, the synthetic token
+                // cannot be used to simulate a later sell against the real
+                // wallet. Use the exact same executable quote/risk checks for
+                // that sell and settle only the paper overlay.
+                const paperQuoteOnlySell = dryRun && side === 'sell';
+                const swapResult = paperQuoteOnlySell
+                  ? await swapProviderChain.quoteExactIn(swapRequest)
+                  : await swapProviderChain.executeExactIn(
+                      swapRequest,
+                      {
+                        keypair,
+                        rpcClient,
+                        sendRawTransaction: async (signedTransactionBase64) => {
+                          const sendStartedAt = Date.now();
+                          const signature = await submitRawTransaction(payload.intent, signedTransactionBase64);
+                          if (!dryRun) {
+                            visibleBroadcastRecorded = true;
+                          }
+                          sendTxMs.push(durationMs(sendStartedAt));
+                          return signature;
+                        }
+                      }
+                    );
                 swapBuildMs = durationMs(swapStartedAt);
                 swapProviderName = swapResult.providerName;
                 swapProviderAttempts = swapResult.providerAttempts;
-                visibleBroadcastRecorded = true;
+                if (!dryRun) {
+                  visibleBroadcastRecorded = true;
+                }
+
+                let submissionSignature = 'signature' in swapResult && typeof swapResult.signature === 'string'
+                  ? swapResult.signature
+                  : '';
+                const paperExecutionReason = side === 'sell'
+                  ? 'paper-dry-run-quoted-shadow-settlement'
+                  : 'paper-dry-run-simulated';
+                if (dryRun) {
+                  if (!/^\d+$/.test(swapResult.outAmountLamports) || BigInt(swapResult.outAmountLamports) <= 0n) {
+                    throw new Error(`Paper ${side} quote returned invalid output amount ${swapResult.outAmountLamports}`);
+                  }
+                  const recordedAt = new Date().toISOString();
+                  if (side === 'buy') {
+                    await paperDryRunStore.applyTokenBuy({
+                      idempotencyKey: intent.idempotencyKey,
+                      strategyId: intent.strategyId,
+                      poolAddress: intent.poolAddress,
+                      mint: tokenMint,
+                      openIntentId: intent.openIntentId,
+                      positionId: intent.positionId,
+                      amountRaw: swapResult.outAmountLamports,
+                      inputSol: Number(BigInt(amountLamports)) / LAMPORTS_PER_SOL,
+                      maxSlippageBps: intent.maxSlippageBps ?? defaultSlippageBps,
+                      maxImpactBps: intent.maxImpactBps,
+                      recordedAt
+                    });
+                  } else {
+                    await paperDryRunStore.applyTokenSell({
+                      idempotencyKey: intent.idempotencyKey,
+                      mint: tokenMint,
+                      poolAddress: intent.poolAddress,
+                      openIntentId: intent.openIntentId,
+                      positionId: intent.positionId,
+                      amountRaw: amountLamports,
+                      outputSol: Number(BigInt(swapResult.outAmountLamports)) / LAMPORTS_PER_SOL,
+                      recordedAt
+                    });
+                  }
+                  const signatureSeed = Buffer.from(
+                    `${intent.idempotencyKey}:${side}:${tokenMint}:${amountLamports}`,
+                    'utf8'
+                  ).toString('base64');
+                  submissionSignature = buildDryRunSignature(signatureSeed);
+                }
 
                 logBroadcastOutcome({
                   event: 'solana-execution-broadcast',
@@ -1759,14 +2593,14 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   totalMs: durationMs(broadcastStartedAt),
                   swapProvider: swapProviderName,
                   swapProviderAttempts: describeSwapProviderAttempts(swapProviderAttempts),
-                  reason: dryRun ? 'paper-dry-run-simulated' : undefined,
+                  reason: dryRun ? paperExecutionReason : undefined,
                   dryRun
                 });
 
                 await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                   idempotencyKey: intent.idempotencyKey,
-                  signatures: [swapResult.signature],
-                  reason: dryRun ? 'paper-dry-run-simulated' : undefined,
+                  signatures: [submissionSignature],
+                  reason: dryRun ? paperExecutionReason : undefined,
                   mainExecutionStatus: dryRun ? 'confirmed' : undefined,
                   ...lifecycleResultIdentity
                 }));
@@ -1780,8 +2614,18 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     poolAddress: intent.poolAddress,
                     tokenMint: intent.tokenMint
                   });
-                  const dryRunChainPositionAddress = intent.chainPositionAddress ?? closed?.chainPositionAddress;
-                  const reason = closed ? 'paper-dry-run-simulated' : 'paper-dry-run-position-already-closed';
+                  if (!closed) {
+                    throw new StructuredExecutionError(
+                      `No paper LP overlay matched withdraw identity for pool ${intent.poolAddress}`,
+                      {
+                        executionFailureKind: 'paper_lp_inventory_missing',
+                        executionFailureOperation: 'paper-withdraw-ownership',
+                        retryable: false
+                      }
+                    );
+                  }
+                  const dryRunChainPositionAddress = intent.chainPositionAddress ?? closed.chainPositionAddress;
+                  const reason = 'paper-dry-run-shadow-close';
                   const signatureSeed = Buffer.from(
                     `${intent.idempotencyKey}:${side}:${dryRunChainPositionAddress ?? intent.poolAddress}`,
                     'utf8'
@@ -1833,7 +2677,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     intent.poolAddress,
                     intent.outputSol,
                     undefined,
-                    { allowDuplicatePosition: dryRun }
+                    {
+                      allowDuplicatePosition: false,
+                      slippageBps: intent.maxSlippageBps
+                    }
                   );
                 } catch (error) {
                   throw classifyOperationError(error, 'dlmm-build');
@@ -1847,10 +2694,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 solSideAtBuild = result.solSide === 'tokenX' || result.solSide === 'tokenY' ? result.solSide : solSideAtBuild;
                 if (result.newPositionKeypair) {
                   signers.push(result.newPositionKeypair);
-                  builtChainPositionAddress = result.newPositionKeypair.publicKey.toBase58();
                 }
-                builtChainPositionAddress ??= intent.chainPositionAddress
-                  ?? buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
+                builtChainPositionAddress = resolveAddLpPositionAddress(result);
               } else if (side === 'withdraw-lp') {
                 const buildStartedAt = Date.now();
                 txBatch = toTransactionBatch(await options.dlmmClient.removeLiquidity(
@@ -1888,18 +2733,23 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   txParams.sign(...signers);
                   signedBase64 = txParams.serialize().toString('base64');
                   const sendStartedAt = Date.now();
-                  txSignatures.push(await submitRawTransaction(signedBase64));
-                  visibleBroadcastRecorded = true;
+                  txSignatures.push(await submitRawTransaction(payload.intent, signedBase64));
+                  // A successful paper simulation is not a chain-visible
+                  // submission.  In particular, an earlier transaction in a
+                  // dry-run batch must not strand the idempotency key when a
+                  // later transaction fails simulation.
+                  if (!dryRun) {
+                    visibleBroadcastRecorded = true;
+                  }
                   sendTxMs.push(durationMs(sendStartedAt));
                 } catch (error) {
                   const failureMetadata = getExecutionFailureMetadata(error);
-                  const canRebuildDryRunAddLp = dryRun
-                    && side === 'add-lp'
+                  const canRebuildAddLp = side === 'add-lp'
                     && dryRunAddLpRebuildOnBinSlippage
                     && failureMetadata.executionFailureKind === 'dlmm_bin_slippage'
                     && rebuildAttemptCount < dryRunAddLpRebuildMaxAttempts
                     && txSignatures.length === 0;
-                  if (canRebuildDryRunAddLp) {
+                  if (canRebuildAddLp) {
                     rebuildAttemptCount += 1;
                     const rebuildStartedAt = Date.now();
                     let rebuilt: any;
@@ -1909,7 +2759,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                         intent.poolAddress,
                         intent.outputSol,
                         undefined,
-                        { allowDuplicatePosition: dryRun }
+                        {
+                          allowDuplicatePosition: false,
+                          slippageBps: intent.maxSlippageBps
+                        }
                       );
                     } catch (buildError) {
                       throw classifyOperationError(buildError, 'dlmm-build');
@@ -1919,11 +2772,8 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     signers = [keypair];
                     if (rebuilt.newPositionKeypair) {
                       signers.push(rebuilt.newPositionKeypair);
-                      builtChainPositionAddress = rebuilt.newPositionKeypair.publicKey.toBase58();
-                    } else {
-                      builtChainPositionAddress = intent.chainPositionAddress
-                        ?? buildDryRunAddress(`${intent.idempotencyKey}:${intent.poolAddress}:${tokenMint}`);
                     }
+                    builtChainPositionAddress = resolveAddLpPositionAddress(rebuilt);
                     activeBinIdAtBuild = typeof rebuilt.activeBinId === 'number' ? rebuilt.activeBinId : activeBinIdAtBuild;
                     lowerBinIdAtBuild = typeof rebuilt.lowerBinId === 'number' ? rebuilt.lowerBinId : lowerBinIdAtBuild;
                     upperBinIdAtBuild = typeof rebuilt.upperBinId === 'number' ? rebuilt.upperBinId : upperBinIdAtBuild;
@@ -1963,14 +2813,19 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     signatures: txSignatures,
                     batchStatus: 'partial',
                     reason,
-                    ...lifecycleResultIdentity
+                    ...lifecycleResultIdentity,
+                    ...(side === 'add-lp'
+                      ? { chainPositionAddress: builtChainPositionAddress }
+                      : {})
                   }));
                   return;
                 }
               }
 
               if (dryRun) {
-                const reason = 'paper-dry-run-simulated';
+                const reason = side === 'withdraw-lp'
+                  ? 'paper-dry-run-shadow-close'
+                  : 'paper-dry-run-simulated';
                 let dryRunChainPositionAddress = intent.chainPositionAddress;
                 if (side === 'add-lp') {
                   dryRunChainPositionAddress = builtChainPositionAddress
@@ -2090,12 +2945,17 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   swapProviderChain,
                   keypair,
                   walletPublicKey,
-                  defaultSlippageBps,
+                  defaultSlippageBps: intent.maxSlippageBps ?? defaultSlippageBps,
+                  maxImpactBps: intent.maxImpactBps,
                   jitoTipLamports: options.jitoTipLamports,
-                  sendRawTransaction: submitRawTransaction,
+                  sendRawTransaction: (signedTransactionBase64) =>
+                    submitRawTransaction(payload.intent, signedTransactionBase64),
                   sendTxMs,
                   acceptedSignatures: txSignatures,
                   poolAddressByMint: new Map([[intent.tokenMint, intent.poolAddress]]),
+                  preExistingAmountRawByMint: typeof intent.preExitTokenAmountRaw === 'string'
+                    ? new Map([[intent.tokenMint, intent.preExitTokenAmountRaw]])
+                    : undefined,
                   residualTokenMinValueSol,
                   residualTokenDustMaxUiAmount
                 });
@@ -2135,6 +2995,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                     mainExecutionStatus: 'confirmed',
                     residualSweepStatus: 'incomplete',
                     residualUnsoldMints: residualSweep.unsoldMints,
+                    residualUnsoldAmountsRaw: residualSweep.unsoldAmountsRaw,
                     residualIgnoredMints: residualSweep.ignoredMints,
                     residualFailureReasons: residualSweep.failureReasons,
                     ...lifecycleResultIdentity
@@ -2196,7 +3057,20 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               await writeStoredBroadcastResult(response, payload.intent, buildSubmittedBroadcastResult({
                 idempotencyKey: intent.idempotencyKey,
                 signatures: txSignatures,
-                ...lifecycleResultIdentity
+                mainExecutionStatus: (side === 'withdraw-lp' || side === 'claim-fee')
+                  && intent.liquidateResidualTokenToSol
+                  && Boolean(intent.tokenMint)
+                    ? 'confirmed'
+                    : undefined,
+                residualSweepStatus: (side === 'withdraw-lp' || side === 'claim-fee')
+                  && intent.liquidateResidualTokenToSol
+                  && Boolean(intent.tokenMint)
+                    ? 'complete'
+                    : undefined,
+                ...lifecycleResultIdentity,
+                ...(side === 'add-lp'
+                  ? { chainPositionAddress: builtChainPositionAddress }
+                  : {})
               }));
               return;
               }
@@ -2235,7 +3109,10 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                 binSlippageBps
               });
 
-              if (!visibleBroadcastRecorded) {
+              if (
+                !visibleBroadcastRecorded
+                && failureMetadata.executionFailureKind !== 'broadcast_outcome_unknown'
+              ) {
                 await releaseIdempotencyReservation(payload.intent);
                 writeJson(response, 200, buildFailedBroadcastResult({
                   idempotencyKey: intent.idempotencyKey,
@@ -2340,16 +3217,31 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           // Account state — query wallet SOL and token balances from RPC
           if (request.method === 'GET' && request.url === '/account-state') {
             if (dryRun) {
-              const paperState = await revaluePaperDryRunState(await paperDryRunStore.read());
-              const walletSol = PAPER_DRY_RUN_WALLET_SOL + paperState.walletSolDelta;
+              let baseWalletLamports: number;
+              try {
+                // Paper owns only the synthetic positions/tokens below, but
+                // its buying power must start from the same real signer SOL
+                // balance as live. Otherwise repeated simulations can allocate
+                // capital that the live wallet could never fund.
+                baseWalletLamports = await rpcClient.getBalance(walletPublicKey);
+              } catch (error) {
+                writeJson(response, 503, accountStateUnavailablePayload(error));
+                return;
+              }
+              const paperState = await revaluePaperDryRunTokens(
+                await revaluePaperDryRunState(await paperDryRunStore.read())
+              );
+              const walletSol = baseWalletLamports / LAMPORTS_PER_SOL + paperState.walletSolDelta;
               const walletLpPositions = paperState.positions.map(toPaperLpPosition);
+              const walletTokens = paperState.tokens.map(toPaperWalletToken);
               writeJson(response, 200, {
+                observedAt: new Date().toISOString(),
                 walletSol,
                 journalSol: walletSol,
                 walletLpPositions,
                 journalLpPositions: walletLpPositions,
-                walletTokens: [],
-                journalTokens: [],
+                walletTokens,
+                journalTokens: walletTokens,
                 fills: []
               });
               return;
@@ -2369,6 +3261,7 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               symbol: string;
               amount: number;
               amountLamports: number;
+              amountRaw: string;
               currentValueSol?: number;
             }[] = [];
             let walletLpPositions: AccountStateLpPosition[] = [];
@@ -2378,12 +3271,14 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               const now = Date.now();
               const walletTokenCandidates = tokenAccounts.map((account) => {
                 const info = account.account.data.parsed.info;
-                const amountLamports = Number(info.tokenAmount.amount ?? 0);
+                const amountRaw = String(info.tokenAmount.amount ?? '0');
+                const amountLamports = Number(amountRaw);
                 return {
                   mint: info.mint,
                   symbol: '',
                   amount: info.tokenAmount.uiAmount ?? 0,
                   amountLamports,
+                  amountRaw,
                   currentValueSol: readFreshTokenValueCache(tokenValueCache, info.mint, now)
                 };
               });
@@ -2414,8 +3309,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
               }
 
               walletTokens = walletTokenCandidates;
-            } catch {
-              // Token accounts query may fail on free RPC
+            } catch (error) {
+              writeJson(response, 503, accountStateUnavailablePayload(error));
+              return;
             }
 
             try {
@@ -2429,11 +3325,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
                   defaultSlippageBps
                 });
               }
-            } catch {
-              // Meteora positions query may fail on free RPC
+            } catch (error) {
+              writeJson(response, 503, accountStateUnavailablePayload(error));
+              return;
             }
 
             writeJson(response, 200, {
+              observedAt: new Date().toISOString(),
               walletSol,
               journalSol: walletSol,
               walletLpPositions,
@@ -2461,6 +3359,13 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           writeText(response, 404, 'not-found');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof UnknownBroadcastOutcomeError) {
+            writeJson(response, 503, {
+              error: 'broadcast outcome unknown',
+              detail: message
+            });
+            return;
+          }
           writeJson(response, 400, { error: message });
         }
       });

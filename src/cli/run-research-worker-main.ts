@@ -28,7 +28,7 @@ async function main() {
     rateLimitCapacity: capacity,
     rateLimitWindowMs: windowMs,
     rateLimiter: new FileBackedSlidingWindowRateLimiter({
-      statePath: process.env.JUPITER_RATE_LIMIT_STATE_PATH ?? join(stateRoot, 'research', 'jupiter-rate-limit.json'),
+      statePath: process.env.JUPITER_RATE_LIMIT_STATE_PATH ?? join(stateRoot, 'jupiter-rate-limit.json'),
       capacity,
       windowMs
     })

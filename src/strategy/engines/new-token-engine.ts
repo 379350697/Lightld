@@ -12,6 +12,10 @@ type NewTokenSnapshot = {
   lpRiskReason?: string;
   /** LP mode: net PnL percentage (fees + principal change) */
   lpNetPnlPct?: number;
+  /** Paper-only modeled net PnL used to exercise the LP exit policy. */
+  lpModeledNetPnlPct?: number;
+  /** Explicit marker preventing a modeled display value from masquerading as an exit quote. */
+  lpModeledPnlSource?: 'paper-shadow-dlmm-active-bin-modeled';
   /** LP mode: current LP value measured in SOL */
   lpCurrentValueSol?: number;
   /** LP mode: unclaimed fee value measured in SOL */
@@ -62,21 +66,35 @@ type NewTokenConfig = {
 
 export type NewTokenAction = 'deploy' | 'dca-out' | 'add-lp' | 'withdraw-lp' | 'hold' | 'claim-fee' | 'rebalance-lp';
 
+const NON_ACTIONABLE_LIFECYCLE_STATES = new Set([
+  'open_pending',
+  'lp_exit_pending',
+  'inventory_exit_pending',
+  'reconcile_required',
+  'failed_terminal'
+]);
+
 export function buildNewTokenDecision(
   snapshot: NewTokenSnapshot,
   config: NewTokenConfig = {}
 ): { action: NewTokenAction; reason?: string } {
-  if (!snapshot.inSession) {
-    return { action: 'hold', reason: 'out-of-session' };
-  }
-
   // ===== Explicit Exit State Machine =====
   if (snapshot.lifecycleState === 'inventory_exit_ready') {
     return { action: 'dca-out', reason: 'inventory-exit-ready' };
   }
 
+  if (snapshot.lifecycleState && NON_ACTIONABLE_LIFECYCLE_STATES.has(snapshot.lifecycleState)) {
+    return { action: 'hold', reason: `lifecycle-${snapshot.lifecycleState}` };
+  }
+
   if (snapshot.hasLpPosition) {
     const lpDecision = buildLpExitPolicyDecision(snapshot, config);
+    if (lpDecision.action === 'withdraw-lp') {
+      return lpDecision;
+    }
+    if (!snapshot.inSession) {
+      return { action: 'withdraw-lp', reason: 'out-of-session-with-lp-position' };
+    }
     if (lpDecision.action !== 'hold' || config.lpEnabled) {
       return lpDecision;
     }
@@ -91,6 +109,14 @@ export function buildNewTokenDecision(
     snapshot.holdTimeMs >= maxHoldMs
   ) {
     return { action: 'dca-out', reason: 'max-hold-with-inventory' };
+  }
+
+  if (snapshot.hasInventory && !snapshot.inSession) {
+    return { action: 'dca-out', reason: 'out-of-session-with-inventory' };
+  }
+
+  if (!snapshot.inSession) {
+    return { action: 'hold', reason: 'out-of-session' };
   }
 
   // ===== LP mode (bid-ask single-sided SOL) =====

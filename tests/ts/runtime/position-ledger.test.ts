@@ -90,9 +90,122 @@ describe('position ledger', () => {
       expect.objectContaining({
         positionKey: 'chain-position:pos-b',
         activeMint: 'mint-b',
-        importStatus: 'entry_unknown'
+        lifecycleState: 'reconcile_required',
+        importStatus: 'entry_unknown',
+        lastReason: 'lp-ownership-reconcile-required:unbound-account-position'
       })
     ]));
+  });
+
+  it('binds a mint-only pending LP open only when it identifies one active chain position', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-pending',
+          positionAddress: 'pos-pending',
+          mint: 'mint-pending',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'open-pending',
+        submissionId: '',
+        tokenMint: 'mint-pending',
+        orderAction: 'add-lp',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-06-29T00:00:00.000Z',
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: '2026-06-29T00:01:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      chainPositionAddress: 'pos-pending',
+      idempotencyKey: 'open-pending',
+      lifecycleState: 'open'
+    });
+  });
+
+  it('does not bind ambiguous mint-only pending evidence to either active LP', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          { poolAddress: 'pool-a', positionAddress: 'pos-a', mint: 'mint-shared', hasLiquidity: true },
+          { poolAddress: 'pool-b', positionAddress: 'pos-b', mint: 'mint-shared', hasLiquidity: true }
+        ],
+        journalLpPositions: [],
+        fills: []
+      },
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'open-ambiguous',
+        submissionId: '',
+        tokenMint: 'mint-shared',
+        orderAction: 'add-lp',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-06-29T00:00:00.000Z',
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: '2026-06-29T00:01:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(2);
+    expect(ledger.records.every((record) =>
+      record.lifecycleState === 'reconcile_required' && record.idempotencyKey === undefined
+    )).toBe(true);
+  });
+
+  it('does not bind one chainless pending open to multiple same-pool sibling LPs', () => {
+    const ledger = importActiveLpPositionsToLedger({
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          { poolAddress: 'pool-shared', positionAddress: 'pos-shared-a', mint: 'mint-shared', hasLiquidity: true },
+          { poolAddress: 'pool-shared', positionAddress: 'pos-shared-b', mint: 'mint-shared', hasLiquidity: true }
+        ],
+        journalLpPositions: [],
+        fills: []
+      },
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'open-shared-pending',
+        submissionId: '',
+        poolAddress: 'pool-shared',
+        tokenMint: 'mint-shared',
+        orderAction: 'add-lp',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-06-29T00:00:00.000Z',
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: '2026-06-29T00:01:00.000Z'
+    });
+
+    expect(ledger.records).toHaveLength(2);
+    expect(ledger.records.every((record) =>
+      record.lifecycleState === 'reconcile_required'
+      && record.idempotencyKey === undefined
+      && record.openIntentId === undefined
+    )).toBe(true);
   });
 
   it('does not reopen a closed chain position from a stale account snapshot', () => {
@@ -261,7 +374,7 @@ describe('position ledger', () => {
     expect(ledger.records.every((record) => record.entrySol === undefined)).toBe(true);
   });
 
-  it('merges a synthetic open record into the discovered chain LP record for the same pool and mint', () => {
+  it('does not bind a stale synthetic open to a later manual LP in the same pool and mint', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
         version: 1,
@@ -298,16 +411,25 @@ describe('position ledger', () => {
       now: '2026-06-29T00:02:00.000Z'
     });
 
-    expect(ledger.records).toHaveLength(1);
-    expect(ledger.records[0]).toMatchObject({
+    expect(ledger.records).toHaveLength(2);
+    expect(ledger.records.find((record) => record.positionKey === 'position:pool-a:mint-a')).toMatchObject({
+      positionId: 'pool-a:mint-a',
+      openIntentId: 'intent-a',
+      idempotencyKey: 'open-pool-a',
+      lifecycleState: 'reconcile_required',
+      missingOnChainSince: '2026-06-29T00:02:00.000Z'
+    });
+    expect(ledger.records.find((record) => record.positionKey === 'chain-position:pos-a')).toMatchObject({
       positionKey: 'chain-position:pos-a',
       positionId: 'pos-a',
       chainPositionAddress: 'pos-a',
       activePoolAddress: 'pool-a',
       activeMint: 'mint-a',
-      entrySol: 0.1,
-      lastAction: 'add-lp'
+      lifecycleState: 'reconcile_required',
+      importStatus: 'entry_unknown',
+      lastReason: 'lp-ownership-reconcile-required:unbound-account-position'
     });
+    expect(ledger.records.find((record) => record.positionKey === 'chain-position:pos-a')?.entrySol).toBeUndefined();
   });
 
   it('does not revive failed terminal open attempts when a later chain LP appears on the same pool and mint', () => {
@@ -354,8 +476,9 @@ describe('position ledger', () => {
     });
     expect(failedRecord?.chainPositionAddress).toBeUndefined();
     expect(ledger.records.find((record) => record.positionKey === 'chain-position:pos-a')).toMatchObject({
-      lifecycleState: 'open',
-      chainPositionAddress: 'pos-a'
+      lifecycleState: 'reconcile_required',
+      chainPositionAddress: 'pos-a',
+      lastReason: 'lp-ownership-reconcile-required:unbound-account-position'
     });
   });
 
@@ -538,6 +661,7 @@ describe('position ledger', () => {
       exitTriggerReason: 'lp-take-profit',
       liveOrderSubmitted: true,
       confirmationStatus: 'confirmed',
+      fullExitClosureProven: true,
       now: '2026-07-03T11:15:23.000Z'
     });
 
@@ -851,7 +975,7 @@ describe('position ledger', () => {
     });
   });
 
-  it('merges a reconciled synthetic open into the unique observed chain position for the same pool and mint', () => {
+  it('merges a reconciled synthetic open only when an exact trusted fill binds the chain position', () => {
     const ledger = importActiveLpPositionsToLedger({
       ledger: {
         version: 1,
@@ -886,7 +1010,19 @@ describe('position ledger', () => {
           currentValueSol: 0.06
         }],
         journalLpPositions: [],
-        fills: []
+        fills: [{
+          submissionId: 'fill-observed',
+          chainPositionAddress: 'chain-observed',
+          positionId: 'chain-observed',
+          openIntentId: 'lp-open-intent:observed',
+          mint: 'mint-observed',
+          side: 'add-lp',
+          amount: 0.05,
+          actualFilledSol: 0.05,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: '2026-07-03T09:44:04.000Z'
+        }]
       },
       closeMissingActive: true,
       now: '2026-07-03T09:54:55.000Z'
@@ -932,6 +1068,7 @@ describe('position ledger', () => {
             chainPositionAddress: 'pos-active',
             activeMint: 'mint-active',
             activePoolAddress: 'pool-active',
+            entryFillSubmissionId: 'open-pos-active',
             lifecycleState: 'open',
             lastAction: 'add-lp',
             updatedAt: '2026-06-29T00:00:00.000Z'
@@ -949,6 +1086,7 @@ describe('position ledger', () => {
         ]
       },
       accountState: {
+        observedAt: '2026-06-29T00:02:30.000Z',
         walletSol: 1,
         journalSol: 1,
         walletTokens: [],
@@ -984,6 +1122,58 @@ describe('position ledger', () => {
     });
   });
 
+  it('does not close a ledger record from confirmation alone while the exact LP still exists', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-still-open',
+          positionId: 'pos-still-open',
+          chainPositionAddress: 'pos-still-open',
+          activeMint: 'mint-still-open',
+          activePoolAddress: 'pool-still-open',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-still-open',
+          positionAddress: 'pos-still-open',
+          mint: 'mint-still-open',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      actionIdentity: {
+        chainPositionAddress: 'pos-still-open',
+        positionId: 'pos-still-open'
+      },
+      orderIntent: {
+        idempotencyKey: 'exit-still-open',
+        poolAddress: 'pool-still-open',
+        tokenMint: 'mint-still-open'
+      },
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      now: '2026-06-29T00:03:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'lp_exit_pending',
+      lastAction: 'withdraw-lp'
+    });
+  });
+
   it('closes only the withdraw target ledger record after confirmed exit', () => {
     const ledger = applyLiveCycleResultToLedger({
       ledger: {
@@ -1006,6 +1196,7 @@ describe('position ledger', () => {
             chainPositionAddress: 'pos-b',
             activeMint: 'mint-b',
             activePoolAddress: 'pool-b',
+            entryFillSubmissionId: 'open-pos-b',
             lifecycleState: 'open',
             lastAction: 'add-lp',
             updatedAt: '2026-06-29T00:00:00.000Z'
@@ -1039,6 +1230,7 @@ describe('position ledger', () => {
       reason: 'live-order-submitted',
       liveOrderSubmitted: true,
       confirmationStatus: 'confirmed',
+      fullExitClosureProven: true,
       now: '2026-06-29T00:03:00.000Z'
     });
 
@@ -1049,6 +1241,72 @@ describe('position ledger', () => {
     expect(ledger.records.find((record) => record.chainPositionAddress === 'pos-b')).toMatchObject({
       lifecycleState: 'open',
       lastAction: 'add-lp'
+    });
+  });
+
+  it('keeps a confirmed partial exit batch pending instead of closing the ledger record', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-a',
+          positionId: 'pos-a',
+          chainPositionAddress: 'pos-a',
+          activeMint: 'mint-a',
+          activePoolAddress: 'pool-a',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-06-29T00:00:00.000Z'
+        }]
+      },
+      accountState: {
+        observedAt: '2026-06-29T00:03:00.000Z',
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      persistedPendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'exit-pos-a',
+        submissionId: 'sub-exit-a',
+        chainPositionAddress: 'pos-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a',
+        orderAction: 'withdraw-lp',
+        batchStatus: 'partial',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-06-29T00:02:00.000Z',
+        updatedAt: '2026-06-29T00:03:00.000Z',
+        reason: 'pending-submission-partial-failure'
+      },
+      actionIdentity: {
+        chainPositionAddress: 'pos-a',
+        positionId: 'pos-a'
+      },
+      orderIntent: {
+        idempotencyKey: 'exit-pos-a',
+        poolAddress: 'pool-a',
+        tokenMint: 'mint-a'
+      },
+      action: 'withdraw-lp',
+      reason: 'live-order-submitted',
+      liveOrderSubmitted: true,
+      confirmationStatus: 'confirmed',
+      finality: 'finalized',
+      now: '2026-06-29T00:03:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lifecycleState: 'lp_exit_pending',
+      pendingSubmissionId: 'sub-exit-a',
+      pendingOrderAction: 'withdraw-lp',
+      pendingConfirmationStatus: 'unknown'
     });
   });
 
@@ -1110,6 +1368,7 @@ describe('position ledger', () => {
       reason: 'live-order-submitted',
       liveOrderSubmitted: true,
       confirmationStatus: 'confirmed',
+      fullExitClosureProven: true,
       now: '2026-07-02T00:03:00.000Z'
     });
 
@@ -1165,6 +1424,7 @@ describe('position ledger', () => {
       reason: 'residual token sweep incomplete',
       liveOrderSubmitted: true,
       confirmationStatus: 'confirmed',
+      fullExitClosureProven: true,
       residualCleanupStatus: 'residual_cleanup_pending',
       residualCleanupValueSol: 0.012,
       now: '2026-07-02T00:03:00.000Z'
@@ -1222,6 +1482,7 @@ describe('position ledger', () => {
           chainPositionAddress: 'pos-a',
           activeMint: 'lp-mint',
           activePoolAddress: 'lp-pool',
+          entryFillSubmissionId: 'open-pos-a',
           lifecycleState: 'open',
           entrySol: 0.1,
           lastAction: 'add-lp',
@@ -1590,6 +1851,7 @@ describe('position ledger', () => {
             chainPositionAddress: 'pos-b',
             activeMint: 'mint-b',
             activePoolAddress: 'pool-b',
+            entryFillSubmissionId: 'open-pos-b',
             lifecycleState: 'open',
             importStatus: 'imported',
             lastAction: 'hold',
@@ -1796,5 +2058,77 @@ describe('position ledger', () => {
     });
 
     expect(state.chainPositionAddress).toBe('pos-b');
+  });
+
+  it('preserves the first chain observation and does not double-advance the risk sentinel in one tick', () => {
+    const accountState: LiveAccountState = {
+      observedAt: '2026-07-17T00:00:00.000Z',
+      walletSol: 1,
+      journalSol: 1,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-risk-once',
+        positionAddress: 'pos-risk-once',
+        mint: 'mint-risk-once',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 180,
+        currentValueSol: 0.1,
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+    const first = importActiveLpPositionsToLedger({
+      accountState,
+      now: '2026-07-17T00:00:01.000Z'
+    });
+    const sentinel = first.records[0]?.lastRiskSentinel;
+    const second = importActiveLpPositionsToLedger({
+      ledger: first,
+      accountState,
+      updateRiskSentinel: false,
+      now: '2026-07-17T00:00:02.000Z'
+    });
+
+    expect(second.records[0]?.firstSeenOnChainAt).toBe('2026-07-17T00:00:01.000Z');
+    expect(second.records[0]?.lastRiskSentinel).toEqual(sentinel);
+    expect(second.records[0]?.lastSeenOnChainAt).toBe('2026-07-17T00:00:02.000Z');
+  });
+
+  it('persists exit-attempt fairness metadata after an unconfirmed close attempt', () => {
+    const ledger = applyLiveCycleResultToLedger({
+      ledger: {
+        version: 1,
+        updatedAt: '2026-07-17T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-fair',
+          chainPositionAddress: 'pos-fair',
+          activeMint: 'mint-fair',
+          activePoolAddress: 'pool-fair',
+          lifecycleState: 'open',
+          importStatus: 'imported',
+          lastAction: 'hold',
+          updatedAt: '2026-07-17T00:00:00.000Z'
+        }]
+      },
+      actionIdentity: { chainPositionAddress: 'pos-fair' },
+      orderIntent: {
+        idempotencyKey: 'exit-fair-1',
+        poolAddress: 'pool-fair',
+        tokenMint: 'mint-fair'
+      },
+      action: 'withdraw-lp',
+      reason: 'rpc-unavailable',
+      liveOrderSubmitted: false,
+      confirmationStatus: 'unknown',
+      now: '2026-07-17T00:01:00.000Z'
+    });
+
+    expect(ledger.records[0]).toMatchObject({
+      lastExitAttemptAt: '2026-07-17T00:01:00.000Z',
+      exitAttemptCount: 1
+    });
   });
 });

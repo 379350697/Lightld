@@ -106,6 +106,14 @@ export function isTokenSafe(
   if (result.error) return false;
   // Python script already evaluates hard gates → result.safe
   if (!result.safe) return false;
+  if (
+    config.minHolders > 0 &&
+    (typeof result.holders !== 'number' || !Number.isFinite(result.holders) || result.holders < config.minHolders)
+  ) return false;
+  if (
+    config.minBluechipPct > 0 &&
+    (typeof result.bluechipPct !== 'number' || !Number.isFinite(result.bluechipPct) || result.bluechipPct < config.minBluechipPct)
+  ) return false;
   // Additional minimum safety score gate applied from config
   if (result.safetyScore < config.minSafetyScore) return false;
   return true;

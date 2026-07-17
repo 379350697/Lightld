@@ -79,9 +79,23 @@ npm run build
 
 ## Run A Strategy Cycle
 
-The CLI is intended for Node 22 on Linux and runs directly from TypeScript source:
+The one-shot CLI is a real paper/live runtime entrypoint. It fails closed unless the
+business mode, dry-run policy, isolated state paths, and HTTP execution services are
+all explicit. Unit tests call `runStrategyCycle` directly with isolated temporary
+paths; the CLI never falls back to the test signer or broadcaster.
 
 ```bash
+export LIGHTLD_RUN_MODE=mechanical-soak
+export LIGHTLD_EXECUTION_MODE=mechanical-soak
+export SOLANA_EXECUTION_DRY_RUN=true
+export LIVE_EXECUTION_MODE=http
+export LIVE_STATE_DIR=state-paper-realistic
+export LIVE_JOURNAL_DIR=tmp/paper-realistic-journals
+export LIVE_QUOTE_URL=http://127.0.0.1:8791/quote
+export LIVE_SIGN_URL=http://127.0.0.1:8787/sign
+export LIVE_BROADCAST_URL=http://127.0.0.1:8791/broadcast
+export LIVE_CONFIRMATION_URL=http://127.0.0.1:8791/confirmation
+export LIVE_ACCOUNT_STATE_URL=http://127.0.0.1:8791/account-state
 npm run run:strategy -- \
   --strategy new-token-v1 \
   --requested-position-sol 0.1 \
@@ -91,12 +105,18 @@ npm run run:strategy -- \
 
 ## Live Env
 
-The default runtime mode is `test`, which keeps using local test signer and broadcaster stubs.
-
-To switch the CLI into live integration mode, set:
+Live uses the same HTTP path with `LIGHTLD_RUN_MODE=live`,
+`LIGHTLD_EXECUTION_MODE=live`, `SOLANA_EXECUTION_DRY_RUN=false`, and the explicit
+human confirmation:
 
 ```bash
+export LIGHTLD_RUN_MODE=live
+export LIGHTLD_EXECUTION_MODE=live
+export SOLANA_EXECUTION_DRY_RUN=false
 export LIVE_EXECUTION_MODE=http
+export LIGHTLD_LIVE_CONFIRM=I_UNDERSTAND_MAINNET
+export LIVE_STATE_DIR=state
+export LIVE_JOURNAL_DIR=tmp/journals
 export LIVE_QUOTE_URL="https://your-quote-service.example/api"
 export LIVE_SIGN_URL="https://your-sign-service.example/api"
 export LIVE_BROADCAST_URL="https://your-broadcast-service.example/api"

@@ -14,8 +14,12 @@ export const RESEARCH_HORIZON_TOLERANCE_MINUTES = {
   15: 5,
   60: 10,
   240: 30,
+  480: 60,
   1440: 120
 } as const;
+
+export const RESEARCH_HORIZONS = [15, 60, 240, 480, 1440] as const;
+export type ResearchHorizonMinutes = (typeof RESEARCH_HORIZONS)[number];
 
 export const ResearchStrategyIdSchema = z.enum(['new-token-v1', 'large-pool-v1']);
 
@@ -99,11 +103,13 @@ export type ResearchEpisode = {
   entryDetail: string;
   targetTokenRaw: string | null;
   doubleTokenRaw: string | null;
+  entryTargetImpactBps: number | null;
+  entryDoubleImpactBps: number | null;
 };
 
 export type ResearchMark = {
   episodeId: string;
-  horizonMinutes: 15 | 60 | 240 | 1440;
+  horizonMinutes: ResearchHorizonMinutes;
   observedAt: string;
   status: ResearchMarkStatus;
   targetRecoverySol: number | null;

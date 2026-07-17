@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 
+import { DEFAULT_ROUND_TRIP_CHAIN_COST_SOL } from '../config/economic-defaults.ts';
 import type { StrategyConfig } from '../config/schema.ts';
 import { pairedBlockBootstrap, summarizePnl } from './statistics.ts';
 import { applyStrategyPatch } from './spec.ts';
 import { StrategyResearchStore } from './store.ts';
 import {
   RESEARCH_HORIZON_TOLERANCE_MINUTES,
+  RESEARCH_HORIZONS,
   RESEARCH_REVIEW_FLOORS,
   type ResearchEpisode,
   type ResearchMark,
@@ -19,6 +21,7 @@ type EconomicRow = {
   observedAt: string;
   pnlSol: number;
   capacityPass: boolean;
+  capacityRequired: boolean;
   regime: string;
   exitHorizonMinutes: number;
   costBreakdown: {
@@ -26,6 +29,7 @@ type EconomicRow = {
     estimatedFeeSol: number;
     impermanentLossSol: number;
     adverseSelectionSol: number;
+    slippageSol: number;
     capitalChargeSol: number;
     chainCostSol: number;
   };
@@ -47,18 +51,26 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     ['baseline', spec.baseConfig],
     ...spec.variants.map((variant) => [variant.variantId, applyStrategyPatch(spec.baseConfig!, variant.parameterPatch)] as const)
   ]);
-  const rows = episodes.flatMap((episode) => {
+  const executedRows = episodes.flatMap((episode) => {
     const config = configByVariant.get(episode.variantId);
     const economic = config ? economicRow(episode, marksByEpisode.get(episode.episodeId) ?? [], config) : null;
     return economic ? [economic] : [];
   });
+  const executedSnapshotIds = new Set(executedRows.map((row) => row.snapshotId));
+  const rows = [
+    ...executedRows,
+    ...store.snapshotPolicyActions(spec.experimentId)
+      .filter((action) => !action.selected && executedSnapshotIds.has(action.snapshotId))
+      .map(noActionEconomicRow)
+  ];
   const variants = ['baseline', ...spec.variants.map((variant) => variant.variantId)];
   const summaries = variants.map((variantId) => {
     const variantRows = rows.filter((row) => row.variantId === variantId);
+    const capacityRows = variantRows.filter((row) => row.capacityRequired);
     return {
       variantId,
       ...summarizePnl(variantRows.map((row) => row.pnlSol)),
-      capacityPassRate: variantRows.length ? variantRows.filter((row) => row.capacityPass).length / variantRows.length : 0,
+      capacityPassRate: capacityRows.length ? capacityRows.filter((row) => row.capacityPass).length / capacityRows.length : 0,
       averageExitHorizonMinutes: variantRows.length
         ? variantRows.reduce((sum, row) => sum + row.exitHorizonMinutes, 0) / variantRows.length
         : 0,
@@ -76,6 +88,7 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
       .map((row) => ({ row, difference: row.pnlSol - baselineBySnapshot.get(row.snapshotId)!.pnlSol }))
       .sort((left, right) => Date.parse(left.row.observedAt) - Date.parse(right.row.observedAt));
     const split = splitWithEmbargo(pairs, 24 * 60 * 60_000);
+    const capacityRows = pairs.filter((pair) => pair.row.capacityRequired);
     return {
       variantId: variant.variantId,
       pairCount: pairs.length,
@@ -83,18 +96,32 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
       train: summarizePnl(split.train.map((pair) => pair.difference)),
       validation: summarizePnl(split.validation.map((pair) => pair.difference)),
       oos: summarizePnl(split.oos.map((pair) => pair.difference)),
-      capacityPassRate: pairs.length ? pairs.filter((pair) => pair.row.capacityPass).length / pairs.length : 0
+      capacityPassRate: capacityRows.length
+        ? capacityRows.filter((pair) => pair.row.capacityPass).length / capacityRows.length
+        : 0
     };
   });
   const selectedEpisodes = episodes.length;
-  const expectedMarks = selectedEpisodes * 4;
+  const markExpectedEpisodes = episodes.filter((episode) =>
+    episode.entryStatus !== 'no_route'
+    && episode.entryStatus !== 'dead_pool'
+    && episode.entryStatus !== 'rug'
+  );
+  const expectedMarks = markExpectedEpisodes.length * RESEARCH_HORIZONS.length;
+  const markExpectedEpisodeIds = new Set(markExpectedEpisodes.map((episode) => episode.episodeId));
   const availableMarks = marks.filter((mark) => {
-    const episode = episodes.find((item) => item.episodeId === mark.episodeId);
+    const episode = markExpectedEpisodeIds.has(mark.episodeId)
+      ? episodes.find((item) => item.episodeId === mark.episodeId)
+      : undefined;
     return Boolean(episode) && isOnTimeMark(episode!, mark) && mark.status !== 'unavailable' && mark.status !== 'missed';
   }).length;
-  const markCoverage = expectedMarks ? availableMarks / expectedMarks : 0;
+  const markCoverage = expectedMarks ? availableMarks / expectedMarks : selectedEpisodes > 0 ? 1 : 0;
   const observedUtcDays = new Set(episodes.map((episode) => episode.observedAt.slice(0, 10))).size;
   const utcDays = countCompleteUtcDays(store.snapshotTimes(spec.experimentId));
+  const paperRows = store.paperOutcomes(spec.experimentId);
+  const boundPaperRows = paperRows.filter((row) => row.selectionId !== null);
+  const executablePnlRows = paperRows.filter((row): row is typeof row & { pnlSol: number } => row.pnlSol !== null);
+  const boundExecutablePnlRows = executablePnlRows.filter((row) => row.selectionId !== null);
   const thresholds = {
     minimumEpisodes: Math.max(spec.thresholds.minimumEpisodes, RESEARCH_REVIEW_FLOORS.minimumEpisodes),
     minimumUtcDays: Math.max(spec.thresholds.minimumUtcDays, RESEARCH_REVIEW_FLOORS.minimumUtcDays),
@@ -117,6 +144,10 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     blockingReasons.push('minimum_paired_oos_sample_not_met');
   }
   if (markCoverage < thresholds.minimumMarkCoverage) blockingReasons.push('mark_coverage_not_met');
+  // Statistical marks compare variants, while at least one bound paper close
+  // proves that the selection -> intent -> position -> exit lifecycle is
+  // operable. A synthetic LP close is valid closure evidence but never PnL.
+  if (boundPaperRows.length === 0) blockingReasons.push('paper_closed_loop_missing');
   const reviewCandidates = sufficientlySampled
     .filter((comparison) =>
       comparison.oos.meanPnlSol > 0
@@ -132,8 +163,6 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
   const patchDraft = chosenVariant
     ? spec.variants.find((variant) => variant.variantId === chosenVariant)?.parameterPatch ?? null
     : null;
-  const paperRows = store.paperOutcomes(spec.experimentId);
-  const boundPaperRows = paperRows.filter((row) => row.selectionId !== null);
   const createdAt = new Date().toISOString();
   const reportId = `research-report-${createHash('sha256').update(JSON.stringify({ experimentId: spec.experimentId, createdAt, comparisons })).digest('hex').slice(0, 24)}`;
   const report = {
@@ -141,6 +170,7 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
     experimentId: spec.experimentId,
     strategyId: spec.strategyId,
     createdAt,
+    evidenceKind: 'modeled-economic-shadow' as const,
     status,
     blockingReasons,
     sample: {
@@ -148,16 +178,18 @@ export function analyzeStrategyResearch(store: StrategyResearchStore, spec: Stra
       utcDays,
       observedUtcDays,
       markCoverage,
-      paperOutcomeCount: paperRows.length,
-      boundPaperOutcomeCount: boundPaperRows.length
+      paperLifecycleClosureCount: paperRows.length,
+      boundPaperLifecycleClosureCount: boundPaperRows.length,
+      paperExecutablePnlCount: executablePnlRows.length,
+      boundPaperExecutablePnlCount: boundExecutablePnlRows.length
     },
     variants: summaries,
     comparisons,
-    paperRealized: summarizePnl(boundPaperRows.map((row) => row.pnlSol)),
-    unboundPaperRealized: summarizePnl(paperRows.filter((row) => row.selectionId === null).map((row) => row.pnlSol)),
+    paperExecutablePnl: summarizePnl(boundExecutablePnlRows.map((row) => row.pnlSol)),
+    unboundPaperExecutablePnl: summarizePnl(executablePnlRows.filter((row) => row.selectionId === null).map((row) => row.pnlSol)),
     chosenVariant,
     patchDraft,
-    note: 'review means manual strategy consideration only; configuration is never changed automatically'
+    note: 'variant economics are modeled from executable route marks; paper lifecycle closes prove operability only, executable paper PnL is not realized chain PnL, and review never changes configuration automatically'
   };
   store.saveReport(report);
   return report;
@@ -173,8 +205,11 @@ export function renderResearchMarkdown(report: ReturnType<typeof analyzeStrategy
     `- UTC days: ${report.sample.utcDays}`,
     `- Observed UTC dates: ${report.sample.observedUtcDays}`,
     `- Mark coverage: ${(report.sample.markCoverage * 100).toFixed(1)}%`,
-    `- Paper realized outcomes: ${report.sample.paperOutcomeCount}`,
-    `- Bound paper outcomes: ${report.sample.boundPaperOutcomeCount}`,
+    `- Paper lifecycle closures: ${report.sample.paperLifecycleClosureCount}`,
+    `- Bound paper lifecycle closures: ${report.sample.boundPaperLifecycleClosureCount}`,
+    `- Paper exits with executable PnL evidence: ${report.sample.paperExecutablePnlCount}`,
+    `- Bound paper exits with executable PnL evidence: ${report.sample.boundPaperExecutablePnlCount}`,
+    `- Variant evidence: ${report.evidenceKind}`,
     ''
   ];
   if (report.blockingReasons.length) lines.push(`Blocking: ${report.blockingReasons.join(', ')}`, '');
@@ -213,12 +248,14 @@ function economicRow(episode: ResearchEpisode, marks: ResearchMark[], config: St
   const takeProfitPct = config.lpConfig?.takeProfitNetPnlPct ?? config.riskThresholds.takeProfitPct;
   const stopLossPct = config.lpConfig?.stopLossNetPnlPct ?? config.riskThresholds.stopLossPct;
   const maxImpermanentLossPct = config.lpConfig?.maxImpermanentLossPct;
+  const maxHoldMinutes = (config.live.maxHoldHours ?? 24) * 60;
   const chosen = evaluated.find((row) =>
     (takeProfitPct !== undefined && row.pnlSol / episode.positionSol * 100 >= takeProfitPct)
     || (stopLossPct !== undefined && row.pnlSol / episode.positionSol * 100 <= -stopLossPct)
     || (maxImpermanentLossPct !== undefined
       && row.costBreakdown.impermanentLossSol / episode.positionSol * 100 >= maxImpermanentLossPct)
-  ) ?? evaluated.find((row) => row.exitHorizonMinutes === 1440);
+  ) ?? evaluated.find((row) => row.exitHorizonMinutes >= maxHoldMinutes)
+    ?? evaluated.find((row) => row.exitHorizonMinutes === 1440);
   return chosen ?? null;
 }
 
@@ -229,6 +266,7 @@ function noEntryEconomicRow(episode: ResearchEpisode): EconomicRow {
     observedAt: episode.observedAt,
     pnlSol: 0,
     capacityPass: false,
+    capacityRequired: true,
     regime: regime(episode),
     exitHorizonMinutes: 0,
     costBreakdown: {
@@ -236,6 +274,33 @@ function noEntryEconomicRow(episode: ResearchEpisode): EconomicRow {
       estimatedFeeSol: 0,
       impermanentLossSol: 0,
       adverseSelectionSol: 0,
+      slippageSol: 0,
+      capitalChargeSol: 0,
+      chainCostSol: 0
+    }
+  };
+}
+
+function noActionEconomicRow(input: {
+  snapshotId: string;
+  observedAt: string;
+  variantId: string;
+}): EconomicRow {
+  return {
+    snapshotId: input.snapshotId,
+    variantId: input.variantId,
+    observedAt: input.observedAt,
+    pnlSol: 0,
+    capacityPass: false,
+    capacityRequired: false,
+    regime: 'no-action',
+    exitHorizonMinutes: 0,
+    costBreakdown: {
+      routeAndPriceSol: 0,
+      estimatedFeeSol: 0,
+      impermanentLossSol: 0,
+      adverseSelectionSol: 0,
+      slippageSol: 0,
       capitalChargeSol: 0,
       chainCostSol: 0
     }
@@ -249,6 +314,7 @@ function failedEconomicRow(episode: ResearchEpisode, exitHorizonMinutes: number)
     observedAt: episode.observedAt,
     pnlSol: -episode.positionSol,
     capacityPass: false,
+    capacityRequired: true,
     regime: regime(episode),
     exitHorizonMinutes,
     costBreakdown: {
@@ -256,6 +322,7 @@ function failedEconomicRow(episode: ResearchEpisode, exitHorizonMinutes: number)
       estimatedFeeSol: 0,
       impermanentLossSol: 0,
       adverseSelectionSol: 0,
+      slippageSol: 0,
       capitalChargeSol: 0,
       chainCostSol: 0
     }
@@ -268,6 +335,7 @@ function averageCosts(rows: EconomicRow[]) {
     'estimatedFeeSol',
     'impermanentLossSol',
     'adverseSelectionSol',
+    'slippageSol',
     'capitalChargeSol',
     'chainCostSol'
   ] as const;
@@ -281,24 +349,39 @@ function economicAtMark(episode: ResearchEpisode, mark: ResearchMark, config: St
   const targetRecoverySol = mark.targetRecoverySol!;
   const doubleRecoverySol = mark.doubleRecoverySol!;
   const feeRatioRaw = Number(episode.features.feeTvlRatio24h ?? 0);
-  const feeRatio = feeRatioRaw > 1 ? feeRatioRaw / 100 : feeRatioRaw;
-  const estimatedFeeSol = Number.isFinite(feeRatio) && feeRatio > 0
-    ? episode.positionSol * feeRatio * mark.horizonMinutes / 1440
+  const feeRatio = episode.features.feeTvlRatio24hUnit === 'ratio'
+    ? feeRatioRaw
+    : feeRatioRaw > 1 ? feeRatioRaw / 100 : feeRatioRaw;
+  const netFeeYield1hRaw = Number(episode.features.netFeeYield1h ?? 0);
+  const netFeeYield1h = episode.features.netFeeYield1hUnit === 'ratio'
+    ? netFeeYield1hRaw
+    : netFeeYield1hRaw;
+  const estimatedFeeSol = config.poolClass === 'new-token'
+    ? Number.isFinite(netFeeYield1h) && netFeeYield1h > 0
+      ? episode.positionSol * netFeeYield1h * mark.horizonMinutes / 60
+      : Number.isFinite(feeRatio) && feeRatio > 0
+        ? episode.positionSol * feeRatio * mark.horizonMinutes / 1440
+        : 0
     : 0;
   // A DLMM position cannot be valued with the constant-product IL formula. Until an
   // actual paper position valuation is available, use the configured conservative
   // range-loss allowance and label the report as modeled rather than observed PnL.
-  const impermanentLossSol = episode.positionSol
-    * (config.entryEdge?.defaultImpermanentLossBps ?? 25) / 10_000
-    * mark.horizonMinutes / 1440;
+  const impermanentLossSol = config.poolClass === 'new-token'
+    ? episode.positionSol
+      * (config.entryEdge?.defaultImpermanentLossBps ?? 25) / 10_000
+      * mark.horizonMinutes / 1440
+    : 0;
   const adverseSelectionSol = episode.positionSol * (config.entryEdge?.defaultAdverseSelectionBps ?? 25) / 10_000;
+  const slippageSol = episode.positionSol * config.solRouteLimits.maxSlippageBps * 2 / 10_000;
   const capitalChargeSol = episode.positionSol * (config.entryEdge?.defaultCapitalChargeBps ?? 5) / 10_000;
-  const chainCostSol = config.entryEdge?.defaultChainCostSol ?? 0.000005;
+  const chainCostSol = config.entryEdge?.defaultChainCostSol ?? DEFAULT_ROUND_TRIP_CHAIN_COST_SOL;
   const pnlSol = targetRecoverySol + estimatedFeeSol - episode.positionSol
-    - impermanentLossSol - adverseSelectionSol - capitalChargeSol - chainCostSol;
+    - impermanentLossSol - adverseSelectionSol - slippageSol - capitalChargeSol - chainCostSol;
   const targetRate = targetRecoverySol / episode.positionSol;
   const doubleRate = doubleRecoverySol / (episode.positionSol * 2);
-  const impactWithinLimit = (mark.targetImpactBps ?? Number.POSITIVE_INFINITY) <= config.solRouteLimits.maxImpactBps
+  const impactWithinLimit = (episode.entryTargetImpactBps ?? Number.POSITIVE_INFINITY) <= config.solRouteLimits.maxImpactBps
+    && (episode.entryDoubleImpactBps ?? Number.POSITIVE_INFINITY) <= config.solRouteLimits.maxImpactBps
+    && (mark.targetImpactBps ?? Number.POSITIVE_INFINITY) <= config.solRouteLimits.maxImpactBps
     && (mark.doubleImpactBps ?? Number.POSITIVE_INFINITY) <= config.solRouteLimits.maxImpactBps;
   return {
     snapshotId: episode.snapshotId,
@@ -306,6 +389,7 @@ function economicAtMark(episode: ResearchEpisode, mark: ResearchMark, config: St
     observedAt: episode.observedAt,
     pnlSol,
     capacityPass: targetRate > 0 && doubleRate >= targetRate * 0.9 && impactWithinLimit,
+    capacityRequired: true,
     regime: regime(episode),
     exitHorizonMinutes: mark.horizonMinutes,
     costBreakdown: {
@@ -313,6 +397,7 @@ function economicAtMark(episode: ResearchEpisode, mark: ResearchMark, config: St
       estimatedFeeSol,
       impermanentLossSol,
       adverseSelectionSol,
+      slippageSol,
       capitalChargeSol,
       chainCostSol
     }
@@ -320,7 +405,10 @@ function economicAtMark(episode: ResearchEpisode, mark: ResearchMark, config: St
 }
 
 function regime(episode: ResearchEpisode) {
-  const feeYield = Number(episode.features.feeTvlRatio24h ?? 0);
+  const feeYieldRaw = Number(episode.features.feeTvlRatio24h ?? 0);
+  const feeYield = episode.features.feeTvlRatio24hUnit === 'ratio'
+    ? feeYieldRaw
+    : feeYieldRaw > 1 ? feeYieldRaw / 100 : feeYieldRaw;
   const liquidity = Number(episode.features.liquidityUsd ?? 0);
   if (feeYield >= 0.1) return 'high-fee-yield';
   if (liquidity >= 100_000) return 'deep-liquidity';

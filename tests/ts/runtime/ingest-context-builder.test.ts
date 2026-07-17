@@ -19,7 +19,7 @@ describe('buildLiveCycleInputFromIngest', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds a large-pool context selecting the highest-liquidity candidate after safety filtering', async () => {
+  it('builds a large-pool context from established spot pools without new-token age/bin filters', async () => {
     const result = await buildLiveCycleInputFromIngest({
       strategy: 'large-pool-v1',
       traderWallet: 'wallet-1',
@@ -34,9 +34,9 @@ describe('buildLiveCycleInputFromIngest', () => {
           baseSymbol: 'MEME',
           liquidityUsd: 90_000,
           volume_24h: 500,
-          created_at: new Date('2026-03-21T09:59:00.000Z').getTime(),
+          created_at: new Date('2025-03-21T09:59:00.000Z').getTime(),
           pool_config: {
-            bin_step: 120,
+            bin_step: 10,
             base_fee_pct: 1
           },
           updatedAt: '2026-03-22T09:59:00.000Z'
@@ -122,7 +122,7 @@ describe('buildLiveCycleInputFromIngest', () => {
           created_at: new Date('2026-03-22T09:50:00.000Z').getTime(),
           pool_config: { bin_step: 120, base_fee_pct: 1 },
           volume: { '24h': 2_000_000 },
-          fee_tvl_ratio: { '24h': 0.20 }
+          fee_tvl_ratio: { '24h': 20 }
         },
         {
           address: 'pool-next',
@@ -133,7 +133,7 @@ describe('buildLiveCycleInputFromIngest', () => {
           created_at: new Date('2026-03-22T09:51:00.000Z').getTime(),
           pool_config: { bin_step: 120, base_fee_pct: 1 },
           volume: { '24h': 2_000_000 },
-          fee_tvl_ratio: { '24h': 0.10 }
+          fee_tvl_ratio: { '24h': 10 }
         }
       ],
       fetchPumpTradesImpl: async () => [
@@ -180,7 +180,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -232,7 +232,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -249,7 +249,9 @@ describe('buildLiveCycleInputFromIngest', () => {
           mint: 'mint-risky',
           safe: true,
           safetyScore: 68,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         }
       ]
     });
@@ -297,7 +299,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -324,7 +326,9 @@ describe('buildLiveCycleInputFromIngest', () => {
         mint: 'mint-risky',
         safe: true,
         safetyScore: 90,
-        maxScore: 120
+        maxScore: 120,
+        holders: 2_000,
+        bluechipPct: 1
       }
     ]);
 
@@ -360,7 +364,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -390,6 +394,20 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-03-22T09:58:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-safe',
+          activePoolAddress: 'pool-safe',
+          entryFillSubmissionId: 'managed-pos-1',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }]
+      },
       safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       accountState: {
         walletSol: 1.25,
@@ -420,7 +438,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -449,6 +467,20 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-03-22T09:58:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-safe',
+          activePoolAddress: 'pool-safe',
+          entryFillSubmissionId: 'managed-pos-1',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }]
+      },
       safetyFilterConfig: { disabled: true, minHolders: 1000, minBluechipPct: 0.8, minSafetyScore: 0 },
       accountState: {
         walletSol: 1.25,
@@ -499,7 +531,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -544,6 +576,7 @@ describe('buildLiveCycleInputFromIngest', () => {
         lifecycleState: 'open',
         entrySol: 0.123,
         entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-pos-1',
         openedAt: '2026-03-22T09:58:00.000Z',
         updatedAt: '2026-03-22T09:58:00.000Z'
       } as any,
@@ -592,7 +625,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -688,7 +721,8 @@ describe('buildLiveCycleInputFromIngest', () => {
     });
 
     expect(result.context.pool).toMatchObject({
-      address: 'pool-stale'
+      address: '',
+      blockReason: 'no-active-lp-maintenance-target'
     });
   });
 
@@ -698,6 +732,20 @@ describe('buildLiveCycleInputFromIngest', () => {
       traderWallet: 'wallet-1',
       requestedPositionSol: 0.1,
       now: new Date('2026-03-22T10:00:00'),
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-03-22T09:58:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-1',
+          chainPositionAddress: 'pos-1',
+          activeMint: 'mint-safe',
+          activePoolAddress: 'pool-safe',
+          entryFillSubmissionId: 'managed-pos-1',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-03-22T09:58:00.000Z'
+        }]
+      },
       accountState: {
         walletSol: 1.25,
         journalSol: 1.25,
@@ -742,7 +790,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -807,7 +855,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -860,7 +908,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           volume_5m: 4_000,
           updatedAt: '2026-03-22T09:58:00.000Z'
@@ -970,7 +1018,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -1020,7 +1068,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -1069,7 +1117,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -1087,8 +1135,8 @@ describe('buildLiveCycleInputFromIngest', () => {
           safe: true,
           safetyScore: 90,
           maxScore: 120,
-          holders: 50,
-          bluechipPct: 0.3
+          holders: 2_000,
+          bluechipPct: 1
         }
       ]
     });
@@ -1127,7 +1175,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -1179,7 +1227,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 10_000
           },
           fee_tvl_ratio: {
-            '24h': 0.02
+            '24h': 2
           }
         },
         {
@@ -1198,7 +1246,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 1_500_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           }
         }
       ],
@@ -1255,7 +1303,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           updatedAt: '2026-03-22T09:58:00.000Z'
         },
@@ -1274,7 +1322,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           updatedAt: '2026-03-22T09:57:00.000Z'
         }
@@ -1298,13 +1346,17 @@ describe('buildLiveCycleInputFromIngest', () => {
           mint: 'mint-steady',
           safe: true,
           safetyScore: 80,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         },
         {
           mint: 'mint-hot',
           safe: true,
           safetyScore: 75,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         }
       ],
       enrichAuxiliarySignalsImpl: async (candidates) => {
@@ -1379,7 +1431,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           updatedAt: '2026-03-22T09:58:00.000Z'
         }
@@ -1397,7 +1449,9 @@ describe('buildLiveCycleInputFromIngest', () => {
           mint: 'mint-safe',
           safe: true,
           safetyScore: 80,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         }
       ],
       enrichAuxiliarySignalsImpl: async () => {
@@ -1444,7 +1498,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           updatedAt: '2026-03-22T09:58:00.000Z'
         },
@@ -1463,7 +1517,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 1_500_000
           },
           fee_tvl_ratio: {
-            '24h': 0.02
+            '24h': 2
           },
           updatedAt: '2026-03-22T09:57:00.000Z'
         }
@@ -1487,7 +1541,9 @@ describe('buildLiveCycleInputFromIngest', () => {
           mint: 'mint-safe',
           safe: true,
           safetyScore: 95,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         },
         {
           mint: 'mint-risky',
@@ -1559,7 +1615,7 @@ describe('buildLiveCycleInputFromIngest', () => {
             '24h': 2_000_000
           },
           fee_tvl_ratio: {
-            '24h': 0.03
+            '24h': 3
           },
           updatedAt: '2026-03-22T09:58:00.000Z'
         }
@@ -1577,7 +1633,9 @@ describe('buildLiveCycleInputFromIngest', () => {
           mint: 'mint-safe',
           safe: true,
           safetyScore: 95,
-          maxScore: 120
+          maxScore: 120,
+          holders: 2_000,
+          bluechipPct: 1
         }
       ]
     });

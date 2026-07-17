@@ -23,12 +23,18 @@ import {
   type WatchlistSnapshotRecord
 } from '../evolution/index.ts';
 import { PendingSubmissionStore } from './pending-submission-store.ts';
+import {
+  PreparedBroadcastStore,
+  buildPreparedBroadcastSnapshot,
+  recoverPreparedBroadcast
+} from './prepared-broadcast-store.ts';
 import { RuntimeStateStore } from './runtime-state-store.ts';
 import { deriveRuntimeMode } from './runtime-mode-policy.ts';
 import { runLiveCycle, type LiveCycleConfirmedFill, type LiveCycleInput, type LiveCycleResult, type StrategyId } from './live-cycle.ts';
 import { recoverPendingSubmission } from './pending-submission-recovery.ts';
 import type {
   LifecycleEventRecord,
+  PendingSubmissionSnapshot,
   PositionLedgerSnapshot,
   PositionLifecycleState,
   PositionStateSnapshot,
@@ -45,10 +51,13 @@ import type { LiveConfirmationProvider } from '../execution/live-confirmation-pr
 import { buildOrderIntent } from '../execution/order-intent-builder.ts';
 import { isManageableLpPosition } from './lp-position-visibility.ts';
 import { createPositionId, markOrphanedLpPosition } from './lp-position-record.ts';
-import { isResolvedConfirmation } from './live-cycle-state.ts';
 import { ResidualTokenSweepStore } from './residual-token-sweep-store.ts';
 import { TargetOpenCooldownStore } from './target-open-cooldown-store.ts';
 import { hasActionableTokenAmount } from './token-inventory.ts';
+import {
+  hasCompleteFreshAccountSnapshot,
+  hasFreshCompleteLpExitAbsenceEvidence
+} from './pending-submission-wallet-evidence.ts';
 import { DEFAULT_SOL_DEPLETION_EXIT_BINS } from './lp-sol-exposure.ts';
 import {
   isTrustedEntrySolSource,
@@ -57,7 +66,7 @@ import {
   type TrustedLpEntryResolution
 } from './lp-entry-resolver.ts';
 import type { LpEntryEvidenceProvider } from './lp-entry-evidence-provider.ts';
-import { SpendingLimitsStore } from '../risk/spending-limits.ts';
+import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { classifyIncidentReason } from './incident-taxonomy.ts';
 import { buildExecutionLifecycleKey } from './execution-lifecycle-key.ts';
 import {
@@ -66,10 +75,12 @@ import {
   type PositionBusinessSemantics
 } from './position-business-semantics.ts';
 import { buildLifecycleProjection, buildOrderAttemptRecord } from './lifecycle-projection.ts';
+import { UNBOUND_ACCOUNT_LP_REASON } from './lp-ownership.ts';
 import {
   applyLiveCycleResultToLedger,
   collectActiveLpPositions,
   importActiveLpPositionsToLedger,
+  positionLedgerKey,
   selectCompatibilityPositionState,
   summarizePositionLedger
 } from './position-ledger.ts';
@@ -77,6 +88,7 @@ import {
 type LiveDaemonBuildCycleContext = {
   tickCount: number;
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
   accountState?: LiveAccountState;
   selectionMode?: 'default' | 'maintenance-only' | 'new-open-only';
   skipMints?: string[];
@@ -102,6 +114,7 @@ function buildLifecycleEventsFromResult(input: {
   strategyId: StrategyId;
   result: LiveCycleResult;
   now: string;
+  fullExitClosureProven?: boolean;
 }): LifecycleEventRecord[] {
   const { result } = input;
   const identity = result.actionIdentity;
@@ -120,8 +133,10 @@ function buildLifecycleEventsFromResult(input: {
     chainPositionAddress: identity?.chainPositionAddress,
     idempotencyKey: intent?.idempotencyKey,
     action: result.action,
-    poolAddress: intent?.poolAddress,
-    tokenMint: intent?.tokenMint,
+    poolAddress: intent?.poolAddress
+      || (typeof result.context?.pool?.address === 'string' ? result.context.pool.address : undefined),
+    tokenMint: intent?.tokenMint
+      || (typeof result.context?.token?.mint === 'string' ? result.context.token.mint : undefined),
     reason: result.reason,
     detail: 'failureDetail' in result && typeof result.failureDetail === 'string'
       ? result.failureDetail
@@ -138,7 +153,7 @@ function buildLifecycleEventsFromResult(input: {
     });
   };
 
-  if (result.action === 'add-lp' && identity?.openIntentId) {
+  if ((result.action === 'add-lp' || result.action === 'deploy') && identity?.openIntentId) {
     push('OpenIntentCreated', 'intent');
   }
 
@@ -169,11 +184,11 @@ function buildLifecycleEventsFromResult(input: {
     });
   }
 
-  if (result.action === 'add-lp' && identity?.chainPositionAddress) {
+  if ((result.action === 'add-lp' || result.action === 'deploy') && identity?.chainPositionAddress) {
     push('ChainPositionObserved', identity.chainPositionAddress);
   }
 
-  if (isFullExitAction(result.action as LiveAction) && result.confirmationStatus === 'confirmed') {
+  if (isFullExitAction(result.action as LiveAction) && input.fullExitClosureProven === true) {
     push('PositionClosed', identity?.chainPositionAddress ?? submittedBroadcast?.submissionId);
   }
 
@@ -203,6 +218,17 @@ function residualCleanupStatusFromResult(result: LiveCycleResult) {
   return undefined;
 }
 
+function residualCleanupAmountRawFromResult(result: LiveCycleResult) {
+  if (result.broadcastResult?.status !== 'submitted') {
+    return undefined;
+  }
+  const mint = result.orderIntent?.tokenMint;
+  if (!mint) {
+    return undefined;
+  }
+  return result.broadcastResult.residualUnsoldAmountsRaw?.[mint];
+}
+
 function residualCleanupValueFromResult(result: LiveCycleResult) {
   const submittedBroadcast = result.broadcastResult?.status === 'submitted'
     ? result.broadcastResult
@@ -212,6 +238,8 @@ function residualCleanupValueFromResult(result: LiveCycleResult) {
 
 type LiveDaemonOptions = {
   strategy: StrategyId;
+  captureMode?: NonNullable<LiveCycleInput['captureMode']>;
+  spendingLimitsConfig?: SpendingLimitsConfig;
   stateRootDir?: string;
   journalRootDir?: string;
   tickIntervalMs?: number;
@@ -220,6 +248,8 @@ type LiveDaemonOptions = {
   residualTokenSweepIntervalMs?: number;
   residualTokenSweepCooldownMs?: number;
   residualTokenSweepMinValueSol?: number;
+  residualSweepMaxSlippageBps?: number;
+  residualSweepMaxImpactBps?: number;
   maxTicks?: number;
   buildCycleInput?: (
     tickCount: number,
@@ -1134,13 +1164,72 @@ async function resolveEffectiveAccountState(
 
 async function runPreIngestPendingRecovery(input: {
   pendingSubmissionStore: PendingSubmissionStore;
-  pendingSubmission: Awaited<ReturnType<PendingSubmissionStore['read']>>;
+  preparedBroadcastStore: PreparedBroadcastStore;
+  spendingLimitsStore?: SpendingLimitsStore;
+  broadcaster?: Omit<LiveCycleInput, 'strategy'>['broadcaster'];
   accountProvider?: LiveAccountStateProvider;
   confirmationProvider?: LiveConfirmationProvider;
 }) {
-  if (!input.pendingSubmission) {
+  const preparedRecovery = await recoverPreparedBroadcast({
+    preparedBroadcastStore: input.preparedBroadcastStore,
+    pendingSubmissionStore: input.pendingSubmissionStore,
+    broadcaster: input.broadcaster,
+    spendingLimitsStore: input.spendingLimitsStore
+  });
+  const pendingSubmission = preparedRecovery.pendingSubmission;
+
+  if (preparedRecovery.blocked) {
+    const effectiveAccountState = pendingSubmission && input.accountProvider
+      ? await input.accountProvider.readState()
+      : undefined;
+    if (pendingSubmission) {
+      const recovery = await recoverPendingSubmission({
+        pendingSubmission,
+        confirmationProvider: input.confirmationProvider,
+        accountState: effectiveAccountState
+      });
+
+      if (recovery.clearPending) {
+        if (recovery.reason === 'pending-submission-failed') {
+          // Persist the pre-submit disposition before removing the WAL. This
+          // path is only reachable for a timed-out paper/shadow reduce-risk
+          // request whose exact overlay position is still present.
+          await input.preparedBroadcastStore.markNotSubmitted(
+            'paper-pending-submission-not-executed'
+          );
+        }
+        await input.preparedBroadcastStore.clear();
+        return {
+          pendingSubmission: null,
+          resolvedPendingSubmission: pendingSubmission,
+          effectiveAccountState,
+          recoveryReason: recovery.reason
+        };
+      }
+
+      if (recovery.nextPendingSubmission) {
+        await input.pendingSubmissionStore.write(recovery.nextPendingSubmission);
+        return {
+          pendingSubmission: recovery.nextPendingSubmission,
+          resolvedPendingSubmission: null,
+          effectiveAccountState,
+          recoveryReason: recovery.reason
+        };
+      }
+    }
+
+    return {
+      pendingSubmission,
+      resolvedPendingSubmission: null,
+      effectiveAccountState,
+      recoveryReason: 'pending-submission-recovery-required' as const
+    };
+  }
+
+  if (!pendingSubmission) {
     return {
       pendingSubmission: null,
+      resolvedPendingSubmission: null,
       effectiveAccountState: undefined as LiveAccountState | undefined,
       recoveryReason: 'clear' as const
     };
@@ -1151,15 +1240,18 @@ async function runPreIngestPendingRecovery(input: {
     : undefined;
 
   const recovery = await recoverPendingSubmission({
-    pendingSubmission: input.pendingSubmission,
+    pendingSubmission,
     confirmationProvider: input.confirmationProvider,
     accountState: effectiveAccountState
   });
 
   if (recovery.clearPending) {
-    await input.pendingSubmissionStore.clear();
+    // Keep the durable identity until the caller has persisted the recovered
+    // position/ownership state. A crash between confirmation and that state
+    // write must replay recovery, not erase the only binding evidence.
     return {
       pendingSubmission: null,
+      resolvedPendingSubmission: pendingSubmission,
       effectiveAccountState,
       recoveryReason: recovery.reason
     };
@@ -1169,13 +1261,15 @@ async function runPreIngestPendingRecovery(input: {
     await input.pendingSubmissionStore.write(recovery.nextPendingSubmission);
     return {
       pendingSubmission: recovery.nextPendingSubmission,
+      resolvedPendingSubmission: null,
       effectiveAccountState,
       recoveryReason: recovery.reason
     };
   }
 
   return {
-    pendingSubmission: input.pendingSubmission,
+    pendingSubmission,
+    resolvedPendingSubmission: null,
     effectiveAccountState,
     recoveryReason: recovery.reason
   };
@@ -1248,7 +1342,7 @@ function resolveConfirmedOpenFillEntry(input: {
 }): TrustedLpEntryMetadata | undefined {
   const resultFill = input.resultFill;
   if (
-    resultFill?.side !== 'add-lp'
+    (resultFill?.side !== 'add-lp' && resultFill?.side !== 'deploy')
     || resultFill.fillAmountSource !== 'wallet-delta'
     || resultFill.hasFillEvidence !== true
     || resultFill.filledSol <= 0
@@ -1309,7 +1403,7 @@ function resolveTrustedEntryEvidenceProblem(input: {
 
   const matchedFill = input.fills.find((fill) =>
     fill.submissionId === input.positionState.entryFillSubmissionId
-    && fill.side === 'add-lp'
+    && (fill.side === 'add-lp' || fill.side === 'buy')
     && fill.hasFillEvidence === true
     && isTrustedFillAmountSource(fill.fillAmountSource)
   );
@@ -1324,11 +1418,60 @@ function resolveTrustedEntryEvidenceProblem(input: {
 type ResidualSweepExecutionResult = {
   dependencyHealth: ReturnType<typeof createDependencyHealthSnapshot>;
   nextSweepAt: string;
+  resolvedMints: string[];
 };
+
+function strategyOwnedResidualAmountByMint(ledger?: PositionLedgerSnapshot) {
+  const amounts = new Map<string, bigint>();
+  for (const record of ledger?.records ?? []) {
+    if (
+      record.residualCleanupStatus !== 'residual_cleanup_pending'
+      || !record.activeMint
+      || !record.residualCleanupAmountRaw
+      || !/^\d+$/.test(record.residualCleanupAmountRaw)
+    ) {
+      continue;
+    }
+    amounts.set(
+      record.activeMint,
+      (amounts.get(record.activeMint) ?? 0n) + BigInt(record.residualCleanupAmountRaw)
+    );
+  }
+  return amounts;
+}
+
+function markResidualCleanupResolved(
+  ledger: PositionLedgerSnapshot | undefined,
+  resolvedMints: string[],
+  now: string
+) {
+  if (!ledger || resolvedMints.length === 0) {
+    return ledger;
+  }
+  const resolved = new Set(resolvedMints);
+  return {
+    ...ledger,
+    records: ledger.records.map((record) => resolved.has(record.activeMint ?? '')
+      && record.residualCleanupStatus === 'residual_cleanup_pending'
+      ? {
+          ...record,
+          residualCleanupStatus: 'residual_cleanup_complete',
+          residualCleanupAmountRaw: undefined,
+          updatedAt: now
+        }
+      : record),
+    updatedAt: now
+  };
+}
 
 async function runResidualTokenSweepIfDue(input: {
   strategy: StrategyId;
+  executionPolicy: 'broadcast' | 'simulate-only';
+  captureMode?: NonNullable<LiveCycleInput['captureMode']>;
+  maxSlippageBps: number;
+  maxImpactBps: number;
   accountState?: LiveAccountState;
+  positionLedger?: PositionLedgerSnapshot;
   runtimeMode: RuntimeMode;
   runtimeReason?: string;
   pendingSubmission: boolean;
@@ -1341,13 +1484,15 @@ async function runResidualTokenSweepIfDue(input: {
   residualTokenSweepCooldownMs: number;
   residualTokenSweepMinValueSol: number;
   nextSweepAt: string;
+  preparedBroadcastStore: PreparedBroadcastStore;
+  pendingSubmissionStore: PendingSubmissionStore;
 }) : Promise<ResidualSweepExecutionResult> {
   const now = new Date();
   const nowIsoValue = now.toISOString();
   let dependencyHealth = input.dependencyHealth;
 
   if (input.nextSweepAt && input.nextSweepAt > nowIsoValue) {
-    return { dependencyHealth, nextSweepAt: input.nextSweepAt };
+    return { dependencyHealth, nextSweepAt: input.nextSweepAt, resolvedMints: [] };
   }
 
   const nextSweepAt = new Date(now.getTime() + input.residualTokenSweepIntervalMs).toISOString();
@@ -1365,12 +1510,15 @@ async function runResidualTokenSweepIfDue(input: {
     || !input.signer
     || !input.broadcaster
   ) {
-    return { dependencyHealth, nextSweepAt };
+    return { dependencyHealth, nextSweepAt, resolvedMints: [] };
   }
 
   await input.residualTokenSweepStore.pruneExpired(nowIsoValue);
+  const ownedAmountByMint = strategyOwnedResidualAmountByMint(input.positionLedger);
   const eligibleTokens = (input.accountState?.walletTokens ?? [])
     .filter((token) =>
+      ownedAmountByMint.has(token.mint)
+      &&
       hasActionableTokenAmount(token)
       && isNonStableMint(token.mint)
       && typeof token.currentValueSol === 'number'
@@ -1384,13 +1532,29 @@ async function runResidualTokenSweepIfDue(input: {
       continue;
     }
 
+    const preExitTokenAmountRaw = sumWalletTokenRaw(input.accountState, token.mint)?.toString();
+    if (preExitTokenAmountRaw === undefined) {
+      // Exact raw ownership is required so a restart can prove that only the
+      // ledger-owned residual was disposed. Never submit a maintenance sell
+      // that could later be confused with same-mint personal inventory.
+      continue;
+    }
+
     const orderIntent = buildOrderIntent({
       strategyId: input.strategy,
+      // Residual inventory is wallet-owned rather than pool-bound. Keeping
+      // this empty makes the exact-in sell use the normal route chain and also
+      // lets paper match the synthetic inventory by mint.
       poolAddress: '',
       outputSol: token.currentValueSol ?? 0,
+      executionPolicy: input.executionPolicy,
       side: 'sell',
       tokenMint: token.mint,
-      fullPositionExit: true
+      fullPositionExit: true,
+      maxSlippageBps: input.maxSlippageBps,
+      maxImpactBps: input.maxImpactBps,
+      inputAmountRaw: ownedAmountByMint.get(token.mint)?.toString(),
+      preExitTokenAmountRaw
     });
 
     let attemptRecorded = false;
@@ -1411,21 +1575,45 @@ async function runResidualTokenSweepIfDue(input: {
     try {
       const signedIntent = await input.signer.sign(orderIntent);
       dependencyHealth = markDependencySuccess(dependencyHealth, 'signer', nowIso());
-      const broadcastResult = await input.broadcaster.broadcast(signedIntent);
+      await input.preparedBroadcastStore.write(buildPreparedBroadcastSnapshot({
+        strategyId: input.strategy,
+        signedIntent,
+        action: 'dca-out',
+        captureMode: input.captureMode,
+        poolAddress: orderIntent.poolAddress,
+        tokenMint: token.mint,
+        tokenSymbol: token.symbol ?? token.mint,
+        requestedPositionSol: token.currentValueSol ?? 0,
+        createdAt: orderIntent.createdAt
+      }));
+      const preparedRecovery = await recoverPreparedBroadcast({
+        preparedBroadcastStore: input.preparedBroadcastStore,
+        pendingSubmissionStore: input.pendingSubmissionStore,
+        broadcaster: input.broadcaster
+      });
 
       await recordAttempt();
 
-      if (broadcastResult.status !== 'submitted') {
+      if (preparedRecovery.status !== 'submitted' || preparedRecovery.broadcastResult?.status !== 'submitted') {
         dependencyHealth = markDependencyFailure(
           dependencyHealth,
           'broadcaster',
-          broadcastResult.reason,
+          preparedRecovery.reason,
           nowIso()
         );
-        return { dependencyHealth, nextSweepAt };
+        return { dependencyHealth, nextSweepAt, resolvedMints: [] };
       }
 
+      const broadcastResult = preparedRecovery.broadcastResult;
+
       dependencyHealth = markDependencySuccess(dependencyHealth, 'broadcaster', nowIso());
+
+      if (broadcastResult.mainExecutionStatus === 'confirmed' && broadcastResult.batchStatus !== 'partial') {
+        // Keep the durable pending identity. The next pre-ingest recovery uses
+        // a fresh complete account snapshot to prove the exact raw token
+        // decrease, persists residual completion, and only then clears it.
+        return { dependencyHealth, nextSweepAt, resolvedMints: [] };
+      }
 
       if (input.confirmationProvider && broadcastResult.submissionId) {
         const confirmation = await input.confirmationProvider.poll({
@@ -1433,8 +1621,23 @@ async function runResidualTokenSweepIfDue(input: {
           confirmationSignature: broadcastResult.confirmationSignature
         });
 
-        if (isResolvedConfirmation(confirmation.status, confirmation.finality)) {
+        if (
+          confirmation.status === 'confirmed'
+          && (confirmation.finality === 'confirmed' || confirmation.finality === 'finalized')
+        ) {
           dependencyHealth = markDependencySuccess(dependencyHealth, 'confirmation', nowIso());
+          const pending = await input.pendingSubmissionStore.read();
+          if (pending?.idempotencyKey === orderIntent.idempotencyKey) {
+            await input.pendingSubmissionStore.write({
+              ...pending,
+              confirmationStatus: 'confirmed',
+              finality: confirmation.finality,
+              lastCheckedAt: confirmation.checkedAt,
+              updatedAt: confirmation.checkedAt,
+              reason: confirmation.reason ?? pending.reason
+            });
+          }
+          return { dependencyHealth, nextSweepAt, resolvedMints: [] };
         } else if (confirmation.status === 'failed') {
           dependencyHealth = markDependencyFailure(
             dependencyHealth,
@@ -1442,10 +1645,21 @@ async function runResidualTokenSweepIfDue(input: {
             confirmation.reason ?? 'maintenance-confirmation-failed',
             nowIso()
           );
+          const pending = await input.pendingSubmissionStore.read();
+          if (pending?.idempotencyKey === orderIntent.idempotencyKey) {
+            await input.pendingSubmissionStore.write({
+              ...pending,
+              confirmationStatus: 'failed',
+              finality: 'failed',
+              lastCheckedAt: confirmation.checkedAt,
+              updatedAt: confirmation.checkedAt,
+              reason: confirmation.reason ?? 'maintenance-confirmation-failed'
+            });
+          }
         }
       }
 
-      return { dependencyHealth, nextSweepAt };
+      return { dependencyHealth, nextSweepAt, resolvedMints: [] };
     } catch (error) {
       await recordAttempt();
 
@@ -1465,14 +1679,14 @@ async function runResidualTokenSweepIfDue(input: {
           error.reason,
           nowIso()
         );
-        return { dependencyHealth, nextSweepAt };
+        return { dependencyHealth, nextSweepAt, resolvedMints: [] };
       }
 
       throw error;
     }
   }
 
-  return { dependencyHealth, nextSweepAt };
+  return { dependencyHealth, nextSweepAt, resolvedMints: [] };
 }
 
 function wait(delayMs: number) {
@@ -1815,6 +2029,179 @@ function hasOpenInventory(accountState?: LiveAccountState) {
   );
 }
 
+function sumWalletTokenRaw(accountState: LiveAccountState | undefined, mint?: string) {
+  if (!accountState || !mint) {
+    return undefined;
+  }
+  let total = 0n;
+  for (const token of accountState.walletTokens ?? []) {
+    if (token.mint !== mint) {
+      continue;
+    }
+    const raw = token.amountRaw
+      ?? (typeof token.amountLamports === 'number' && Number.isSafeInteger(token.amountLamports) && token.amountLamports >= 0
+        ? String(token.amountLamports)
+        : undefined);
+    if (!raw || !/^\d+$/.test(raw)) {
+      return undefined;
+    }
+    total += BigInt(raw);
+  }
+  return total;
+}
+
+function recoveredOpenWalletDeltaIsPlausible(
+  pending: PendingSubmissionSnapshot,
+  actualFilledSol: number
+) {
+  const requestedPositionSol = pending.requestedPositionSol;
+  if (
+    typeof requestedPositionSol !== 'number'
+    || !Number.isFinite(requestedPositionSol)
+    || requestedPositionSol <= 0
+  ) {
+    return false;
+  }
+
+  // Wallet deltas include network fees and, for LP opens, account rent. Keep
+  // a conservative bounded allowance without accepting arbitrary unrelated
+  // wallet activity accumulated while the daemon was down.
+  const feeAndRentBufferSol = Math.max(0.01, requestedPositionSol * 0.2);
+  return actualFilledSol <= requestedPositionSol + feeAndRentBufferSol;
+}
+
+function resolveRecoveredSpotOpenEvidence(input: {
+  pendingSubmission?: PendingSubmissionSnapshot | null;
+  accountState?: LiveAccountState;
+  recordedAt: string;
+}): {
+  fill?: LiveCycleConfirmedFill;
+  failureReason?: string;
+} {
+  const pending = input.pendingSubmission;
+  if (
+    pending?.orderAction !== 'deploy'
+    || !pending.tokenMint
+    || !pending.submissionId
+    || pending.preEntryTokenAmountRaw === undefined
+    || typeof pending.preEntryWalletSol !== 'number'
+  ) {
+    return {
+      failureReason: 'spot-ownership-reconcile-required:recovered-open-baseline-missing'
+    };
+  }
+  const currentRaw = sumWalletTokenRaw(input.accountState, pending.tokenMint);
+  if (currentRaw === undefined || currentRaw <= BigInt(pending.preEntryTokenAmountRaw)) {
+    return {
+      failureReason: currentRaw === undefined
+        ? 'spot-ownership-reconcile-required:recovered-open-token-raw-unavailable'
+        : 'spot-ownership-reconcile-required:recovered-open-token-delta-missing'
+    };
+  }
+  const actualFilledSol = pending.preEntryWalletSol - (input.accountState?.walletSol ?? pending.preEntryWalletSol);
+  if (!Number.isFinite(actualFilledSol) || actualFilledSol <= 0) {
+    return {
+      failureReason: 'spot-ownership-reconcile-required:recovered-open-wallet-delta-missing'
+    };
+  }
+  if (!recoveredOpenWalletDeltaIsPlausible(pending, actualFilledSol)) {
+    return {
+      failureReason: 'spot-ownership-reconcile-required:recovered-open-wallet-delta-out-of-bounds'
+    };
+  }
+  return {
+    fill: {
+      submissionId: pending.submissionId,
+      mint: pending.tokenMint,
+      side: 'deploy',
+      filledSol: actualFilledSol,
+      actualFilledSol,
+      actualWalletDeltaSol: -actualFilledSol,
+      acquiredTokenAmountRaw: (currentRaw - BigInt(pending.preEntryTokenAmountRaw)).toString(),
+      fillAmountSource: 'wallet-delta',
+      recordedAt: input.recordedAt,
+      hasFillEvidence: true
+    }
+  };
+}
+
+function resolveRecoveredLpResidualEvidence(input: {
+  pendingSubmission: PendingSubmissionSnapshot;
+  accountState?: LiveAccountState;
+}) {
+  const { pendingSubmission } = input;
+  if (
+    (pendingSubmission.orderAction !== 'withdraw-lp' && pendingSubmission.orderAction !== 'claim-fee')
+    || !pendingSubmission.tokenMint
+    || pendingSubmission.preExitTokenAmountRaw === undefined
+  ) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:residual-ownership-baseline-missing'
+    };
+  }
+
+  const postExitRaw = sumWalletTokenRaw(input.accountState, pendingSubmission.tokenMint);
+  if (postExitRaw === undefined) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:post-exit-token-raw-unavailable'
+    };
+  }
+
+  const preExitRaw = BigInt(pendingSubmission.preExitTokenAmountRaw);
+  if (postExitRaw < preExitRaw) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:pre-existing-wallet-token-balance-changed'
+    };
+  }
+
+  const ownedResidualRaw = postExitRaw - preExitRaw;
+  const reportedResidualRawText = pendingSubmission.residualUnsoldAmountsRaw?.[pendingSubmission.tokenMint];
+  const reportedResidualRaw = reportedResidualRawText && /^\d+$/.test(reportedResidualRawText)
+    ? BigInt(reportedResidualRawText)
+    : undefined;
+
+  if (
+    pendingSubmission.residualSweepStatus === 'incomplete'
+    && (reportedResidualRaw === undefined || reportedResidualRaw !== ownedResidualRaw || ownedResidualRaw <= 0n)
+  ) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:reported-residual-amount-mismatch'
+    };
+  }
+
+  if (
+    pendingSubmission.residualSweepStatus === 'complete'
+    && (ownedResidualRaw > 0n || (reportedResidualRaw !== undefined && reportedResidualRaw > 0n))
+  ) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:cleanup-complete-but-residual-remains'
+    };
+  }
+
+  if (reportedResidualRaw !== undefined && reportedResidualRaw !== ownedResidualRaw) {
+    return {
+      trusted: false as const,
+      reason: 'lp-exit-reconcile-required:reported-residual-amount-mismatch'
+    };
+  }
+
+  const cleanupStatus = pendingSubmission.residualSweepStatus === 'dust_ignored'
+    ? 'residual_dust_ignored'
+    : ownedResidualRaw > 0n
+      ? 'residual_cleanup_pending'
+      : 'residual_cleanup_complete';
+  return {
+    trusted: true as const,
+    cleanupStatus,
+    cleanupAmountRaw: ownedResidualRaw > 0n ? ownedResidualRaw.toString() : undefined
+  };
+}
+
 function hasPersistedActiveLifecycleTarget(positionState?: PositionStateSnapshot | null) {
   return Boolean(
     positionState
@@ -1866,6 +2253,7 @@ function reconcileTerminalFlatPositionState(input: {
     activeMint: undefined,
     activePoolAddress: undefined,
     lifecycleState: 'closed' as const,
+    ownedTokenAmountRaw: undefined,
     entrySol: undefined,
     entrySolSource: undefined,
     entryFillSubmissionId: undefined,
@@ -1971,7 +2359,8 @@ function resolvePersistedActiveTarget(input: {
   action: string;
 }) {
   const shouldPreservePriorOpenTarget = Boolean(
-    input.positionState?.lifecycleState === 'open'
+    input.positionState?.lifecycleState !== undefined
+    && input.positionState.lifecycleState !== 'closed'
     && input.positionState.activeMint
     && input.positionState.activePoolAddress
     && !input.liveOrderSubmitted
@@ -2125,6 +2514,13 @@ export function resolveLifecycleStateForPersist(input: {
     unresolvedOpen
   );
 
+  if (
+    input.previousLifecycleState === 'reconcile_required'
+    && !accountIsFlat
+  ) {
+    return 'reconcile_required';
+  }
+
   if (isPositionAlreadyClosedTerminal({
     action: input.lastAction,
     reason: input.lastReason,
@@ -2141,7 +2537,7 @@ export function resolveLifecycleStateForPersist(input: {
   }
 
   if (isFullExitAction(input.lastAction as LiveAction) && input.nextLifecycleState === 'inventory_exit_ready') {
-    return 'closed';
+    return hasInventory ? 'inventory_exit_ready' : 'closed';
   }
 
   if (input.nextLifecycleState === 'closed' && hasInventory) {
@@ -2220,6 +2616,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
 
   const runtimeStateStore = new RuntimeStateStore(stateRootDir);
   const pendingSubmissionStore = new PendingSubmissionStore(stateRootDir);
+  const preparedBroadcastStore = new PreparedBroadcastStore(stateRootDir);
+  // Recovery and chain-entry reconstruction must be able to settle/release a
+  // durable reservation even when the current invocation does not re-specify
+  // an enforcement config. A missing file is an empty no-op store.
+  const spendingLimitsStore = new SpendingLimitsStore(
+    stateRootDir,
+    options.spendingLimitsConfig?.dailySpendResetHour ?? 0
+  );
   const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
   const targetOpenCooldownStore = new TargetOpenCooldownStore(stateRootDir);
   let dependencyHealth =
@@ -2236,6 +2640,35 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
   let tickCount = 0;
   let nextResidualTokenSweepAt = '';
   const lpEntryEvidenceCooldowns = new Map<string, string>();
+  const reportedUnboundLpKeys = new Set<string>();
+  const reportUnboundLpOwnership = async (ledger?: PositionLedgerSnapshot | null) => {
+    for (const record of ledger?.records ?? []) {
+      if (
+        record.lastReason !== UNBOUND_ACCOUNT_LP_REASON
+        || reportedUnboundLpKeys.has(record.positionKey)
+      ) {
+        continue;
+      }
+      reportedUnboundLpKeys.add(record.positionKey);
+      try {
+        await appendDaemonIncident({
+          mirrorRuntime,
+          strategyId: options.strategy,
+          journalRootDir,
+          runtimeMode: runtimeState.mode,
+          stage: 'lp-ownership-reconciliation',
+          reason: UNBOUND_ACCOUNT_LP_REASON,
+          tokenMint: record.activeMint,
+          poolAddress: record.activePoolAddress,
+          chainPositionAddress: record.chainPositionAddress
+        });
+      } catch (error) {
+        console.warn(
+          `[LiveDaemon] LP ownership reconciliation incident write failed; continuing fail-closed without trading the orphan: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  };
 
   await mirrorRuntime?.start();
   let warmedAccountState = await warmAccountProvider(options.accountProvider);
@@ -2253,6 +2686,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       now: nowIso()
     });
     await runtimeStateStore.writePositionLedger(startupLedger);
+    await reportUnboundLpOwnership(startupLedger);
     const startupSummary = summarizePositionLedger(startupLedger);
     if (startupSummary.activeLpCount > 0) {
       console.log(
@@ -2290,6 +2724,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       let tickError: unknown;
       let pendingSubmission = await pendingSubmissionStore.read();
       let pendingSubmissionBeforeCycle = pendingSubmission;
+      let resolvedPostTickSubmission: PendingSubmissionSnapshot | null = null;
       let positionState = await runtimeStateStore.readPositionState() ?? undefined;
       let positionLedger = await runtimeStateStore.readPositionLedger() ?? undefined;
       let previousMode = runtimeState.mode;
@@ -2306,7 +2741,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
       try {
         const preRecovery = await runPreIngestPendingRecovery({
           pendingSubmissionStore,
-          pendingSubmission,
+          preparedBroadcastStore,
+          spendingLimitsStore,
+          broadcaster: options.broadcaster,
           accountProvider: options.accountProvider,
           confirmationProvider: options.confirmationProvider
         });
@@ -2314,24 +2751,701 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         effectiveAccountState = preRecovery.effectiveAccountState;
         positionState = await runtimeStateStore.readPositionState() ?? undefined;
         positionLedger = await runtimeStateStore.readPositionLedger() ?? undefined;
+        const resolvedPreIngestSubmission = preRecovery.resolvedPendingSubmission;
         if (
           pendingSubmission === null &&
-          effectiveAccountState &&
-          hasOpenInventory(effectiveAccountState) &&
+          resolvedPreIngestSubmission &&
           (preRecovery.recoveryReason === 'pending-submission-filled' || preRecovery.recoveryReason === 'pending-submission-confirmed')
         ) {
-          positionState = positionState
-            ? {
-                ...positionState,
-                lifecycleState: 'open'
-              }
-            : {
-                allowNewOpens: true,
+          if (resolvedPreIngestSubmission.orderAction === 'deploy') {
+            const recoveredAt = nowIso();
+            const recoveredOpenEvidence = resolveRecoveredSpotOpenEvidence({
+              pendingSubmission: resolvedPreIngestSubmission,
+              accountState: effectiveAccountState,
+              recordedAt: recoveredAt
+            });
+            const recoveredFill = recoveredOpenEvidence.fill;
+            const recoveredLifecycleState: PositionLifecycleState = recoveredFill
+              ? 'open'
+              : 'reconcile_required';
+            if (recoveredFill?.actualFilledSol && spendingLimitsStore) {
+              await spendingLimitsStore.settleSpend(
+                resolvedPreIngestSubmission.idempotencyKey,
+                recoveredFill.actualFilledSol
+              );
+            }
+            positionState = {
+              ...(positionState ?? {
+                allowNewOpens: false,
                 flattenOnly: false,
-                lastAction: 'hold',
-                lifecycleState: 'open',
-                updatedAt: nowIso()
+                lastAction: 'deploy',
+                updatedAt: recoveredAt
+              }),
+              allowNewOpens: false,
+              lastAction: 'deploy',
+              lastReason: recoveredFill
+                ? preRecovery.recoveryReason
+                : recoveredOpenEvidence.failureReason
+                  ?? 'spot-ownership-reconcile-required:recovered-open-evidence-missing',
+              lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+              openIntentId: resolvedPreIngestSubmission.openIntentId,
+              positionId: resolvedPreIngestSubmission.positionId,
+              chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress,
+              activeMint: resolvedPreIngestSubmission.tokenMint,
+              activePoolAddress: resolvedPreIngestSubmission.poolAddress,
+              lifecycleState: recoveredLifecycleState,
+              ownedTokenAmountRaw: recoveredFill?.acquiredTokenAmountRaw,
+              entrySol: recoveredFill?.actualFilledSol,
+              entrySolSource: recoveredFill ? 'actual_fill' : undefined,
+              entryFillSubmissionId: recoveredFill?.submissionId,
+              openedAt: recoveredFill?.recordedAt,
+              walletSol: effectiveAccountState?.walletSol,
+              updatedAt: recoveredAt
+            };
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            positionLedger = applyLiveCycleResultToLedger({
+              ledger: positionLedger,
+              positionState,
+              accountState: effectiveAccountState,
+              pendingSubmissionBeforeCycle: resolvedPreIngestSubmission,
+              persistedPendingSubmission: null,
+              actionIdentity: {
+                openIntentId: resolvedPreIngestSubmission.openIntentId,
+                positionId: resolvedPreIngestSubmission.positionId,
+                chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress
+              },
+              orderIntent: {
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                poolAddress: resolvedPreIngestSubmission.poolAddress,
+                tokenMint: resolvedPreIngestSubmission.tokenMint
+              },
+              action: 'deploy',
+              reason: positionState.lastReason ?? preRecovery.recoveryReason,
+              liveOrderSubmitted: true,
+              confirmationStatus: 'confirmed',
+              confirmedFill: recoveredFill,
+              now: recoveredAt
+            });
+            await runtimeStateStore.writePositionLedger(positionLedger);
+            await runtimeStateStore.writePositionState(positionState);
+          } else if (
+            resolvedPreIngestSubmission.orderAction === 'dca-out'
+            && (
+              Boolean(positionState?.ownedTokenAmountRaw)
+              || Boolean(resolvedPreIngestSubmission.openIntentId)
+              || Boolean(
+                resolvedPreIngestSubmission.positionId
+                && !resolvedPreIngestSubmission.chainPositionAddress
+                && !positionState?.chainPositionAddress
+              )
+            )
+          ) {
+            const recoveredAt = nowIso();
+            const postExitTokenAmountRaw = sumWalletTokenRaw(
+              effectiveAccountState,
+              resolvedPreIngestSubmission.tokenMint
+            );
+            const preExitTokenAmountRaw = resolvedPreIngestSubmission.preExitTokenAmountRaw;
+            const submittedInputAmountRaw = resolvedPreIngestSubmission.inputAmountRaw;
+            const freshExactTokenDecrease = Boolean(
+              preExitTokenAmountRaw
+              && /^\d+$/.test(preExitTokenAmountRaw)
+              && submittedInputAmountRaw
+              && /^\d+$/.test(submittedInputAmountRaw)
+              && postExitTokenAmountRaw !== undefined
+              && hasCompleteFreshAccountSnapshot(resolvedPreIngestSubmission, effectiveAccountState)
+              && BigInt(preExitTokenAmountRaw) >= postExitTokenAmountRaw
+              && BigInt(preExitTokenAmountRaw) - postExitTokenAmountRaw === BigInt(submittedInputAmountRaw)
+            );
+            const exactOwnedExit = Boolean(
+              positionState?.ownedTokenAmountRaw
+              && resolvedPreIngestSubmission.inputAmountRaw === positionState.ownedTokenAmountRaw
+              && freshExactTokenDecrease
+            );
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            if (exactOwnedExit && positionState) {
+              positionLedger = applyLiveCycleResultToLedger({
+                ledger: positionLedger,
+                positionState,
+                accountState: effectiveAccountState,
+                pendingSubmissionBeforeCycle: resolvedPreIngestSubmission,
+                persistedPendingSubmission: null,
+                actionIdentity: {
+                  openIntentId: resolvedPreIngestSubmission.openIntentId,
+                  positionId: resolvedPreIngestSubmission.positionId,
+                  chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress
+                },
+                orderIntent: {
+                  idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                  poolAddress: resolvedPreIngestSubmission.poolAddress,
+                  tokenMint: resolvedPreIngestSubmission.tokenMint
+                },
+                action: 'dca-out',
+                reason: preRecovery.recoveryReason,
+                liveOrderSubmitted: true,
+                confirmationStatus: 'confirmed',
+                exitActionClosureProven: true,
+                fullExitClosureProven: true,
+                now: recoveredAt
+              });
+              positionState = {
+                ...positionState,
+                lastAction: 'dca-out',
+                lastReason: preRecovery.recoveryReason,
+                openIntentId: undefined,
+                positionId: undefined,
+                chainPositionAddress: undefined,
+                activeMint: undefined,
+                activePoolAddress: undefined,
+                lifecycleState: 'closed',
+                ownedTokenAmountRaw: undefined,
+                entrySol: undefined,
+                entrySolSource: undefined,
+                entryFillSubmissionId: undefined,
+                openedAt: undefined,
+                lastClosedMint: resolvedPreIngestSubmission.tokenMint ?? positionState.activeMint,
+                lastClosedAt: recoveredAt,
+                walletSol: effectiveAccountState?.walletSol,
+                updatedAt: recoveredAt
               };
+            } else {
+              const reason = positionState?.ownedTokenAmountRaw
+                ? freshExactTokenDecrease
+                  ? 'spot-ownership-reconcile-required:recovered-exit-amount-mismatch'
+                  : 'spot-ownership-reconcile-required:recovered-exit-token-delta-unproven'
+                : 'spot-ownership-reconcile-required:recovered-exit-ownership-missing';
+              positionState = {
+                ...(positionState ?? {
+                  allowNewOpens: false,
+                  flattenOnly: false,
+                  lastAction: 'dca-out',
+                  updatedAt: recoveredAt
+                }),
+                allowNewOpens: false,
+                lastAction: 'dca-out',
+                lastReason: reason,
+                lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                openIntentId: resolvedPreIngestSubmission.openIntentId ?? positionState?.openIntentId,
+                positionId: resolvedPreIngestSubmission.positionId ?? positionState?.positionId,
+                chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress ?? positionState?.chainPositionAddress,
+                activeMint: resolvedPreIngestSubmission.tokenMint ?? positionState?.activeMint,
+                activePoolAddress: resolvedPreIngestSubmission.poolAddress || positionState?.activePoolAddress,
+                lifecycleState: 'reconcile_required',
+                updatedAt: recoveredAt
+              };
+              const matchingRecordIndex = positionLedger?.records.findIndex((record) =>
+                (positionState?.openIntentId && record.openIntentId === positionState.openIntentId)
+                || (positionState?.positionId && record.positionId === positionState.positionId)
+              ) ?? -1;
+              const reconcileRecord = {
+                positionKey: positionLedgerKey({
+                  chainPositionAddress: positionState.chainPositionAddress,
+                  positionId: positionState.positionId,
+                  openIntentId: positionState.openIntentId,
+                  idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                  poolAddress: positionState.activePoolAddress,
+                  mint: positionState.activeMint
+                }),
+                openIntentId: positionState.openIntentId,
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                positionId: positionState.positionId,
+                chainPositionAddress: positionState.chainPositionAddress,
+                activeMint: positionState.activeMint,
+                activePoolAddress: positionState.activePoolAddress,
+                lifecycleState: 'reconcile_required' as const,
+                ownedTokenAmountRaw: positionState.ownedTokenAmountRaw,
+                entrySol: positionState.entrySol,
+                entrySolSource: positionState.entrySolSource,
+                entryFillSubmissionId: positionState.entryFillSubmissionId,
+                openedAt: positionState.openedAt,
+                lastAction: 'dca-out',
+                lastReason: reason,
+                updatedAt: recoveredAt
+              };
+              const records = [...(positionLedger?.records ?? [])];
+              if (matchingRecordIndex >= 0) {
+                records[matchingRecordIndex] = { ...records[matchingRecordIndex], ...reconcileRecord };
+              } else {
+                records.push(reconcileRecord);
+              }
+              positionLedger = { version: 1, records, updatedAt: recoveredAt };
+            }
+            if (positionLedger) {
+              await runtimeStateStore.writePositionLedger(positionLedger);
+            }
+            await runtimeStateStore.writePositionState(positionState);
+          } else if (resolvedPreIngestSubmission.orderAction === 'dca-out') {
+            // This is a maintenance sale of residual inventory rather than a
+            // spot-position exit (spot exits carry position/open identities or
+            // match positionState.ownedTokenAmountRaw in the branch above).
+            // Bind completion to both the exact raw wallet delta and the exact
+            // amount still owned by residual ledger records before clearing
+            // the durable pending identity.
+            const recoveredAt = nowIso();
+            const mint = resolvedPreIngestSubmission.tokenMint;
+            const inputAmountRaw = resolvedPreIngestSubmission.inputAmountRaw;
+            const preExitTokenAmountRaw = resolvedPreIngestSubmission.preExitTokenAmountRaw;
+            const postExitTokenAmountRaw = sumWalletTokenRaw(effectiveAccountState, mint);
+            const matchingResidualRecords = (positionLedger?.records ?? []).filter((record) =>
+              record.activeMint === mint
+              && record.residualCleanupStatus === 'residual_cleanup_pending'
+              && record.residualCleanupAmountRaw
+              && /^\d+$/.test(record.residualCleanupAmountRaw)
+            );
+            const ledgerOwnedAmountRaw = matchingResidualRecords.reduce(
+              (total, record) => total + BigInt(record.residualCleanupAmountRaw!),
+              0n
+            );
+            const exactRawWalletDecrease = Boolean(
+              inputAmountRaw
+              && preExitTokenAmountRaw
+              && postExitTokenAmountRaw !== undefined
+              && hasCompleteFreshAccountSnapshot(resolvedPreIngestSubmission, effectiveAccountState)
+              && BigInt(preExitTokenAmountRaw) >= postExitTokenAmountRaw
+              && BigInt(preExitTokenAmountRaw) - postExitTokenAmountRaw === BigInt(inputAmountRaw)
+            );
+            const exactLedgerOwnership = Boolean(
+              inputAmountRaw
+              && matchingResidualRecords.length > 0
+              && ledgerOwnedAmountRaw === BigInt(inputAmountRaw)
+            );
+            const trustedResidualExit = exactRawWalletDecrease && exactLedgerOwnership;
+            const recoveryReason = trustedResidualExit
+              ? preRecovery.recoveryReason
+              : exactRawWalletDecrease
+                ? 'residual-ownership-reconcile-required:recovered-exit-amount-mismatch'
+                : 'residual-ownership-reconcile-required:recovered-exit-token-delta-unproven';
+            const records = [...(positionLedger?.records ?? [])];
+            let matchedRecord = false;
+            for (let index = 0; index < records.length; index += 1) {
+              const record = records[index];
+              if (
+                record.activeMint !== mint
+                || record.residualCleanupStatus !== 'residual_cleanup_pending'
+              ) {
+                continue;
+              }
+              matchedRecord = true;
+              records[index] = trustedResidualExit
+                ? {
+                    ...record,
+                    lifecycleState: record.lastAction === 'withdraw-lp'
+                      || record.lifecycleState === 'lp_exit_pending'
+                      || record.lifecycleState === 'inventory_exit_pending'
+                      || record.lifecycleState === 'inventory_exit_ready'
+                      ? 'closed'
+                      : record.lifecycleState,
+                    residualCleanupStatus: 'residual_cleanup_complete',
+                    residualCleanupAmountRaw: undefined,
+                    lastReason: recoveryReason,
+                    updatedAt: recoveredAt
+                  }
+                : {
+                    ...record,
+                    lifecycleState: 'reconcile_required',
+                    lastReason: recoveryReason,
+                    evidenceMissingReason: recoveryReason,
+                    updatedAt: recoveredAt
+                  };
+            }
+            if (!matchedRecord) {
+              records.push({
+                positionKey: `residual-recovery:${mint || resolvedPreIngestSubmission.idempotencyKey}`,
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                activeMint: mint,
+                activePoolAddress: resolvedPreIngestSubmission.poolAddress,
+                lifecycleState: 'reconcile_required',
+                residualCleanupStatus: 'residual_cleanup_pending',
+                residualCleanupAmountRaw: inputAmountRaw,
+                lastAction: 'dca-out',
+                lastReason: 'residual-ownership-reconcile-required:ledger-record-missing',
+                evidenceMissingReason: 'residual-ownership-reconcile-required:ledger-record-missing',
+                updatedAt: recoveredAt
+              });
+            }
+            positionLedger = {
+              version: 1,
+              records,
+              updatedAt: recoveredAt
+            };
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            await runtimeStateStore.writePositionLedger(positionLedger);
+          } else if (resolvedPreIngestSubmission.orderAction === 'add-lp') {
+            const recoveredAt = nowIso();
+            const activeLpCandidates = collectActiveLpPositions(effectiveAccountState).filter((position) => {
+              const chainPositionAddress = position.chainPositionAddress || position.positionAddress;
+              if (resolvedPreIngestSubmission.chainPositionAddress) {
+                return chainPositionAddress === resolvedPreIngestSubmission.chainPositionAddress;
+              }
+              return position.poolAddress === resolvedPreIngestSubmission.poolAddress
+                && position.mint === resolvedPreIngestSubmission.tokenMint;
+            });
+            const recoveredLp = activeLpCandidates.length === 1 ? activeLpCandidates[0] : undefined;
+            const recoveredChainPositionAddress = recoveredLp?.chainPositionAddress || recoveredLp?.positionAddress;
+            const actualFilledSol = typeof resolvedPreIngestSubmission.preEntryWalletSol === 'number'
+              && typeof effectiveAccountState?.walletSol === 'number'
+              ? resolvedPreIngestSubmission.preEntryWalletSol - effectiveAccountState.walletSol
+              : undefined;
+            const recoveredFill: LiveCycleConfirmedFill | undefined = recoveredLp
+              && typeof actualFilledSol === 'number'
+              && Number.isFinite(actualFilledSol)
+              && actualFilledSol > 0
+              && recoveredOpenWalletDeltaIsPlausible(resolvedPreIngestSubmission, actualFilledSol)
+              ? {
+                  submissionId: resolvedPreIngestSubmission.submissionId,
+                  mint: resolvedPreIngestSubmission.tokenMint ?? recoveredLp.mint,
+                  side: 'add-lp',
+                  filledSol: actualFilledSol,
+                  actualFilledSol,
+                  actualWalletDeltaSol: -actualFilledSol,
+                  fillAmountSource: 'wallet-delta',
+                  recordedAt: recoveredAt,
+                  hasFillEvidence: true
+                }
+              : undefined;
+            const trustedRecoveredLp = Boolean(recoveredFill && recoveredChainPositionAddress);
+            const recoveryReason = trustedRecoveredLp
+              ? preRecovery.recoveryReason
+              : 'lp-open-reconcile-required:recovered-open-evidence-missing';
+            if (recoveredFill?.actualFilledSol && spendingLimitsStore) {
+              await spendingLimitsStore.settleSpend(
+                resolvedPreIngestSubmission.idempotencyKey,
+                recoveredFill.actualFilledSol
+              );
+            }
+            positionState = {
+              ...(positionState ?? {
+                allowNewOpens: false,
+                flattenOnly: false,
+                lastAction: 'add-lp',
+                updatedAt: recoveredAt
+              }),
+              allowNewOpens: false,
+              lastAction: 'add-lp',
+              lastReason: recoveryReason,
+              lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+              openIntentId: resolvedPreIngestSubmission.openIntentId,
+              positionId: recoveredChainPositionAddress
+                ? createPositionId({ chainPositionAddress: recoveredChainPositionAddress })
+                : resolvedPreIngestSubmission.positionId,
+              chainPositionAddress: recoveredChainPositionAddress ?? resolvedPreIngestSubmission.chainPositionAddress,
+              activeMint: recoveredLp?.mint ?? resolvedPreIngestSubmission.tokenMint,
+              activePoolAddress: recoveredLp?.poolAddress ?? resolvedPreIngestSubmission.poolAddress,
+              lifecycleState: trustedRecoveredLp ? 'open' : 'reconcile_required',
+              entrySol: recoveredFill?.actualFilledSol,
+              entrySolSource: recoveredFill ? 'actual_fill' : undefined,
+              entryFillSubmissionId: recoveredFill?.submissionId,
+              openedAt: recoveredFill?.recordedAt,
+              walletSol: effectiveAccountState?.walletSol,
+              updatedAt: recoveredAt
+            };
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            positionLedger = applyLiveCycleResultToLedger({
+              ledger: positionLedger,
+              positionState,
+              accountState: effectiveAccountState,
+              pendingSubmissionBeforeCycle: resolvedPreIngestSubmission,
+              persistedPendingSubmission: null,
+              actionIdentity: {
+                openIntentId: positionState.openIntentId,
+                positionId: positionState.positionId,
+                chainPositionAddress: positionState.chainPositionAddress
+              },
+              orderIntent: {
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                poolAddress: positionState.activePoolAddress,
+                tokenMint: positionState.activeMint
+              },
+              action: 'add-lp',
+              reason: recoveryReason,
+              liveOrderSubmitted: true,
+              confirmationStatus: 'confirmed',
+              confirmedFill: recoveredFill,
+              now: recoveredAt
+            });
+            if (!trustedRecoveredLp) {
+              positionLedger = {
+                ...positionLedger,
+                records: positionLedger.records.map((record) =>
+                  (positionState?.openIntentId && record.openIntentId === positionState.openIntentId)
+                    || (positionState?.positionId && record.positionId === positionState.positionId)
+                    ? { ...record, lifecycleState: 'reconcile_required' as const, lastReason: recoveryReason, updatedAt: recoveredAt }
+                    : record
+                ),
+                updatedAt: recoveredAt
+              };
+            }
+            await runtimeStateStore.writePositionLedger(positionLedger);
+            await runtimeStateStore.writePositionState(positionState);
+          } else if (resolvedPreIngestSubmission.orderAction === 'withdraw-lp') {
+            const recoveredAt = nowIso();
+            const closureProven = hasFreshCompleteLpExitAbsenceEvidence(
+              resolvedPreIngestSubmission,
+              effectiveAccountState
+            );
+            const residualEvidence = closureProven
+              ? resolveRecoveredLpResidualEvidence({
+                  pendingSubmission: resolvedPreIngestSubmission,
+                  accountState: effectiveAccountState
+                })
+              : {
+                  trusted: false as const,
+                  reason: 'lp-exit-reconcile-required:recovered-exit-absence-unproven'
+                };
+            const recoveryReason = residualEvidence.trusted
+              ? preRecovery.recoveryReason
+              : residualEvidence.reason;
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            positionLedger = applyLiveCycleResultToLedger({
+              ledger: positionLedger,
+              positionState,
+              accountState: effectiveAccountState,
+              pendingSubmissionBeforeCycle: resolvedPreIngestSubmission,
+              persistedPendingSubmission: null,
+              actionIdentity: {
+                openIntentId: resolvedPreIngestSubmission.openIntentId,
+                positionId: resolvedPreIngestSubmission.positionId,
+                chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress
+              },
+              orderIntent: {
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                poolAddress: resolvedPreIngestSubmission.poolAddress,
+                tokenMint: resolvedPreIngestSubmission.tokenMint
+              },
+              action: 'withdraw-lp',
+              reason: recoveryReason,
+              liveOrderSubmitted: true,
+              confirmationStatus: 'confirmed',
+              exitActionClosureProven: Boolean(
+                closureProven
+                && residualEvidence.trusted
+              ),
+              fullExitClosureProven: Boolean(
+                closureProven
+                && residualEvidence.trusted
+                && (
+                  residualEvidence.cleanupStatus === 'residual_cleanup_complete'
+                  || residualEvidence.cleanupStatus === 'residual_dust_ignored'
+                )
+              ),
+              residualCleanupStatus: residualEvidence.trusted
+                ? residualEvidence.cleanupStatus
+                : undefined,
+              residualCleanupAmountRaw: residualEvidence.trusted
+                ? residualEvidence.cleanupAmountRaw
+                : undefined,
+              now: recoveredAt
+            });
+
+            if (!residualEvidence.trusted) {
+              const recordMatches = (record: PositionLedgerSnapshot['records'][number]) => Boolean(
+                (resolvedPreIngestSubmission.chainPositionAddress && (
+                  record.chainPositionAddress === resolvedPreIngestSubmission.chainPositionAddress
+                  || record.positionKey === `chain-position:${resolvedPreIngestSubmission.chainPositionAddress}`
+                ))
+                || (resolvedPreIngestSubmission.openIntentId && record.openIntentId === resolvedPreIngestSubmission.openIntentId)
+                || (resolvedPreIngestSubmission.positionId && record.positionId === resolvedPreIngestSubmission.positionId)
+                || (
+                  resolvedPreIngestSubmission.poolAddress
+                  && resolvedPreIngestSubmission.tokenMint
+                  && record.activePoolAddress === resolvedPreIngestSubmission.poolAddress
+                  && record.activeMint === resolvedPreIngestSubmission.tokenMint
+                )
+              );
+              positionLedger = {
+                ...positionLedger,
+                records: positionLedger.records.map((record) => recordMatches(record)
+                  ? {
+                      ...record,
+                      lifecycleState: 'reconcile_required' as const,
+                      residualCleanupStatus: undefined,
+                      residualCleanupAmountRaw: undefined,
+                      lastReason: recoveryReason,
+                      evidenceMissingReason: recoveryReason,
+                      updatedAt: recoveredAt
+                    }
+                  : record),
+                updatedAt: recoveredAt
+              };
+              positionState = {
+                ...(positionState ?? {
+                  allowNewOpens: false,
+                  flattenOnly: false,
+                  lastAction: 'withdraw-lp',
+                  updatedAt: recoveredAt
+                }),
+                allowNewOpens: false,
+                lastAction: 'withdraw-lp',
+                lastReason: recoveryReason,
+                lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                openIntentId: resolvedPreIngestSubmission.openIntentId ?? positionState?.openIntentId,
+                positionId: resolvedPreIngestSubmission.positionId ?? positionState?.positionId,
+                chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress ?? positionState?.chainPositionAddress,
+                activeMint: resolvedPreIngestSubmission.tokenMint ?? positionState?.activeMint,
+                activePoolAddress: resolvedPreIngestSubmission.poolAddress || positionState?.activePoolAddress,
+                lifecycleState: 'reconcile_required',
+                walletSol: effectiveAccountState?.walletSol,
+                updatedAt: recoveredAt
+              };
+            } else {
+              positionState = selectCompatibilityPositionState({
+                ledger: positionLedger,
+                pendingSubmission: null,
+                prior: {
+                  ...(positionState ?? {
+                    allowNewOpens: false,
+                    flattenOnly: false,
+                    lastAction: 'withdraw-lp',
+                    updatedAt: recoveredAt
+                  }),
+                  lastAction: 'withdraw-lp',
+                  lastReason: recoveryReason,
+                  lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                  openIntentId: undefined,
+                  positionId: undefined,
+                  chainPositionAddress: undefined,
+                  activeMint: undefined,
+                  activePoolAddress: undefined,
+                  lifecycleState: 'closed',
+                  entrySol: undefined,
+                  entrySolSource: undefined,
+                  entryFillSubmissionId: undefined,
+                  openedAt: undefined,
+                  lastClosedMint: resolvedPreIngestSubmission.tokenMint ?? positionState?.activeMint,
+                  lastClosedAt: recoveredAt,
+                  walletSol: effectiveAccountState?.walletSol,
+                  updatedAt: recoveredAt
+                },
+                advance: true,
+                allowNewOpens: false,
+                flattenOnly: positionState?.flattenOnly ?? false,
+                lastAction: 'withdraw-lp',
+                lastReason: recoveryReason,
+                walletSol: effectiveAccountState?.walletSol,
+                now: recoveredAt
+              });
+            }
+            await runtimeStateStore.writePositionLedger(positionLedger);
+            await runtimeStateStore.writePositionState(positionState);
+          } else if (resolvedPreIngestSubmission.orderAction === 'claim-fee') {
+            const recoveredAt = nowIso();
+            const residualEvidence = hasCompleteFreshAccountSnapshot(
+              resolvedPreIngestSubmission,
+              effectiveAccountState
+            )
+              ? resolveRecoveredLpResidualEvidence({
+                  pendingSubmission: resolvedPreIngestSubmission,
+                  accountState: effectiveAccountState
+                })
+              : {
+                  trusted: false as const,
+                  reason: 'lp-exit-reconcile-required:post-claim-account-snapshot-unavailable'
+                };
+            const recoveryReason = residualEvidence.trusted
+              ? preRecovery.recoveryReason
+              : residualEvidence.reason;
+            pendingSubmissionBeforeCycle = resolvedPreIngestSubmission;
+            positionLedger = applyLiveCycleResultToLedger({
+              ledger: positionLedger,
+              positionState,
+              accountState: effectiveAccountState,
+              pendingSubmissionBeforeCycle: resolvedPreIngestSubmission,
+              persistedPendingSubmission: null,
+              actionIdentity: {
+                openIntentId: resolvedPreIngestSubmission.openIntentId,
+                positionId: resolvedPreIngestSubmission.positionId,
+                chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress
+              },
+              orderIntent: {
+                idempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+                poolAddress: resolvedPreIngestSubmission.poolAddress,
+                tokenMint: resolvedPreIngestSubmission.tokenMint
+              },
+              action: 'claim-fee',
+              reason: recoveryReason,
+              liveOrderSubmitted: true,
+              confirmationStatus: 'confirmed',
+              residualCleanupStatus: residualEvidence.trusted
+                ? residualEvidence.cleanupStatus
+                : undefined,
+              residualCleanupAmountRaw: residualEvidence.trusted
+                ? residualEvidence.cleanupAmountRaw
+                : undefined,
+              now: recoveredAt
+            });
+            const recordMatches = (record: PositionLedgerSnapshot['records'][number]) => Boolean(
+              (resolvedPreIngestSubmission.chainPositionAddress && (
+                record.chainPositionAddress === resolvedPreIngestSubmission.chainPositionAddress
+                || record.positionKey === `chain-position:${resolvedPreIngestSubmission.chainPositionAddress}`
+              ))
+              || (resolvedPreIngestSubmission.openIntentId && record.openIntentId === resolvedPreIngestSubmission.openIntentId)
+              || (resolvedPreIngestSubmission.positionId && record.positionId === resolvedPreIngestSubmission.positionId)
+              || (
+                resolvedPreIngestSubmission.poolAddress
+                && resolvedPreIngestSubmission.tokenMint
+                && record.activePoolAddress === resolvedPreIngestSubmission.poolAddress
+                && record.activeMint === resolvedPreIngestSubmission.tokenMint
+              )
+            );
+            if (!residualEvidence.trusted) {
+              positionLedger = {
+                ...positionLedger,
+                records: positionLedger.records.map((record) => recordMatches(record)
+                  ? {
+                      ...record,
+                      lifecycleState: 'reconcile_required' as const,
+                      residualCleanupStatus: undefined,
+                      residualCleanupAmountRaw: undefined,
+                      lastReason: recoveryReason,
+                      evidenceMissingReason: recoveryReason,
+                      updatedAt: recoveredAt
+                    }
+                  : record),
+                updatedAt: recoveredAt
+              };
+            }
+            positionState = {
+              ...(positionState ?? {
+                allowNewOpens: false,
+                flattenOnly: false,
+                lastAction: 'claim-fee',
+                updatedAt: recoveredAt
+              }),
+              allowNewOpens: false,
+              lastAction: 'claim-fee',
+              lastReason: recoveryReason,
+              lastOrderIdempotencyKey: resolvedPreIngestSubmission.idempotencyKey,
+              openIntentId: resolvedPreIngestSubmission.openIntentId ?? positionState?.openIntentId,
+              positionId: resolvedPreIngestSubmission.positionId ?? positionState?.positionId,
+              chainPositionAddress: resolvedPreIngestSubmission.chainPositionAddress ?? positionState?.chainPositionAddress,
+              activeMint: resolvedPreIngestSubmission.tokenMint ?? positionState?.activeMint,
+              activePoolAddress: resolvedPreIngestSubmission.poolAddress || positionState?.activePoolAddress,
+              lifecycleState: residualEvidence.trusted ? (positionState?.lifecycleState ?? 'open') : 'reconcile_required',
+              walletSol: effectiveAccountState?.walletSol,
+              updatedAt: recoveredAt
+            };
+            await runtimeStateStore.writePositionLedger(positionLedger);
+            await runtimeStateStore.writePositionState(positionState);
+          }
+        }
+        if (
+          resolvedPreIngestSubmission
+          && preRecovery.recoveryReason === 'pending-submission-failed'
+          && resolvedPreIngestSubmission.orderAction
+          && classifyAction(resolvedPreIngestSubmission.orderAction) === 'open_risk'
+        ) {
+          // A submitted open that later fails on-chain consumed no position
+          // capital. Release its durable reservation before erasing the
+          // pending identity; releaseSpend is idempotent across crashes.
+          await spendingLimitsStore.releaseSpend(
+            resolvedPreIngestSubmission.idempotencyKey,
+            resolvedPreIngestSubmission.requestedPositionSol
+          );
+        }
+        if (resolvedPreIngestSubmission) {
+          // The recovered business state is now durable (or the submission
+          // resolved as failed), so the pending identity can be cleared.
+          await pendingSubmissionStore.clear();
         }
 
         const cooldownActive = pendingSubmission !== null && runtimeState.cooldownUntil !== '' && runtimeState.cooldownUntil > nowIso();
@@ -2365,6 +3479,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           now: nowIso()
         });
         await runtimeStateStore.writePositionLedger(positionLedger);
+        await reportUnboundLpOwnership(positionLedger);
         effectiveAccountState = suppressClosedLedgerLpPositions({
           accountState: effectiveAccountState,
           ledger: positionLedger
@@ -2373,7 +3488,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (options.signer && options.broadcaster) {
           const preIngestResidualSweepResult = await runResidualTokenSweepIfDue({
             strategy: options.strategy,
+            executionPolicy: options.captureMode === 'mechanical-soak' || options.captureMode === 'economic-shadow'
+              ? 'simulate-only'
+              : 'broadcast',
+            captureMode: options.captureMode,
+            maxSlippageBps: options.residualSweepMaxSlippageBps ?? 100,
+            maxImpactBps: options.residualSweepMaxImpactBps ?? 200,
             accountState: effectiveAccountState,
+            positionLedger,
             runtimeMode: runtimeState.mode,
             runtimeReason: runtimeState.circuitReason,
             pendingSubmission: hasPendingSubmission,
@@ -2385,10 +3507,21 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             residualTokenSweepIntervalMs,
             residualTokenSweepCooldownMs,
             residualTokenSweepMinValueSol,
-            nextSweepAt: nextResidualTokenSweepAt
+            nextSweepAt: nextResidualTokenSweepAt,
+            preparedBroadcastStore,
+            pendingSubmissionStore
           });
           dependencyHealth = preIngestResidualSweepResult.dependencyHealth;
           nextResidualTokenSweepAt = preIngestResidualSweepResult.nextSweepAt;
+          pendingSubmission = await pendingSubmissionStore.read();
+          positionLedger = markResidualCleanupResolved(
+            positionLedger,
+            preIngestResidualSweepResult.resolvedMints,
+            nowIso()
+          );
+          if (preIngestResidualSweepResult.resolvedMints.length > 0 && positionLedger) {
+            await runtimeStateStore.writePositionLedger(positionLedger);
+          }
         }
 
         const terminalFlatPositionState = reconcileTerminalFlatPositionState({
@@ -2444,7 +3577,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
         }
 
-        if (positionState?.lifecycleState === 'open') {
+        if (positionState?.lifecycleState === 'open' && options.strategy === 'new-token-v1') {
           const boundPosition = resolveBoundLpPosition({
             accountState: effectiveAccountState,
             chainPositionAddress: positionState.chainPositionAddress,
@@ -2558,8 +3691,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
                       entryFillSubmissionId: evidence.signature,
                       openedAt: evidence.openedAt
                     };
-                    if (positionState.lastOrderIdempotencyKey) {
-                      await new SpendingLimitsStore(stateRootDir).settleSpend(
+                    if (positionState.lastOrderIdempotencyKey && spendingLimitsStore) {
+                      await spendingLimitsStore.settleSpend(
                         positionState.lastOrderIdempotencyKey,
                         evidence.entrySol
                       );
@@ -2667,6 +3800,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         cycleInput = await buildCycleInput(tickCount, {
           tickCount,
           positionState,
+          positionLedger,
           accountState: effectiveAccountState,
           selectionMode: shouldStartMaintenancePass
             ? 'maintenance-only'
@@ -2712,9 +3846,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           accountState: effectiveAccountState,
           pendingSubmission,
           closeMissingActive: true,
+          updateRiskSentinel: false,
           now: nowIso()
         });
         await runtimeStateStore.writePositionLedger(positionLedger);
+        await reportUnboundLpOwnership(positionLedger);
         effectiveAccountState = suppressClosedLedgerLpPositions({
           accountState: effectiveAccountState,
           ledger: positionLedger
@@ -2742,6 +3878,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           evolutionSink,
           accountState: effectiveAccountState,
           positionLedger,
+          deferResolvedPendingClear: true,
           residualTokenSweepMinValueSol
         });
 
@@ -2794,6 +3931,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             let newOpenCycleInput = await buildCycleInput(tickCount, {
               tickCount,
               positionState,
+              positionLedger,
               accountState: effectiveAccountState,
               selectionMode: 'new-open-only',
               skipMints,
@@ -3005,7 +4143,43 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             updatedAt: nowIso()
           };
         }
-        if (postTickPendingSubmission && effectiveAccountState) {
+        const currentCycleSubmissionClosureProven = Boolean(
+          postTickPendingSubmission
+          && result.submittedActionClosureProven === true
+          && result.liveOrderSubmitted
+          && result.orderIntent?.idempotencyKey === postTickPendingSubmission.idempotencyKey
+        );
+        const currentCycleSpotOpenProven = Boolean(
+          postTickPendingSubmission
+          && result.action === 'deploy'
+          && result.liveOrderSubmitted
+          && result.confirmationStatus === 'confirmed'
+          && result.orderIntent?.idempotencyKey === postTickPendingSubmission.idempotencyKey
+          && result.confirmedFill?.hasFillEvidence === true
+          && result.confirmedFill.acquiredTokenAmountRaw
+          && /^\d+$/.test(result.confirmedFill.acquiredTokenAmountRaw)
+          && BigInt(result.confirmedFill.acquiredTokenAmountRaw) > 0n
+        );
+        if (
+          postTickPendingSubmission
+          && (currentCycleSubmissionClosureProven || currentCycleSpotOpenProven)
+        ) {
+          // runLiveCycle used a fresh post-submit snapshot. Keep the physical
+          // pending record until the ledger/state writes below are durable,
+          // but never let the stale pre-cycle snapshot veto that proof.
+          resolvedPostTickSubmission = postTickPendingSubmission;
+          postTickPendingSubmission = null;
+          pendingSubmission = null;
+          runtimeState = {
+            ...runtimeState,
+            mode: 'healthy' as RuntimeMode,
+            circuitReason: '',
+            cooldownUntil: '',
+            transientAutoHealEligible: false,
+            transientRecoverySuccessTicks: 0,
+            updatedAt: nowIso()
+          };
+        } else if (postTickPendingSubmission && effectiveAccountState) {
           const postTickRecovery = await recoverPendingSubmission({
             pendingSubmission: postTickPendingSubmission,
             confirmationProvider,
@@ -3013,23 +4187,31 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           });
 
           if (postTickRecovery.clearPending) {
-            await pendingSubmissionStore.clear();
-            postTickPendingSubmission = null;
-            pendingSubmission = null;
-            pendingSubmissionBeforeCycle = null;
-            if (
-              postTickRecovery.reason === 'pending-submission-filled' ||
-              postTickRecovery.reason === 'pending-submission-confirmed'
-            ) {
-              runtimeState = {
-                ...runtimeState,
-                mode: 'healthy' as RuntimeMode,
-                circuitReason: '',
-                cooldownUntil: '',
-                transientAutoHealEligible: false,
-                transientRecoverySuccessTicks: 0,
-                updatedAt: nowIso()
-              };
+            const resolvedCurrentCycleSubmission = Boolean(
+              result.liveOrderSubmitted
+              && result.orderIntent?.idempotencyKey === postTickPendingSubmission.idempotencyKey
+            );
+            if (resolvedCurrentCycleSubmission) {
+              // Keep the physical pending record until the matching ledger and
+              // compatibility position state are durable. The logical cycle
+              // may proceed as resolved, but a crash must replay this identity.
+              resolvedPostTickSubmission = postTickPendingSubmission;
+              postTickPendingSubmission = null;
+              pendingSubmission = null;
+              if (
+                postTickRecovery.reason === 'pending-submission-filled' ||
+                postTickRecovery.reason === 'pending-submission-confirmed'
+              ) {
+                runtimeState = {
+                  ...runtimeState,
+                  mode: 'healthy' as RuntimeMode,
+                  circuitReason: '',
+                  cooldownUntil: '',
+                  transientAutoHealEligible: false,
+                  transientRecoverySuccessTicks: 0,
+                  updatedAt: nowIso()
+                };
+              }
             }
           } else if (postTickRecovery.nextPendingSubmission) {
             await pendingSubmissionStore.write(postTickRecovery.nextPendingSubmission);
@@ -3053,7 +4235,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           runtimeState = applyDerivedRuntimeState({
             currentState: runtimeState,
             derived: postTickDerived,
-            pendingSubmission: postTickPendingSubmission !== null,
+            pendingSubmission: postTickPendingSubmission !== null || resolvedPostTickSubmission !== null,
             now: nowIso()
           });
         }
@@ -3061,7 +4243,14 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         if (!(result.liveOrderSubmitted && result.action === 'dca-out')) {
           const residualSweepResult = await runResidualTokenSweepIfDue({
             strategy: options.strategy,
+            executionPolicy: options.captureMode === 'mechanical-soak' || options.captureMode === 'economic-shadow'
+              ? 'simulate-only'
+              : 'broadcast',
+            captureMode: options.captureMode,
+            maxSlippageBps: options.residualSweepMaxSlippageBps ?? 100,
+            maxImpactBps: options.residualSweepMaxImpactBps ?? 200,
             accountState: effectiveAccountState,
+            positionLedger,
             runtimeMode: runtimeState.mode,
             runtimeReason: runtimeState.circuitReason,
             pendingSubmission: postTickPendingSubmission !== null,
@@ -3073,10 +4262,21 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
             residualTokenSweepIntervalMs,
             residualTokenSweepCooldownMs,
             residualTokenSweepMinValueSol,
-            nextSweepAt: nextResidualTokenSweepAt
+            nextSweepAt: nextResidualTokenSweepAt,
+            preparedBroadcastStore,
+            pendingSubmissionStore
           });
           dependencyHealth = residualSweepResult.dependencyHealth;
           nextResidualTokenSweepAt = residualSweepResult.nextSweepAt;
+          postTickPendingSubmission = await pendingSubmissionStore.read();
+          positionLedger = markResidualCleanupResolved(
+            positionLedger,
+            residualSweepResult.resolvedMints,
+            nowIso()
+          );
+          if (residualSweepResult.resolvedMints.length > 0 && positionLedger) {
+            await runtimeStateStore.writePositionLedger(positionLedger);
+          }
         }
 
         runtimeState = applyTransientCircuitAutoHeal({
@@ -3113,7 +4313,9 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const resultContextPoolAddress = typeof result.context?.pool?.address === 'string' && result.context.pool.address.length > 0
           ? result.context.pool.address
           : '';
-        const persistedPendingSubmission = await pendingSubmissionStore.read();
+        const persistedPendingSubmission = resolvedPostTickSubmission
+          ? null
+          : await pendingSubmissionStore.read();
         const persistedActiveTarget = resolvePersistedActiveTarget({
           positionState,
           pendingSubmission: persistedPendingSubmission ?? pendingSubmissionBeforeCycle,
@@ -3125,7 +4327,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         });
         const persistedActiveMint = persistedActiveTarget.activeMint;
         const persistedPoolAddress = persistedActiveTarget.activePoolAddress;
-        const persistedLifecycleState = resolveLifecycleStateForPersist({
+        const resolvedPersistedLifecycleState = resolveLifecycleStateForPersist({
           nextLifecycleState: result.nextLifecycleState,
           previousLifecycleState: positionState?.lifecycleState,
           pendingSubmission: persistedPendingSubmission !== null,
@@ -3139,32 +4341,32 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activePoolAddress: persistedPoolAddress
         });
 
+        const persistedLifecycleState = result.fullExitClosureProven === true
+          ? 'closed'
+          : result.action === 'withdraw-lp' && result.submittedActionClosureProven === true
+            ? 'inventory_exit_ready'
+            : resolvedPersistedLifecycleState;
         const failedOpenCooldownMint = result.reason.startsWith('failed-open-cooldown:')
           ? result.reason.slice('failed-open-cooldown:'.length)
           : '';
         const positionClosed = persistedLifecycleState === 'closed';
-        const fullExitSucceeded = isFullExitAction(result.action as LiveAction) && result.liveOrderSubmitted;
-        const activeLpStillInAccount = fullExitSucceeded && hasMatchingLpPosition({
-          accountState: effectiveAccountState,
-          chainPositionAddress: positionState?.chainPositionAddress,
-          activeMint: persistedActiveMint,
-          activePoolAddress: persistedPoolAddress
-        });
+        const fullExitClosureProven = result.fullExitClosureProven === true;
         const shouldRecordClosedMint = (
           positionClosed &&
           (isExposureReducingAction(result.action) || Boolean(positionState?.activeMint))
-        ) || (fullExitSucceeded && !activeLpStillInAccount) || failedOpenCooldownMint.length > 0;
+        ) || fullExitClosureProven || failedOpenCooldownMint.length > 0;
         const closedMint = shouldRecordClosedMint
           ? (failedOpenCooldownMint || persistedActiveMint || positionState?.activeMint || resultContextMint)
           : (positionState?.lastClosedMint ?? '');
         const closedAt = shouldRecordClosedMint ? nowIso() : (positionState?.lastClosedAt ?? '');
-        const persistedActiveMintForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedActiveMint;
-        const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || (fullExitSucceeded && !activeLpStillInAccount)) ? undefined : persistedPoolAddress;
+        const persistedActiveMintForState = (persistedLifecycleState === 'closed' || fullExitClosureProven) ? undefined : persistedActiveMint;
+        const persistedActivePoolAddressForState = (persistedLifecycleState === 'closed' || fullExitClosureProven) ? undefined : persistedPoolAddress;
         const lifecycleEventNow = nowIso();
         const lifecycleEvents = buildLifecycleEventsFromResult({
           strategyId: options.strategy,
           result,
-          now: lifecycleEventNow
+          now: lifecycleEventNow,
+          fullExitClosureProven
         });
         if (lifecycleEvents.length > 0) {
           await runtimeStateStore.appendLifecycleEvents(lifecycleEvents);
@@ -3183,8 +4385,11 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           exitTriggerReason: result.audit?.reason,
           liveOrderSubmitted: result.liveOrderSubmitted,
           confirmationStatus: result.confirmationStatus,
+          exitActionClosureProven: result.submittedActionClosureProven,
+          fullExitClosureProven,
           residualCleanupStatus: residualCleanupStatusFromResult(result),
           residualCleanupValueSol: residualCleanupValueFromResult(result),
+          residualCleanupAmountRaw: residualCleanupAmountRawFromResult(result),
           confirmedFill: result.confirmedFill,
           now: lifecycleEventNow
         });
@@ -3254,7 +4459,8 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           }
           report.circuitReason = report.circuitReason || 'lifecycle-reconcile-required';
         }
-        const submittedOpenEntry = result.action === 'add-lp' && result.liveOrderSubmitted
+        const submittedOpenEntry = (result.action === 'add-lp' || result.action === 'deploy')
+          && result.liveOrderSubmitted
           ? resolveConfirmedOpenFillEntry({
               resultFill: result.confirmedFill,
               activeMint: persistedActiveMint
@@ -3293,7 +4499,13 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
         const persistedEntrySol = persistedEntryMetadata?.entrySol;
         const persistedEntrySolSource = persistedEntryMetadata?.entrySolSource;
         const persistedEntryFillSubmissionId = persistedEntryMetadata?.entryFillSubmissionId;
-        const persistedOpenedAt = result.action === 'add-lp' && result.liveOrderSubmitted
+        const persistedOwnedTokenAmountRaw = positionClosed
+          ? undefined
+          : result.action === 'deploy' && result.confirmedFill?.acquiredTokenAmountRaw
+            ? result.confirmedFill.acquiredTokenAmountRaw
+            : positionState?.ownedTokenAmountRaw;
+        const persistedOpenedAt = (result.action === 'add-lp' || result.action === 'deploy')
+          && result.liveOrderSubmitted
           ? (submittedOpenEntry?.openedAt ?? nowIso())
           : positionClosed
             ? undefined
@@ -3371,6 +4583,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           activeMint: persistedActiveMintForState,
           activePoolAddress: persistedActivePoolAddressForState,
           lifecycleState: persistedLifecycleState,
+          ownedTokenAmountRaw: persistedOwnedTokenAmountRaw,
           entrySol: orphanedIdentity?.entrySol ?? inferredPositionMetadata.entrySol,
           entrySolSource: inferredPositionMetadata.entrySolSource,
           entryFillSubmissionId: inferredPositionMetadata.entryFillSubmissionId,
@@ -3390,7 +4603,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           walletSol: effectiveAccountState?.walletSol,
           updatedAt: nowIso()
         };
-        await runtimeStateStore.writePositionState(selectCompatibilityPositionState({
+        const compatibilityPositionState = selectCompatibilityPositionState({
           ledger: positionLedger,
           pendingSubmission: persistedPendingSubmission,
           prior: nextPositionState,
@@ -3401,7 +4614,23 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           lastReason: result.reason,
           walletSol: effectiveAccountState?.walletSol,
           now: nowIso()
-        }));
+        });
+        await runtimeStateStore.writePositionState(
+          result.action === 'withdraw-lp'
+          && result.submittedActionClosureProven === true
+          && result.fullExitClosureProven !== true
+          && compatibilityPositionState.lifecycleState === 'closed'
+            ? nextPositionState
+            : compatibilityPositionState
+        );
+        if (resolvedPostTickSubmission) {
+          const stillPending = await pendingSubmissionStore.read();
+          if (stillPending?.idempotencyKey === resolvedPostTickSubmission.idempotencyKey) {
+            await pendingSubmissionStore.clear();
+          }
+          resolvedPostTickSubmission = null;
+          report.pendingSubmission = false;
+        }
         enqueueResolvedOpenOrderMirror({
           mirrorRuntime,
           idempotencyKey: result.orderIntent?.idempotencyKey ?? positionState?.lastOrderIdempotencyKey,
@@ -3525,6 +4754,7 @@ export async function runLiveDaemon(options: LiveDaemonOptions) {
           chainPositionAddress: persistedIdentity.chainPositionAddress,
           activePoolAddress: positionClosed ? undefined : positionState?.activePoolAddress,
           lifecycleState: persistedLifecycleState,
+          ownedTokenAmountRaw: positionClosed ? undefined : positionState?.ownedTokenAmountRaw,
           entrySol: positionClosed ? undefined : positionState?.entrySol,
           entrySolSource: positionClosed ? undefined : positionState?.entrySolSource,
           entryFillSubmissionId: positionClosed ? undefined : positionState?.entryFillSubmissionId,

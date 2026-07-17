@@ -263,50 +263,64 @@ export class SolanaRpcClient {
       visibilityAttempts?: number;
       visibilityDelayMs?: number;
     } = {}
-  ): Promise<{ signature: string; status: SignatureStatus }> {
+  ): Promise<{
+    signature: string;
+    status?: SignatureStatus;
+    visibility: 'visible' | 'accepted_unconfirmed';
+    visibilityReason?: string;
+  }> {
     const attempts = options.visibilityAttempts ?? DEFAULT_SIGNATURE_VISIBILITY_ATTEMPTS;
     const delayMs = options.visibilityDelayMs ?? DEFAULT_SIGNATURE_VISIBILITY_DELAY_MS;
-    const acceptedSignatures: string[] = [];
     let lastError: Error | undefined;
 
     for (const url of this.writeUrls) {
+      let signature: string;
       try {
-        const signature = await this.sendRawTransactionToUrl(url, base64Transaction);
-        acceptedSignatures.push(signature);
-        const status = await this.waitForSignatureVisibility(signature, { attempts, delayMs });
-
-        if (status) {
-          if (status.err) {
-            throw new Error('Solana transaction failed pre-confirmation: ' + JSON.stringify(status.err));
-          }
-
-          return { signature, status };
-        }
-
-        lastError = new Error('Solana transaction ' + signature + ' was accepted by RPC but never became visible');
+        signature = await this.sendRawTransactionToUrl(url, base64Transaction);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
-        if (
-          lastError.message.includes('Solana transaction failed pre-confirmation:') ||
-          lastError.message.includes('Solana RPC sendTransaction error:')
-        ) {
+        if (lastError.message.includes('Solana RPC sendTransaction error:')) {
           throw lastError;
         }
 
         const disposition = this.classifyCallError(lastError);
 
-        if (!disposition?.retryable && acceptedSignatures.length === 0) {
+        if (!disposition?.retryable) {
           throw lastError;
         }
+
+        continue;
       }
+
+      let status: SignatureStatus | null;
+      try {
+        status = await this.waitForSignatureVisibility(signature, { attempts, delayMs });
+      } catch (error) {
+        const visibilityError = error instanceof Error ? error : new Error(String(error));
+        return {
+          signature,
+          visibility: 'accepted_unconfirmed',
+          visibilityReason: visibilityError.message
+        };
+      }
+
+      if (!status) {
+        return {
+          signature,
+          visibility: 'accepted_unconfirmed',
+          visibilityReason: `Solana transaction ${signature} was accepted by RPC but never became visible`
+        };
+      }
+
+      if (status.err) {
+        throw new Error('Solana transaction failed pre-confirmation: ' + JSON.stringify(status.err));
+      }
+
+      return { signature, status, visibility: 'visible' };
     }
 
-    throw new Error(
-      'Solana transaction was not visible after broadcast attempts' +
-      (acceptedSignatures.length > 0 ? '; acceptedSignatures=' + acceptedSignatures.join(',') : '') +
-      (lastError ? '; lastError=' + lastError.message : '')
-    );
+    throw lastError ?? new Error('All Solana write RPC endpoints failed before accepting the transaction');
   }
 
   async getSignatureStatuses(

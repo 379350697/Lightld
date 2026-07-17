@@ -14,6 +14,7 @@ export type LiveBroadcastResult =
       mainExecutionStatus?: 'submitted' | 'confirmed';
       residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
       residualUnsoldMints?: string[];
+      residualUnsoldAmountsRaw?: Record<string, string>;
       residualIgnoredMints?: string[];
       residualFailureReasons?: string[];
       residualEstimatedValueSol?: number;

@@ -1,5 +1,9 @@
 import type { TokenSafetyResult } from '../ingest/gmgn/token-safety-client.ts';
-import { GMGN_SAFETY_DEFERRED_ERROR, isTokenSafe } from '../ingest/gmgn/token-safety-client.ts';
+import {
+  DEFAULT_SAFETY_CONFIG,
+  GMGN_SAFETY_DEFERRED_ERROR,
+  isTokenSafe
+} from '../ingest/gmgn/token-safety-client.ts';
 import type { IngestCandidate } from '../runtime/ingest-candidate-selection.ts';
 import type { StrategyId } from '../runtime/live-cycle.ts';
 import type { CandidateSourceObservation } from './types.ts';
@@ -15,9 +19,7 @@ function boundedPositive(value: number, cap: number) {
 function feeTvlScore(feeTvlRatio24h: number) {
   if (!Number.isFinite(feeTvlRatio24h) || feeTvlRatio24h <= 0) return 0;
 
-  // Meteora rows can surface this as a decimal ratio or a percent-like number.
-  const percentLikeValue = feeTvlRatio24h <= 1 ? feeTvlRatio24h * 100 : feeTvlRatio24h;
-  return Math.min(50, percentLikeValue);
+  return Math.min(50, feeTvlRatio24h * 100);
 }
 
 function candidateScore(candidate: IngestCandidate) {
@@ -129,7 +131,7 @@ export function buildGmgnObservation(input: {
   const result = input.result;
   const hasError = Boolean(result?.error);
   const deferred = result?.error === GMGN_SAFETY_DEFERRED_ERROR;
-  const safe = result ? isTokenSafe(result, { disabled: false, minHolders: 0, minBluechipPct: 0, minSafetyScore: 0 }) : false;
+  const safe = result ? isTokenSafe(result, DEFAULT_SAFETY_CONFIG) : false;
   const hardRejectReason = !hasError && result && !safe
     ? (result.rejectReasons?.join(',') || 'gmgn-unsafe')
     : '';

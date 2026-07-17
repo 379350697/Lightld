@@ -85,7 +85,7 @@ export function isSubmittedPendingOpenRecord(
   }
 
   if (
-    record.lastAction === 'add-lp' &&
+    (record.lastAction === 'add-lp' || record.lastAction === 'deploy') &&
     record.lastReason === 'awaiting-chain-position-evidence' &&
     record.entryFillSubmissionId
   ) {
@@ -101,7 +101,7 @@ export function isSubmittedPendingOpenRecord(
   }
 
   const hasPersistedPendingFields = Boolean(
-    record.pendingOrderAction === 'add-lp' &&
+    (record.pendingOrderAction === 'add-lp' || record.pendingOrderAction === 'deploy') &&
     record.pendingSubmissionId &&
     record.pendingConfirmationStatus &&
     record.pendingConfirmationStatus !== 'failed' &&
@@ -137,6 +137,17 @@ export function classifyPositionRecord(
 
   if (record.lifecycleState === 'reconcile_required') {
     return 'reconcile_required';
+  }
+
+  if (
+    record.ownedTokenAmountRaw
+    && (
+      record.lifecycleState === 'open'
+      || record.lifecycleState === 'inventory_exit_pending'
+      || record.lifecycleState === 'inventory_exit_ready'
+    )
+  ) {
+    return 'chain_active';
   }
 
   if (record.chainPositionAddress) {

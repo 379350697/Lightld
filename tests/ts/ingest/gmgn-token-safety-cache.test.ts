@@ -9,12 +9,26 @@ import {
   fetchTokenSafetyBatch,
   getTokenSafetyCacheSize,
   GMGN_SAFETY_DEFERRED_ERROR,
+  isTokenSafe,
   primeTokenSafetyCacheForTests,
   resolveGmgnSafetyTimeoutMs,
   sweepTokenSafetyCache
 } from '../../../src/ingest/gmgn/token-safety-client';
 
 describe('GMGN token safety cache', () => {
+  it('fails closed when required holder or bluechip evidence is missing or below policy', () => {
+    const base = {
+      mint: 'mint-policy',
+      safe: true,
+      safetyScore: 80,
+      maxScore: 120
+    };
+
+    expect(isTokenSafe(base)).toBe(false);
+    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 0.7 })).toBe(false);
+    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 1 })).toBe(true);
+  });
+
   it('sweeps expired entries before enforcing the max entry limit', () => {
     clearTokenSafetyCacheForTests();
     primeTokenSafetyCacheForTests('mint-expired', {

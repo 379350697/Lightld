@@ -26,7 +26,9 @@ type EngineCycleResult =
     };
 
 export function runEngineCycle(input: RunnerInput): EngineCycleResult {
-  const shouldApplyEntryHardGates = !(input.engine === 'new-token' && Boolean(input.snapshot.hasLpPosition));
+  const shouldApplyEntryHardGates = input.engine === 'new-token'
+    ? !Boolean(input.snapshot.hasLpPosition) && !Boolean(input.snapshot.hasInventory)
+    : !Boolean(input.snapshot.hasInventory);
   const gates = shouldApplyEntryHardGates ? evaluateHardGates(
     {
       hasSolRoute: Boolean(input.snapshot.hasSolRoute),
@@ -59,6 +61,7 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
       positionSol: typeof input.snapshot.requestedPositionSol === 'number' ? input.snapshot.requestedPositionSol : undefined,
       expectedFeeSol: typeof input.snapshot.expectedFeeSol === 'number' ? input.snapshot.expectedFeeSol : undefined,
       feeTvlRatio24h: typeof input.snapshot.feeTvlRatio24h === 'number' ? input.snapshot.feeTvlRatio24h : undefined,
+      feeHorizonHours: number(input.config.maxHoldHours),
       adverseSelectionBps: typeof input.snapshot.adverseSelectionBps === 'number' ? input.snapshot.adverseSelectionBps : undefined,
       impermanentLossBps: typeof input.snapshot.impermanentLossBps === 'number' ? input.snapshot.impermanentLossBps : undefined,
       roundTripCostBps: typeof input.snapshot.roundTripCostBps === 'number' ? input.snapshot.roundTripCostBps : undefined,
@@ -91,6 +94,10 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpRiskIntent: typeof input.snapshot.lpRiskIntent === 'string' ? input.snapshot.lpRiskIntent as any : undefined,
           lpRiskReason: typeof input.snapshot.lpRiskReason === 'string' ? input.snapshot.lpRiskReason : undefined,
           lpNetPnlPct: typeof input.snapshot.lpNetPnlPct === 'number' ? input.snapshot.lpNetPnlPct : undefined,
+          lpModeledNetPnlPct: typeof input.snapshot.lpModeledNetPnlPct === 'number' ? input.snapshot.lpModeledNetPnlPct : undefined,
+          lpModeledPnlSource: input.snapshot.lpModeledPnlSource === 'paper-shadow-dlmm-active-bin-modeled'
+            ? input.snapshot.lpModeledPnlSource
+            : undefined,
           lpSolDepletedBins: typeof input.snapshot.lpSolDepletedBins === 'number' ? input.snapshot.lpSolDepletedBins : undefined,
           lpSolExposureStatus: typeof input.snapshot.lpSolExposureStatus === 'string' ? input.snapshot.lpSolExposureStatus as any : undefined,
           lpUnclaimedFeeUsd: typeof input.snapshot.lpUnclaimedFeeUsd === 'number' ? input.snapshot.lpUnclaimedFeeUsd : undefined,
@@ -114,7 +121,20 @@ export function runEngineCycle(input: RunnerInput): EngineCycleResult {
           lpMaxImpermanentLossPct: typeof input.config.lpMaxImpermanentLossPct === 'number' ? input.config.lpMaxImpermanentLossPct : undefined
         }
       )
-    : buildLargePoolDecision();
+    : buildLargePoolDecision(
+      {
+        inSession: Boolean(input.snapshot.inSession),
+        hasInventory: Boolean(input.snapshot.hasInventory),
+        unrealizedPct: typeof input.snapshot.unrealizedPct === 'number' ? input.snapshot.unrealizedPct : undefined,
+        holdTimeMs: typeof input.snapshot.holdTimeMs === 'number' ? input.snapshot.holdTimeMs : undefined,
+        lifecycleState: typeof input.snapshot.lifecycleState === 'string' ? input.snapshot.lifecycleState : undefined
+      },
+      {
+        takeProfitPct: typeof input.config.takeProfitPct === 'number' ? input.config.takeProfitPct : undefined,
+        stopLossPct: typeof input.config.stopLossPct === 'number' ? input.config.stopLossPct : undefined,
+        maxHoldHours: typeof input.config.maxHoldHours === 'number' ? input.config.maxHoldHours : undefined
+      }
+    );
 
   return {
     action: decision.action,

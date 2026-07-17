@@ -5,6 +5,8 @@ import { classifyAction } from './action-semantics.ts';
 import { isSolanaTransactionSignature } from '../shared/solana-signature.ts';
 import {
   hasAnyWalletEvidenceForPendingSubmission,
+  hasCompleteFreshAccountSnapshot,
+  hasFreshCompleteLpExitAbsenceEvidence,
   hasFullyFundedWalletLpEvidence,
   hasWalletLpEvidence,
   hasWalletTokenEvidence
@@ -33,6 +35,52 @@ type PendingSubmissionRecoveryResult = {
 
 function nowIso(now?: Date) {
   return (now ?? new Date()).toISOString();
+}
+
+function hasCompleteFreshNegativeEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+) {
+  return hasCompleteFreshAccountSnapshot(pendingSubmission, accountState);
+}
+
+function isPartialBatch(pendingSubmission: PendingSubmissionSnapshot) {
+  return pendingSubmission.batchStatus === 'partial'
+    || pendingSubmission.reason === 'pending-submission-partial-failure'
+    || pendingSubmission.reason?.startsWith('pending-submission-partial-failure:') === true;
+}
+
+function isExplicitlyNotSubmitted(
+  pendingSubmission: PendingSubmissionSnapshot
+) {
+  if (
+    pendingSubmission.submissionId
+    || pendingSubmission.submissionIds?.some((submissionId) => submissionId.length > 0)
+  ) {
+    return false;
+  }
+
+  const reason = (pendingSubmission.reason ?? '').toLowerCase();
+  return reason === 'broadcast-not-submitted'
+    || reason.startsWith('broadcast-not-submitted:');
+}
+
+function unresolvedPartialBatch(
+  pendingSubmission: PendingSubmissionSnapshot
+): PendingSubmissionRecoveryResult {
+  return {
+    blocked: true,
+    resolved: false,
+    clearPending: false,
+    reason: 'pending-submission-recovery-required',
+    nextPendingSubmission: {
+      ...pendingSubmission,
+      batchStatus: 'partial',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      reason: 'pending-submission-partial-failure'
+    }
+  };
 }
 
 function hasMatchingFill(
@@ -97,11 +145,26 @@ function isUnknownOpenFailure(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!accountState) {
+  // Negative wallet evidence is only terminal for the local paper overlay.
+  // A live transaction can be accepted without returning a submission id and
+  // land after an otherwise fresh account snapshot, so live must remain
+  // fail-closed until positive chain/execution evidence or manual recovery.
+  if (
+    pendingSubmission.captureMode !== 'mechanical-soak'
+    && pendingSubmission.captureMode !== 'economic-shadow'
+  ) {
     return false;
   }
 
-  if (pendingSubmission.submissionId || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)) {
+  if (!hasCompleteFreshNegativeEvidence(pendingSubmission, accountState)) {
+    return false;
+  }
+
+  if (
+    pendingSubmission.submissionId
+    || pendingSubmission.submissionIds?.some((submissionId) => submissionId.length > 0)
+    || hasAnyWalletEvidenceForPendingSubmission(pendingSubmission, accountState)
+  ) {
     return false;
   }
 
@@ -116,7 +179,7 @@ function isUnknownExitFill(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!accountState) {
+  if (!hasCompleteFreshNegativeEvidence(pendingSubmission, accountState)) {
     return false;
   }
 
@@ -135,7 +198,14 @@ function isUntrackedReduceRiskFailure(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!accountState) {
+  if (
+    pendingSubmission.captureMode !== 'mechanical-soak'
+    && pendingSubmission.captureMode !== 'economic-shadow'
+  ) {
+    return false;
+  }
+
+  if (!hasCompleteFreshNegativeEvidence(pendingSubmission, accountState)) {
     return false;
   }
 
@@ -154,7 +224,7 @@ function hasFreshOpenWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!accountState) {
+  if (!hasCompleteFreshNegativeEvidence(pendingSubmission, accountState)) {
     return false;
   }
 
@@ -178,7 +248,7 @@ function hasFreshReduceRiskWalletEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ) {
-  if (!accountState) {
+  if (!hasCompleteFreshNegativeEvidence(pendingSubmission, accountState)) {
     return false;
   }
 
@@ -204,6 +274,75 @@ function hasFreshReduceRiskWalletEvidence(
   return false;
 }
 
+type DcaExitTokenDeltaEvidence =
+  | 'proven'
+  | 'account-snapshot-unavailable'
+  | 'ownership-baseline-missing'
+  | 'post-exit-token-raw-unavailable'
+  | 'token-delta-mismatch';
+
+function sumWalletTokenAmountRaw(
+  accountState: LiveAccountState | undefined,
+  tokenMint: string | undefined
+) {
+  if (!accountState || !tokenMint || !Array.isArray(accountState.walletTokens)) {
+    return undefined;
+  }
+
+  let total = 0n;
+  for (const token of accountState.walletTokens) {
+    if (token.mint !== tokenMint) {
+      continue;
+    }
+
+    const amountRaw = token.amountRaw
+      ?? (typeof token.amountLamports === 'number'
+        && Number.isSafeInteger(token.amountLamports)
+        && token.amountLamports >= 0
+        ? String(token.amountLamports)
+        : undefined);
+    if (!amountRaw || !/^\d+$/.test(amountRaw)) {
+      return undefined;
+    }
+    total += BigInt(amountRaw);
+  }
+
+  return total;
+}
+
+function resolveDcaExitTokenDeltaEvidence(
+  pendingSubmission: PendingSubmissionSnapshot,
+  accountState: LiveAccountState | undefined
+): DcaExitTokenDeltaEvidence {
+  if (!hasCompleteFreshAccountSnapshot(pendingSubmission, accountState)) {
+    return 'account-snapshot-unavailable';
+  }
+  if (
+    !pendingSubmission.tokenMint
+    || pendingSubmission.preExitTokenAmountRaw === undefined
+    || pendingSubmission.inputAmountRaw === undefined
+  ) {
+    return 'ownership-baseline-missing';
+  }
+
+  const postExitRaw = sumWalletTokenAmountRaw(accountState, pendingSubmission.tokenMint);
+  if (postExitRaw === undefined) {
+    return 'post-exit-token-raw-unavailable';
+  }
+
+  const preExitRaw = BigInt(pendingSubmission.preExitTokenAmountRaw);
+  const expectedDisposedRaw = BigInt(pendingSubmission.inputAmountRaw);
+  if (preExitRaw < expectedDisposedRaw || preExitRaw - postExitRaw !== expectedDisposedRaw) {
+    return 'token-delta-mismatch';
+  }
+
+  return 'proven';
+}
+
+function pendingDcaExitEvidenceReason(evidence: Exclude<DcaExitTokenDeltaEvidence, 'proven'>) {
+  return `pending-dca-awaiting-exact-token-delta:${evidence}`;
+}
+
 function hasLegacyFullyFundedLpEvidence(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
@@ -219,6 +358,40 @@ function resolveTerminalWalletRecoveryReason(
   pendingSubmission: PendingSubmissionSnapshot,
   accountState: LiveAccountState | undefined
 ): PendingSubmissionRecoveryResult['reason'] | undefined {
+  // A withdraw transaction (or a fill row) is not proof that the exact LP
+  // account disappeared.  Only a complete post-submit account snapshot with
+  // that chain position absent can close the lifecycle.
+  if (pendingSubmission.orderAction === 'withdraw-lp') {
+    return hasFreshCompleteLpExitAbsenceEvidence(pendingSubmission, accountState)
+      ? 'pending-submission-filled'
+      : undefined;
+  }
+
+  // Confirmation or a generic fill row is not enough to close an exact-in
+  // strategy-owned spot exit.  A fresh complete account snapshot must prove
+  // that precisely inputAmountRaw disappeared from the wallet-wide raw
+  // balance, preserving any pre-existing same-mint personal inventory.
+  if (pendingSubmission.orderAction === 'dca-out') {
+    return resolveDcaExitTokenDeltaEvidence(pendingSubmission, accountState) === 'proven'
+      ? 'pending-submission-filled'
+      : undefined;
+  }
+
+  if (
+    pendingSubmission.orderAction === 'claim-fee'
+    && !hasCompleteFreshAccountSnapshot(pendingSubmission, accountState)
+  ) {
+    return undefined;
+  }
+
+  if (
+    pendingSubmission.orderAction === 'claim-fee'
+    && pendingSubmission.confirmationStatus === 'confirmed'
+    && (pendingSubmission.finality === 'confirmed' || pendingSubmission.finality === 'finalized')
+  ) {
+    return 'pending-submission-confirmed';
+  }
+
   if (hasMatchingFill(pendingSubmission, accountState)) {
     return 'pending-submission-filled';
   }
@@ -237,10 +410,6 @@ function resolveTerminalWalletRecoveryReason(
 
   if (isUnknownExitFill(pendingSubmission, accountState)) {
     return 'pending-submission-filled';
-  }
-
-  if (isUnknownOpenFailure(pendingSubmission, accountState)) {
-    return 'pending-submission-failed';
   }
 
   return undefined;
@@ -265,6 +434,14 @@ export async function recoverPendingSubmission(
       clearPending: false,
       reason: 'clear'
     };
+  }
+
+  // A structured pre-submit rejection has no chain outcome to poll. Clear it
+  // immediately so a failed exit returns to the ordinary open/exit loop. Do
+  // not infer this from a bare HTTP 409: `idempotency key pending` is an
+  // accepted request with an unknown outcome and must remain fail-closed.
+  if (isExplicitlyNotSubmitted(input.pendingSubmission)) {
+    return resolvedRecovery('pending-submission-failed');
   }
 
   const checkedAt = nowIso(input.now);
@@ -327,8 +504,64 @@ export async function recoverPendingSubmission(
       submissionId: confirmations[confirmations.length - 1]?.submissionId ?? nextPendingSubmission.submissionId
     };
 
+    if (isPartialBatch(nextPendingSubmission)) {
+      return unresolvedPartialBatch(nextPendingSubmission);
+    }
+
     if (allConfirmed) {
-      return resolvedRecovery('pending-submission-confirmed');
+      if (nextPendingSubmission.orderAction === 'dca-out') {
+        const dcaExitEvidence = resolveDcaExitTokenDeltaEvidence(
+          nextPendingSubmission,
+          input.accountState
+        );
+        if (dcaExitEvidence === 'proven') {
+          return resolvedRecovery('pending-submission-confirmed');
+        }
+        return {
+          blocked: true,
+          resolved: false,
+          clearPending: false,
+          reason: 'pending-submission-recovery-required',
+          nextPendingSubmission: {
+            ...nextPendingSubmission,
+            reason: pendingDcaExitEvidenceReason(dcaExitEvidence)
+          }
+        };
+      }
+
+      if (nextPendingSubmission.orderAction !== 'withdraw-lp') {
+        if (
+          nextPendingSubmission.orderAction === 'claim-fee'
+          && !hasCompleteFreshAccountSnapshot(nextPendingSubmission, input.accountState)
+        ) {
+          return {
+            blocked: true,
+            resolved: false,
+            clearPending: false,
+            reason: 'pending-submission-recovery-required',
+            nextPendingSubmission: {
+              ...nextPendingSubmission,
+              reason: 'pending-claim-awaiting-account-residual-proof'
+            }
+          };
+        }
+        return resolvedRecovery('pending-submission-confirmed');
+      }
+
+      if (hasFreshCompleteLpExitAbsenceEvidence(nextPendingSubmission, input.accountState)) {
+        return resolvedRecovery('pending-submission-confirmed');
+      }
+
+      return {
+        blocked: true,
+        resolved: false,
+        clearPending: false,
+        reason: 'pending-submission-recovery-required',
+        nextPendingSubmission: {
+          ...nextPendingSubmission,
+          reason: 'pending-withdraw-awaiting-account-closure-proof'
+        }
+      };
     }
 
     const terminalWalletReason = resolveTerminalWalletRecoveryReason(
@@ -369,12 +602,23 @@ export async function recoverPendingSubmission(
     }
   }
 
+  if (isPartialBatch(nextPendingSubmission)) {
+    return unresolvedPartialBatch(nextPendingSubmission);
+  }
+
   const terminalWalletReason = resolveTerminalWalletRecoveryReason(nextPendingSubmission, input.accountState);
   if (terminalWalletReason) {
     return resolvedRecovery(terminalWalletReason);
   }
 
   if (nextPendingSubmission.timeoutAt && nextPendingSubmission.timeoutAt <= checkedAt) {
+    // Only a timed-out paper open can be disproved by the authoritative local
+    // overlay being absent. Never release live open-risk capacity from a
+    // short-lived negative wallet snapshot after an unknown broadcast.
+    if (isUnknownOpenFailure(nextPendingSubmission, input.accountState)) {
+      return resolvedRecovery('pending-submission-failed');
+    }
+
     if (isUntrackedReduceRiskFailure(nextPendingSubmission, input.accountState)) {
       return resolvedRecovery('pending-submission-failed');
     }

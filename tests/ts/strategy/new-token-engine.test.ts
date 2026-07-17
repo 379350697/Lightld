@@ -25,14 +25,15 @@ describe('buildNewTokenDecision', () => {
     });
   });
 
-  it('returns hold when out of session regardless of inventory state', () => {
+  it('exits existing spot inventory when out of session', () => {
     expect(
       buildNewTokenDecision({
         inSession: false,
         hasInventory: true
       })
     ).toMatchObject({
-      action: 'hold'
+      action: 'dca-out',
+      reason: 'out-of-session-with-inventory'
     });
   });
 
@@ -177,6 +178,46 @@ describe('buildNewTokenDecision — LP mode', () => {
       )
     ).toMatchObject({ action: 'hold' });
   });
+
+  it('withdraws an existing LP when out of session', () => {
+    expect(
+      buildNewTokenDecision(
+        { inSession: false, hasInventory: false, hasLpPosition: true },
+        lpConfig
+      )
+    ).toMatchObject({ action: 'withdraw-lp', reason: 'out-of-session-with-lp-position' });
+  });
+
+  it('honors inventory_exit_ready outside the entry session', () => {
+    expect(
+      buildNewTokenDecision(
+        {
+          inSession: false,
+          hasInventory: true,
+          hasLpPosition: false,
+          lifecycleState: 'inventory_exit_ready'
+        },
+        lpConfig
+      )
+    ).toMatchObject({ action: 'dca-out', reason: 'inventory-exit-ready' });
+  });
+
+  it.each(['open_pending', 'lp_exit_pending', 'inventory_exit_pending', 'reconcile_required', 'failed_terminal'])(
+    'does not issue a duplicate action while lifecycle is %s',
+    (lifecycleState) => {
+      expect(
+        buildNewTokenDecision(
+          {
+            inSession: true,
+            hasInventory: true,
+            hasLpPosition: true,
+            lifecycleState
+          },
+          lpConfig
+        )
+      ).toMatchObject({ action: 'hold', reason: `lifecycle-${lifecycleState}` });
+    }
+  );
 
   it('returns claim-fee when unclaimed fees exceed configured threshold', () => {
     expect(

@@ -131,13 +131,17 @@ export function reduceLifecycleEventsToLedger(input: {
       continue;
     }
 
-    if (event.eventType === 'BroadcastSubmitted' && event.action === 'add-lp') {
+    if (
+      event.eventType === 'BroadcastSubmitted'
+      && (event.action === 'add-lp' || event.action === 'deploy')
+    ) {
+      const openingAction = event.action;
       const existing = records.find((record) => recordMatchesEvent(record, event));
       const next: PositionLedgerRecord = {
         ...(existing ?? {
           positionKey: eventTargetKey(event),
           lifecycleState: 'open_pending' as const,
-          lastAction: event.action ?? 'add-lp',
+          lastAction: openingAction,
           updatedAt: event.createdAt
         }),
         positionKey: existing?.positionKey ?? eventTargetKey(event),
@@ -148,9 +152,9 @@ export function reduceLifecycleEventsToLedger(input: {
         activeMint: event.tokenMint ?? existing?.activeMint,
         lifecycleState: 'open_pending',
         pendingSubmissionId: event.submissionId ?? existing?.pendingSubmissionId,
-        pendingOrderAction: 'add-lp',
+        pendingOrderAction: openingAction,
         pendingConfirmationStatus: 'submitted',
-        lastAction: 'add-lp',
+        lastAction: openingAction,
         lastReason: event.reason ?? 'broadcast-submitted',
         updatedAt: event.createdAt
       };

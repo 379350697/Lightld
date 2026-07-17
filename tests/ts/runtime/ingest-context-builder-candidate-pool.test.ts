@@ -12,7 +12,7 @@ function makeCandidate(overrides: Partial<IngestCandidate> = {}): IngestCandidat
     quoteMint: 'So11111111111111111111111111111111111111112',
     liquidityUsd: 25_000,
     hasSolRoute: true,
-    capturedAt: '2026-06-21T10:00:00.000Z',
+    capturedAt: '2026-06-21T07:00:00.000Z',
     holders: 0,
     hasInventory: false,
     hasLpPosition: false,
@@ -50,6 +50,7 @@ function makeEntry(candidate = makeCandidate()): CandidatePoolEntry {
 describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
   it('selects an openable candidate from the candidate pool without fetching live ingest sources', async () => {
     const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [makeEntry()]),
       selectOpenableCandidate: vi.fn(async () => makeEntry())
     };
     const fetchMeteoraPoolsImpl = vi.fn(async () => {
@@ -66,7 +67,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
     });
 
     expect(fetchMeteoraPoolsImpl).not.toHaveBeenCalled();
-    expect(reader.selectOpenableCandidate).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
+    expect(reader.listOpenableCandidates).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
       now: new Date('2026-06-21T10:00:00.000Z')
     }));
     expect(result.context.pool).toMatchObject({
@@ -85,6 +86,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
 
   it('can disable dynamic position sizing for paper sampling', async () => {
     const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [makeEntry(makeCandidate({ liquidityUsd: 25_000 }))]),
       selectOpenableCandidate: vi.fn(async () => makeEntry(makeCandidate({ liquidityUsd: 25_000 })))
     };
 
@@ -119,8 +121,53 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
     });
   });
 
+  it('does not reopen or maintain a manual wallet LP returned by a stale candidate reader', async () => {
+    const manualEntry = makeEntry(makeCandidate({
+      address: 'pool-manual',
+      mint: 'mint-manual',
+      symbol: 'MANUAL'
+    }));
+    const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [manualEntry]),
+      selectOpenableCandidate: vi.fn(async () => manualEntry)
+    };
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.02,
+      now: new Date('2026-06-21T10:00:00.000Z'),
+      candidatePoolReadEnabled: true,
+      candidatePoolReader: reader,
+      accountState: {
+        walletSol: 0.4,
+        journalSol: 0.4,
+        walletTokens: [],
+        journalTokens: [],
+        fills: [],
+        journalLpPositions: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-manual',
+          positionAddress: 'position-manual',
+          mint: 'mint-manual',
+          hasLiquidity: true
+        }]
+      }
+    });
+
+    expect(reader.listOpenableCandidates).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
+      excludedMints: expect.arrayContaining(['mint-manual'])
+    }));
+    expect(result.context.pool).toMatchObject({
+      address: '',
+      blockReason: 'candidate-pool-no-openable-candidate'
+    });
+  });
+
   it('keeps existing LP maintenance independent from the candidate pool', async () => {
     const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => {
+        throw new Error('candidate pool should not be read for existing LP maintenance');
+      }),
       selectOpenableCandidate: vi.fn(async () => {
         throw new Error('candidate pool should not be read for existing LP maintenance');
       })
@@ -166,6 +213,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
         flattenOnly: false,
         lastAction: 'add-lp',
         lifecycleState: 'open',
+        openIntentId: 'lp-open-intent:position-lp',
         activeMint: 'mint-lp',
         activePoolAddress: 'pool-lp',
         positionId: 'position-lp',
@@ -177,7 +225,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       }
     });
 
-    expect(reader.selectOpenableCandidate).not.toHaveBeenCalled();
+    expect(reader.listOpenableCandidates).not.toHaveBeenCalled();
     expect(result.context.pool).toMatchObject({
       address: 'pool-lp'
     });
@@ -197,6 +245,11 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
 
   it('selects a fresh new-open candidate while excluding active exposure mints', async () => {
     const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [makeEntry(makeCandidate({
+        address: 'pool-next',
+        mint: 'mint-next',
+        symbol: 'NEXT'
+      }))]),
       selectOpenableCandidate: vi.fn(async () => makeEntry(makeCandidate({
         address: 'pool-next',
         mint: 'mint-next',
@@ -247,7 +300,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       }
     });
 
-    expect(reader.selectOpenableCandidate).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
+    expect(reader.listOpenableCandidates).toHaveBeenCalledWith('new-token-v1', expect.objectContaining({
       excludedMints: expect.arrayContaining(['mint-lp', 'mint-wallet-token', 'mint-explicit-skip']),
       excludedTargets: expect.arrayContaining([{ poolAddress: 'pool-cooldown', tokenMint: 'mint-cooldown' }])
     }));
@@ -263,6 +316,7 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
 
   it('does not open from a maintenance-only pass when there is no active LP', async () => {
     const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [makeEntry()]),
       selectOpenableCandidate: vi.fn(async () => makeEntry())
     };
 
@@ -284,10 +338,43 @@ describe('buildLiveCycleInputFromIngest candidate pool cutover', () => {
       }
     });
 
-    expect(reader.selectOpenableCandidate).not.toHaveBeenCalled();
+    expect(reader.listOpenableCandidates).not.toHaveBeenCalled();
     expect(result.context.route).toMatchObject({
       hasSolRoute: false,
       blockReason: 'no-active-lp-maintenance-target'
     });
+  });
+
+  it('skips a higher-ranked candidate that fails strategy gates and opens the next eligible one', async () => {
+    const tooYoung = makeEntry(makeCandidate({
+      address: 'pool-too-young',
+      mint: 'mint-too-young',
+      capturedAt: '2026-06-21T09:59:00.000Z'
+    }));
+    const eligible = makeEntry(makeCandidate({
+      address: 'pool-eligible',
+      mint: 'mint-eligible',
+      symbol: 'ELIG',
+      capturedAt: '2026-06-21T07:00:00.000Z'
+    }));
+    const reader: CandidatePoolReader = {
+      listOpenableCandidates: vi.fn(async () => [tooYoung, eligible]),
+      selectOpenableCandidate: vi.fn(async () => tooYoung)
+    };
+
+    const result = await buildLiveCycleInputFromIngest({
+      strategy: 'new-token-v1',
+      requestedPositionSol: 0.02,
+      disableDynamicPositionSizing: true,
+      now: new Date('2026-06-21T10:00:00.000Z'),
+      candidatePoolReadEnabled: true,
+      candidatePoolReader: reader
+    });
+
+    expect(result.context.pool).toMatchObject({
+      address: 'pool-eligible',
+      candidateCount: 2
+    });
+    expect(result.context.token).toMatchObject({ mint: 'mint-eligible', symbol: 'ELIG' });
   });
 });

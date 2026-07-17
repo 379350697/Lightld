@@ -8,7 +8,10 @@ import { z } from 'zod';
 import { readJsonIfExists, writeJsonAtomically } from '../runtime/atomic-file.ts';
 import { validateIntentAllowlist } from '../risk/instruction-allowlist.ts';
 import { verifySignedIntent } from './signed-intent-verifier.ts';
-import { LiveOrderIntentSchema } from './live-order-intent-schema.ts';
+import {
+  LiveOrderIntentSchema,
+  PersistedLiveOrderIntentSchema
+} from './live-order-intent-schema.ts';
 import type { LiveBroadcastResult } from './live-broadcaster.ts';
 import type { LiveConfirmationResult } from './live-confirmation-provider.ts';
 import type { LiveAccountState } from '../runtime/live-account-provider.ts';
@@ -172,7 +175,12 @@ const SubmissionStoreSchema = z.object({
     confirmationSignature: z.string().min(1),
     signerId: z.string().min(1),
     receivedAt: z.string().min(1),
-    signedIntent: SignedIntentSchema
+    signedIntent: z.object({
+      intent: PersistedLiveOrderIntentSchema,
+      signerId: z.string().min(1),
+      signedAt: z.string().min(1),
+      signature: z.string().min(1)
+    })
   }))
 });
 
@@ -303,7 +311,8 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
             const snapshot = await store.read();
             writeJson(response, 200, {
               status: 'ok',
-              submissionCount: snapshot.submissions.length
+              submissionCount: snapshot.submissions.length,
+              dryRun: false
             });
             return;
           }
@@ -317,6 +326,14 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
             const body = await readBody(request);
             const payload = z.object({ intent: SignedIntentSchema }).parse(JSON.parse(body));
             verifySignedIntent(payload.intent, expectedSignerPublicKeys);
+
+            if (payload.intent.intent.executionPolicy !== 'broadcast') {
+              writeJson(response, 409, {
+                error: 'execution policy mismatch',
+                detail: 'Local live execution only accepts signed broadcast intents'
+              });
+              return;
+            }
 
             if (options.maxOutputSol !== undefined) {
               const allowlistResult = validateIntentAllowlist(
@@ -376,7 +393,16 @@ export function createLocalLiveExecutionServer(options: LocalLiveExecutionServer
           }
 
           if (request.method === 'GET' && request.url === '/account-state') {
-            writeJson(response, 200, await readAccountState(options.accountStatePath));
+            const accountState = await readAccountState(options.accountStatePath);
+            writeJson(response, 200, {
+              ...accountState,
+              observedAt: new Date().toISOString(),
+              walletLpPositions: accountState.walletLpPositions ?? [],
+              journalLpPositions: accountState.journalLpPositions ?? [],
+              walletTokens: accountState.walletTokens ?? [],
+              journalTokens: accountState.journalTokens ?? [],
+              fills: accountState.fills ?? []
+            });
             return;
           }
 

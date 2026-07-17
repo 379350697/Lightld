@@ -337,6 +337,40 @@ describe('swap provider chain', () => {
 });
 
 describe('JupiterV2SwapProvider', () => {
+  it('rejects a quote above the signed impact limit before execution', async () => {
+    const keypair = Keypair.generate();
+    const executeOrderV2 = vi.fn();
+    const provider = new JupiterV2SwapProvider({
+      getOrderV2: vi.fn(async () => ({
+        requestId: 'request-impact',
+        inputMint: SOL_MINT,
+        outputMint: 'token-mint',
+        inAmount: '1000',
+        outAmount: '900',
+        otherAmountThreshold: '850',
+        swapMode: 'ExactIn',
+        slippageBps: 100,
+        swapType: 'aggregator',
+        priceImpactPct: '2.1',
+        routePlan: [],
+        swapTransaction: buildSerializedV0TransactionBase64(keypair.publicKey),
+        lastValidBlockHeight: 123
+      })),
+      executeOrderV2
+    } as any);
+
+    await expect(provider.executeExactIn(
+      buildRequest({
+        inputMint: SOL_MINT,
+        outputMint: 'token-mint',
+        walletPublicKey: keypair.publicKey.toBase58(),
+        maxImpactBps: 200
+      }),
+      { keypair, rpcClient: {} as any, sendRawTransaction: vi.fn() }
+    )).rejects.toThrow('exceeds signed maximum 200bps');
+    expect(executeOrderV2).not.toHaveBeenCalled();
+  });
+
   it('orders, signs, and executes a Jupiter V2 exact-in swap', async () => {
     const keypair = Keypair.generate();
     const transactionBase64 = buildSerializedV0TransactionBase64(keypair.publicKey);

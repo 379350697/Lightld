@@ -13,10 +13,11 @@ import type {
 } from './types.ts';
 import {
   RESEARCH_ENTRY_MAX_DELAY_MINUTES,
+  RESEARCH_HORIZONS,
   RESEARCH_HORIZON_TOLERANCE_MINUTES
 } from './types.ts';
 
-const HORIZONS = [15, 60, 240, 1440] as const;
+const HORIZONS = RESEARCH_HORIZONS;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS experiments (
@@ -97,6 +98,9 @@ const SCHEMA = `
     exit_value_sol REAL,
     fee_value_sol REAL,
     pnl_sol REAL,
+    valuation_trust TEXT,
+    valuation_completeness TEXT,
+    pnl_evidence_kind TEXT NOT NULL DEFAULT 'legacy-untrusted',
     raw_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS paper_selections (
@@ -158,6 +162,17 @@ export class StrategyResearchStore {
         ensureColumn(database, 'paper_outcomes', 'selection_id', 'TEXT');
         ensureColumn(database, 'paper_outcomes', 'snapshot_id', 'TEXT');
         ensureColumn(database, 'paper_outcomes', 'variant_id', 'TEXT');
+        ensureColumn(database, 'paper_outcomes', 'valuation_trust', 'TEXT');
+        ensureColumn(database, 'paper_outcomes', 'valuation_completeness', 'TEXT');
+        ensureColumn(database, 'paper_outcomes', 'pnl_evidence_kind', "TEXT NOT NULL DEFAULT 'legacy-untrusted'");
+        // Older rows were allowed to derive PnL from display/fallback values,
+        // and their raw outcome did not retain enough trust metadata to
+        // repair them safely. Fail closed instead of carrying that pollution
+        // into a new analysis.
+        database.prepare(`
+          UPDATE paper_outcomes SET exit_value_sol=NULL,pnl_sol=NULL
+          WHERE pnl_evidence_kind='legacy-untrusted'
+        `).run();
         ensureColumn(database, 'paper_selections', 'variant_id', "TEXT NOT NULL DEFAULT 'baseline'");
         ensureColumn(database, 'worker_status', 'missed_count', 'INTEGER NOT NULL DEFAULT 0');
       }
@@ -323,7 +338,7 @@ export class StrategyResearchStore {
     }
   }
 
-  dueEpisodes(now = new Date(), limit = 100): Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440; missed: boolean }> {
+  dueEpisodes(now = new Date(), limit = 100): Array<{ episode: ResearchEpisode; horizonMinutes: 0 | ResearchMark['horizonMinutes']; missed: boolean }> {
     const rows = this.required().prepare(`
       SELECT e.*, GROUP_CONCAT(CASE WHEN m.status<>'unavailable' THEN m.horizon_minutes END) AS completed_horizons
       FROM episodes e
@@ -331,7 +346,7 @@ export class StrategyResearchStore {
       LEFT JOIN marks m ON m.episode_id=e.episode_id
       GROUP BY e.episode_id ORDER BY e.observed_at ASC
     `).all() as Row[];
-    const due: Array<{ episode: ResearchEpisode; horizonMinutes: 0 | 15 | 60 | 240 | 1440; missed: boolean }> = [];
+    const due: Array<{ episode: ResearchEpisode; horizonMinutes: 0 | ResearchMark['horizonMinutes']; missed: boolean }> = [];
     const scheduled = new Set<string>();
     for (const row of rows) {
       const episode = mapEpisode(row);
@@ -339,7 +354,7 @@ export class StrategyResearchStore {
       if (!Number.isFinite(ageMinutes) || ageMinutes < 0) continue;
       const entryStatus = row.entry_status === null || row.entry_status === undefined ? '' : String(row.entry_status);
       if ((!episode.targetTokenRaw || !episode.doubleTokenRaw) && (entryStatus === '' || entryStatus === 'unavailable')) {
-        const key = `${episode.snapshotId}:${episode.poolAddress}:${episode.tokenMint}:0`;
+        const key = `${episode.episodeId}:0`;
         if (!scheduled.has(key)) {
           scheduled.add(key);
           due.push({ episode, horizonMinutes: 0, missed: ageMinutes > RESEARCH_ENTRY_MAX_DELAY_MINUTES });
@@ -348,7 +363,7 @@ export class StrategyResearchStore {
         const completed = new Set(String(row.completed_horizons ?? '').split(',').filter(Boolean).map(Number));
         const horizon = HORIZONS.find((value) => ageMinutes >= value && !completed.has(value));
         if (horizon) {
-          const key = `${episode.snapshotId}:${episode.poolAddress}:${episode.tokenMint}:${horizon}`;
+          const key = `${episode.episodeId}:${horizon}`;
           if (!scheduled.has(key)) {
             scheduled.add(key);
             due.push({
@@ -359,9 +374,19 @@ export class StrategyResearchStore {
           }
         }
       }
-      if (due.length >= limit) break;
     }
-    return due;
+    return due.sort((left, right) => {
+      if (left.missed !== right.missed) return left.missed ? 1 : -1;
+      const leftTolerance = left.horizonMinutes === 0
+        ? RESEARCH_ENTRY_MAX_DELAY_MINUTES
+        : RESEARCH_HORIZON_TOLERANCE_MINUTES[left.horizonMinutes];
+      const rightTolerance = right.horizonMinutes === 0
+        ? RESEARCH_ENTRY_MAX_DELAY_MINUTES
+        : RESEARCH_HORIZON_TOLERANCE_MINUTES[right.horizonMinutes];
+      const leftDeadline = Date.parse(left.episode.observedAt) + (left.horizonMinutes + leftTolerance) * 60_000;
+      const rightDeadline = Date.parse(right.episode.observedAt) + (right.horizonMinutes + rightTolerance) * 60_000;
+      return leftDeadline - rightDeadline;
+    }).slice(0, limit);
   }
 
   recordEntryQuote(input: {
@@ -375,26 +400,22 @@ export class StrategyResearchStore {
   }) {
     this.required().prepare(`
       UPDATE episodes SET target_token_raw=?,double_token_raw=?,entry_target_impact_bps=?,entry_double_impact_bps=?,entry_status=?,entry_detail=?
-      WHERE snapshot_id=(SELECT snapshot_id FROM episodes WHERE episode_id=?)
-        AND pool_address=(SELECT pool_address FROM episodes WHERE episode_id=?)
-        AND token_mint=(SELECT token_mint FROM episodes WHERE episode_id=?)
+      WHERE episode_id=?
         AND EXISTS (
           SELECT 1 FROM episodes source JOIN experiments x ON x.experiment_id=source.experiment_id
           WHERE source.episode_id=? AND x.status='active'
         )
     `).run(
       input.targetTokenRaw ?? null, input.doubleTokenRaw ?? null, input.targetImpactBps ?? null,
-      input.doubleImpactBps ?? null, input.status, input.detail ?? '', input.episodeId, input.episodeId, input.episodeId,
-      input.episodeId
+      input.doubleImpactBps ?? null, input.status, input.detail ?? '', input.episodeId, input.episodeId
     );
   }
 
   recordMark(mark: ResearchMark) {
     this.required().prepare(`
       INSERT INTO marks(episode_id,horizon_minutes,observed_at,status,target_recovery_sol,double_recovery_sol,target_impact_bps,double_impact_bps,detail)
-      SELECT grouped.episode_id,?,?,?,?,?,?,?,?
-      FROM episodes source JOIN episodes grouped
-        ON grouped.snapshot_id=source.snapshot_id AND grouped.pool_address=source.pool_address AND grouped.token_mint=source.token_mint
+      SELECT source.episode_id,?,?,?,?,?,?,?,?
+      FROM episodes source
       JOIN experiments x ON x.experiment_id=source.experiment_id AND x.status='active'
       WHERE source.episode_id=?
       ON CONFLICT(episode_id,horizon_minutes) DO UPDATE SET
@@ -432,6 +453,28 @@ export class StrategyResearchStore {
     return (this.required().prepare(`
       SELECT observed_at AS observedAt FROM snapshots WHERE experiment_id=? ORDER BY observed_at
     `).all(experimentId) as Array<{ observedAt: string }>).map((row) => row.observedAt);
+  }
+
+  snapshotPolicyActions(experimentId: string): Array<{
+    snapshotId: string;
+    observedAt: string;
+    variantId: string;
+    selected: boolean;
+  }> {
+    return (this.required().prepare(`
+      SELECT s.snapshot_id AS snapshotId,s.observed_at AS observedAt,d.variant_id AS variantId,
+        MAX(d.selected) AS selected
+      FROM snapshots s
+      JOIN decisions d ON d.snapshot_id=s.snapshot_id
+      WHERE s.experiment_id=?
+      GROUP BY s.snapshot_id,s.observed_at,d.variant_id
+      ORDER BY s.observed_at,d.variant_id
+    `).all(experimentId) as Array<{
+      snapshotId: string;
+      observedAt: string;
+      variantId: string;
+      selected: number;
+    }>).map((row) => ({ ...row, selected: Boolean(row.selected) }));
   }
 
   recordPaperSelection(input: {
@@ -480,17 +523,19 @@ export class StrategyResearchStore {
     const insert = this.required().prepare(`
       INSERT OR REPLACE INTO paper_outcomes(
         outcome_id,experiment_id,strategy_id,recorded_at,opened_at,closed_at,runtime_mode,capture_mode,selection_id,snapshot_id,variant_id,
-        entry_sol,exit_value_sol,fee_value_sol,pnl_sol,raw_json
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        entry_sol,exit_value_sol,fee_value_sol,pnl_sol,valuation_trust,valuation_completeness,pnl_evidence_kind,raw_json
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     for (const outcome of outcomes) {
       if (outcome.strategyId !== experiment.strategyId
-        || outcome.captureMode !== 'mechanical-soak'
-        || outcome.recordedAt < experiment.startedAt
-        || (experiment.stoppedAt !== null && outcome.recordedAt > experiment.stoppedAt)) {
+        || outcome.captureMode !== 'mechanical-soak') {
         continue;
       }
       const selectionTime = outcome.openedAt ?? outcome.recordedAt;
+      if (selectionTime < experiment.startedAt
+        || (experiment.stoppedAt !== null && selectionTime > experiment.stoppedAt)) {
+        continue;
+      }
       const selectionTimeMs = Date.parse(selectionTime);
       const selectionCutoff = Number.isFinite(selectionTimeMs)
         ? new Date(selectionTimeMs - 30 * 60_000).toISOString()
@@ -505,39 +550,80 @@ export class StrategyResearchStore {
           snapshotId: string;
           variantId: string;
         } | undefined : undefined;
-      const exitValue = outcome.exitMetrics.lpTotalValueSol
-        ?? outcome.exitMetrics.lpCurrentValueSol
-        ?? outcome.exitMetrics.quoteOutputSol;
-      const feeValue = outcome.exitMetrics.lpClaimedFeeValueSol ?? outcome.exitMetrics.lpUnclaimedFeeValueSol ?? 0;
-      const pnl = typeof outcome.entrySol === 'number' && typeof exitValue === 'number'
-        ? exitValue + feeValue - outcome.entrySol
+      const syntheticLpLifecycle = outcome.action === 'withdraw-lp';
+      const executableSpotQuote = outcome.action === 'dca-out'
+        && outcome.exitMetrics.settlementEvidence === 'paper-executable-spot-quote';
+      const completeExitQuote = !syntheticLpLifecycle
+        && outcome.exitMetrics.valuationTrust === 'exit_quote'
+        && outcome.exitMetrics.valuationCompleteness === 'complete';
+      const pnlEvidenceKind = executableSpotQuote
+        ? 'paper-executable-spot-quote'
+        : completeExitQuote
+          ? 'complete-exit-quote'
+          : 'lifecycle-only';
+      const hasPnlEvidence = pnlEvidenceKind !== 'lifecycle-only';
+      const hasTradingValuePair = completeExitQuote
+        && typeof outcome.exitMetrics.lpTradingValueSol === 'number'
+        && typeof outcome.exitMetrics.lpEntryTradingSol === 'number';
+      const entryValue = hasTradingValuePair
+        ? outcome.exitMetrics.lpEntryTradingSol
+        : outcome.entrySol;
+      const exitValue = !hasPnlEvidence
+        ? undefined
+        : executableSpotQuote
+          ? outcome.exitMetrics.quoteOutputSol
+          : hasTradingValuePair
+            ? outcome.exitMetrics.lpTradingValueSol
+            : outcome.exitMetrics.exitQuoteValueSol
+            ?? outcome.exitMetrics.lpTotalValueSol
+            ?? outcome.exitMetrics.lpCurrentValueSol
+            ?? outcome.exitMetrics.quoteOutputSol;
+      const feeValue = (outcome.exitMetrics.lpClaimedFeeValueSol ?? 0)
+        + (outcome.exitMetrics.lpUnclaimedFeeValueSol ?? 0);
+      // LP total/trading valuation already includes claimed and unclaimed fees.
+      // Adding feeValue again here would overstate every trusted exit estimate.
+      const pnl = typeof entryValue === 'number' && typeof exitValue === 'number'
+        ? exitValue - entryValue
         : null;
       insert.run(
         hashId('paper', experimentId, outcome.strategyId, outcome.cycleId, outcome.recordedAt), experimentId, outcome.strategyId,
         outcome.recordedAt, outcome.openedAt ?? null, outcome.closedAt ?? null, outcome.runtimeMode, outcome.captureMode,
         selection?.selectionId ?? null, selection?.snapshotId ?? null, selection?.variantId ?? null,
-        outcome.entrySol ?? null, exitValue ?? null, feeValue, pnl, stableJson(outcome)
+        entryValue ?? null, exitValue ?? null, feeValue, pnl,
+        outcome.exitMetrics.valuationTrust ?? null,
+        outcome.exitMetrics.valuationCompleteness ?? null,
+        pnlEvidenceKind,
+        stableJson(outcome)
       );
     }
   }
 
   paperOutcomes(experimentId: string): Array<{
-    pnlSol: number;
+    pnlSol: number | null;
     closedAt: string;
     selectionId: string | null;
     snapshotId: string | null;
     variantId: string | null;
+    pnlEvidenceKind: string;
   }> {
-    return (this.required().prepare(`
+    const hasPnlEvidenceKind = tableHasColumn(this.required(), 'paper_outcomes', 'pnl_evidence_kind');
+    return (this.required().prepare(hasPnlEvidenceKind ? `
       SELECT pnl_sol AS pnlSol,COALESCE(closed_at,recorded_at) AS closedAt,
-        selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId
-      FROM paper_outcomes WHERE experiment_id=? AND pnl_sol IS NOT NULL ORDER BY closedAt
+        selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId,
+        pnl_evidence_kind AS pnlEvidenceKind
+      FROM paper_outcomes WHERE experiment_id=? ORDER BY closedAt
+    ` : `
+      SELECT NULL AS pnlSol,COALESCE(closed_at,recorded_at) AS closedAt,
+        selection_id AS selectionId,snapshot_id AS snapshotId,variant_id AS variantId,
+        'legacy-untrusted' AS pnlEvidenceKind
+      FROM paper_outcomes WHERE experiment_id=? ORDER BY closedAt
     `).all(experimentId) as Array<{
-      pnlSol: number;
+      pnlSol: number | null;
       closedAt: string;
       selectionId: string | null;
       snapshotId: string | null;
       variantId: string | null;
+      pnlEvidenceKind: string;
     }>);
   }
 
@@ -578,6 +664,7 @@ export class StrategyResearchStore {
       variantIds: spec.variants.map((variant) => variant.variantId),
       thresholds: spec.thresholds
     } : null;
+    const hasPnlEvidenceKind = tableHasColumn(database, 'paper_outcomes', 'pnl_evidence_kind');
     return {
       activeExperiment: summarizeExperiment(active),
       latestExperiment: active ? null : summarizeExperiment(latest?.spec ?? null),
@@ -587,6 +674,12 @@ export class StrategyResearchStore {
       selectedEpisodeCount: scalar('SELECT COUNT(*) AS count FROM episodes WHERE experiment_id=? AND selected=1'),
       paperOutcomeCount: scalar('SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=?'),
       boundPaperOutcomeCount: scalar('SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=? AND selection_id IS NOT NULL'),
+      paperExecutablePnlCount: hasPnlEvidenceKind
+        ? scalar("SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=? AND pnl_sol IS NOT NULL AND pnl_evidence_kind NOT IN ('legacy-untrusted','lifecycle-only')")
+        : 0,
+      boundPaperExecutablePnlCount: hasPnlEvidenceKind
+        ? scalar("SELECT COUNT(*) AS count FROM paper_outcomes WHERE experiment_id=? AND selection_id IS NOT NULL AND pnl_sol IS NOT NULL AND pnl_evidence_kind NOT IN ('legacy-untrusted','lifecycle-only')")
+        : 0,
       marks: Object.fromEntries(marks.map((row) => [String(row.horizon), row.count])),
       markFailures: Object.fromEntries(marks.map((row) => [String(row.horizon), { unavailable: row.unavailable, missed: row.missed }])),
       worker
@@ -623,7 +716,9 @@ function mapEpisode(row: Row): ResearchEpisode {
     entryStatus: row.entry_status === null || row.entry_status === undefined ? null : String(row.entry_status) as ResearchEpisode['entryStatus'],
     entryDetail: String(row.entry_detail ?? ''),
     targetTokenRaw: row.target_token_raw === null || row.target_token_raw === undefined ? null : String(row.target_token_raw),
-    doubleTokenRaw: row.double_token_raw === null || row.double_token_raw === undefined ? null : String(row.double_token_raw)
+    doubleTokenRaw: row.double_token_raw === null || row.double_token_raw === undefined ? null : String(row.double_token_raw),
+    entryTargetImpactBps: nullableNumber(row.entry_target_impact_bps),
+    entryDoubleImpactBps: nullableNumber(row.entry_double_impact_bps)
   };
 }
 
@@ -644,8 +739,12 @@ function stableJson(value: unknown): string {
 }
 
 function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string) {
-  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!columns.some((entry) => entry.name === column)) {
+  if (!tableHasColumn(database, table, column)) {
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function tableHasColumn(database: DatabaseSync, table: string, column: string) {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return columns.some((entry) => entry.name === column);
 }

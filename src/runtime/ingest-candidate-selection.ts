@@ -48,6 +48,7 @@ export type IngestCandidate = {
   baseFeePct: number;
   volume24h: number;
   feeTvlRatio24h: number;
+  feeTvlRatioUnit?: 'ratio';
   poolFeeYieldStatus?: string;
   poolFeeYieldScore?: number;
   poolFeeYieldReason?: string;

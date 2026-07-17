@@ -19,8 +19,13 @@ import {
 } from '../ingest/signals/types.ts';
 import { computeDynamicPositionSol } from '../risk/dynamic-position-sizing.ts';
 import type { CandidateScanRecord, CandidateSampleRecord } from '../evolution/index.ts';
-import { isAllowedMeteoraEntryBinStep } from '../candidate-pool/meteora-candidate-builder.ts';
+import {
+  isMeteoraPoolPrefiltered,
+  normalizeMeteoraFeeTvlRatio
+} from '../candidate-pool/meteora-candidate-builder.ts';
 import type { CandidatePoolEntry, CandidatePoolReader } from '../candidate-pool/types.ts';
+import { evaluateEntryEconomicEdge } from '../strategy/entry-edge.ts';
+import { evaluateHardGates } from '../strategy/filtering/hard-gates.ts';
 import {
   applySafetyFilter,
   filterRecentlyClosedMintCandidates,
@@ -35,9 +40,14 @@ import {
 } from './ingest-candidate-selection.ts';
 import type { DecisionContextInput } from './build-decision-context.ts';
 import type { LiveAccountState } from './live-account-provider.ts';
-import type { PositionStateSnapshot, TargetOpenCooldownSnapshot } from './state-types.ts';
+import type {
+  PositionLedgerSnapshot,
+  PositionStateSnapshot,
+  TargetOpenCooldownSnapshot
+} from './state-types.ts';
 import type { LiveCycleInput, StrategyId } from './live-cycle.ts';
 import { resolvePositionBusinessSemantics } from './position-business-semantics.ts';
+import { hasLightldLpOwnershipEvidence } from './lp-ownership.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STRATEGY_CONFIGS = {
@@ -92,6 +102,7 @@ type IngestContextBuilderInput = {
   newCandidateSafetyTimeoutMs?: number;
   maxActivePositions?: number;
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
   candidatePoolReader?: CandidatePoolReader;
   candidatePoolReadEnabled?: boolean;
   candidatePoolMaxAgeMs?: number;
@@ -190,6 +201,26 @@ function readNumber(payload: Record<string, unknown>, keys: string[]) {
   }
 
   return 0;
+}
+
+function readTimestamp(payload: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key];
+    const numeric = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())
+        ? Number(value)
+        : Number.NaN;
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const milliseconds = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+      return new Date(milliseconds).toISOString();
+    }
+    if (typeof value === 'string' && Number.isFinite(Date.parse(value))) {
+      return new Date(value).toISOString();
+    }
+  }
+
+  return '';
 }
 
 function readBoolean(payload: Record<string, unknown>, keys: string[]) {
@@ -779,15 +810,31 @@ function resolveActiveLpMaintenanceCandidate(input: {
   candidates: IngestCandidate[];
   accountState?: LiveAccountState;
   positionState?: PositionStateSnapshot;
+  positionLedger?: PositionLedgerSnapshot;
   openCooldowns?: TargetOpenCooldownSnapshot[];
   now: Date;
 }) {
+  const ownedPositions = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) =>
+    position.mint !== SOL_MINT
+    && (position.hasLiquidity ?? true)
+    && hasLightldLpOwnershipEvidence({
+      position,
+      ledger: input.positionLedger,
+      positionState: input.positionState
+    })
+  );
   const activeCooldowns = activeOpenCooldownTargets({
     cooldowns: input.openCooldowns,
     now: input.now
   });
   const activeCandidates = input.candidates.filter((candidate) =>
     candidate.hasLpPosition &&
+    ownedPositions.some((position) =>
+      position.poolAddress === candidate.address && position.mint === candidate.mint
+    ) &&
     !activeCooldowns.some((cooldown) => targetOpenCooldownMatches(candidate, cooldown))
   );
   if (activeCandidates.length === 0) {
@@ -1061,7 +1108,15 @@ function resolveAccountBackedActiveLpCandidate(input: IngestContextBuilderInput,
   const positions = [
     ...(input.accountState?.walletLpPositions ?? []),
     ...(input.accountState?.journalLpPositions ?? [])
-  ].filter((position) => position.mint !== SOL_MINT && (position.hasLiquidity ?? true));
+  ].filter((position) =>
+    position.mint !== SOL_MINT
+    && (position.hasLiquidity ?? true)
+    && hasLightldLpOwnershipEvidence({
+      position,
+      ledger: input.positionLedger,
+      positionState: input.positionState
+    })
+  );
 
   if (positions.length === 0) {
     return null;
@@ -1164,7 +1219,15 @@ function resolveUntrackedAccountLpCandidate(input: IngestContextBuilderInput, no
   const positions = [
     ...(input.accountState?.walletLpPositions ?? []),
     ...(input.accountState?.journalLpPositions ?? [])
-  ].filter((position) => position.mint !== SOL_MINT && (position.hasLiquidity ?? true));
+  ].filter((position) =>
+    position.mint !== SOL_MINT
+    && (position.hasLiquidity ?? true)
+    && hasLightldLpOwnershipEvidence({
+      position,
+      ledger: input.positionLedger,
+      positionState: input.positionState
+    })
+  );
 
   if (positions.length === 0) {
     return null;
@@ -1220,24 +1283,29 @@ async function buildCandidatePoolBackedCycleInput(
     });
   }
 
-  let entry: CandidatePoolEntry | null;
-  try {
-    entry = await input.candidatePoolReader.selectOpenableCandidate(input.strategy, {
+  let entries: CandidatePoolEntry[];
+  const readerOptions = {
+    now,
+    maxAgeMs: input.candidatePoolMaxAgeMs,
+    excludedMints: resolveOpenCandidateExcludedMints({
+      accountState: input.accountState,
+      positionState: input.positionState,
       now,
-      maxAgeMs: input.candidatePoolMaxAgeMs,
-      excludedMints: input.selectionMode === 'new-open-only'
-        ? resolveOpenCandidateExcludedMints({
-            accountState: input.accountState,
-            positionState: input.positionState,
-            now,
-            skipMints: input.skipMints
-          })
-        : resolveRecentlyClosedExcludedMints({ positionState: input.positionState, now }),
-      excludedTargets: resolveOpenCandidateExcludedTargets({
-        cooldowns: input.openCooldowns,
-        now
-      })
-    });
+      skipMints: input.skipMints
+    }),
+    excludedTargets: resolveOpenCandidateExcludedTargets({
+      cooldowns: input.openCooldowns,
+      now
+    }),
+    limit: 100
+  };
+  try {
+    entries = (await input.candidatePoolReader.listOpenableCandidates(input.strategy, readerOptions))
+      .filter((entry) => !readerOptions.excludedMints.includes(entry.tokenMint))
+      .filter((entry) => !readerOptions.excludedTargets.some((target) =>
+        (!target.poolAddress || target.poolAddress === entry.poolAddress)
+        && (!target.tokenMint || target.tokenMint === entry.tokenMint)
+      ));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[Ingest] Candidate pool read failed closed for new opens: ${message}`);
@@ -1247,25 +1315,63 @@ async function buildCandidatePoolBackedCycleInput(
     });
   }
 
-  if (!entry) {
+  if (entries.length === 0) {
     return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
       blockReason: 'candidate-pool-no-openable-candidate',
       blockDetails: 'candidate pool has no fresh openable candidate'
     });
   }
 
+  const evaluatedEntries = entries.map((candidateEntry) => {
+    const candidate = candidateEntry.candidate;
+    const candidateRequestedPositionSol = resolveCandidateRequestedPositionSol({
+      strategy: input.strategy,
+      requestedPositionSol,
+      candidate,
+      disableDynamicPositionSizing: input.disableDynamicPositionSizing
+    });
+    const hardGates = evaluateHardGates({
+      hasSolRoute: candidate.hasSolRoute,
+      liquidityUsd: candidate.liquidityUsd,
+      poolCreatedAt: candidate.capturedAt
+    }, {
+      ...config.hardGates,
+      nowMs: now.getTime()
+    });
+    const edge = input.strategy === 'new-token-v1'
+      ? evaluateEntryEconomicEdge({
+          positionSol: candidateRequestedPositionSol,
+          feeTvlRatio24h: candidate.feeTvlRatio24h,
+          feeHorizonHours: config.live.maxHoldHours,
+          roundTripCostBps: config.solRouteLimits.maxSlippageBps * 2
+        }, config.entryEdge)
+      : { accepted: true, reason: 'entry-edge-disabled' as const };
+
+    return {
+      entry: candidateEntry,
+      requestedPositionSol: candidateRequestedPositionSol,
+      accepted: hardGates.accepted && edge.accepted,
+      rejectionReason: hardGates.accepted ? edge.reason : hardGates.reasons.join(',')
+    };
+  });
+  const selectedEvaluation = evaluatedEntries.find((evaluation) => evaluation.accepted);
+  if (!selectedEvaluation) {
+    return buildFallbackContext(input, requestedPositionSol, sessionActive, config.solRouteLimits.maxSlippageBps, null, {
+      blockReason: 'candidate-pool-no-strategy-eligible-candidate',
+      blockDetails: evaluatedEntries
+        .slice(0, 10)
+        .map((evaluation) => `${evaluation.entry.poolAddress}:${evaluation.rejectionReason}`)
+        .join(';')
+    });
+  }
+  const entry = selectedEvaluation.entry;
+
   const candidate = {
     ...entry.candidate,
     hasInventory: false,
-    hasLpPosition: false,
-    safetyScore: entry.score
+    hasLpPosition: false
   };
-  const selectedRequestedPositionSol = resolveCandidateRequestedPositionSol({
-    strategy: input.strategy,
-    requestedPositionSol,
-    candidate,
-    disableDynamicPositionSizing: input.disableDynamicPositionSizing
-  });
+  const selectedRequestedPositionSol = selectedEvaluation.requestedPositionSol;
   const lpPositionSignal = resolveLpPositionSignal(input.accountState, {
     mint: candidate.mint,
     poolAddress: candidate.address
@@ -1277,7 +1383,7 @@ async function buildCandidatePoolBackedCycleInput(
       liquidityUsd: candidate.liquidityUsd,
       hasSolRoute: candidate.hasSolRoute,
       capturedAt: candidate.capturedAt,
-      candidateCount: 1,
+      candidateCount: entries.length,
       binStep: candidate.binStep,
       baseFeePct: candidate.baseFeePct,
       volume24h: candidate.volume24h,
@@ -1389,14 +1495,15 @@ function buildCandidate(
     quoteMint: readString(payload, ['quoteMint', 'quote_mint', 'token_y_mint']) || resolveNestedString(payload, ['token_y', 'tokenY'], ['address', 'mint']),
     liquidityUsd,
     hasSolRoute: resolveHasSolRoute(payload),
-    capturedAt: readString(payload, ['capturedAt', 'updatedAt', 'pool_created_at']),
+    capturedAt: readTimestamp(payload, ['created_at', 'createdAt', 'pool_created_at', 'capturedAt', 'updatedAt']),
     holders,
     hasInventory: hasAccountInventory(accountState, mint),
     hasLpPosition: hasAccountLpPosition(accountState, mint),
     binStep: readNumber(poolConfig, ['bin_step', 'binStep']),
     baseFeePct: readNumber(poolConfig, ['base_fee_pct', 'baseFeePct']),
     volume24h: readNumber(volumeObj, ['24h']),
-    feeTvlRatio24h: readNumber(feeTvlObj, ['24h'])
+    feeTvlRatio24h: normalizeMeteoraFeeTvlRatio(readNumber(feeTvlObj, ['24h'])),
+    feeTvlRatioUnit: 'ratio'
   } satisfies IngestCandidate;
 }
 
@@ -1690,14 +1797,11 @@ export async function buildLiveCycleInputFromIngest(
 
   const pumpIndexes = buildPumpIndexes(pumpRows, input.traderWallet);
   const maxPoolAgeMs = 3 * 24 * 60 * 60 * 1000;
-  const prefilteredRows = poolRows.filter((row) => {
-    const payload = rawRecord(row);
-    const poolConfig = isRecord(payload.pool_config) ? payload.pool_config : {};
-    const isBlacklisted = readBoolean(payload, ['is_blacklisted', 'isBlacklisted']);
-    const binStep = readNumber(poolConfig, ['bin_step', 'binStep']);
-    const hasSolRoute = resolveHasSolRoute(payload);
-    return hasSolRoute && !isBlacklisted && isAllowedMeteoraEntryBinStep(binStep) && isRecentPool(payload, now, maxPoolAgeMs);
-  });
+  const newTokenPrefilter = config.poolClass === 'new-token';
+  const prefilteredRows = poolRows.filter((row) => isMeteoraPoolPrefiltered(row, now, maxPoolAgeMs, {
+    requireRecent: newTokenPrefilter,
+    requireEntryBinStep: newTokenPrefilter
+  }));
 
   const prefilterCandidates: IngestCandidate[] = prefilteredRows.map((row) =>
     buildCandidate(
@@ -1721,6 +1825,7 @@ export async function buildLiveCycleInputFromIngest(
         candidates: lpEligibleCandidates,
         accountState: input.accountState,
         positionState: input.positionState,
+        positionLedger: input.positionLedger,
         openCooldowns: input.openCooldowns,
         now
       });
@@ -1759,6 +1864,19 @@ export async function buildLiveCycleInputFromIngest(
       activeLpMaintenanceCandidate
     );
   }
+
+  // An LP visible in the signer wallet but not owned by Lightld is neither a
+  // maintenance target nor a new-entry candidate. Keep its exact pool/mint
+  // occupied so the generic candidate path cannot turn the same manual LP
+  // into a withdraw/rebalance decision or open a duplicate position.
+  const occupiedLpTargets = [
+    ...(input.accountState?.walletLpPositions ?? []),
+    ...(input.accountState?.journalLpPositions ?? [])
+  ].filter((position) => position.mint !== SOL_MINT && (position.hasLiquidity ?? true));
+  candidates = candidates.filter((candidate) => !occupiedLpTargets.some((position) =>
+    position.poolAddress === candidate.address && position.mint === candidate.mint
+  ));
+
   if (input.selectionMode === 'new-open-only') {
     const excludedMints = new Set(resolveOpenCandidateExcludedMints({
       accountState: input.accountState,

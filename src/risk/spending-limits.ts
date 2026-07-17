@@ -22,6 +22,7 @@ const SpendingLimitsStateSchema = z.object({
     requestedSol: z.number().finite().nonnegative(),
     settledSol: z.number().finite().nonnegative().optional(),
     status: z.enum(['reserved', 'settled']),
+    reservedAt: z.string().min(1).optional(),
     updatedAt: z.string().min(1)
   })).default([])
 });
@@ -37,8 +38,11 @@ export type SpendingLimitsResult =
     };
 
 function todayDateString(resetHour: number) {
-  const now = new Date();
-  const adjusted = new Date(now.getTime() - resetHour * 60 * 60 * 1000);
+  return resetDateStringAt(new Date(), resetHour);
+}
+
+function resetDateStringAt(date: Date, resetHour: number) {
+  const adjusted = new Date(date.getTime() - resetHour * 60 * 60 * 1000);
   return adjusted.toISOString().slice(0, 10);
 }
 
@@ -183,13 +187,21 @@ export class SpendingLimitsStore {
   }
 
   async reserveSpend(idempotencyKey: string, requestedSol: number): Promise<SpendingLimitsState> {
+    if (!Number.isFinite(requestedSol) || requestedSol < 0) {
+      throw new Error(`invalid-spend-reservation:${idempotencyKey}`);
+    }
+
     const current = await this.read();
     const existing = current.reservations.find((reservation) => reservation.idempotencyKey === idempotencyKey);
 
     if (existing) {
+      if (existing.requestedSol !== requestedSol) {
+        throw new Error(`spending-reservation-conflict:${idempotencyKey}`);
+      }
       return current;
     }
 
+    const reservedAt = new Date().toISOString();
     const updated: SpendingLimitsState = {
       dailySpendSol: current.dailySpendSol + requestedSol,
       hourlySpendSol: current.hourlySpendSol + requestedSol,
@@ -203,9 +215,63 @@ export class SpendingLimitsStore {
           idempotencyKey,
           requestedSol,
           status: 'reserved',
-          updatedAt: new Date().toISOString()
+          reservedAt,
+          updatedAt: reservedAt
         }
       ]
+    };
+
+    await writeJsonAtomically(this.path, SpendingLimitsStateSchema.parse(updated));
+    return updated;
+  }
+
+  /**
+   * Releases only an un-settled reservation. Missing and already-settled
+   * reservations are intentional no-ops so callers can safely retry cleanup
+   * after a definite pre-submission failure.
+   */
+  async releaseSpend(
+    idempotencyKey: string,
+    expectedRequestedSol?: number
+  ): Promise<SpendingLimitsState> {
+    const current = await this.read();
+    const existingIndex = current.reservations.findIndex(
+      (reservation) => reservation.idempotencyKey === idempotencyKey
+    );
+
+    if (
+      existingIndex < 0
+      || current.reservations[existingIndex].status === 'settled'
+      || (
+        expectedRequestedSol !== undefined
+        && current.reservations[existingIndex].requestedSol !== expectedRequestedSol
+      )
+    ) {
+      return current;
+    }
+
+    const existing = current.reservations[existingIndex];
+    const reservations = current.reservations.filter((_, index) => index !== existingIndex);
+    const reservedAt = existing.reservedAt ?? existing.updatedAt;
+    const countsTowardCurrentDay = resetDateStringAt(new Date(reservedAt), this.resetHour)
+      === current.lastResetDate;
+    const countsTowardCurrentHour = reservedAt.slice(0, 13) === current.lastHourlyResetAt;
+    const updated: SpendingLimitsState = {
+      dailySpendSol: countsTowardCurrentDay
+        ? Math.max(0, current.dailySpendSol - existing.requestedSol)
+        : current.dailySpendSol,
+      hourlySpendSol: countsTowardCurrentHour
+        ? Math.max(0, current.hourlySpendSol - existing.requestedSol)
+        : current.hourlySpendSol,
+      orderCount: countsTowardCurrentDay
+        ? Math.max(0, current.orderCount - 1)
+        : current.orderCount,
+      hourlyOrderCount: countsTowardCurrentHour
+        ? Math.max(0, current.hourlyOrderCount - 1)
+        : current.hourlyOrderCount,
+      lastHourlyResetAt: current.lastHourlyResetAt,
+      lastResetDate: current.lastResetDate,
+      reservations
     };
 
     await writeJsonAtomically(this.path, SpendingLimitsStateSchema.parse(updated));
@@ -229,16 +295,25 @@ export class SpendingLimitsStore {
       ? existing.settledSol
       : existing.requestedSol;
     const deltaSol = actualSol - previousBookedSol;
+    const reservedAt = existing.reservedAt ?? existing.updatedAt;
+    const countsTowardCurrentDay = resetDateStringAt(new Date(reservedAt), this.resetHour)
+      === current.lastResetDate;
+    const countsTowardCurrentHour = reservedAt.slice(0, 13) === current.lastHourlyResetAt;
     const reservations = [...current.reservations];
     reservations[existingIndex] = {
       ...existing,
+      reservedAt,
       settledSol: actualSol,
       status: 'settled',
       updatedAt: new Date().toISOString()
     };
     const updated: SpendingLimitsState = {
-      dailySpendSol: Math.max(0, current.dailySpendSol + deltaSol),
-      hourlySpendSol: Math.max(0, current.hourlySpendSol + deltaSol),
+      dailySpendSol: countsTowardCurrentDay
+        ? Math.max(0, current.dailySpendSol + deltaSol)
+        : current.dailySpendSol,
+      hourlySpendSol: countsTowardCurrentHour
+        ? Math.max(0, current.hourlySpendSol + deltaSol)
+        : current.hourlySpendSol,
       orderCount: current.orderCount,
       hourlyOrderCount: current.hourlyOrderCount,
       lastHourlyResetAt: current.lastHourlyResetAt,

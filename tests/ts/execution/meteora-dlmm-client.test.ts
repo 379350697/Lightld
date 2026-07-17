@@ -61,7 +61,8 @@ describe('MeteoraDlmmClient', () => {
       client.addLiquidityByStrategy(makePoolAddress(1), makePoolAddress(2).toBase58(), 0.1)
     ).resolves.toMatchObject({
       transaction: [{ id: 'repair-tx-1' }, { id: 'repair-tx-2' }],
-      newPositionKeypair: undefined
+      newPositionKeypair: undefined,
+      positionAddress: existingPosition.publicKey.toBase58()
     });
 
     expect(initializePositionAndAddLiquidityByStrategy).not.toHaveBeenCalled();
@@ -91,7 +92,11 @@ describe('MeteoraDlmmClient', () => {
 
     const client = new MeteoraDlmmClient({} as any);
 
-    await client.addLiquidityByStrategy(makePoolAddress(1), makePoolAddress(2).toBase58(), 0.1);
+    const result = await client.addLiquidityByStrategy(
+      makePoolAddress(1),
+      makePoolAddress(2).toBase58(),
+      0.1
+    );
 
     expect(initializePositionAndAddLiquidityByStrategy).toHaveBeenCalledWith(expect.objectContaining({
       strategy: expect.objectContaining({
@@ -100,6 +105,7 @@ describe('MeteoraDlmmClient', () => {
         singleSidedX: false
       })
     }));
+    expect(result.positionAddress).toBe(result.newPositionKeypair?.publicKey.toBase58());
   });
 
   it('allows paper sampling to initialize another position when unrelated live positions exist', async () => {

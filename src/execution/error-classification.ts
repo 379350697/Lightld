@@ -100,3 +100,32 @@ export class ExecutionRequestError extends Error {
     }
   }
 }
+
+/**
+ * Returns true only when the execution service has explicitly rejected the
+ * request before accepting a transaction for broadcast.
+ *
+ * HTTP 409 is special: `idempotency key pending` means the service accepted
+ * the request identity but has not durably recorded the outcome, so callers
+ * must keep the request fail-closed. Other known 409 responses are validation
+ * conflicts that happen before idempotency reservation / transaction send.
+ */
+export function isDefinitelyNotSubmittedBroadcastError(
+  error: unknown
+): error is ExecutionRequestError {
+  if (
+    !(error instanceof ExecutionRequestError)
+    || error.operation !== 'broadcast'
+    || error.kind !== 'hard'
+  ) {
+    return false;
+  }
+
+  if (error.status !== 409) {
+    return true;
+  }
+
+  const detail = `${error.detail ?? ''} ${error.message}`.toLowerCase();
+  return detail.includes('execution policy mismatch')
+    || detail.includes('idempotency key conflict');
+}

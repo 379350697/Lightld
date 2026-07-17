@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { SqliteCandidatePool } from '../candidate-pool/sqlite-candidate-pool.ts';
+import { loadStrategyConfig } from '../config/loader.ts';
 import { HttpLiveBroadcaster } from '../execution/http-live-broadcaster.ts';
 import { HttpLiveConfirmationProvider } from '../execution/http-live-confirmation-provider.ts';
 import { HttpLiveQuoteProvider } from '../execution/http-live-quote-provider.ts';
@@ -20,8 +21,10 @@ import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.t
 import { deriveLpEntryEvidenceUrl, HttpLpEntryEvidenceProvider } from '../runtime/lp-entry-evidence-provider.ts';
 import { runLiveDaemon } from '../runtime/live-daemon.ts';
 import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
-import { SpendingLimitsStore, type SpendingLimitsConfig } from '../risk/spending-limits.ts';
+import type { SpendingLimitsConfig } from '../risk/spending-limits.ts';
 import { StrategyResearchStore } from '../strategy-research/store.ts';
+import { resolveCandidatePoolStaleMs } from './run-candidate-worker-args.ts';
+import { resolveLiveDaemonTiming } from './run-live-daemon-args.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -40,11 +43,12 @@ type ParsedArgs = {
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
+  const timing = resolveLiveDaemonTiming(argv);
   const parsed: ParsedArgs = {
     stateRootDir: process.env.LIVE_STATE_DIR ?? 'state',
     journalRootDir: process.env.LIVE_JOURNAL_DIR ?? 'tmp/journals',
-    tickIntervalMs: Number(process.env.LIVE_DAEMON_TICK_INTERVAL_MS ?? 30_000),
-    hotTickIntervalMs: Number(process.env.LIVE_DAEMON_HOT_TICK_INTERVAL_MS ?? 3_000),
+    tickIntervalMs: timing.tickIntervalMs,
+    hotTickIntervalMs: timing.hotTickIntervalMs,
     requestedPositionSol: process.env.LIVE_REQUESTED_POSITION_SOL
       ? Number(process.env.LIVE_REQUESTED_POSITION_SOL)
       : undefined,
@@ -83,13 +87,11 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (current === '--tick-interval-ms' && next) {
-      parsed.tickIntervalMs = Number(next);
       index += 1;
       continue;
     }
 
     if (current === '--hot-tick-interval-ms' && next) {
-      parsed.hotTickIntervalMs = Number(next);
       index += 1;
       continue;
     }
@@ -204,17 +206,14 @@ async function main() {
     throw new Error(`${runMode} requires SOLANA_EXECUTION_DRY_RUN=true`);
   }
   const runtimeConfig = loadLiveRuntimeConfig();
-  const spendingLimitsConfig = parseBoolean(process.env.LIVE_IGNORE_SPENDING_LIMITS, false)
-    ? undefined
-    : buildSpendingLimitsConfig({
-      maxSingleOrderSol: runtimeConfig.maxSingleOrderSol,
-      maxDailySpendSol: runtimeConfig.maxDailySpendSol,
-      maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
-    });
-
-  if (spendingLimitsConfig && runtimeConfig.resetSpendingLimitsOnStartup) {
-    await new SpendingLimitsStore(args.stateRootDir).reset();
+  if (runtimeConfig.executionMode !== 'http') {
+    throw new Error('run:daemon requires LIVE_EXECUTION_MODE=http so paper and live both use the signed execution path');
   }
+  const spendingLimitsConfig = buildSpendingLimitsConfig({
+    maxSingleOrderSol: runtimeConfig.maxSingleOrderSol,
+    maxDailySpendSol: runtimeConfig.maxDailySpendSol,
+    maxHourlySpendSol: runtimeConfig.maxHourlySpendSol
+  });
   const mirrorConfig = loadMirrorConfig({
     ...process.env,
     LIVE_STATE_DIR: args.stateRootDir,
@@ -224,6 +223,11 @@ async function main() {
   if (args.strategy !== 'new-token-v1' && args.strategy !== 'large-pool-v1') {
     throw new Error('Expected --strategy to be one of: new-token-v1, large-pool-v1');
   }
+  const strategyConfig = await loadStrategyConfig(
+    args.strategy === 'new-token-v1'
+      ? 'src/config/strategies/new-token-v1.yaml'
+      : 'src/config/strategies/large-pool-v1.yaml'
+  );
 
   const strategy = args.strategy;
 
@@ -324,7 +328,9 @@ async function main() {
   try {
     await runLiveDaemon({
     strategy,
-    stateRootDir: args.stateRootDir,
+      captureMode: runMode,
+      spendingLimitsConfig,
+      stateRootDir: args.stateRootDir,
     journalRootDir: args.journalRootDir,
     tickIntervalMs: args.tickIntervalMs,
     hotTickIntervalMs: args.hotTickIntervalMs,
@@ -340,6 +346,8 @@ async function main() {
       process.env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL,
       0.1
     ),
+    residualSweepMaxSlippageBps: strategyConfig.solRouteLimits.maxSlippageBps,
+    residualSweepMaxImpactBps: strategyConfig.solRouteLimits.maxImpactBps,
     maxTicks: args.maxTicks,
     accountProvider: executionAdapters.accountProvider,
     lpEntryEvidenceProvider: executionAdapters.lpEntryEvidenceProvider,
@@ -368,11 +376,12 @@ async function main() {
         maxActivePositions: args.maxActivePositions,
         candidatePoolReader,
         candidatePoolReadEnabled,
-        candidatePoolMaxAgeMs: parsePositiveInteger(process.env.LIVE_CANDIDATE_POOL_STALE_MS, 45_000),
+        candidatePoolMaxAgeMs: resolveCandidatePoolStaleMs(process.env),
         disableDynamicPositionSizing: parseBoolean(process.env.LIVE_DISABLE_DYNAMIC_POSITION_SIZING, false),
         newCandidateSafetyMaxBatchSize: parsePositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_MAX_BATCH_SIZE, 1),
         newCandidateSafetyTimeoutMs: parseOptionalPositiveInteger(process.env.LIVE_NEW_CANDIDATE_GMGN_TIMEOUT_MS),
         positionState: buildContext?.positionState,
+        positionLedger: buildContext?.positionLedger,
         selectionMode: buildContext?.selectionMode as IngestSelectionMode | undefined,
         skipMints: buildContext?.skipMints,
         openCooldowns: buildContext?.openCooldowns
@@ -383,12 +392,11 @@ async function main() {
         captureMode: runMode,
         accountState,
         spendingLimitsConfig,
-        ignoreLivePositionSolLimit: parseBoolean(process.env.LIVE_IGNORE_POSITION_SOL_LIMIT, false),
         ...ingestInput
       };
     },
       onCycleResult: researchStore ? (result) => {
-        if (result.action !== 'deploy' && result.action !== 'add-lp') return;
+        if ((result.action !== 'deploy' && result.action !== 'add-lp') || !result.liveOrderSubmitted) return;
         const poolAddress = typeof result.context?.pool?.address === 'string' ? result.context.pool.address : '';
         const tokenMint = typeof result.context?.token?.mint === 'string' ? result.context.token.mint : '';
         if (!poolAddress || !tokenMint) return;
@@ -396,7 +404,7 @@ async function main() {
           strategyId: strategy,
           poolAddress,
           tokenMint,
-          selectedAt: new Date().toISOString(),
+          selectedAt: result.orderIntent?.createdAt ?? new Date().toISOString(),
           action: result.action,
           reason: result.reason
         });

@@ -3,6 +3,10 @@ export type LpExitSnapshot = {
   lpRiskIntent?: 'hold' | 'range-warning' | 'range-exit' | 'liquidity-exit' | 'volatility-exit';
   lpRiskReason?: string;
   lpNetPnlPct?: number;
+  /** Paper-only active-bin model. It is never an executable exit quote or realized PnL. */
+  lpModeledNetPnlPct?: number;
+  /** Explicit evidence label required before a modeled value may drive paper TP/SL. */
+  lpModeledPnlSource?: 'paper-shadow-dlmm-active-bin-modeled';
   lpUnclaimedFeeUsd?: number;
   lpSolDepletedBins?: number;
   lpSolExposureStatus?: 'sol-heavy' | 'mixed' | 'token-heavy' | 'sol-depleted';
@@ -55,7 +59,13 @@ export function buildLpExitPolicyDecision(
   }
 
   const pnlValuationReady = !snapshot.valuationStatus || snapshot.valuationStatus === 'ready';
-  if (pnlValuationReady && typeof snapshot.lpNetPnlPct === 'number') {
+  const effectivePnlPct = typeof snapshot.lpNetPnlPct === 'number'
+    ? snapshot.lpNetPnlPct
+    : snapshot.lpModeledPnlSource === 'paper-shadow-dlmm-active-bin-modeled'
+      && typeof snapshot.lpModeledNetPnlPct === 'number'
+      ? snapshot.lpModeledNetPnlPct
+      : undefined;
+  if (pnlValuationReady && typeof effectivePnlPct === 'number') {
     const stopLoss = config.lpStopLossNetPnlPct ?? 20;
     const takeProfit = config.lpTakeProfitNetPnlPct ?? 30;
     const minHoldMsBeforeTakeProfit = (config.lpMinHoldMinutesBeforeTakeProfit ?? 5) * 60 * 1000;
@@ -63,11 +73,11 @@ export function buildLpExitPolicyDecision(
       && typeof snapshot.holdTimeMs === 'number'
       && snapshot.holdTimeMs >= minHoldMsBeforeTakeProfit;
 
-    if (snapshot.lpNetPnlPct <= -stopLoss) {
+    if (effectivePnlPct <= -stopLoss) {
       return { action: 'withdraw-lp', reason: 'lp-stop-loss' };
     }
 
-    if (snapshot.lpNetPnlPct >= takeProfit && canTakeProfit) {
+    if (effectivePnlPct >= takeProfit && canTakeProfit) {
       return { action: 'withdraw-lp', reason: 'lp-take-profit' };
     }
   }

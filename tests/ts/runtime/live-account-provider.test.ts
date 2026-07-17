@@ -11,6 +11,7 @@ describe('HttpLiveAccountStateProvider', () => {
 
         return new Response(
           JSON.stringify({
+            observedAt: '2026-03-22T00:00:01.000Z',
             walletSol: 1.25,
             journalSol: 1.25,
             walletLpPositions: [
@@ -43,6 +44,7 @@ describe('HttpLiveAccountStateProvider', () => {
     });
 
     await expect(provider.readState()).resolves.toEqual({
+      observedAt: '2026-03-22T00:00:01.000Z',
       walletSol: 1.25,
       journalSol: 1.25,
       walletLpPositions: [
@@ -69,6 +71,27 @@ describe('HttpLiveAccountStateProvider', () => {
         }
       ]
     });
+  });
+
+  it('rejects an incomplete account snapshot instead of treating omissions as empty balances', async () => {
+    const provider = new HttpLiveAccountStateProvider({
+      url: 'https://account.example/api',
+      maxRetries: 0,
+      fetchImpl: async () => new Response(
+        JSON.stringify({
+          walletSol: 1.25,
+          journalSol: 1.25,
+          walletLpPositions: [],
+          journalLpPositions: [],
+          walletTokens: [],
+          journalTokens: [],
+          fills: []
+        }),
+        { status: 200 }
+      )
+    });
+
+    await expect(provider.readState()).rejects.toThrow(/observedAt/);
   });
 
   it('uses a longer default timeout for cold account-state reads', () => {

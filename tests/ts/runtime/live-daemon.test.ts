@@ -155,14 +155,15 @@ describe('runLiveDaemon', () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-new-open-sim-cooldown-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
     const targetCooldownStore = new TargetOpenCooldownStore(stateRootDir);
     const simulationReason = [
       'Solana RPC sendTransaction error: Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1',
       'simulationLogs=Transfer: insufficient lamports 38522692, need 57406080'
     ].join('; ');
     const baseAccountState = {
-      walletSol: 0.0385,
-      journalSol: 0.0385,
+      walletSol: 0.5,
+      journalSol: 0.5,
       walletTokens: [],
       journalTokens: [],
       walletLpPositions: [{
@@ -176,6 +177,23 @@ describe('runLiveDaemon', () => {
       journalLpPositions: [],
       fills: []
     };
+    await runtimeStateStore.writePositionLedger({
+      version: 1,
+      updatedAt: '2026-07-04T00:00:00.000Z',
+      records: [{
+        positionKey: 'chain-position:pos-active',
+        chainPositionAddress: 'pos-active',
+        activeMint: 'mint-active',
+        activePoolAddress: 'pool-active',
+        entryFillSubmissionId: 'managed-open-pos-active',
+        entrySol: 0.08,
+        entrySolSource: 'actual_fill',
+        openedAt: new Date().toISOString(),
+        lifecycleState: 'open',
+        lastAction: 'add-lp',
+        updatedAt: '2026-07-04T00:00:00.000Z'
+      }]
+    });
 
     await runLiveDaemon({
       strategy: 'new-token-v1',
@@ -194,7 +212,7 @@ describe('runLiveDaemon', () => {
             requestedPositionSol: 0.08,
             accountState: baseAccountState,
             context: {
-              pool: { address: 'pool-fable', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
+              pool: { address: 'pool-fable', liquidityUsd: 10_000, feeTvlRatio24h: 0.06, score: 90 },
               token: { mint: 'mint-fable', inSession: true, hasSolRoute: true, symbol: 'FABLE', score: 90 },
               trader: { hasInventory: false, hasLpPosition: false },
               route: { hasSolRoute: true, expectedOutSol: 0.08, slippageBps: 50 }
@@ -378,6 +396,7 @@ describe('runLiveDaemon', () => {
       activePoolAddress: 'pool-loss',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-position-active',
       openedAt,
       updatedAt: openedAt
     });
@@ -438,6 +457,7 @@ describe('runLiveDaemon', () => {
       activePoolAddress: 'pool-profit',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-position-active',
       openedAt,
       updatedAt: openedAt
     });
@@ -648,6 +668,7 @@ describe('runLiveDaemon', () => {
       chainPositionAddress: 'position-active',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-position-active',
       openedAt,
       updatedAt: openedAt
     });
@@ -693,7 +714,7 @@ describe('runLiveDaemon', () => {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.05 },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.06 },
             token: {
               mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
               inSession: true,
@@ -773,6 +794,7 @@ describe('runLiveDaemon', () => {
       chainPositionAddress: 'position-active',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-position-active',
       openedAt,
       updatedAt: openedAt
     });
@@ -816,7 +838,7 @@ describe('runLiveDaemon', () => {
           requestedPositionSol: 0.1,
           accountState,
           context: {
-            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.05 },
+            pool: { address: context?.selectionMode === 'new-open-only' ? 'pool-new' : 'pool-active', liquidityUsd: 20_000, feeTvlRatio24h: 0.06 },
             token: {
               mint: context?.selectionMode === 'new-open-only' ? 'mint-new' : 'mint-active',
               inSession: true,
@@ -974,6 +996,7 @@ describe('runLiveDaemon', () => {
       chainPositionAddress: 'position-active',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-position-active',
       openedAt,
       updatedAt: openedAt
     });
@@ -1265,6 +1288,31 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const outcomes: Array<{ tokenMint: string; actualExitReason: string }> = [];
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: false,
+      flattenOnly: false,
+      lastAction: 'withdraw-lp',
+      lastReason: 'residual_cleanup_pending',
+      activeMint: 'mint-safe',
+      lifecycleState: 'inventory_exit_ready',
+      updatedAt: new Date().toISOString()
+    });
+    await runtimeStateStore.writePositionLedger({
+      version: 1,
+      records: [{
+        positionKey: 'residual:mint-safe',
+        activeMint: 'mint-safe',
+        lifecycleState: 'closed',
+        lastAction: 'withdraw-lp',
+        residualCleanupStatus: 'residual_cleanup_pending',
+        residualCleanupAmountRaw: '10000000',
+        updatedAt: new Date().toISOString()
+      }],
+      updatedAt: new Date().toISOString()
+    });
 
     await runLiveDaemon({
       strategy: 'new-token-v1',
@@ -1289,13 +1337,37 @@ describe('runLiveDaemon', () => {
             mint: 'mint-safe',
             symbol: 'SAFE',
             amount: 10,
-            amountLamports: 10_000_000
+            amountLamports: 10_000_000,
+            amountRaw: '10000000'
           }],
           journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
           fills: []
         },
+        accountProvider: {
+          readState: async () => ({
+            walletSol: 1.35,
+            journalSol: 1.35,
+            observedAt: postExitObservedAt,
+            walletTokens: [],
+            journalTokens: [],
+            walletLpPositions: [],
+            journalLpPositions: [],
+            fills: []
+          })
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: postExitObservedAt
+          })
+        },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06, score: 90 },
           token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
           trader: { hasInventory: true, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1506,6 +1578,7 @@ describe('runLiveDaemon', () => {
           readState: async () => ({
             walletSol: 1.25,
             journalSol: 1.25,
+            observedAt: '2026-03-22T00:00:01.000Z',
             walletTokens: [],
             journalTokens: [],
             walletLpPositions: [
@@ -1534,6 +1607,7 @@ describe('runLiveDaemon', () => {
         accountState: {
           walletSol: 1.25,
           journalSol: 1.25,
+          observedAt: '2026-03-22T00:00:01.000Z',
           walletTokens: [],
           journalTokens: [],
           walletLpPositions: [
@@ -1639,6 +1713,7 @@ describe('runLiveDaemon', () => {
           readState: async () => ({
             walletSol: 1.25,
             journalSol: 1.25,
+            observedAt: '2026-03-22T00:00:01.000Z',
             walletTokens: [],
             journalTokens: [],
             walletLpPositions: [
@@ -1733,6 +1808,7 @@ describe('runLiveDaemon', () => {
         accountState: {
           walletSol: 1.25,
           journalSol: 1.25,
+          observedAt: '2026-03-22T00:00:01.000Z',
           walletTokens: [],
           journalTokens: [],
           walletLpPositions: [
@@ -2306,7 +2382,7 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
+          pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06, score: 90 },
           token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE', score: 90 },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -2348,7 +2424,7 @@ describe('runLiveDaemon', () => {
           fills: []
         },
         context: {
-          pool: { address: 'pool-failed', liquidityUsd: 10_000, feeTvlRatio24h: 0.05, score: 90 },
+          pool: { address: 'pool-failed', liquidityUsd: 10_000, feeTvlRatio24h: 0.06, score: 90 },
           token: { mint: 'mint-failed', inSession: true, hasSolRoute: true, symbol: 'FAIL', score: 90 },
           trader: { hasInventory: false, hasLpPosition: false },
           route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -2474,6 +2550,7 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -2482,12 +2559,13 @@ describe('runLiveDaemon', () => {
       lastReason: 'live-order-submitted',
       activeMint: 'mint-open',
       activePoolAddress: 'pool-open',
+      chainPositionAddress: 'pos-open',
       lifecycleState: 'open',
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
       entryFillSubmissionId: 'sub-open',
-      openedAt: '2026-04-18T00:00:00.000Z',
-      updatedAt: '2026-04-18T00:00:00.000Z'
+      openedAt,
+      updatedAt: openedAt
     });
 
     await runLiveDaemon({
@@ -2517,6 +2595,8 @@ describe('runLiveDaemon', () => {
           journalLpPositions: [],
           fills: [{
             submissionId: 'sub-open',
+            chainPositionAddress: 'pos-open',
+            positionId: 'pos-open',
             mint: 'mint-open',
             side: 'add-lp' as const,
             amount: 0.1,
@@ -2525,7 +2605,7 @@ describe('runLiveDaemon', () => {
             actualWalletDeltaSol: 0.1,
             fillAmountSource: 'wallet-delta' as const,
             hasFillEvidence: true,
-            recordedAt: '2026-04-18T00:00:00.000Z'
+            recordedAt: openedAt
           }]
         },
         context: {
@@ -2541,12 +2621,12 @@ describe('runLiveDaemon', () => {
 
     expect(positionState).toMatchObject({
       lastAction: 'hold',
-      lastReason: 'runtime-paused',
+      lastReason: 'hold',
       activeMint: 'mint-open',
       activePoolAddress: 'pool-open',
       lifecycleState: 'open',
       entrySol: 0.1,
-      openedAt: '2026-04-18T00:00:00.000Z'
+      openedAt
     });
   });
 
@@ -2730,7 +2810,7 @@ describe('runLiveDaemon', () => {
       }
     });
 
-    expect(seenActions).toEqual(['hold', 'withdraw-lp']);
+    expect(seenActions).toEqual(['withdraw-lp', 'hold']);
     expect(broadcastMints).toEqual(['mint-exit']);
   });
 
@@ -2739,6 +2819,7 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const openedAt = new Date().toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -2753,8 +2834,8 @@ describe('runLiveDaemon', () => {
       entrySol: 0.1,
       entrySolSource: 'actual_fill',
       entryFillSubmissionId: 'sub-open',
-      openedAt: '2026-04-18T00:00:00.000Z',
-      updatedAt: '2026-04-18T00:00:00.000Z'
+      openedAt,
+      updatedAt: openedAt
     });
 
     await runLiveDaemon({
@@ -2792,7 +2873,7 @@ describe('runLiveDaemon', () => {
             actualWalletDeltaSol: 0.1,
             fillAmountSource: 'wallet-delta' as const,
             hasFillEvidence: true,
-            recordedAt: '2026-04-18T00:00:00.000Z'
+            recordedAt: openedAt
           }]
         },
         context: {
@@ -2808,14 +2889,14 @@ describe('runLiveDaemon', () => {
 
     expect(positionState).toMatchObject({
       lastAction: 'hold',
-      lastReason: 'runtime-paused',
+      lastReason: 'hold',
       activeMint: 'mint-open',
       activePoolAddress: 'pool-open',
       positionId: 'pos-open',
       chainPositionAddress: 'pos-open',
       lifecycleState: 'open',
       entrySol: 0.1,
-      openedAt: '2026-04-18T00:00:00.000Z'
+      openedAt
     });
   });
 
@@ -2902,7 +2983,7 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-    const openedAt = '2026-04-18T00:00:00.000Z';
+    const openedAt = new Date().toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -3107,8 +3188,8 @@ describe('runLiveDaemon', () => {
       const stateRootDir = join(root, 'state');
       const journalRootDir = join(root, 'journals');
       const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-      const questOpenedAt = '2026-06-24T14:40:02.959Z';
-      const condorOpenedAt = '2026-06-24T15:00:40.000Z';
+      const questOpenedAt = new Date(Date.now() - 60_000).toISOString();
+      const condorOpenedAt = new Date().toISOString();
 
       await runtimeStateStore.writePositionState({
         allowNewOpens: true,
@@ -3227,8 +3308,8 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-    const staleOpenedAt = '2026-06-25T02:32:09.860Z';
-    const realOpenedAt = '2026-06-25T02:25:44.622Z';
+    const realOpenedAt = new Date(Date.now() - 60_000).toISOString();
+    const staleOpenedAt = new Date().toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -3237,6 +3318,8 @@ describe('runLiveDaemon', () => {
       lastReason: 'hold',
       activeMint: 'mint-safe',
       activePoolAddress: 'pool-safe',
+      positionId: 'current-position',
+      chainPositionAddress: 'current-position',
       lifecycleState: 'open',
       entrySol: 0.137416044,
       entrySolSource: 'actual_fill',
@@ -3268,6 +3351,8 @@ describe('runLiveDaemon', () => {
       journalLpPositions: [],
       fills: [{
         submissionId: 'real-open',
+        chainPositionAddress: 'current-position',
+        positionId: 'current-position',
         mint: 'mint-safe',
         side: 'add-lp' as const,
         amount: 0.077416045,
@@ -3275,7 +3360,6 @@ describe('runLiveDaemon', () => {
         actualWalletDeltaSol: -0.077416045,
         fillAmountSource: 'wallet-delta' as const,
         hasFillEvidence: true,
-        positionId: 'pool-safe:mint-safe',
         recordedAt: realOpenedAt
       }]
     };
@@ -3313,8 +3397,8 @@ describe('runLiveDaemon', () => {
       const stateRootDir = join(root, 'state');
       const journalRootDir = join(root, 'journals');
       const runtimeStateStore = new RuntimeStateStore(stateRootDir);
-      const staleOpenedAt = '2026-06-24T15:11:38.375Z';
-      const repairedOpenedAt = '2026-06-24T15:00:40.000Z';
+      const repairedOpenedAt = new Date(Date.now() - 60_000).toISOString();
+      const staleOpenedAt = new Date().toISOString();
 
       await runtimeStateStore.writePositionState({
         allowNewOpens: true,
@@ -3807,6 +3891,23 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+    const openedAt = new Date(Date.now() - 60_000).toISOString();
+    await runtimeStateStore.writePositionState({
+      allowNewOpens: true,
+      flattenOnly: false,
+      lastAction: 'add-lp',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      positionId: 'pos-1',
+      chainPositionAddress: 'pos-1',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'managed-open-pos-1',
+      openedAt,
+      updatedAt: openedAt
+    });
 
     const accountStates = [
       {
@@ -3830,8 +3931,11 @@ describe('runLiveDaemon', () => {
       {
         walletSol: 1.25,
         journalSol: 1.25,
-        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200 }],
-        journalTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200 }],
+        observedAt: postExitObservedAt,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200, amountRaw: '1200' }],
+        journalTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 1200, amountRaw: '1200' }],
         fills: [{
           submissionId: 'sub-1',
           confirmationSignature: 'tx-1',
@@ -3841,6 +3945,16 @@ describe('runLiveDaemon', () => {
           amount: 1200,
           recordedAt: '2026-03-22T00:00:02.000Z'
         }]
+      },
+      {
+        walletSol: 1.35,
+        journalSol: 1.35,
+        observedAt: new Date(Date.now() + 120_000).toISOString(),
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
       }
     ];
 
@@ -3853,6 +3967,9 @@ describe('runLiveDaemon', () => {
       journalRootDir,
       tickIntervalMs: 1,
       maxTicks: 2,
+      accountProvider: {
+        readState: async () => accountStates[Math.min(tick, accountStates.length - 1)]
+      },
       buildCycleInput: async () => {
         const current = tick;
         tick += 1;
@@ -3861,6 +3978,9 @@ describe('runLiveDaemon', () => {
         return {
           requestedPositionSol: 0.1,
           accountState,
+          accountProvider: {
+            readState: async () => accountStates[Math.min(current + 1, accountStates.length - 1)]
+          },
           context: {
             pool: { address: 'pool-1', liquidityUsd: 10_000 },
             token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -3884,7 +4004,14 @@ describe('runLiveDaemon', () => {
                 status: 'submitted' as const,
                 submissionId: `sub-${current + 1}`,
                 idempotencyKey: signedIntent.intent.idempotencyKey,
-                confirmationSignature: `tx-${current + 1}`
+                confirmationSignature: `tx-${current + 1}`,
+                ...(current === 0
+                  ? {
+                      residualSweepStatus: 'incomplete' as const,
+                      residualUnsoldMints: ['mint-safe'],
+                      residualUnsoldAmountsRaw: { 'mint-safe': '1200' }
+                    }
+                  : {})
               };
             }
           },
@@ -3907,13 +4034,27 @@ describe('runLiveDaemon', () => {
     );
     const orders = ordersRaw.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) as Array<{ side: string }>;
     const positionState = await runtimeStateStore.readPositionState();
+    const positionLedger = await runtimeStateStore.readPositionLedger();
+    const pendingSubmission = await new PendingSubmissionStore(stateRootDir).read();
 
     expect(seenActions).toEqual(['withdraw-lp', 'sell']);
     expect(orders.map((order) => order.side)).toEqual(['withdraw-lp', 'sell']);
-    expect(positionState?.lastAction).toBe('dca-out');
+    expect(positionState).toMatchObject({
+      lastAction: 'dca-out',
+      lifecycleState: 'closed'
+    });
+    expect(positionState?.activeMint).toBeUndefined();
+    expect(positionLedger?.records).toContainEqual(expect.objectContaining({
+      activeMint: 'mint-safe',
+      lifecycleState: 'closed',
+      lastAction: 'dca-out',
+      residualCleanupStatus: 'residual_cleanup_complete'
+    }));
+    expect(positionLedger?.records.find((record) => record.activeMint === 'mint-safe')?.residualCleanupAmountRaw).toBeUndefined();
+    expect(pendingSubmission).toBeNull();
   });
 
-  it('closes confirmed withdraw even when fill evidence is missing', async () => {
+  it('keeps a confirmed withdraw pending until the exact LP is absent from a fresh account snapshot', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-close-evidence-'));
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
@@ -4015,15 +4156,18 @@ describe('runLiveDaemon', () => {
     const positionState = await runtimeStateStore.readPositionState();
     const pendingSubmission = await new PendingSubmissionStore(stateRootDir).read();
 
-    expect(pendingSubmission).toBeNull();
+    expect(pendingSubmission).toMatchObject({
+      orderAction: 'withdraw-lp',
+      chainPositionAddress: 'pos-1',
+      reason: 'pending-withdraw-awaiting-account-closure-proof'
+    });
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
-      lifecycleState: 'closed',
-      lastClosedMint: 'mint-safe'
+      lifecycleState: 'lp_exit_pending',
+      activeMint: 'mint-safe',
+      activePoolAddress: 'pool-1',
+      chainPositionAddress: 'pos-1'
     });
-    expect(positionState?.activeMint).toBeUndefined();
-    expect(positionState?.activePoolAddress).toBeUndefined();
-    expect(positionState?.chainPositionAddress).toBeUndefined();
   });
 
   it('does not retry a confirmed full exit when the next account snapshot is stale', async () => {
@@ -4138,7 +4282,8 @@ describe('runLiveDaemon', () => {
     );
     expect(withdrawIntents).toHaveLength(1);
     expect(health).toMatchObject({
-      chainActiveLpCount: 0
+      chainActiveLpCount: 1,
+      pendingSubmission: true
     });
   });
 
@@ -4148,6 +4293,7 @@ describe('runLiveDaemon', () => {
     const journalRootDir = join(root, 'journals');
     const runtimeStateStore = new RuntimeStateStore(stateRootDir);
     const openedAt = new Date(Date.now() - 19 * 60 * 60 * 1000).toISOString();
+    const observedAt = new Date(Date.now() + 60_000).toISOString();
 
     await runtimeStateStore.writePositionState({
       allowNewOpens: true,
@@ -4165,33 +4311,35 @@ describe('runLiveDaemon', () => {
       updatedAt: openedAt
     });
 
-    const accountState = {
+    const targetLp = {
+      poolAddress: 'pool-closing',
+      positionAddress: 'pos-closing',
+      chainPositionAddress: 'pos-closing',
+      mint: 'mint-closing',
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 165,
+      solSide: 'tokenX' as const,
+      solDepletedBins: 65,
+      hasLiquidity: true
+    };
+    const preCycleAccountState = {
       walletSol: 1.25,
       journalSol: 1.25,
       walletTokens: [],
       journalTokens: [],
-      walletLpPositions: [{
-        poolAddress: 'pool-other',
-        positionAddress: 'pos-other',
-        mint: 'mint-other',
-        lowerBinId: 100,
-        upperBinId: 168,
-        activeBinId: 165,
-        solSide: 'tokenX' as const,
-        solDepletedBins: 0,
-        hasLiquidity: true
-      }],
-      journalLpPositions: [{
-        poolAddress: 'pool-other',
-        positionAddress: 'pos-other',
-        mint: 'mint-other',
-        lowerBinId: 100,
-        upperBinId: 168,
-        activeBinId: 165,
-        solSide: 'tokenX' as const,
-        solDepletedBins: 0,
-        hasLiquidity: true
-      }],
+      walletLpPositions: [targetLp],
+      journalLpPositions: [targetLp],
+      fills: []
+    };
+    const postSubmitAccountState = {
+      walletSol: 1.35,
+      journalSol: 1.35,
+      observedAt,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
       fills: []
     };
 
@@ -4204,9 +4352,9 @@ describe('runLiveDaemon', () => {
       buildCycleInput: async () => ({
         reconciliationStatus: 'matched' as const,
         requestedPositionSol: 0.1,
-        accountState,
+        accountState: preCycleAccountState,
         accountProvider: {
-          readState: async () => accountState
+          readState: async () => postSubmitAccountState
         },
         context: {
           pool: { address: 'pool-closing', liquidityUsd: 10_000 },
@@ -4244,16 +4392,214 @@ describe('runLiveDaemon', () => {
 
     const positionState = await runtimeStateStore.readPositionState();
     const health = await runtimeStateStore.readHealthReport();
+    const lifecycleEventLog = await runtimeStateStore.readLifecycleEventLog();
+    const pendingSubmission = await new PendingSubmissionStore(stateRootDir).read();
 
     expect(positionState).toMatchObject({
       lastAction: 'withdraw-lp',
       lastClosedMint: 'mint-closing',
-      allowNewOpens: true
+      allowNewOpens: true,
+      lifecycleState: 'closed'
     });
+    expect(positionState?.activeMint).toBeUndefined();
+    expect(positionState?.activePoolAddress).toBeUndefined();
+    expect(lifecycleEventLog?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventType: 'PositionClosed' })
+    ]));
+    expect(pendingSubmission).toBeNull();
     expect(health).toMatchObject({
       allowNewOpens: true
     });
     expect(positionState?.lastClosedAt).toBeTruthy();
+  });
+
+  it('persists paper large-pool deploy entry and owned spot quantity from confirmed wallet deltas', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-live-daemon-paper-spot-open-'));
+    const stateRootDir = join(root, 'state');
+    const journalRootDir = join(root, 'journals');
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+    const beforeAccountState = {
+      walletSol: 1.25,
+      journalSol: 1.25,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
+      fills: []
+    };
+    const afterAccountState = {
+      walletSol: 1.15,
+      journalSol: 1.15,
+      walletTokens: [{
+        mint: 'mint-large',
+        symbol: 'LARGE',
+        amount: 1_000,
+        amountRaw: '1000',
+        currentValueSol: 0.1
+      }],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    await runLiveDaemon({
+      strategy: 'large-pool-v1',
+      captureMode: 'mechanical-soak',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        captureMode: 'mechanical-soak',
+        requestedPositionSol: 0.1,
+        accountState: beforeAccountState,
+        accountProvider: {
+          readState: async () => afterAccountState
+        },
+        context: {
+          pool: { address: 'pool-large', liquidityUsd: 100_000, score: 90 },
+          token: { mint: 'mint-large', inSession: true, hasSolRoute: true, symbol: 'LARGE', score: 90 },
+          trader: { hasInventory: false, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'paper-test-signer',
+            signedAt: new Date().toISOString(),
+            signature: 'paper-signed'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => ({
+            status: 'submitted' as const,
+            submissionId: 'paper-spot-open',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'paper-spot-open-signature'
+          })
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: new Date().toISOString()
+          })
+        }
+      })
+    });
+
+    const positionState = await runtimeStateStore.readPositionState();
+    const lifecycleEventLog = await runtimeStateStore.readLifecycleEventLog();
+    expect(positionState).toMatchObject({
+      lastAction: 'deploy',
+      activeMint: 'mint-large',
+      activePoolAddress: 'pool-large',
+      lifecycleState: 'open',
+      entrySol: 0.1,
+      entrySolSource: 'actual_fill',
+      entryFillSubmissionId: 'paper-spot-open',
+      ownedTokenAmountRaw: '1000'
+    });
+    expect(positionState?.openedAt).toBeTruthy();
+    expect(lifecycleEventLog?.events).toContainEqual(expect.objectContaining({
+      eventType: 'OpenIntentCreated',
+      action: 'deploy',
+      openIntentId: expect.any(String),
+      poolAddress: 'pool-large',
+      tokenMint: 'mint-large'
+    }));
+
+    const openIntentId = positionState?.openIntentId;
+    const accountBeforeClose = {
+      ...afterAccountState,
+      journalTokens: afterAccountState.walletTokens
+    };
+    const accountAfterClose = {
+      walletSol: 1.24,
+      journalSol: 1.24,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
+      fills: []
+    };
+    await runLiveDaemon({
+      strategy: 'large-pool-v1',
+      captureMode: 'mechanical-soak',
+      stateRootDir,
+      journalRootDir,
+      tickIntervalMs: 1,
+      maxTicks: 1,
+      buildCycleInput: async () => ({
+        captureMode: 'mechanical-soak',
+        requestedPositionSol: 0.1,
+        accountState: accountBeforeClose,
+        accountProvider: {
+          readState: async () => ({
+            ...accountAfterClose,
+            observedAt: new Date(Date.now() + 1_000).toISOString()
+          })
+        },
+        context: {
+          pool: { address: 'pool-large', liquidityUsd: 100_000, score: 90 },
+          token: { mint: 'mint-large', inSession: false, hasSolRoute: true, symbol: 'LARGE', score: 90 },
+          trader: { hasInventory: true, hasLpPosition: false },
+          route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+        },
+        quoteProvider: {
+          collect: async ({ expectedOutSol, slippageBps }) => ({
+            routeExists: true,
+            outputSol: expectedOutSol,
+            slippageBps,
+            quotedAt: new Date().toISOString(),
+            stale: false
+          })
+        },
+        signer: {
+          sign: async (intent) => ({
+            intent,
+            signerId: 'paper-test-signer',
+            signedAt: new Date().toISOString(),
+            signature: 'paper-signed-close'
+          })
+        },
+        broadcaster: {
+          broadcast: async (signedIntent) => ({
+            status: 'submitted' as const,
+            submissionId: 'paper-spot-close',
+            idempotencyKey: signedIntent.intent.idempotencyKey,
+            confirmationSignature: 'paper-spot-close-signature'
+          })
+        },
+        confirmationProvider: {
+          poll: async ({ submissionId, confirmationSignature }) => ({
+            submissionId,
+            confirmationSignature,
+            status: 'confirmed' as const,
+            finality: 'finalized' as const,
+            checkedAt: new Date().toISOString()
+          })
+        }
+      })
+    });
+
+    const closedState = await runtimeStateStore.readPositionState();
+    const closedLifecycleEventLog = await runtimeStateStore.readLifecycleEventLog();
+    expect(closedState).toMatchObject({
+      lastAction: 'dca-out',
+      lifecycleState: 'closed',
+      lastClosedMint: 'mint-large'
+    });
+    expect(closedLifecycleEventLog?.events).toContainEqual(expect.objectContaining({
+      eventType: 'PositionClosed',
+      action: 'dca-out',
+      openIntentId,
+      poolAddress: 'pool-large',
+      tokenMint: 'mint-large'
+    }));
   });
 
   it('runs maintenance sell sweeps from runtime wallet inventory and records mint cooldown', async () => {
@@ -4261,7 +4607,25 @@ describe('runLiveDaemon', () => {
     const stateRootDir = join(root, 'state');
     const journalRootDir = join(root, 'journals');
     const residualTokenSweepStore = new ResidualTokenSweepStore(stateRootDir);
+    const runtimeStateStore = new RuntimeStateStore(stateRootDir);
     const seenMints: string[] = [];
+
+    await runtimeStateStore.writePositionLedger({
+      version: 1,
+      records: [
+        {
+          positionKey: 'residual:mint-maint-1', activeMint: 'mint-maint-1', lifecycleState: 'closed',
+          lastAction: 'withdraw-lp', residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '10', updatedAt: '2026-04-27T00:00:00.000Z'
+        },
+        {
+          positionKey: 'residual:mint-maint-2', activeMint: 'mint-maint-2', lifecycleState: 'closed',
+          lastAction: 'withdraw-lp', residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '8', updatedAt: '2026-04-27T00:00:00.000Z'
+        }
+      ],
+      updatedAt: '2026-04-27T00:00:00.000Z'
+    });
 
     await runLiveDaemon({
       strategy: 'new-token-v1',
@@ -4277,8 +4641,8 @@ describe('runLiveDaemon', () => {
           walletSol: 1.25,
           journalSol: 1.25,
           walletTokens: [
-            { mint: 'mint-maint-1', symbol: 'M1', amount: 10, currentValueSol: 0.35 },
-            { mint: 'mint-maint-2', symbol: 'M2', amount: 8, currentValueSol: 0.2 }
+            { mint: 'mint-maint-1', symbol: 'M1', amount: 10, amountRaw: '10', currentValueSol: 0.35 },
+            { mint: 'mint-maint-2', symbol: 'M2', amount: 8, amountRaw: '8', currentValueSol: 0.2 }
           ],
           journalTokens: [],
           fills: []
@@ -4336,6 +4700,16 @@ describe('runLiveDaemon', () => {
       const stateRootDir = join(root, 'state');
       const journalRootDir = join(root, 'journals');
       const seenMints: string[] = [];
+      const runtimeStateStore = new RuntimeStateStore(stateRootDir);
+      await runtimeStateStore.writePositionLedger({
+        version: 1,
+        records: [{
+          positionKey: 'residual:mint-maint-cooldown', activeMint: 'mint-maint-cooldown', lifecycleState: 'closed',
+          lastAction: 'withdraw-lp', residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '10', updatedAt: '2026-04-27T00:00:00.000Z'
+        }],
+        updatedAt: '2026-04-27T00:00:00.000Z'
+      });
 
       await runLiveDaemon({
         strategy: 'new-token-v1',
@@ -4354,7 +4728,7 @@ describe('runLiveDaemon', () => {
             walletSol: 1.25,
             journalSol: 1.25,
             walletTokens: [
-              { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, currentValueSol: 0.4 }
+              { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, amountRaw: '10', currentValueSol: 0.4 }
             ],
             journalTokens: [],
             fills: []
@@ -4431,7 +4805,7 @@ describe('runLiveDaemon', () => {
           walletSol: 1.25,
           journalSol: 1.25,
           walletTokens: [
-            { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, currentValueSol: 0.4 }
+            { mint: 'mint-maint-cooldown', symbol: 'MCD', amount: 10, amountRaw: '10', currentValueSol: 0.4 }
           ],
           journalTokens: [],
           fills: []
@@ -4491,6 +4865,15 @@ describe('runLiveDaemon', () => {
       account: { consecutiveFailures: 1, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: 'fetch failed' },
       confirmation: { consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', lastFailureReason: '' }
     });
+    await runtimeStateStore.writePositionLedger({
+      version: 1,
+      records: [{
+        positionKey: 'residual:mint-pre-ingest-maint', activeMint: 'mint-pre-ingest-maint', lifecycleState: 'closed',
+        lastAction: 'withdraw-lp', residualCleanupStatus: 'residual_cleanup_pending',
+        residualCleanupAmountRaw: '10', updatedAt: '2026-04-27T00:00:00.000Z'
+      }],
+      updatedAt: '2026-04-27T00:00:00.000Z'
+    });
 
     await runLiveDaemon({
       strategy: 'new-token-v1',
@@ -4506,7 +4889,7 @@ describe('runLiveDaemon', () => {
           walletSol: 1.25,
           journalSol: 1.25,
           walletTokens: [
-            { mint: 'mint-pre-ingest-maint', symbol: 'PIM', amount: 10, currentValueSol: 0.35 }
+            { mint: 'mint-pre-ingest-maint', symbol: 'PIM', amount: 10, amountRaw: '10', currentValueSol: 0.35 }
           ],
           journalTokens: [],
           fills: []

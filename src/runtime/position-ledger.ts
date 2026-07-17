@@ -12,6 +12,15 @@ import {
   isPositionRecordBusinessActive,
   isSubmittedPendingOpenRecord
 } from './lifecycle-projection.ts';
+import {
+  isTrustedEntrySolSource,
+  isTrustedLpOpenFill
+} from './lp-entry-resolver.ts';
+import {
+  hasLightldLpOwnershipEvidence,
+  positionStateOwnsLpPosition,
+  UNBOUND_ACCOUNT_LP_REASON
+} from './lp-ownership.ts';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = new Set([
@@ -23,6 +32,27 @@ type AccountLpPosition = NonNullable<LiveAccountState['walletLpPositions']>[numb
 
 function isNonStableMint(mint?: string) {
   return typeof mint === 'string' && mint.length > 0 && mint !== SOL_MINT && !STABLE_MINTS.has(mint);
+}
+
+function walletTokenAmountRaw(accountState: LiveAccountState | undefined, mint?: string) {
+  if (!accountState || !mint) {
+    return undefined;
+  }
+  let total = 0n;
+  for (const token of accountState.walletTokens ?? []) {
+    if (token.mint !== mint) {
+      continue;
+    }
+    const raw = token.amountRaw
+      ?? (typeof token.amountLamports === 'number' && Number.isSafeInteger(token.amountLamports) && token.amountLamports >= 0
+        ? String(token.amountLamports)
+        : undefined);
+    if (!raw || !/^\d+$/.test(raw)) {
+      return undefined;
+    }
+    total += BigInt(raw);
+  }
+  return total;
 }
 
 export function positionLedgerKey(input: {
@@ -86,50 +116,15 @@ export function collectActiveLpPositions(accountState?: LiveAccountState): Accou
 
 function findMatchingRecord(
   records: PositionLedgerRecord[],
-  position: AccountLpPosition,
-  activePositions: AccountLpPosition[]
+  position: AccountLpPosition
 ) {
   const chainPositionAddress = position.chainPositionAddress || position.positionAddress;
   if (chainPositionAddress) {
-    const byChain = records.find((record) =>
+    return records.find((record) =>
       record.chainPositionAddress === chainPositionAddress ||
       record.positionId === chainPositionAddress ||
       record.positionKey === `chain-position:${chainPositionAddress}`
     );
-    if (byChain) {
-      return byChain;
-    }
-
-    const samePoolMintActiveCount = activePositions.filter((activePosition) =>
-      activePosition.poolAddress === position.poolAddress && activePosition.mint === position.mint
-    ).length;
-    if (samePoolMintActiveCount === 1) {
-      const pendingOrReconcileMatches = records.filter((record) =>
-        (
-          record.lifecycleState === 'open_pending' ||
-          record.lifecycleState === 'reconcile_required'
-        ) &&
-        !record.chainPositionAddress &&
-        record.activeMint === position.mint &&
-        record.activePoolAddress === position.poolAddress
-      );
-      if (pendingOrReconcileMatches.length === 1) {
-        return pendingOrReconcileMatches[0];
-      }
-
-      const syntheticOpenMatches = records.filter((record) =>
-        record.lifecycleState !== 'closed' &&
-        record.lifecycleState !== 'failed_terminal' &&
-        record.lifecycleState !== 'reconcile_required' &&
-        !record.missingOnChainSince &&
-        !record.chainPositionAddress &&
-        record.activeMint === position.mint &&
-        record.activePoolAddress === position.poolAddress
-      );
-      if (syntheticOpenMatches.length === 1) {
-        return syntheticOpenMatches[0];
-      }
-    }
   }
 
   if (position.positionId) {
@@ -144,20 +139,10 @@ function findMatchingRecord(
 
 function findPendingOpenRecordForObservedPosition(
   records: PositionLedgerRecord[],
-  position: AccountLpPosition,
-  pendingSubmission?: PendingSubmissionSnapshot | null
+  pendingSubmission: PendingSubmissionSnapshot | null | undefined,
+  pendingMatchesPosition: boolean
 ) {
-  if (
-    !pendingSubmission ||
-    (pendingSubmission.orderAction !== 'add-lp' && pendingSubmission.orderAction !== 'deploy')
-  ) {
-    return undefined;
-  }
-
-  const pendingMatchesPosition =
-    (!pendingSubmission.poolAddress || pendingSubmission.poolAddress === position.poolAddress) &&
-    (!pendingSubmission.tokenMint || pendingSubmission.tokenMint === position.mint);
-  if (!pendingMatchesPosition) {
+  if (!pendingSubmission || !pendingMatchesPosition) {
     return undefined;
   }
 
@@ -167,36 +152,74 @@ function findPendingOpenRecordForObservedPosition(
     !record.chainPositionAddress &&
     (
       (pendingSubmission.idempotencyKey && record.idempotencyKey === pendingSubmission.idempotencyKey) ||
-      (pendingSubmission.openIntentId && record.openIntentId === pendingSubmission.openIntentId) ||
-      (record.activePoolAddress === position.poolAddress && (
-        !record.activeMint || record.activeMint === position.mint
-      ))
+      (pendingSubmission.openIntentId && record.openIntentId === pendingSubmission.openIntentId)
     )
   );
+}
+
+function findTrustedFillRecordForObservedPosition(
+  records: PositionLedgerRecord[],
+  entryFillSubmissionId?: string
+) {
+  if (!entryFillSubmissionId) {
+    return undefined;
+  }
+
+  return records.find((record) =>
+    record.lifecycleState !== 'closed'
+    && record.lifecycleState !== 'failed_terminal'
+    && !record.chainPositionAddress
+    && record.entryFillSubmissionId === entryFillSubmissionId
+  );
+}
+
+function pendingOpenUniquelyBindsPosition(input: {
+  pendingSubmission?: PendingSubmissionSnapshot | null;
+  position: AccountLpPosition;
+  activePositions: AccountLpPosition[];
+}) {
+  const pending = input.pendingSubmission;
+  if (
+    !pending
+    || pending.confirmationStatus === 'failed'
+    || (pending.orderAction && pending.orderAction !== 'add-lp')
+    || !pending.idempotencyKey
+  ) {
+    return false;
+  }
+
+  const chainPositionAddress = input.position.chainPositionAddress || input.position.positionAddress;
+  if (pending.chainPositionAddress) {
+    return Boolean(chainPositionAddress && pending.chainPositionAddress === chainPositionAddress);
+  }
+
+  const hasPoolEvidence = Boolean(pending.poolAddress);
+  const hasMintEvidence = Boolean(pending.tokenMint);
+  if (!hasPoolEvidence && !hasMintEvidence) {
+    return false;
+  }
+
+  const matches = input.activePositions.filter((position) =>
+    (!hasPoolEvidence || position.poolAddress === pending.poolAddress)
+    && (!hasMintEvidence || position.mint === pending.tokenMint)
+  );
+  return matches.length === 1 && matches[0] === input.position;
 }
 
 function resolveEntryFromFills(input: {
   position: AccountLpPosition;
   accountState?: LiveAccountState;
-  activePositions: AccountLpPosition[];
 }) {
   const chainPositionAddress = input.position.chainPositionAddress || input.position.positionAddress;
-  const samePoolMintActiveCount = input.activePositions.filter((position) =>
-    position.poolAddress === input.position.poolAddress && position.mint === input.position.mint
-  ).length;
   const fills = [...(input.accountState?.fills ?? [])].reverse();
   const fill = fills.find((entry) =>
-    entry.side === 'add-lp' &&
+    isTrustedLpOpenFill(entry) &&
+    Boolean(entry.submissionId) &&
     entry.mint === input.position.mint &&
+    Boolean(chainPositionAddress) &&
     (
-      (chainPositionAddress && (
-        entry.chainPositionAddress === chainPositionAddress ||
-        entry.positionId === chainPositionAddress
-      )) ||
-      (samePoolMintActiveCount <= 1 && (
-        entry.positionId === `${input.position.poolAddress}:${input.position.mint}` ||
-        (entry as any).poolAddress === input.position.poolAddress
-      ))
+      entry.chainPositionAddress === chainPositionAddress ||
+      entry.positionId === chainPositionAddress
     )
   );
 
@@ -299,6 +322,12 @@ function normalizeLedgerLifecycleRecords(
 
   return records.map((record) => {
     if (record.lifecycleState === 'closed' || record.importStatus === 'superseded_closed') {
+      return record;
+    }
+
+    // A large-pool spot record is evidenced by its exact owned wallet-token
+    // quantity, not by an LP position address.
+    if (record.ownedTokenAmountRaw) {
       return record;
     }
 
@@ -437,6 +466,7 @@ export function migratePositionStateToLedger(input: {
       activeMint: state.activeMint,
       activePoolAddress: state.activePoolAddress,
       lifecycleState: state.lifecycleState ?? 'open',
+      ownedTokenAmountRaw: state.ownedTokenAmountRaw,
       entrySol: state.entrySol,
       entrySolSource: state.entrySolSource,
       entryFillSubmissionId: state.entryFillSubmissionId,
@@ -466,6 +496,7 @@ export function importActiveLpPositionsToLedger(input: {
   accountState?: LiveAccountState;
   pendingSubmission?: PendingSubmissionSnapshot | null;
   closeMissingActive?: boolean;
+  updateRiskSentinel?: boolean;
   now: string;
 }): PositionLedgerSnapshot {
   const baseLedger = input.ledger ?? migratePositionStateToLedger({
@@ -486,16 +517,28 @@ export function importActiveLpPositionsToLedger(input: {
     });
     activeKeys.add(key);
 
-    const existing = findMatchingRecord(records, position, activePositions)
-      ?? findPendingOpenRecordForObservedPosition(records, position, input.pendingSubmission);
+    const pendingMatchesPosition = pendingOpenUniquelyBindsPosition({
+      pendingSubmission: input.pendingSubmission,
+      position,
+      activePositions
+    });
+    const resolvedFillEntry = resolveEntryFromFills({
+      position,
+      accountState: input.accountState
+    });
+    const existing = findMatchingRecord(records, position)
+      ?? findTrustedFillRecordForObservedPosition(
+        records,
+        resolvedFillEntry?.entryFillSubmissionId
+      )
+      ?? findPendingOpenRecordForObservedPosition(
+        records,
+        input.pendingSubmission,
+        pendingMatchesPosition
+      );
     if (existing?.lifecycleState === 'closed' && existing.chainPositionAddress === chainPositionAddress) {
       continue;
     }
-    const resolvedFillEntry = resolveEntryFromFills({
-      position,
-      accountState: input.accountState,
-      activePositions
-    });
     const existingEntryMatchesPosition = Boolean(
       existing
       && existing.entrySol
@@ -515,13 +558,7 @@ export function importActiveLpPositionsToLedger(input: {
     const positionStateEntryMatchesPosition = Boolean(
       input.positionState
       && input.positionState.entrySol
-      && (
-        (chainPositionAddress && input.positionState.chainPositionAddress === chainPositionAddress)
-        || (
-          input.positionState.activePoolAddress === position.poolAddress
-          && input.positionState.activeMint === position.mint
-        )
-      )
+      && positionStateOwnsLpPosition(position, input.positionState)
     );
     const positionStateEntry = positionStateEntryMatchesPosition
       ? {
@@ -532,12 +569,18 @@ export function importActiveLpPositionsToLedger(input: {
         }
       : undefined;
     const entry = resolvedFillEntry ?? positionStateEntry ?? existingEntry;
-    const pendingMatchesPosition = Boolean(
-      input.pendingSubmission
-      && input.pendingSubmission.poolAddress === position.poolAddress
-      && input.pendingSubmission.tokenMint === position.mint
-    );
-    const hasTrustedEntry = typeof entry?.entrySol === 'number' && entry.entrySol > 0;
+    const hasTrustedEntry = typeof entry?.entrySol === 'number'
+      && entry.entrySol > 0
+      && isTrustedEntrySolSource(entry.entrySolSource);
+    const hasOwnershipEvidence = hasLightldLpOwnershipEvidence({
+      position,
+      ledgerRecord: existing,
+      positionState: input.positionState,
+      pendingSubmission: input.pendingSubmission,
+      pendingOpenBound: pendingMatchesPosition,
+      trustedOpenFillBound: Boolean(resolvedFillEntry?.entryFillSubmissionId)
+    });
+    const existingReasonIsOwnershipFailure = existing?.lastReason === UNBOUND_ACCOUNT_LP_REASON;
     const nextRecord: PositionLedgerRecord = {
       ...(existing ?? {
         lastAction: 'hold'
@@ -551,12 +594,18 @@ export function importActiveLpPositionsToLedger(input: {
       chainPositionAddress,
       activeMint: position.mint,
       activePoolAddress: position.poolAddress,
-      lifecycleState: 'open',
+      lifecycleState: hasOwnershipEvidence ? 'open' : 'reconcile_required',
       entrySol: entry?.entrySol,
       entrySolSource: entry?.entrySolSource,
       entryFillSubmissionId: entry?.entryFillSubmissionId,
       openedAt: entry?.openedAt ?? existing?.openedAt,
       importStatus: hasTrustedEntry ? 'imported' : 'entry_unknown',
+      lastReason: hasOwnershipEvidence
+        ? (existingReasonIsOwnershipFailure ? 'lp-ownership-evidence-recovered' : existing?.lastReason)
+        : UNBOUND_ACCOUNT_LP_REASON,
+      evidenceMissingReason: hasOwnershipEvidence
+        ? (existingReasonIsOwnershipFailure ? undefined : existing?.evidenceMissingReason)
+        : 'missing-open-intent-idempotency-or-entry-fill',
       valuationStatus: hasTrustedEntry
         ? position.valuationStatus as PositionLedgerRecord['valuationStatus']
         : 'unavailable',
@@ -570,18 +619,21 @@ export function importActiveLpPositionsToLedger(input: {
       displayValueSol: hasTrustedEntry ? position.currentValueSol : undefined,
       lpTotalValueSol: hasTrustedEntry ? position.currentValueSol : undefined,
       lastValuationAt: hasTrustedEntry ? position.lastValuationAt : undefined,
-      lastRiskSentinel: evaluateLpRiskSentinel({
-        observedAt: input.now,
-        activeBinId: position.activeBinId,
-        lowerBinId: position.lowerBinId,
-        upperBinId: position.upperBinId,
-        solDepletedBins: position.solDepletedBins,
-        binCount: position.binCount,
-        currentValueSol: position.currentValueSol,
-        liquidityValueSol: position.liquidityValueSol,
-        currentPrice: position.currentPrice,
-        previous: existing?.lastRiskSentinel
-      }),
+      lastRiskSentinel: input.updateRiskSentinel === false && existing?.lastRiskSentinel
+        ? existing.lastRiskSentinel
+        : evaluateLpRiskSentinel({
+            observedAt: input.now,
+            activeBinId: position.activeBinId,
+            lowerBinId: position.lowerBinId,
+            upperBinId: position.upperBinId,
+            solDepletedBins: position.solDepletedBins,
+            binCount: position.binCount,
+            currentValueSol: position.currentValueSol,
+            liquidityValueSol: position.liquidityValueSol,
+            currentPrice: position.currentPrice,
+            previous: existing?.lastRiskSentinel
+          }),
+      firstSeenOnChainAt: existing?.firstSeenOnChainAt ?? input.now,
       lastSeenOnChainAt: input.now,
       missingOnChainSince: undefined,
       updatedAt: input.now
@@ -609,10 +661,11 @@ export function importActiveLpPositionsToLedger(input: {
       const sharesPendingIdentity =
         (nextRecord.idempotencyKey && record.idempotencyKey === nextRecord.idempotencyKey) ||
         (nextRecord.openIntentId && record.openIntentId === nextRecord.openIntentId);
-      const sharesPendingPool =
-        record.activePoolAddress === nextRecord.activePoolAddress &&
-        (!record.activeMint || record.activeMint === nextRecord.activeMint);
-      if (!sharesPendingIdentity && !sharesPendingPool) {
+      const sharesTrustedFillIdentity = Boolean(
+        nextRecord.entryFillSubmissionId
+        && record.entryFillSubmissionId === nextRecord.entryFillSubmissionId
+      );
+      if (!sharesPendingIdentity && !sharesTrustedFillIdentity) {
         continue;
       }
 
@@ -627,7 +680,21 @@ export function importActiveLpPositionsToLedger(input: {
     }
   }
 
-  const shouldCloseMissing = input.closeMissingActive === true && !input.pendingSubmission;
+  const accountObservationIsComplete = Boolean(
+    input.accountState?.observedAt
+    && Array.isArray(input.accountState.walletLpPositions)
+    && Array.isArray(input.accountState.journalLpPositions)
+    && Array.isArray(input.accountState.walletTokens)
+    && Array.isArray(input.accountState.journalTokens)
+    && Array.isArray(input.accountState.fills)
+  );
+  const accountObservedAtMs = input.accountState?.observedAt
+    ? Date.parse(input.accountState.observedAt)
+    : Number.NaN;
+  const shouldCloseMissing = input.closeMissingActive === true
+    && !input.pendingSubmission
+    && accountObservationIsComplete
+    && Number.isFinite(accountObservedAtMs);
   const isTerminalExitRecord = (record: PositionLedgerRecord) =>
     record.lastAction === 'withdraw-lp' ||
     record.pendingOrderAction === 'withdraw-lp' ||
@@ -636,6 +703,48 @@ export function importActiveLpPositionsToLedger(input: {
   const nextRecords = records.map((record) => {
     if (record.lifecycleState === 'closed') {
       return record;
+    }
+
+    if (record.ownedTokenAmountRaw) {
+      if (!input.accountState) {
+        return record;
+      }
+      const observedRaw = walletTokenAmountRaw(input.accountState, record.activeMint);
+      const ownedRaw = BigInt(record.ownedTokenAmountRaw);
+      if (observedRaw === undefined || observedRaw < ownedRaw) {
+        return {
+          ...record,
+          lifecycleState: 'reconcile_required' as const,
+          lastReason: observedRaw === undefined
+            ? 'spot-ownership-reconcile-required:wallet-token-raw-unavailable'
+            : 'spot-ownership-reconcile-required:wallet-balance-below-owned-amount',
+          evidenceMissingReason: observedRaw === undefined
+            ? 'wallet-token-raw-unavailable'
+            : 'wallet-balance-below-owned-amount',
+          updatedAt: input.now
+        };
+      }
+      return {
+        ...record,
+        missingOnChainSince: undefined,
+        updatedAt: input.now
+      };
+    }
+
+    if (
+      record.lifecycleState === 'reconcile_required'
+      && (
+        record.lastAction === 'deploy'
+        || record.lastReason?.startsWith('spot-ownership-reconcile-required:')
+      )
+    ) {
+      // A large-pool spot position intentionally has no chain LP address.
+      // Do not reinterpret its explicit ownership reconciliation as missing
+      // LP evidence during the generic closeMissingActive import pass.
+      return {
+        ...record,
+        updatedAt: input.now
+      };
     }
 
     const recordKey = positionLedgerKey({
@@ -719,7 +828,13 @@ export function importActiveLpPositionsToLedger(input: {
       };
     }
 
-    if (!shouldCloseMissing || !isTerminalExitRecord(record)) {
+    const exitAttemptedAtMs = Date.parse(
+      record.lastExitAttemptAt ?? record.updatedAt
+    );
+    const hasFreshClosureObservation = shouldCloseMissing
+      && Number.isFinite(exitAttemptedAtMs)
+      && accountObservedAtMs > exitAttemptedAtMs;
+    if (!hasFreshClosureObservation || !isTerminalExitRecord(record)) {
       return {
         ...record,
         lifecycleState: record.lifecycleState,
@@ -821,6 +936,7 @@ export function applyLiveCycleResultToLedger(input: {
     idempotencyKey?: string;
     poolAddress?: string;
     tokenMint?: string;
+    inputAmountRaw?: string;
   };
   action: string;
   reason: string;
@@ -828,12 +944,16 @@ export function applyLiveCycleResultToLedger(input: {
   liveOrderSubmitted: boolean;
   confirmationStatus?: string;
   finality?: string;
+  exitActionClosureProven?: boolean;
+  fullExitClosureProven?: boolean;
   residualCleanupStatus?: string;
   residualCleanupValueSol?: number;
+  residualCleanupAmountRaw?: string;
   confirmedFill?: {
     submissionId: string;
     actualFilledSol?: number;
     filledSol: number;
+    acquiredTokenAmountRaw?: string;
     fillAmountSource?: string;
     recordedAt: string;
   };
@@ -844,12 +964,9 @@ export function applyLiveCycleResultToLedger(input: {
     positionState: input.positionState,
     accountState: input.accountState,
     pendingSubmission: input.persistedPendingSubmission ?? input.pendingSubmissionBeforeCycle,
+    updateRiskSentinel: false,
     now: input.now
   });
-
-  if (input.action === 'dca-out') {
-    return imported;
-  }
 
   const actionChainPositionAddress = input.actionIdentity?.chainPositionAddress;
   const actionPoolAddress = input.orderIntent?.poolAddress;
@@ -926,6 +1043,54 @@ export function applyLiveCycleResultToLedger(input: {
   }
 
   const records = [...imported.records];
+  if (
+    input.action === 'dca-out'
+    && input.fullExitClosureProven === true
+    && actionTokenMint
+    && input.orderIntent?.inputAmountRaw
+    && /^\d+$/.test(input.orderIntent.inputAmountRaw)
+  ) {
+    const matchingResidualIndexes = records
+      .map((record, recordIndex) => ({ record, recordIndex }))
+      .filter(({ record }) =>
+        record.activeMint === actionTokenMint
+        && record.residualCleanupStatus === 'residual_cleanup_pending'
+        && Boolean(record.residualCleanupAmountRaw && /^\d+$/.test(record.residualCleanupAmountRaw))
+      );
+    const expectedResidualRaw = matchingResidualIndexes.reduce(
+      (total, { record }) => total + BigInt(record.residualCleanupAmountRaw!),
+      0n
+    );
+    if (
+      matchingResidualIndexes.length > 0
+      && expectedResidualRaw === BigInt(input.orderIntent.inputAmountRaw)
+    ) {
+      for (const { record, recordIndex } of matchingResidualIndexes) {
+        records[recordIndex] = {
+          ...record,
+          lifecycleState: 'closed',
+          lastAction: 'dca-out',
+          lastReason: input.exitTriggerReason ?? input.reason,
+          lastOrderIdempotencyKey: input.orderIntent.idempotencyKey ?? record.lastOrderIdempotencyKey,
+          lastExitAttemptAt: input.now,
+          exitAttemptCount: (record.exitAttemptCount ?? 0) + 1,
+          residualCleanupStatus: 'residual_cleanup_complete',
+          residualCleanupAmountRaw: undefined,
+          lastClosedAt: record.lastClosedAt ?? input.now,
+          updatedAt: input.now
+        };
+      }
+      return {
+        version: 1,
+        records: normalizeLedgerLifecycleRecords(
+          records,
+          input.now,
+          input.persistedPendingSubmission ?? input.pendingSubmissionBeforeCycle
+        ),
+        updatedAt: input.now
+      };
+    }
+  }
   let index = records.findIndex((record) => recordMatchesTarget({ record, ...target }));
   const shouldCreateTargetRecord = Boolean(
     input.liveOrderSubmitted
@@ -953,9 +1118,12 @@ export function applyLiveCycleResultToLedger(input: {
       chainPositionAddress: target.chainPositionAddress,
       activeMint: target.tokenMint,
       activePoolAddress: target.poolAddress,
-      lifecycleState: input.action === 'add-lp' || pendingOrderAction === 'add-lp'
+      lifecycleState: input.action === 'add-lp' || input.action === 'deploy'
+        || pendingOrderAction === 'add-lp' || pendingOrderAction === 'deploy'
         ? 'open_pending'
-        : 'lp_exit_pending',
+        : input.action === 'dca-out' || pendingOrderAction === 'dca-out'
+          ? 'inventory_exit_pending'
+          : 'lp_exit_pending',
       importStatus: 'entry_unknown',
       lastAction: input.action,
       lastReason: input.reason,
@@ -969,9 +1137,21 @@ export function applyLiveCycleResultToLedger(input: {
   }
 
   const record = records[index];
+  const spotExit = (input.action === 'dca-out' || pendingOrderAction === 'dca-out')
+    && Boolean(record.ownedTokenAmountRaw);
+  if (input.action === 'dca-out' && !spotExit) {
+    // A dca-out after an LP withdrawal is residual cleanup owned by the LP
+    // record's residual fields. The aggregate residual branch above updates
+    // those records only when exact closure proof is present.
+    return imported;
+  }
   const hasPending = Boolean(input.persistedPendingSubmission);
+  const partialBatch = input.persistedPendingSubmission?.batchStatus === 'partial'
+    || input.pendingSubmissionBeforeCycle?.batchStatus === 'partial';
   const isConfirmed = input.confirmationStatus === 'confirmed';
-  const fullExit = input.action === 'withdraw-lp' || pendingOrderAction === 'withdraw-lp';
+  const fullExit = input.action === 'withdraw-lp'
+    || pendingOrderAction === 'withdraw-lp'
+    || spotExit;
   const stillOnChain = hasActivePositionForRecord({
     record,
     accountState: input.accountState
@@ -990,20 +1170,42 @@ export function applyLiveCycleResultToLedger(input: {
       updatedAt: input.now
     };
   }
-  const lifecycleState = fullExit && (isConfirmed || terminalAlreadyClosed)
+  const confirmedSpotOpen = input.action === 'deploy' && isConfirmed;
+  const lifecycleState = confirmedSpotOpen && !input.confirmedFill?.acquiredTokenAmountRaw
+    ? 'reconcile_required'
+    : fullExit
+      && !partialBatch
+      && !hasPending
+      && (
+        input.fullExitClosureProven === true
+        || input.exitActionClosureProven === true
+        || terminalAlreadyClosed
+      )
     ? 'closed'
-    : hasPending && fullExit
-      ? 'lp_exit_pending'
-    : hasPending && (input.action === 'add-lp' || pendingOrderAction === 'add-lp')
+    : fullExit && (hasPending || isConfirmed)
+      ? spotExit ? 'inventory_exit_pending' : 'lp_exit_pending'
+    : hasPending && (
+      input.action === 'add-lp' || pendingOrderAction === 'add-lp'
+      || input.action === 'deploy' || pendingOrderAction === 'deploy'
+    )
       ? 'open_pending'
-      : isConfirmed && input.action === 'add-lp'
-        ? target.chainPositionAddress ? 'open' : 'open_pending'
+      : isConfirmed && (input.action === 'add-lp' || input.action === 'deploy')
+        ? input.action === 'deploy' || target.chainPositionAddress ? 'open' : 'open_pending'
         : record.lifecycleState;
 
-  const lastReason = fullExit && isConfirmed && input.exitTriggerReason
-    ? input.exitTriggerReason
-    : input.reason;
+  const preserveReconciliationEvidence = record.lifecycleState === 'reconcile_required'
+    && !input.liveOrderSubmitted
+    && input.action === 'hold';
+  const lastReason = preserveReconciliationEvidence
+    ? record.lastReason ?? input.reason
+    : fullExit && isConfirmed && input.exitTriggerReason
+      ? input.exitTriggerReason
+      : input.reason;
 
+  const isExitAttempt = input.action === 'withdraw-lp'
+    || spotExit
+    || input.action === 'claim-fee'
+    || input.action === 'rebalance-lp';
   records[index] = {
     ...record,
     positionKey: target.chainPositionAddress
@@ -1025,27 +1227,40 @@ export function applyLiveCycleResultToLedger(input: {
     activeMint: target.tokenMint ?? record.activeMint,
     activePoolAddress: target.poolAddress ?? record.activePoolAddress,
     lifecycleState,
-    entrySol: input.action === 'add-lp' && isConfirmed
+    importStatus: (input.action === 'deploy' || input.action === 'add-lp')
+      && isConfirmed && input.confirmedFill?.fillAmountSource === 'wallet-delta'
+      ? 'imported'
+      : record.importStatus,
+    ownedTokenAmountRaw: lifecycleState === 'closed'
+      ? undefined
+      : input.action === 'deploy' && isConfirmed
+        ? input.confirmedFill?.acquiredTokenAmountRaw ?? record.ownedTokenAmountRaw
+        : record.ownedTokenAmountRaw,
+    entrySol: (input.action === 'add-lp' || input.action === 'deploy') && isConfirmed
       ? input.confirmedFill?.actualFilledSol ?? input.confirmedFill?.filledSol ?? record.entrySol
       : record.entrySol,
-    entrySolSource: input.action === 'add-lp' && isConfirmed && input.confirmedFill?.fillAmountSource === 'wallet-delta'
+    entrySolSource: (input.action === 'add-lp' || input.action === 'deploy')
+      && isConfirmed && input.confirmedFill?.fillAmountSource === 'wallet-delta'
       ? 'actual_fill'
       : record.entrySolSource,
-    entryFillSubmissionId: input.action === 'add-lp' && isConfirmed
+    entryFillSubmissionId: (input.action === 'add-lp' || input.action === 'deploy') && isConfirmed
       ? input.confirmedFill?.submissionId ?? record.entryFillSubmissionId
       : record.entryFillSubmissionId,
-    openedAt: input.action === 'add-lp' && isConfirmed
+    openedAt: (input.action === 'add-lp' || input.action === 'deploy') && isConfirmed
       ? input.confirmedFill?.recordedAt ?? record.openedAt ?? input.now
       : record.openedAt,
-    lastAction: input.action,
+    lastAction: preserveReconciliationEvidence ? record.lastAction : input.action,
     lastReason,
     lastOrderIdempotencyKey: target.idempotencyKey ?? record.lastOrderIdempotencyKey,
+    lastExitAttemptAt: isExitAttempt ? input.now : record.lastExitAttemptAt,
+    exitAttemptCount: isExitAttempt ? (record.exitAttemptCount ?? 0) + 1 : record.exitAttemptCount,
     pendingSubmissionId: hasPending ? input.persistedPendingSubmission?.submissionId : undefined,
     pendingOrderAction: hasPending ? input.persistedPendingSubmission?.orderAction : undefined,
     pendingConfirmationStatus: hasPending ? input.persistedPendingSubmission?.confirmationStatus : undefined,
     pendingFinality: hasPending ? input.persistedPendingSubmission?.finality : undefined,
     residualCleanupStatus: input.residualCleanupStatus ?? record.residualCleanupStatus,
     residualCleanupValueSol: input.residualCleanupValueSol ?? record.residualCleanupValueSol,
+    residualCleanupAmountRaw: input.residualCleanupAmountRaw ?? record.residualCleanupAmountRaw,
     missingOnChainSince: stillOnChain ? undefined : record.missingOnChainSince,
     lastClosedAt: lifecycleState === 'closed' ? input.now : record.lastClosedAt,
     updatedAt: input.now
@@ -1247,7 +1462,10 @@ export function selectCompatibilityPositionState(input: {
   now: string;
 }): PositionStateSnapshot {
   const activeRecords = [...(input.ledger?.records ?? [])]
-    .filter((record) => isPositionRecordBusinessActive(record, input.pendingSubmission, { now: input.now }))
+    .filter((record) =>
+      isPositionRecordBusinessActive(record, input.pendingSubmission, { now: input.now })
+      || record.lifecycleState === 'reconcile_required'
+    )
     .sort((a, b) =>
       (a.openedAt || a.updatedAt || '').localeCompare(b.openedAt || b.updatedAt || '')
       || a.positionKey.localeCompare(b.positionKey)
@@ -1301,6 +1519,7 @@ export function selectCompatibilityPositionState(input: {
       activeMint: undefined,
       activePoolAddress: undefined,
       lifecycleState: 'closed',
+      ownedTokenAmountRaw: undefined,
       entrySol: undefined,
       entrySolSource: undefined,
       entryFillSubmissionId: undefined,
@@ -1314,13 +1533,16 @@ export function selectCompatibilityPositionState(input: {
     allowNewOpens: input.allowNewOpens,
     flattenOnly: input.flattenOnly,
     lastAction: input.lastAction,
-    lastReason: input.lastReason,
+    lastReason: activeRecord.lifecycleState === 'reconcile_required'
+      ? activeRecord.lastReason ?? input.lastReason
+      : input.lastReason,
     openIntentId: activeRecord.openIntentId,
     positionId: activeRecord.positionId,
     chainPositionAddress: activeRecord.chainPositionAddress,
     activeMint: activeRecord.activeMint,
     activePoolAddress: activeRecord.activePoolAddress,
     lifecycleState: activeRecord.lifecycleState,
+    ownedTokenAmountRaw: activeRecord.ownedTokenAmountRaw,
     entrySol: activeRecord.entrySol,
     entrySolSource: activeRecord.entrySolSource,
     entryFillSubmissionId: activeRecord.entryFillSubmissionId,

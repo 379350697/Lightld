@@ -1,8 +1,242 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { recoverPendingSubmission } from '../../../src/runtime/pending-submission-recovery';
 
 describe('recoverPendingSubmission', () => {
+  it('clears a structured rejection with no accepted submission without polling', async () => {
+    const poll = vi.fn();
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-policy-mismatch',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        orderAction: 'withdraw-lp',
+        reason: 'broadcast-not-submitted: execution policy mismatch'
+      },
+      confirmationProvider: { poll },
+      now: new Date('2026-03-22T00:01:00.000Z')
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
+    });
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it('keeps a bare or accepted-outcome 409 fail-closed when no submission id is known', async () => {
+    const basePending = {
+      strategyId: 'new-token-v1',
+      idempotencyKey: 'k-idempotency-pending',
+      submissionId: '',
+      confirmationStatus: 'unknown' as const,
+      finality: 'unknown' as const,
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:05:00.000Z',
+      tokenMint: 'mint-safe',
+      tokenSymbol: 'SAFE',
+      poolAddress: 'pool-safe',
+      orderAction: 'withdraw-lp' as const
+    };
+
+    for (const reason of [
+      'http-409',
+      'idempotency key pending',
+      'broadcast-outcome-unknown: execution policy mismatch'
+    ]) {
+      const result = await recoverPendingSubmission({
+        pendingSubmission: { ...basePending, reason },
+        now: new Date('2026-03-22T00:01:00.000Z')
+      });
+
+      expect(result).toMatchObject({
+        blocked: true,
+        resolved: false,
+        clearPending: false,
+        reason: 'pending-submission-recovery-required'
+      });
+    }
+  });
+
+  it('keeps a live unknown open fail-closed before timeout despite a fresh empty wallet snapshot', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        captureMode: 'live',
+        idempotencyKey: 'k-live-open-before-timeout',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-live',
+        poolAddress: 'pool-live',
+        orderAction: 'add-lp',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        observedAt: '2026-03-22T00:00:30.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
+    });
+  });
+
+  it('keeps a live unknown open fail-closed after timeout despite a fresh empty wallet snapshot', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        captureMode: 'live',
+        idempotencyKey: 'k-live-open-after-timeout',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:01:00.000Z',
+        tokenMint: 'mint-live',
+        poolAddress: 'pool-live',
+        orderAction: 'add-lp',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        observedAt: '2026-03-22T00:01:30.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-timeout'
+    });
+  });
+
+  it('treats a legacy unknown open with no capture mode as live and keeps it fail-closed', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-legacy-unknown-open',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:01:00.000Z',
+        tokenMint: 'mint-legacy',
+        poolAddress: 'pool-legacy',
+        orderAction: 'add-lp',
+        reason: 'broadcast-outcome-unknown'
+      },
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        observedAt: '2026-03-22T00:01:30.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-timeout'
+    });
+  });
+
+  it('only clears an unknown paper open after timeout when the authoritative overlay remains empty', async () => {
+    const pendingSubmission = {
+      strategyId: 'new-token-v1',
+      captureMode: 'mechanical-soak' as const,
+      idempotencyKey: 'k-paper-open',
+      submissionId: '',
+      confirmationStatus: 'unknown' as const,
+      finality: 'unknown' as const,
+      createdAt: '2026-03-22T00:00:00.000Z',
+      updatedAt: '2026-03-22T00:00:00.000Z',
+      timeoutAt: '2026-03-22T00:01:00.000Z',
+      tokenMint: 'mint-paper',
+      poolAddress: 'pool-paper',
+      orderAction: 'add-lp' as const,
+      reason: 'broadcast-outcome-unknown'
+    };
+    const accountState = {
+      observedAt: '2026-03-22T00:00:30.000Z',
+      walletSol: 2,
+      journalSol: 2,
+      walletLpPositions: [],
+      journalLpPositions: [],
+      walletTokens: [],
+      journalTokens: [],
+      fills: []
+    };
+
+    const beforeTimeout = await recoverPendingSubmission({
+      pendingSubmission,
+      now: new Date('2026-03-22T00:00:45.000Z'),
+      accountState
+    });
+    const afterTimeout = await recoverPendingSubmission({
+      pendingSubmission,
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        ...accountState,
+        observedAt: '2026-03-22T00:01:30.000Z'
+      }
+    });
+
+    expect(beforeTimeout).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
+    });
+    expect(afterTimeout).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-failed'
+    });
+  });
+
   it('resolves and clears a pending submission after finalized confirmation', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
@@ -35,6 +269,109 @@ describe('recoverPendingSubmission', () => {
       resolved: true,
       clearPending: true,
       reason: 'pending-submission-confirmed'
+    });
+  });
+
+  it('resolves a confirmed exact-in spot exit only after the exact raw token decrease is visible', async () => {
+    const signature = '4x3i8gm3UnPDkrtwSM4XckYmfZ6U1JDpoMscWV7VV7aXKWpDKEyHf9quovnRhxidwvNpEdFHuVyzx3wzgc3mdupm';
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'large-pool-v1',
+        idempotencyKey: 'k-exact-dca-exit',
+        submissionId: 'sub-exact-dca-exit',
+        confirmationSignature: signature,
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        preExitTokenAmountRaw: '1000',
+        inputAmountRaw: '400',
+        orderAction: 'dca-out'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      confirmationProvider: {
+        poll: async () => ({
+          submissionId: 'sub-exact-dca-exit',
+          confirmationSignature: signature,
+          status: 'confirmed',
+          finality: 'finalized',
+          checkedAt: '2026-03-22T00:01:00.000Z'
+        })
+      },
+      accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
+        walletSol: 1.1,
+        journalSol: 1.1,
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 600, amountRaw: '600' }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      resolved: true,
+      clearPending: true,
+      reason: 'pending-submission-confirmed'
+    });
+  });
+
+  it('keeps a confirmed exact-in spot exit pending when the raw token decrease is partial', async () => {
+    const signature = '4x3i8gm3UnPDkrtwSM4XckYmfZ6U1JDpoMscWV7VV7aXKWpDKEyHf9quovnRhxidwvNpEdFHuVyzx3wzgc3mdupm';
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'large-pool-v1',
+        idempotencyKey: 'k-partial-dca-exit',
+        submissionId: 'sub-partial-dca-exit',
+        confirmationSignature: signature,
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        preExitTokenAmountRaw: '1000',
+        inputAmountRaw: '400',
+        orderAction: 'dca-out'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      confirmationProvider: {
+        poll: async () => ({
+          submissionId: 'sub-partial-dca-exit',
+          confirmationSignature: signature,
+          status: 'confirmed',
+          finality: 'finalized',
+          checkedAt: '2026-03-22T00:01:00.000Z'
+        })
+      },
+      accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
+        walletSol: 1.05,
+        journalSol: 1.05,
+        walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 700, amountRaw: '700' }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required',
+      nextPendingSubmission: {
+        confirmationStatus: 'confirmed',
+        finality: 'finalized',
+        reason: 'pending-dca-awaiting-exact-token-delta:token-delta-mismatch'
+      }
     });
   });
 
@@ -119,7 +456,7 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
-  it('treats unknown exit submissions without remaining wallet inventory as resolved exits', async () => {
+  it('does not close an unknown LP exit from mint-only negative evidence', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
@@ -137,6 +474,45 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
+    });
+  });
+
+  it('does not use an incomplete account snapshot as negative exit evidence', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-exit-incomplete',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        chainPositionAddress: 'position-safe',
+        orderAction: 'withdraw-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletTokens: [],
@@ -145,11 +521,11 @@ describe('recoverPendingSubmission', () => {
       }
     });
 
-    expect(result).toEqual({
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required'
     });
   });
 
@@ -197,8 +573,11 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
+        walletLpPositions: [],
+        journalLpPositions: [],
         walletTokens: [{ mint: 'mint-safe', symbol: 'SAFE', amount: 42 }],
         journalTokens: [],
         fills: []
@@ -210,6 +589,64 @@ describe('recoverPendingSubmission', () => {
       resolved: true,
       clearPending: true,
       reason: 'pending-submission-filled'
+    });
+  });
+
+  it('keeps a confirmed withdraw pending while the exact chain position still exists', async () => {
+    const signature = '5KcyrPXoh77aWuwnD7FP8bf9UT1313jajkZ3kBkwZgPAzEbNKGiXpo5Qf59JhZ1C1uSa12TFk2WYbmS1pnYjYioz';
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        idempotencyKey: 'k-confirmed-still-open',
+        submissionId: 'sub-confirmed-still-open',
+        confirmationSignature: signature,
+        confirmationStatus: 'submitted',
+        finality: 'processed',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        timeoutAt: '2026-03-22T00:05:00.000Z',
+        tokenMint: 'mint-safe',
+        poolAddress: 'pool-safe',
+        chainPositionAddress: 'position-safe',
+        orderAction: 'withdraw-lp'
+      },
+      now: new Date('2026-03-22T00:01:00.000Z'),
+      confirmationProvider: {
+        poll: async () => ({
+          submissionId: 'sub-confirmed-still-open',
+          confirmationSignature: signature,
+          status: 'confirmed',
+          finality: 'finalized',
+          checkedAt: '2026-03-22T00:01:00.000Z'
+        })
+      },
+      accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletLpPositions: [{
+          poolAddress: 'pool-safe',
+          positionAddress: 'position-safe',
+          mint: 'mint-safe',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required',
+      nextPendingSubmission: {
+        confirmationStatus: 'confirmed',
+        finality: 'finalized',
+        reason: 'pending-withdraw-awaiting-account-closure-proof'
+      }
     });
   });
 
@@ -231,6 +668,7 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
@@ -286,6 +724,7 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
@@ -394,6 +833,7 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
@@ -444,10 +884,13 @@ describe('recoverPendingSubmission', () => {
         timeoutAt: '2026-03-22T00:05:00.000Z',
         tokenMint: 'mint-safe',
         tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        chainPositionAddress: 'position-safe',
         orderAction: 'withdraw-lp'
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [],
@@ -484,6 +927,7 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:20:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:20:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [
@@ -559,6 +1003,7 @@ describe('recoverPendingSubmission', () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
+        captureMode: 'mechanical-soak',
         idempotencyKey: 'k-unknown-withdraw',
         submissionId: '',
         confirmationSignature: undefined,
@@ -575,6 +1020,7 @@ describe('recoverPendingSubmission', () => {
       },
       now: new Date('2026-03-22T00:02:00.000Z'),
       accountState: {
+        observedAt: '2026-03-22T00:02:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletTokens: [],
@@ -598,7 +1044,52 @@ describe('recoverPendingSubmission', () => {
     });
   });
 
-  it('clears a stale partial-failure reason once every tracked submission is finalized', async () => {
+  it('keeps a timed-out live withdraw fail-closed even when the exact LP still exists', async () => {
+    const result = await recoverPendingSubmission({
+      pendingSubmission: {
+        strategyId: 'new-token-v1',
+        captureMode: 'live',
+        idempotencyKey: 'k-live-unknown-withdraw',
+        submissionId: '',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:30.000Z',
+        timeoutAt: '2026-03-22T00:01:00.000Z',
+        tokenMint: 'mint-safe',
+        tokenSymbol: 'SAFE',
+        poolAddress: 'pool-safe',
+        chainPositionAddress: 'pos-safe',
+        orderAction: 'withdraw-lp',
+        reason: 'idempotency key pending'
+      },
+      now: new Date('2026-03-22T00:02:00.000Z'),
+      accountState: {
+        observedAt: '2026-03-22T00:02:00.000Z',
+        walletSol: 2,
+        journalSol: 2,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-safe',
+          positionAddress: 'pos-safe',
+          mint: 'mint-safe',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-timeout'
+    });
+  });
+
+  it('keeps a partial batch pending even when every tracked submission is finalized', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
@@ -615,6 +1106,7 @@ describe('recoverPendingSubmission', () => {
         tokenMint: 'mint-safe',
         tokenSymbol: 'SAFE',
         orderAction: 'withdraw-lp',
+        batchStatus: 'partial',
         reason: 'pending-submission-partial-failure'
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
@@ -629,15 +1121,21 @@ describe('recoverPendingSubmission', () => {
       }
     });
 
-    expect(result).toEqual({
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-confirmed'
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required',
+      nextPendingSubmission: {
+        batchStatus: 'partial',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        reason: 'pending-submission-partial-failure'
+      }
     });
   });
 
-  it('clears a partial-failure reduce-risk submission when wallet state shows no remaining position', async () => {
+  it('keeps a partial reduce-risk batch pending even when wallet state shows no remaining position', async () => {
     const result = await recoverPendingSubmission({
       pendingSubmission: {
         strategyId: 'new-token-v1',
@@ -655,6 +1153,7 @@ describe('recoverPendingSubmission', () => {
         tokenSymbol: 'SAFE',
         poolAddress: 'pool-safe',
         orderAction: 'withdraw-lp',
+        batchStatus: 'partial',
         reason: 'pending-submission-partial-failure'
       },
       now: new Date('2026-03-22T00:01:00.000Z'),
@@ -669,6 +1168,7 @@ describe('recoverPendingSubmission', () => {
         })
       },
       accountState: {
+        observedAt: '2026-03-22T00:01:00.000Z',
         walletSol: 2,
         journalSol: 2,
         walletLpPositions: [],
@@ -679,11 +1179,17 @@ describe('recoverPendingSubmission', () => {
       }
     });
 
-    expect(result).toEqual({
-      blocked: false,
-      resolved: true,
-      clearPending: true,
-      reason: 'pending-submission-filled'
+    expect(result).toMatchObject({
+      blocked: true,
+      resolved: false,
+      clearPending: false,
+      reason: 'pending-submission-recovery-required',
+      nextPendingSubmission: {
+        batchStatus: 'partial',
+        confirmationStatus: 'unknown',
+        finality: 'unknown',
+        reason: 'pending-submission-partial-failure'
+      }
     });
   });
 

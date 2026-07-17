@@ -7,7 +7,7 @@ import type {
   CandidateSourceObservation
 } from './types.ts';
 
-const REQUIRED_HARD_SOURCES: CandidateSourceName[] = ['meteora', 'jupiter_route'];
+const REQUIRED_HARD_SOURCES: CandidateSourceName[] = ['meteora', 'jupiter_route', 'gmgn'];
 const GMGN_BLOCK_REASON_PREFIX = 'gmgn:';
 const POOL_FEE_YIELD_BLOCK_REASON_PREFIX = 'pool_fee_yield:';
 
@@ -33,17 +33,6 @@ function minIso(values: string[], fallback: string) {
     }
   }
   return Number.isFinite(minMs) ? new Date(minMs).toISOString() : fallback;
-}
-
-function feeTvlScore(candidate: IngestCandidate) {
-  if (candidate.poolFeeYieldStatus && candidate.poolFeeYieldStatus !== 'yield_profile_missing') {
-    return 0;
-  }
-
-  if (candidate.feeTvlRatio24h > 0.20) return 40;
-  if (candidate.feeTvlRatio24h >= 0.10) return 30;
-  if (candidate.feeTvlRatio24h >= 0.05) return 20;
-  return 0;
 }
 
 function resolveStatus(input: {
@@ -81,16 +70,6 @@ function resolveStatus(input: {
       status: 'source_unavailable' as CandidatePoolStatus,
       blockReason: `meteora-${meteora.status}`
     };
-  }
-
-  const gmgn = bySource.get('gmgn');
-  if (gmgn?.status === 'blocked' && parseTime(gmgn.expiresAt) > nowMs) {
-    return {
-      status: 'blocked' as CandidatePoolStatus,
-      blockReason: gmgn.hardRejectReason
-        ? `${GMGN_BLOCK_REASON_PREFIX}${gmgn.hardRejectReason}`
-        : 'gmgn-blocked'
-      };
   }
 
   const feeYield = bySource.get('pool_fee_yield');
@@ -132,6 +111,37 @@ function resolveStatus(input: {
     };
   }
 
+  const gmgn = bySource.get('gmgn');
+  if (!gmgn) {
+    return {
+      status: 'eligible' as CandidatePoolStatus,
+      blockReason: 'missing-gmgn'
+    };
+  }
+
+  if (parseTime(gmgn.expiresAt) <= nowMs || gmgn.status === 'stale') {
+    return {
+      status: 'stale' as CandidatePoolStatus,
+      blockReason: 'stale-gmgn'
+    };
+  }
+
+  if (gmgn.status === 'blocked') {
+    return {
+      status: 'blocked' as CandidatePoolStatus,
+      blockReason: gmgn.hardRejectReason
+        ? `${GMGN_BLOCK_REASON_PREFIX}${gmgn.hardRejectReason}`
+        : 'gmgn-blocked'
+    };
+  }
+
+  if (gmgn.status !== 'passed') {
+    return {
+      status: 'source_unavailable' as CandidatePoolStatus,
+      blockReason: `gmgn-${gmgn.status}`
+    };
+  }
+
   return {
     status: 'openable' as CandidatePoolStatus,
     blockReason: ''
@@ -152,9 +162,7 @@ export function deriveCandidatePoolEntry(input: {
   const hardObservations = input.observations.filter((observation) =>
     REQUIRED_HARD_SOURCES.includes(observation.source)
   );
-  const score = input.observations.reduce((total, observation) => total + Math.max(0, observation.score), 0)
-    + feeTvlScore(input.candidate)
-    + (input.candidate.poolFeeYieldScore ?? 0);
+  const score = input.observations.reduce((total, observation) => total + Math.max(0, observation.score), 0);
   const fallbackFreshness = new Date(input.now.getTime()).toISOString();
   const freshnessExpiresAt = hardObservations.length > 0
     ? minIso(hardObservations.map((observation) => observation.expiresAt), fallbackFreshness)
@@ -174,7 +182,7 @@ export function deriveCandidatePoolEntry(input: {
     updatedAt,
     candidate: {
       ...input.candidate,
-      safetyScore: score
+      safetyScore: input.observations.find((observation) => observation.source === 'gmgn' && observation.status === 'passed')?.score
     }
   };
 }

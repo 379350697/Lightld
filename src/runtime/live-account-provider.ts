@@ -1,9 +1,11 @@
 import type { FetchImpl } from '../ingest/shared/http-client.ts';
 import { executeWithRetry } from '../execution/request-resilience.ts';
+import { z } from 'zod';
 
 import type { RuntimeLpPositionStatus } from './lp-position-visibility.ts';
 
 export type LiveAccountState = {
+  observedAt?: string;
   walletSol: number;
   journalSol: number;
   walletLpPositions?: Array<{
@@ -109,6 +111,7 @@ export type LiveAccountState = {
     symbol?: string;
     amount: number;
     amountLamports?: number;
+    amountRaw?: string;
     currentValueSol?: number;
   }>;
   journalTokens?: Array<{
@@ -116,6 +119,7 @@ export type LiveAccountState = {
     symbol?: string;
     amount: number;
     amountLamports?: number;
+    amountRaw?: string;
     currentValueSol?: number;
   }>;
   fills?: Array<{
@@ -130,6 +134,7 @@ export type LiveAccountState = {
     amount: number;
     actualFilledSol?: number;
     actualWalletDeltaSol?: number;
+    acquiredTokenAmountRaw?: string;
     fillAmountSource?: 'wallet-delta' | 'chain-reconstructed' | 'requested-position-fallback';
     hasFillEvidence?: boolean;
     preWalletSol?: number;
@@ -137,6 +142,38 @@ export type LiveAccountState = {
     recordedAt: string;
   }>;
 };
+
+const AccountLpPositionSchema = z.object({
+  poolAddress: z.string(),
+  positionAddress: z.string(),
+  mint: z.string()
+}).passthrough();
+
+const AccountTokenSchema = z.object({
+  mint: z.string(),
+  amount: z.number().finite(),
+  amountRaw: z.string().regex(/^\d+$/).optional()
+}).passthrough();
+
+const AccountFillSchema = z.object({
+  mint: z.string(),
+  side: z.enum(['buy', 'sell', 'add-lp', 'withdraw-lp', 'claim-fee', 'rebalance-lp']),
+  amount: z.number().finite(),
+  recordedAt: z.string().min(1)
+}).passthrough();
+
+export const LiveAccountStateSchema = z.object({
+  observedAt: z.string().min(1).refine((value) => Number.isFinite(Date.parse(value)), {
+    message: 'observedAt must be a valid timestamp'
+  }),
+  walletSol: z.number().finite(),
+  journalSol: z.number().finite(),
+  walletLpPositions: z.array(AccountLpPositionSchema),
+  journalLpPositions: z.array(AccountLpPositionSchema),
+  walletTokens: z.array(AccountTokenSchema),
+  journalTokens: z.array(AccountTokenSchema),
+  fills: z.array(AccountFillSchema)
+}).passthrough();
 
 export interface LiveAccountStateProvider {
   readState(): Promise<LiveAccountState>;
@@ -182,7 +219,7 @@ export class HttpLiveAccountStateProvider implements LiveAccountStateProvider {
         );
       }
 
-      return response.json() as Promise<LiveAccountState>;
+      return LiveAccountStateSchema.parse(await response.json()) as LiveAccountState;
     }, {
       operation: 'account',
       timeoutMs: this.timeoutMs,

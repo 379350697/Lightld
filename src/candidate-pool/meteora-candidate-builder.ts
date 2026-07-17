@@ -48,6 +48,10 @@ function readBoolean(payload: RawRecord, keys: string[]) {
   return false;
 }
 
+export function normalizeMeteoraFeeTvlRatio(percentNumber: number) {
+  return Number.isFinite(percentNumber) && percentNumber > 0 ? percentNumber / 100 : 0;
+}
+
 function readTimestamp(payload: RawRecord, keys: string[]) {
   for (const key of keys) {
     const value = payload[key];
@@ -89,12 +93,25 @@ export function hasMeteoraSolRoute(row: RawRecord) {
   return quoteMint === SOL_MINT || baseMint === SOL_MINT || pairName.includes('SOL');
 }
 
-export function isMeteoraPoolPrefiltered(row: RawRecord, now: Date, maxAgeMs: number) {
+export function isMeteoraPoolPrefiltered(
+  row: RawRecord,
+  now: Date,
+  maxAgeMs: number,
+  options: {
+    requireRecent?: boolean;
+    requireEntryBinStep?: boolean;
+  } = {}
+) {
   const payload = rawRecord(row);
   const poolConfig = isRecord(payload.pool_config) ? payload.pool_config : {};
   const isBlacklisted = readBoolean(payload, ['is_blacklisted', 'isBlacklisted']);
   const binStep = readNumber(poolConfig, ['bin_step', 'binStep']);
-  return hasMeteoraSolRoute(row) && !isBlacklisted && isAllowedMeteoraEntryBinStep(binStep) && isRecentMeteoraPool(row, now, maxAgeMs);
+  const requireRecent = options.requireRecent ?? true;
+  const requireEntryBinStep = options.requireEntryBinStep ?? true;
+  return hasMeteoraSolRoute(row)
+    && !isBlacklisted
+    && (!requireEntryBinStep || isAllowedMeteoraEntryBinStep(binStep))
+    && (!requireRecent || isRecentMeteoraPool(row, now, maxAgeMs));
 }
 
 export function isAllowedMeteoraEntryBinStep(binStep: number) {
@@ -134,6 +151,9 @@ export function buildMeteoraCandidate(row: RawRecord): IngestCandidate {
     binStep: readNumber(poolConfig, ['bin_step', 'binStep']),
     baseFeePct: readNumber(poolConfig, ['base_fee_pct', 'baseFeePct']),
     volume24h: readNumber(volumeObj, ['24h']) || readNumber(payload, ['volume_24h', 'volume24h']),
-    feeTvlRatio24h: readNumber(feeTvlObj, ['24h']) || readNumber(payload, ['fee_tvl_ratio_24h', 'feeTvlRatio24h'])
+    feeTvlRatio24h: normalizeMeteoraFeeTvlRatio(
+      readNumber(feeTvlObj, ['24h']) || readNumber(payload, ['fee_tvl_ratio_24h', 'feeTvlRatio24h'])
+    ),
+    feeTvlRatioUnit: 'ratio'
   };
 }

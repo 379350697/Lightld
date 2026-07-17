@@ -57,7 +57,8 @@ entryEdge:
   enabled: true
   defaultAdverseSelectionBps: 25
   defaultImpermanentLossBps: 25
-  defaultChainCostSol: 0.000005
+  # Full entry/exit lifecycle: tipped swaps plus multi-leg DLMM base fees.
+  defaultChainCostSol: 0.0001
   defaultCapitalChargeBps: 5
   defaultSafetyMarginBps: 10
 live:

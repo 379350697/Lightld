@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyExecutionError } from '../../../src/execution/error-classification';
+import {
+  classifyExecutionError,
+  ExecutionRequestError,
+  isDefinitelyNotSubmittedBroadcastError
+} from '../../../src/execution/error-classification';
 
 describe('classifyExecutionError', () => {
   it('treats quote timeouts as transient errors', () => {
@@ -39,5 +43,27 @@ describe('classifyExecutionError', () => {
       reason: 'http-400',
       retryable: false
     });
+  });
+
+  it('distinguishes rejected 409 requests from accepted idempotency reservations', () => {
+    const policyMismatch = new ExecutionRequestError('broadcast', {
+      kind: 'hard',
+      reason: 'http-409',
+      retryable: false
+    }, undefined, 409, 'execution policy mismatch: signed intent requires broadcast');
+    const idempotencyPending = new ExecutionRequestError('broadcast', {
+      kind: 'hard',
+      reason: 'http-409',
+      retryable: false
+    }, undefined, 409, 'idempotency key pending: request is reserved');
+    const unstructuredConflict = new ExecutionRequestError('broadcast', {
+      kind: 'hard',
+      reason: 'http-409',
+      retryable: false
+    }, undefined, 409);
+
+    expect(isDefinitelyNotSubmittedBroadcastError(policyMismatch)).toBe(true);
+    expect(isDefinitelyNotSubmittedBroadcastError(idempotencyPending)).toBe(false);
+    expect(isDefinitelyNotSubmittedBroadcastError(unstructuredConflict)).toBe(false);
   });
 });

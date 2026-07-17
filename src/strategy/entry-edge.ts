@@ -1,7 +1,10 @@
+import { DEFAULT_ROUND_TRIP_CHAIN_COST_SOL } from '../config/economic-defaults.ts';
+
 export type EntryEconomicEdgeInput = {
   positionSol?: number;
   expectedFeeSol?: number;
   feeTvlRatio24h?: number;
+  feeHorizonHours?: number;
   adverseSelectionBps?: number;
   impermanentLossBps?: number;
   roundTripCostBps?: number;
@@ -40,10 +43,6 @@ function fromBps(positionSol: number, bps: number) {
   return positionSol * bps / 10_000;
 }
 
-function normalizedRatio(value: number) {
-  return value > 1 ? value / 100 : value;
-}
-
 export function evaluateEntryEconomicEdge(
   input: EntryEconomicEdgeInput,
   policy: EntryEconomicEdgePolicy = {}
@@ -58,8 +57,9 @@ export function evaluateEntryEconomicEdge(
   }
 
   const feeRatio = positive(input.feeTvlRatio24h);
+  const feeHorizonHours = positive(input.feeHorizonHours) ?? 24;
   const expectedFeeSol = nonnegative(input.expectedFeeSol)
-    ?? (feeRatio ? positionSol * normalizedRatio(feeRatio) : undefined);
+    ?? (feeRatio ? positionSol * feeRatio * Math.min(24, feeHorizonHours) / 24 : undefined);
   const requiredEdgeSol = fromBps(positionSol, nonnegative(input.safetyMarginBps) ?? policy.defaultSafetyMarginBps ?? 10);
   if (expectedFeeSol === undefined) {
     return { accepted: false, reason: 'entry-edge-missing-fee', expectedFeeSol: 0, totalCostSol: 0, netEdgeSol: 0, requiredEdgeSol };
@@ -69,7 +69,7 @@ export function evaluateEntryEconomicEdge(
     fromBps(positionSol, nonnegative(input.adverseSelectionBps) ?? policy.defaultAdverseSelectionBps ?? 25)
     + fromBps(positionSol, nonnegative(input.impermanentLossBps) ?? policy.defaultImpermanentLossBps ?? 25)
     + fromBps(positionSol, nonnegative(input.roundTripCostBps) ?? 0)
-    + (nonnegative(input.chainCostSol) ?? policy.defaultChainCostSol ?? 0.000005)
+    + (nonnegative(input.chainCostSol) ?? policy.defaultChainCostSol ?? DEFAULT_ROUND_TRIP_CHAIN_COST_SOL)
     + fromBps(positionSol, nonnegative(input.capitalChargeBps) ?? policy.defaultCapitalChargeBps ?? 5);
   const netEdgeSol = expectedFeeSol - totalCostSol;
   const accepted = netEdgeSol > requiredEdgeSol;

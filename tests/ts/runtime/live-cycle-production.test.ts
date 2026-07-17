@@ -70,16 +70,20 @@ describe('runLiveCycle production adapters', () => {
       }),
       broadcaster: new HttpLiveBroadcaster({
         url: 'https://broadcast.example/api',
-        fetchImpl: async () =>
+        fetchImpl: async (_input, init) => {
+          const request = JSON.parse(String(init?.body)) as { intent: { intent: { idempotencyKey: string } } };
+          return (
           new Response(
             JSON.stringify({
               status: 'submitted',
               submissionId: 'sub-1',
-              idempotencyKey: 'k',
+              idempotencyKey: request.intent.intent.idempotencyKey,
               confirmationSignature: '4x3i8gm3UnPDkrtwSM4XckYmfZ6U1JDpoMscWV7VV7aXKWpDKEyHf9quovnRhxidwvNpEdFHuVyzx3wzgc3mdupm'
             }),
             { status: 200 }
           )
+          );
+        }
       }),
       confirmationProvider: new HttpLiveConfirmationProvider({
         url: 'https://confirm.example/api',
@@ -100,8 +104,11 @@ describe('runLiveCycle production adapters', () => {
         fetchImpl: async () =>
           new Response(
             JSON.stringify({
+              observedAt: new Date(Date.now() + 1_000).toISOString(),
               walletSol: 1.25,
               journalSol: 1.25,
+              walletLpPositions: [],
+              journalLpPositions: [],
               walletTokens: [],
               journalTokens: [],
               fills: []
@@ -146,8 +153,11 @@ describe('runLiveCycle production adapters', () => {
         fetchImpl: async () =>
           new Response(
             JSON.stringify({
+              observedAt: new Date(Date.now() + 1_000).toISOString(),
               walletSol: 1.5,
               journalSol: 1.25,
+              walletLpPositions: [],
+              journalLpPositions: [],
               walletTokens: [],
               journalTokens: [],
               fills: []
@@ -168,6 +178,20 @@ describe('runLiveCycle production adapters', () => {
       journalRootDir: 'tmp/tests/runtime-live-cycle-production',
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'add-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        chainPositionAddress: 'pos-1',
+        lifecycleState: 'open',
+        entrySol: 0.1,
+        entrySolSource: 'actual_fill',
+        entryFillSubmissionId: 'sub-open',
+        openedAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
       context: {
         pool: { address: 'pool-1', liquidityUsd: 10_000 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
@@ -179,6 +203,7 @@ describe('runLiveCycle production adapters', () => {
         fetchImpl: async () =>
           new Response(
             JSON.stringify({
+              observedAt: new Date(Date.now() + 1_000).toISOString(),
               walletSol: 1.5,
               journalSol: 1.25,
               walletTokens: [],
@@ -233,6 +258,7 @@ describe('runLiveCycle production adapters', () => {
         fetchImpl: async () =>
           new Response(
             JSON.stringify({
+              observedAt: new Date(Date.now() + 1_000).toISOString(),
               walletSol: 1.5,
               journalSol: 1.25,
               walletTokens: [],
@@ -290,16 +316,20 @@ describe('runLiveCycle production adapters', () => {
       },
       broadcaster: new HttpLiveBroadcaster({
         url: 'https://broadcast.example/api',
-        fetchImpl: async () =>
+        fetchImpl: async (_input, init) => {
+          const request = JSON.parse(String(init?.body)) as { intent: { intent: { idempotencyKey: string } } };
+          return (
           new Response(
             JSON.stringify({
               status: 'submitted',
               submissionId: 'sub-2',
               confirmationSignature: '2hcGSu65JCe7Te6VyvnKGb43icU4WJ6FSGxyLhb4Zo66nmo13X2N2NbDWhirWCjiFBLpdgbZrcdxTgmojdku3o5u',
-              idempotencyKey: 'k2'
+              idempotencyKey: request.intent.intent.idempotencyKey
             }),
             { status: 200 }
           )
+          );
+        }
       })
     });
 
@@ -358,9 +388,9 @@ describe('runLiveCycle production adapters', () => {
       stateRootDir: 'tmp/tests/runtime-live-cycle-production-state',
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       },
       confirmationProvider: new HttpLiveConfirmationProvider({
@@ -379,26 +409,29 @@ describe('runLiveCycle production adapters', () => {
       }),
       broadcaster: new HttpLiveBroadcaster({
         url: 'https://broadcast.example/api',
-        fetchImpl: async () =>
+        fetchImpl: async (_input, init) => {
+          const request = JSON.parse(String(init?.body)) as { intent: { intent: { idempotencyKey: string } } };
+          return (
           new Response(
             JSON.stringify({
               status: 'submitted',
               submissionId: 'sub-new',
-              idempotencyKey: 'k-new',
+              idempotencyKey: request.intent.intent.idempotencyKey,
               confirmationSignature: '5KcyrPXoh77aWuwnD7FP8bf9UT1313jajkZ3kBkwZgPAzEbNKGiXpo5Qf59JhZ1C1uSa12TFk2WYbmS1pnYjYioz'
             }),
             { status: 200 }
           )
+          );
+        }
       }),
       accountState: {
+        observedAt: '2026-03-22T00:02:00.000Z',
         walletSol: 1.25,
         journalSol: 1.25,
-        walletTokens: [
-          { mint: 'mint-safe', symbol: 'SAFE', amount: 1 }
-        ],
-        journalTokens: [
-          { mint: 'mint-safe', symbol: 'SAFE', amount: 1 }
-        ],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        walletTokens: [],
+        journalTokens: [],
         fills: []
       }
     });
@@ -431,7 +464,7 @@ describe('runLiveCycle production adapters', () => {
       stateRootDir: stateDir,
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -529,6 +562,8 @@ describe('runLiveCycle production adapters', () => {
       timeoutAt: '2026-03-22T00:05:00.000Z',
       tokenMint: 'mint-safe',
       tokenSymbol: 'SAFE',
+      poolAddress: 'pool-1',
+      chainPositionAddress: 'pos-1',
       orderAction: 'add-lp',
       reason: 'broadcast-outcome-unknown'
     });
@@ -545,6 +580,7 @@ describe('runLiveCycle production adapters', () => {
         route: { hasSolRoute: false, expectedOutSol: 0.1, slippageBps: 50, blockReason: 'no-selected-candidate' }
       },
       accountState: {
+        observedAt: '2026-03-22T00:06:00.000Z',
         walletSol: 1.25,
         journalSol: 1.25,
         walletTokens: [],
@@ -587,7 +623,7 @@ describe('runLiveCycle production adapters', () => {
         maxDailySpendSol: 1
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }

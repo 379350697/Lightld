@@ -62,6 +62,7 @@ export type PendingOrderAction = z.infer<typeof PendingOrderActionSchema>;
 
 export const PendingSubmissionSnapshotSchema = z.object({
   strategyId: z.string(),
+  captureMode: z.enum(['live', 'mechanical-soak', 'economic-shadow']).optional(),
   idempotencyKey: z.string(),
   submissionId: z.string(),
   openIntentId: z.string().optional(),
@@ -79,7 +80,15 @@ export const PendingSubmissionSnapshotSchema = z.object({
   tokenMint: z.string().optional(),
   tokenSymbol: z.string().optional(),
   poolAddress: z.string().optional(),
+  preEntryTokenAmountRaw: z.string().regex(/^\d+$/).optional(),
+  preEntryWalletSol: z.number().finite().nonnegative().optional(),
+  preExitTokenAmountRaw: z.string().regex(/^\d+$/).optional(),
+  requestedPositionSol: z.number().finite().nonnegative().optional(),
+  inputAmountRaw: z.string().regex(/^\d+$/).refine((value) => BigInt(value) > 0n).optional(),
   orderAction: PendingOrderActionSchema.optional(),
+  batchStatus: z.enum(['complete', 'partial']).optional(),
+  residualSweepStatus: z.enum(['complete', 'incomplete', 'dust_ignored']).optional(),
+  residualUnsoldAmountsRaw: z.record(z.string(), z.string().regex(/^\d+$/)).optional(),
   reason: z.string().optional()
 });
 
@@ -143,6 +152,7 @@ export const PositionStateSnapshotSchema = z.object({
   activeMint: z.string().optional(),
   activePoolAddress: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema.optional(),
+  ownedTokenAmountRaw: z.string().regex(/^\d+$/).refine((value) => BigInt(value) > 0n).optional(),
   entrySol: z.number().positive().optional(),
   entrySolSource: PositionEntrySolSourceSchema.optional(),
   entryFillSubmissionId: z.string().optional(),
@@ -182,6 +192,7 @@ export const PositionLedgerRecordSchema = z.object({
   activeMint: z.string().optional(),
   activePoolAddress: z.string().optional(),
   lifecycleState: PositionLifecycleStateSchema,
+  ownedTokenAmountRaw: z.string().regex(/^\d+$/).refine((value) => BigInt(value) > 0n).optional(),
   entrySol: z.number().positive().optional(),
   entrySolSource: PositionEntrySolSourceSchema.optional(),
   entryFillSubmissionId: z.string().optional(),
@@ -196,9 +207,13 @@ export const PositionLedgerRecordSchema = z.object({
   pendingFinality: PendingFinalitySchema.optional(),
   residualCleanupStatus: z.string().optional(),
   residualCleanupValueSol: z.number().finite().nonnegative().optional(),
+  residualCleanupAmountRaw: z.string().regex(/^\d+$/).optional(),
   supersededByPositionKey: z.string().optional(),
   evidenceMissingReason: z.string().optional(),
+  firstSeenOnChainAt: z.string().optional(),
   lastSeenOnChainAt: z.string().optional(),
+  lastExitAttemptAt: z.string().optional(),
+  exitAttemptCount: z.number().int().nonnegative().optional(),
   missingOnChainSince: z.string().optional(),
   valuationStatus: LpValuationStatusSchema.optional(),
   valuationReason: z.string().optional(),

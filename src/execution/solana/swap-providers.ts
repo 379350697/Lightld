@@ -36,6 +36,7 @@ export type SwapExactInRequest = {
   walletPublicKey: string;
   poolAddress?: string;
   slippageBps: number;
+  maxImpactBps?: number;
   jitoTipLamports?: number;
   skipBalanceDependentProviders?: boolean;
 };
@@ -126,6 +127,23 @@ function parsePositiveIntegerString(value: string) {
   }
 
   return value;
+}
+
+function assertQuoteWithinExecutionLimits(request: SwapExactInRequest, quote: SwapQuoteResult) {
+  if (typeof request.maxImpactBps !== 'number') {
+    return;
+  }
+
+  if (typeof quote.priceImpactPct !== 'number' || !Number.isFinite(quote.priceImpactPct)) {
+    throw new Error(`${quote.providerName} quote missing price impact required by signed intent`);
+  }
+
+  const impactBps = Math.abs(quote.priceImpactPct) * 100;
+  if (impactBps > request.maxImpactBps) {
+    throw new Error(
+      `${quote.providerName} price impact ${impactBps.toFixed(2)}bps exceeds signed maximum ${request.maxImpactBps}bps`
+    );
+  }
 }
 
 function readString(record: unknown, key: string) {
@@ -627,6 +645,12 @@ export class MeteoraDirectSwapProvider implements SwapExecutionProvider {
     context: SwapExecutionContext
   ): Promise<SwapExecuteResult> {
     const directSwap = await this.buildDirectSwap(request);
+    assertQuoteWithinExecutionLimits(request, {
+      providerName: this.name,
+      outAmountLamports: directSwap.outAmountLamports,
+      minOutAmountLamports: directSwap.minOutAmountLamports,
+      priceImpactPct: directSwap.priceImpactPct
+    });
     const { value: blockhash } = await context.rpcClient.getLatestBlockhash();
     directSwap.transaction.recentBlockhash = blockhash.blockhash;
     directSwap.transaction.feePayer = context.keypair.publicKey;
@@ -699,6 +723,12 @@ export class JupiterV2SwapProvider implements SwapExecutionProvider {
 
   async executeExactIn(request: SwapExactInRequest, context: SwapExecutionContext): Promise<SwapExecuteResult> {
     const order = await this.getOrder(request);
+    assertQuoteWithinExecutionLimits(request, {
+      providerName: this.name,
+      outAmountLamports: extractJupiterV2OutAmount(order) ?? '0',
+      minOutAmountLamports: extractJupiterV2MinOutAmount(order),
+      priceImpactPct: extractJupiterV2PriceImpact(order)
+    });
     const transactionBase64 = extractJupiterV2Transaction(order);
     if (!transactionBase64) {
       throw new Error('Jupiter V2 order did not include a transaction');
@@ -769,6 +799,7 @@ export class JupiterV1SwapProvider implements SwapExecutionProvider {
 
   async executeExactIn(request: SwapExactInRequest, context: SwapExecutionContext): Promise<SwapExecuteResult> {
     const quote = await this.getQuote(request);
+    assertQuoteWithinExecutionLimits(request, this.toQuoteResult(quote));
     const swapResponse = await this.jupiterClient.getSwapTransaction(
       quote,
       request.walletPublicKey,
@@ -841,6 +872,7 @@ export class RaydiumSwapProvider implements SwapExecutionProvider {
 
   async executeExactIn(request: SwapExactInRequest, context: SwapExecutionContext): Promise<SwapExecuteResult> {
     const quote = await this.fetchQuote(request);
+    assertQuoteWithinExecutionLimits(request, this.toQuoteResult(quote));
     const response = await this.fetchTransactions(request, quote);
     const transactions = response.data ?? [];
     if (transactions.length === 0) {
@@ -987,6 +1019,16 @@ export class OkxSwapProvider implements SwapExecutionProvider {
 
   async executeExactIn(request: SwapExactInRequest, context: SwapExecutionContext): Promise<SwapExecuteResult> {
     const data = await this.fetchOkxData('/api/v6/dex/aggregator/swap-instruction', request);
+    const outAmountLamports = extractOkxOutAmount(data);
+    if (!outAmountLamports) {
+      throw new Error('OKX swap instruction missing output amount');
+    }
+    assertQuoteWithinExecutionLimits(request, {
+      providerName: this.name,
+      outAmountLamports,
+      minOutAmountLamports: extractOkxMinOutAmount(data),
+      priceImpactPct: readNumber(extractOkxRouterResult(data)?.priceImpactPercent)
+    });
     const rawInstructions = data?.instructionLists;
     if (!Array.isArray(rawInstructions) || rawInstructions.length === 0) {
       throw new Error('OKX swap-instruction response missing instructionLists');

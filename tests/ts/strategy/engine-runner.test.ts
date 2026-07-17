@@ -64,6 +64,28 @@ describe('runEngineCycle', () => {
     expect(result.audit.reason).toBe('lp-stop-loss');
   });
 
+  it('lets residual new-token inventory exit after LP closure even when entry gates now fail', () => {
+    const result = runEngineCycle({
+      engine: 'new-token',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        hasLpPosition: false,
+        lifecycleState: 'inventory_exit_ready',
+        hasSolRoute: false,
+        liquidityUsd: 0
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 5_000,
+        lpEnabled: true
+      }
+    });
+
+    expect(result.action).toBe('dca-out');
+    expect(result.audit.reason).toBe('inventory-exit-ready');
+  });
+
   it('passes configured maxHoldHours through to LP exit policy', () => {
     const result = runEngineCycle({
       engine: 'new-token',
@@ -102,6 +124,50 @@ describe('runEngineCycle', () => {
 
     expect(result.action).toBe('hold');
     expect(result.audit.reason).toContain('missing-sol-route');
+  });
+
+  it('runs large-pool exit policy without reapplying entry hard gates', () => {
+    const result = runEngineCycle({
+      engine: 'large-pool',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        lifecycleState: 'open',
+        unrealizedPct: -8,
+        hasSolRoute: false,
+        liquidityUsd: 0
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 20_000,
+        stopLossPct: 8
+      }
+    });
+
+    expect(result.action).toBe('dca-out');
+    expect(result.audit.reason).toBe('stop-loss');
+  });
+
+  it('passes lifecycle and max hold inputs into the large-pool engine', () => {
+    const result = runEngineCycle({
+      engine: 'large-pool',
+      snapshot: {
+        inSession: true,
+        hasInventory: true,
+        lifecycleState: 'open',
+        holdTimeMs: 3 * 60 * 60 * 1000,
+        hasSolRoute: true,
+        liquidityUsd: 30_000
+      },
+      config: {
+        requireSolRoute: true,
+        minLiquidityUsd: 20_000,
+        maxHoldHours: 2
+      }
+    });
+
+    expect(result.action).toBe('dca-out');
+    expect(result.audit.reason).toBe('max-hold-with-inventory');
   });
 });
 

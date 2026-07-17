@@ -49,9 +49,11 @@ export type CandidatePoolReaderOptions = {
   excludedTargets?: Array<{ poolAddress?: string; tokenMint?: string }>;
   maxAgeMs?: number;
   requireFreshWorker?: boolean;
+  limit?: number;
 };
 
 export interface CandidatePoolReader {
+  listOpenableCandidates(strategyId: StrategyId, options?: CandidatePoolReaderOptions): Promise<CandidatePoolEntry[]>;
   selectOpenableCandidate(strategyId: StrategyId, options?: CandidatePoolReaderOptions): Promise<CandidatePoolEntry | null>;
 }
 

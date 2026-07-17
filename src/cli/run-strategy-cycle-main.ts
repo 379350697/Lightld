@@ -5,7 +5,7 @@ import { HttpLiveQuoteProvider } from '../execution/http-live-quote-provider.ts'
 import { HttpLiveSigner } from '../execution/http-live-signer.ts';
 import type { DecisionContextInput } from '../runtime/build-decision-context.ts';
 import { HttpLiveAccountStateProvider } from '../runtime/live-account-provider.ts';
-import { loadLiveRuntimeConfig } from '../runtime/live-runtime-config.ts';
+import { loadStrategyCycleRuntime } from './run-strategy-cycle-runtime.ts';
 
 type ParsedArgs = {
   strategy?: string;
@@ -51,43 +51,49 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const runtimeConfig = loadLiveRuntimeConfig();
+  const {
+    runMode,
+    stateRootDir,
+    journalRootDir,
+    runtimeConfig
+  } = loadStrategyCycleRuntime();
 
   if (args.strategy !== 'new-token-v1' && args.strategy !== 'large-pool-v1') {
     throw new Error('Expected --strategy to be one of: new-token-v1, large-pool-v1');
   }
 
-  const executionAdapters = runtimeConfig.executionMode === 'http'
-    ? {
-        quoteProvider: new HttpLiveQuoteProvider({
-          url: runtimeConfig.quoteServiceUrl,
-          authToken: runtimeConfig.authToken
-        }),
-        signer: new HttpLiveSigner({
-          url: runtimeConfig.signServiceUrl,
-          authToken: runtimeConfig.authToken
-        }),
-        broadcaster: new HttpLiveBroadcaster({
-          url: runtimeConfig.broadcastServiceUrl,
-          authToken: runtimeConfig.authToken,
-          timeoutMs: runtimeConfig.broadcastTimeoutMs
-        }),
-        confirmationProvider: new HttpLiveConfirmationProvider({
-          url: runtimeConfig.confirmationServiceUrl,
-          authToken: runtimeConfig.authToken
-        }),
-        accountProvider: new HttpLiveAccountStateProvider({
-          url: runtimeConfig.accountStateUrl,
-          authToken: runtimeConfig.authToken,
-          timeoutMs: runtimeConfig.accountStateTimeoutMs
-        })
-      }
-    : {};
+  const executionAdapters = {
+    quoteProvider: new HttpLiveQuoteProvider({
+      url: runtimeConfig.quoteServiceUrl,
+      authToken: runtimeConfig.authToken
+    }),
+    signer: new HttpLiveSigner({
+      url: runtimeConfig.signServiceUrl,
+      authToken: runtimeConfig.authToken
+    }),
+    broadcaster: new HttpLiveBroadcaster({
+      url: runtimeConfig.broadcastServiceUrl,
+      authToken: runtimeConfig.authToken,
+      timeoutMs: runtimeConfig.broadcastTimeoutMs
+    }),
+    confirmationProvider: new HttpLiveConfirmationProvider({
+      url: runtimeConfig.confirmationServiceUrl,
+      authToken: runtimeConfig.authToken
+    }),
+    accountProvider: new HttpLiveAccountStateProvider({
+      url: runtimeConfig.accountStateUrl,
+      authToken: runtimeConfig.authToken,
+      timeoutMs: runtimeConfig.accountStateTimeoutMs
+    })
+  };
 
   const result = await runStrategyCycle({
     strategy: args.strategy,
     requestedPositionSol: args.requestedPositionSol,
     context: args.context,
+    captureMode: runMode,
+    stateRootDir,
+    journalRootDir,
     ...executionAdapters
   });
 

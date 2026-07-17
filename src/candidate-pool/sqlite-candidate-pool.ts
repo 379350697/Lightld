@@ -139,14 +139,14 @@ const SCHEMA = [
       candidate_pool_worker_status.expires_at AS worker_expires_at,
       CASE
         WHEN candidate_pool_worker_status.strategy_id IS NULL THEN 'source_unavailable'
-        WHEN candidate_pool_worker_status.status != 'ok' THEN 'source_unavailable'
+        WHEN candidate_pool_worker_status.status NOT IN ('ok', 'running') THEN 'source_unavailable'
         WHEN candidate_pool_worker_status.expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'source_unavailable'
         WHEN candidate_pool.freshness_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'stale'
         ELSE candidate_pool.status
       END AS current_status,
       CASE
         WHEN candidate_pool_worker_status.strategy_id IS NULL THEN 0
-        WHEN candidate_pool_worker_status.status != 'ok' THEN 0
+        WHEN candidate_pool_worker_status.status NOT IN ('ok', 'running') THEN 0
         WHEN candidate_pool_worker_status.expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 0
         WHEN candidate_pool.freshness_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 0
         ELSE candidate_pool.openable
@@ -175,7 +175,17 @@ function readBoolean(row: Row, key: string) {
 
 function parseCandidate(rawJson: string): IngestCandidate | null {
   try {
-    return JSON.parse(rawJson) as IngestCandidate;
+    const candidate = JSON.parse(rawJson) as IngestCandidate;
+    // Candidate rows written before feeTvlRatioUnit was introduced contain
+    // Meteora's percent-number (for example 15.6 means 15.6%). Normalize only
+    // at this persistence boundary so new ratio values above 1 remain valid.
+    if (candidate.feeTvlRatioUnit !== 'ratio') {
+      candidate.feeTvlRatio24h = Number.isFinite(candidate.feeTvlRatio24h)
+        ? candidate.feeTvlRatio24h / 100
+        : 0;
+      candidate.feeTvlRatioUnit = 'ratio';
+    }
+    return candidate;
   } catch {
     return null;
   }
@@ -248,7 +258,11 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
     if (!this.database) return [];
     return (this.database.prepare(`
       SELECT pool_address AS poolAddress FROM candidate_pool
-      WHERE strategy_id=? AND openable=1
+      WHERE strategy_id=?
+        AND openable=1
+        AND freshness_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      ORDER BY score DESC, updated_at DESC
+      LIMIT 20
     `).all(strategyId) as Array<{ poolAddress: string }>).map((row) => row.poolAddress);
   }
 
@@ -474,6 +488,26 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
       const retentionCutoff = new Date(input.observedAt.getTime() - retentionMs).toISOString();
       database.prepare('DELETE FROM pool_fee_yield_samples WHERE observed_at < ?').run(retentionCutoff);
       database.prepare('DELETE FROM pool_fee_yield_retirements WHERE expires_at < ?').run(nowIso);
+      database.prepare('DELETE FROM candidate_pool WHERE updated_at < ?').run(retentionCutoff);
+      database.prepare(`
+        DELETE FROM candidate_source_observations
+        WHERE observed_at < ?
+           OR NOT EXISTS (
+             SELECT 1 FROM candidate_pool
+             WHERE candidate_pool.strategy_id = candidate_source_observations.strategy_id
+               AND candidate_pool.pool_address = candidate_source_observations.pool_address
+               AND candidate_pool.token_mint = candidate_source_observations.token_mint
+           )
+      `).run(retentionCutoff);
+      database.prepare(`
+        DELETE FROM pool_fee_yield_profiles
+        WHERE observed_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM pool_fee_yield_retirements
+            WHERE pool_fee_yield_retirements.pool_address = pool_fee_yield_profiles.pool_address
+              AND pool_fee_yield_retirements.expires_at >= ?
+          )
+      `).run(retentionCutoff, nowIso);
       database.exec('COMMIT');
       database.exec('PRAGMA wal_checkpoint(PASSIVE)');
     } catch (error) {
@@ -492,61 +526,71 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
       return false;
     }
 
-    return readString(row, 'status') === 'ok' && readString(row, 'expires_at') > now.toISOString();
+    return ['ok', 'running'].includes(readString(row, 'status'))
+      && readString(row, 'expires_at') > now.toISOString();
   }
 
-  async selectOpenableCandidate(strategyId: StrategyId, options: CandidatePoolReaderOptions = {}): Promise<CandidatePoolEntry | null> {
+  async listOpenableCandidates(strategyId: StrategyId, options: CandidatePoolReaderOptions = {}): Promise<CandidatePoolEntry[]> {
     await this.open();
     if (!this.database) {
-      return null;
+      return [];
     }
 
     const now = options.now ?? new Date();
     if (options.requireFreshWorker !== false && !this.hasFreshOkWorker(strategyId, now)) {
-      return null;
+      return [];
     }
 
-    const excluded = new Set(options.excludedMints ?? []);
-    const excludedTargets = new Set(
-      (options.excludedTargets ?? [])
-        .map((target) => `${target.poolAddress ?? ''}::${target.tokenMint ?? ''}`)
-    );
+    const predicates = [
+      'strategy_id=?',
+      'openable=1',
+      'freshness_expires_at > ?'
+    ];
+    const parameters: Array<string | number> = [strategyId, now.toISOString()];
+    const excludedMints = [...new Set((options.excludedMints ?? []).filter(Boolean))];
+    if (excludedMints.length > 0) {
+      predicates.push(`token_mint NOT IN (${excludedMints.map(() => '?').join(',')})`);
+      parameters.push(...excludedMints);
+    }
+    for (const target of options.excludedTargets ?? []) {
+      const poolAddress = target.poolAddress?.trim() ?? '';
+      const tokenMint = target.tokenMint?.trim() ?? '';
+      if (poolAddress && tokenMint) {
+        predicates.push('NOT (pool_address=? AND token_mint=?)');
+        parameters.push(poolAddress, tokenMint);
+      } else if (poolAddress) {
+        predicates.push('pool_address!=?');
+        parameters.push(poolAddress);
+      } else if (tokenMint) {
+        predicates.push('token_mint!=?');
+        parameters.push(tokenMint);
+      }
+    }
+    if (typeof options.maxAgeMs === 'number' && options.maxAgeMs >= 0) {
+      predicates.push('updated_at >= ?');
+      parameters.push(new Date(now.getTime() - options.maxAgeMs).toISOString());
+    }
+    const limit = Number.isInteger(options.limit) && (options.limit ?? 0) > 0
+      ? Math.min(options.limit!, 250)
+      : 20;
     const rows = this.database.prepare(`
       SELECT * FROM candidate_pool
-      WHERE strategy_id=?
-        AND openable=1
-        AND freshness_expires_at > ?
+      WHERE ${predicates.join('\n        AND ')}
       ORDER BY score DESC, updated_at DESC
-      LIMIT 20
-    `).all(strategyId, now.toISOString()) as Row[];
+      LIMIT ?
+    `).all(...parameters, limit) as Row[];
 
+    const entries: CandidatePoolEntry[] = [];
     for (const candidateRow of rows) {
       const mint = readString(candidateRow, 'token_mint');
-      if (excluded.has(mint)) {
-        continue;
-      }
       const poolAddress = readString(candidateRow, 'pool_address');
-      if (
-        excludedTargets.has(`${poolAddress}::${mint}`) ||
-        excludedTargets.has(`::${mint}`) ||
-        excludedTargets.has(`${poolAddress}::`)
-      ) {
-        continue;
-      }
       const candidate = parseCandidate(readString(candidateRow, 'raw_candidate_json'));
       if (!candidate) {
         continue;
       }
 
       const updatedAt = readString(candidateRow, 'updated_at');
-      if (typeof options.maxAgeMs === 'number' && options.maxAgeMs >= 0) {
-        const ageMs = now.getTime() - Date.parse(updatedAt);
-        if (!Number.isFinite(ageMs) || ageMs > options.maxAgeMs) {
-          continue;
-        }
-      }
-
-      return {
+      entries.push({
         strategyId: readString(candidateRow, 'strategy_id') as StrategyId,
         poolAddress,
         tokenMint: mint,
@@ -557,15 +601,15 @@ export class SqliteCandidatePool implements CandidatePoolReader, CandidatePoolWr
         blockReason: readString(candidateRow, 'block_reason'),
         freshnessExpiresAt: readString(candidateRow, 'freshness_expires_at'),
         updatedAt,
-        candidate: {
-          ...candidate,
-          safetyScore: readNumber(candidateRow, 'score'),
-          poolFeeYieldScore: readNumber(candidateRow, 'score')
-        }
-      };
+        candidate
+      });
     }
 
-    return null;
+    return entries;
+  }
+
+  async selectOpenableCandidate(strategyId: StrategyId, options: CandidatePoolReaderOptions = {}): Promise<CandidatePoolEntry | null> {
+    return (await this.listOpenableCandidates(strategyId, options))[0] ?? null;
   }
 
   private readObservations(database: DatabaseSync, strategyId: StrategyId, poolAddress: string, tokenMint: string) {

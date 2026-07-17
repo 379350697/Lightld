@@ -42,6 +42,7 @@ describe('HttpLiveSigner', () => {
       outputSol: 0.1,
       createdAt: '2026-03-21T00:00:00.000Z',
       idempotencyKey: 'new-token-v1:pool-1:2026-03-21T00:00:00.000Z',
+      executionPolicy: 'broadcast',
       side: 'add-lp',
       tokenMint: 'mint-1',
       openIntentId: 'lp-open-intent:identity-1',

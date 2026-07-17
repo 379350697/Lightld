@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { StrategyConfig } from '../config/schema.ts';
 import type { IngestCandidate } from '../runtime/ingest-candidate-selection.ts';
-import { filterLpEligibleCandidates, rankCandidatesForSafety, selectCandidate } from '../runtime/ingest-candidate-selection.ts';
+import { filterLpEligibleCandidates } from '../runtime/ingest-candidate-selection.ts';
 import { evaluateEntryEconomicEdge } from '../strategy/entry-edge.ts';
 import { evaluateHardGates } from '../strategy/filtering/hard-gates.ts';
 import { applyStrategyPatch } from './spec.ts';
@@ -42,7 +42,10 @@ export class SqliteCandidateResearchRecorder implements CandidateResearchRecorde
     const spec = this.store.activeExperiment();
     if (!spec || spec.strategyId !== input.strategyId) return;
     if (this.store.hasRecentSnapshot(spec.experimentId, input.observedAt, this.captureIntervalMs)) return;
-    const candidates = rankCandidatesForSafety(input.candidates).slice(0, 20);
+    // The candidate worker passes the same fresh database order consumed by
+    // the daemon. Preserve that order so baseline selection can be bound to
+    // the actual paper open instead of applying a second ranking system.
+    const candidates = input.candidates.slice(0, 20);
     if (candidates.length === 0) return;
     this.store.captureSnapshot(buildSnapshot(spec, input.baseConfig, candidates, input.observedAt, input.captureMode));
   }
@@ -73,7 +76,7 @@ export function buildSnapshot(
       isEntryEligible(candidate, config, positionSol)
     );
     const eligibleKeys = new Set(eligible.map(candidateKey));
-    const selected = selectCandidate(eligible, spec.strategyId, 0);
+    const selected = eligible[0] ?? null;
     const selectedKey = selected ? candidateKey(selected) : '';
     return candidates.map((candidate) => ({
       variantId,
@@ -102,11 +105,13 @@ export function buildSnapshot(
         liquidityUsd: candidate.liquidityUsd,
         volume24h: candidate.volume24h,
         feeTvlRatio24h: candidate.feeTvlRatio24h,
+        feeTvlRatio24hUnit: 'ratio',
         binStep: candidate.binStep,
         baseFeePct: candidate.baseFeePct,
         safetyScore: candidate.safetyScore ?? 0,
         poolFeeYieldScore: candidate.poolFeeYieldScore ?? 0,
         netFeeYield1h: candidate.netFeeYield1h ?? 0,
+        netFeeYield1hUnit: 'ratio',
         hasInventory: candidate.hasInventory,
         hasLpPosition: candidate.hasLpPosition
       }
@@ -125,6 +130,7 @@ function isEntryEligible(candidate: IngestCandidate, config: StrategyConfig, pos
   return evaluateEntryEconomicEdge({
     positionSol,
     feeTvlRatio24h: candidate.feeTvlRatio24h,
+    feeHorizonHours: config.live.maxHoldHours,
     roundTripCostBps: config.solRouteLimits.maxSlippageBps * 2
   }, config.entryEdge).accepted;
 }

@@ -287,7 +287,7 @@ describe('solana rpc config policy', () => {
     ]);
   });
 
-  it('requires a sent transaction to become visible on a read endpoint', async () => {
+  it('stops after the first write RPC accepts a transaction even while visibility is pending', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     const client = new SolanaRpcClient({
       writeRpcUrls: ['https://write-1.example', 'https://write-2.example'],
@@ -305,20 +305,11 @@ describe('solana rpc config policy', () => {
           }), { status: 200 });
         }
 
-        const visible = url.includes('read-2') && calls.some((call) =>
-          call.url.includes('write-2') && call.method === 'sendTransaction'
-        );
-
         return new Response(JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
           result: {
-            value: [visible ? {
-              slot: 10,
-              confirmations: 1,
-              err: null,
-              confirmationStatus: 'processed'
-            } : null]
+            value: [null]
           }
         }), { status: 200 });
       }
@@ -327,19 +318,19 @@ describe('solana rpc config policy', () => {
     await expect(client.sendRawTransactionAndWaitForVisibility('tx-base64', {
       visibilityAttempts: 1,
       visibilityDelayMs: 1
-    })).resolves.toMatchObject({ signature: 'sig-visible' });
+    })).resolves.toMatchObject({
+      signature: 'sig-dropped',
+      visibility: 'accepted_unconfirmed'
+    });
 
     expect(calls).toEqual([
       { url: 'https://write-1.example', method: 'sendTransaction' },
-      { url: 'https://read-1.example', method: 'getSignatureStatuses' },
-      { url: 'https://read-2.example', method: 'getSignatureStatuses' },
-      { url: 'https://write-2.example', method: 'sendTransaction' },
       { url: 'https://read-1.example', method: 'getSignatureStatuses' },
       { url: 'https://read-2.example', method: 'getSignatureStatuses' }
     ]);
   });
 
-  it('fails when accepted transaction signatures never become visible', async () => {
+  it('returns accepted_unconfirmed when an accepted signature never becomes visible', async () => {
     const client = new SolanaRpcClient({
       writeRpcUrls: ['https://write-1.example'],
       readRpcUrls: ['https://read-1.example'],
@@ -361,7 +352,10 @@ describe('solana rpc config policy', () => {
     await expect(client.sendRawTransactionAndWaitForVisibility('tx-base64', {
       visibilityAttempts: 1,
       visibilityDelayMs: 1
-    })).rejects.toThrow(/not visible after broadcast attempts/);
+    })).resolves.toMatchObject({
+      signature: 'sig-dropped',
+      visibility: 'accepted_unconfirmed'
+    });
   });
 
   it('requests signatures for an address with a limit', async () => {

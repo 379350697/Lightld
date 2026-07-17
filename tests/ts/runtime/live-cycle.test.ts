@@ -8,10 +8,12 @@ import { appendJsonLine, readJsonLines } from '../../../src/journals/jsonl-write
 import type { MirrorEvent } from '../../../src/observability/mirror-events';
 import { SpendingLimitsStore } from '../../../src/risk/spending-limits';
 import { ExecutionRequestError } from '../../../src/execution/error-classification';
+import { TestLiveSigner } from '../../../src/execution/live-signer';
 import { KillSwitch } from '../../../src/runtime/kill-switch';
 import { liveIncidentDedupeStore } from '../../../src/runtime/incident-dedupe';
 import { runLiveCycle, validateLpWithdrawTriggerEligibility } from '../../../src/runtime/live-cycle';
 import { PendingSubmissionStore } from '../../../src/runtime/pending-submission-store';
+import { PreparedBroadcastStore } from '../../../src/runtime/prepared-broadcast-store';
 
 const TEST_JOURNAL_DIR = 'tmp/tests/runtime-live-cycle';
 const TEST_STATE_DIR = 'tmp/tests/runtime-live-cycle-state';
@@ -55,6 +57,37 @@ const activeLpPositionState = (overrides: Record<string, unknown> = {}) => ({
   updatedAt: new Date().toISOString(),
   ...overrides
 }) as any;
+
+const paperModeledLpAccountState = (currentValueSol: number, overrides: Record<string, unknown> = {}) => ({
+  observedAt: new Date().toISOString(),
+  walletSol: 1,
+  journalSol: 1,
+  walletTokens: [],
+  journalTokens: [],
+  walletLpPositions: [{
+    poolAddress: 'pool-1',
+    positionAddress: 'pos-1',
+    chainPositionAddress: 'pos-1',
+    mint: 'mint-safe',
+    lowerBinId: 100,
+    upperBinId: 168,
+    activeBinId: 120,
+    solSide: 'tokenX' as const,
+    solDepletedBins: 5,
+    currentValueSol,
+    displayValueSol: currentValueSol,
+    valuationStatus: 'ready' as const,
+    valuationReason: '',
+    valuationSource: 'paper-shadow-dlmm-active-bin-modeled',
+    valuationTrust: 'fallback_display' as const,
+    valuationCompleteness: 'untrusted' as const,
+    hasLiquidity: true,
+    hasClaimableFees: false,
+    ...overrides
+  }],
+  journalLpPositions: [],
+  fills: []
+});
 
 describe('runLiveCycle', () => {
   beforeEach(async () => {
@@ -171,6 +204,231 @@ describe('runLiveCycle', () => {
     expect(decisionJournal[0].cycleId).toBe(orderJournal[0].cycleId);
   });
 
+  it('uses the same strategy and order path for paper and live, changing only execution policy', async () => {
+    const intents: Array<Record<string, unknown>> = [];
+    const run = async (captureMode: 'live' | 'mechanical-soak') => runLiveCycle({
+      strategy: 'new-token-v1',
+      captureMode,
+      journalRootDir: join(TEST_JOURNAL_DIR, captureMode),
+      stateRootDir: join(TEST_STATE_DIR, captureMode),
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (signedIntent) => {
+          intents.push(signedIntent.intent as unknown as Record<string, unknown>);
+          return {
+            status: 'submitted',
+            submissionId: `${captureMode}-submission`,
+            idempotencyKey: signedIntent.intent.idempotencyKey
+          };
+        }
+      }
+    });
+
+    const live = await run('live');
+    const paper = await run('mechanical-soak');
+
+    expect(paper.action).toBe(live.action);
+    expect(paper.audit.reason).toBe(live.audit.reason);
+    expect(paper.executionPlan).toMatchObject({
+      poolAddress: live.executionPlan?.poolAddress,
+      exitMint: live.executionPlan?.exitMint,
+      maxSlippageBps: live.executionPlan?.maxSlippageBps,
+      maxImpactBps: live.executionPlan?.maxImpactBps,
+      solExitQuote: {
+        outputSol: live.executionPlan?.solExitQuote.outputSol,
+        slippageBps: live.executionPlan?.solExitQuote.slippageBps
+      }
+    });
+    expect(intents).toHaveLength(2);
+    expect(intents[0]).toMatchObject({
+      strategyId: 'new-token-v1',
+      side: 'withdraw-lp',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-safe',
+      outputSol: 0.1,
+      fullPositionExit: true,
+      executionPolicy: 'broadcast'
+    });
+    expect(intents[1]).toMatchObject({
+      strategyId: 'new-token-v1',
+      side: 'withdraw-lp',
+      poolAddress: 'pool-1',
+      tokenMint: 'mint-safe',
+      outputSol: 0.1,
+      fullPositionExit: true,
+      executionPolicy: 'simulate-only'
+    });
+  });
+
+  it('keeps paper and live LP opens identical through the signed intent boundary', async () => {
+    const intents: Array<Record<string, unknown>> = [];
+    const run = async (captureMode: 'live' | 'mechanical-soak') => runLiveCycle({
+      strategy: 'new-token-v1',
+      captureMode,
+      journalRootDir: join(TEST_JOURNAL_DIR, `open-${captureMode}`),
+      stateRootDir: join(TEST_STATE_DIR, `open-${captureMode}`),
+      requestedPositionSol: 0.1,
+      context: {
+        pool: { address: 'pool-open', liquidityUsd: 50_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-open', inSession: true, hasSolRoute: true, symbol: 'OPEN' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (signedIntent) => {
+          intents.push(signedIntent.intent as unknown as Record<string, unknown>);
+          return {
+            status: 'submitted',
+            submissionId: `${captureMode}-open-submission`,
+            idempotencyKey: signedIntent.intent.idempotencyKey
+          };
+        }
+      }
+    });
+
+    const live = await run('live');
+    const paper = await run('mechanical-soak');
+
+    expect(paper.action).toBe('add-lp');
+    expect(paper.action).toBe(live.action);
+    expect(paper.audit.reason).toBe(live.audit.reason);
+    expect(paper.executionPlan).toMatchObject({
+      strategyId: live.executionPlan?.strategyId,
+      poolAddress: live.executionPlan?.poolAddress,
+      exitMint: live.executionPlan?.exitMint,
+      maxSlippageBps: live.executionPlan?.maxSlippageBps,
+      maxImpactBps: live.executionPlan?.maxImpactBps,
+      solExitQuote: {
+        routeExists: live.executionPlan?.solExitQuote.routeExists,
+        outputSol: live.executionPlan?.solExitQuote.outputSol,
+        slippageBps: live.executionPlan?.solExitQuote.slippageBps,
+        stale: live.executionPlan?.solExitQuote.stale
+      }
+    });
+    expect(intents).toHaveLength(2);
+    for (const intent of intents) {
+      expect(intent).toMatchObject({
+        strategyId: 'new-token-v1',
+        side: 'add-lp',
+        poolAddress: 'pool-open',
+        tokenMint: 'mint-open',
+        outputSol: 0.1,
+        fullPositionExit: false,
+        liquidateResidualTokenToSol: false,
+        maxSlippageBps: 100,
+        maxImpactBps: 200
+      });
+    }
+    expect(intents[0].executionPolicy).toBe('broadcast');
+    expect(intents[1].executionPolicy).toBe('simulate-only');
+  });
+
+  it('keeps paper and live residual exits identical through the signed intent boundary', async () => {
+    const intents: Array<Record<string, unknown>> = [];
+    const run = async (captureMode: 'live' | 'mechanical-soak') => runLiveCycle({
+      strategy: 'new-token-v1',
+      captureMode,
+      journalRootDir: join(TEST_JOURNAL_DIR, `residual-${captureMode}`),
+      stateRootDir: join(TEST_STATE_DIR, `residual-${captureMode}`),
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'mint-residual',
+        activePoolAddress: 'pool-residual',
+        lifecycleState: 'inventory_exit_ready',
+        updatedAt: '2026-07-17T00:00:00.000Z'
+      },
+      positionLedger: {
+        version: 1,
+        records: [{
+          positionKey: 'chain-position:closed-lp',
+          chainPositionAddress: 'closed-lp',
+          activeMint: 'mint-residual',
+          activePoolAddress: 'pool-residual',
+          lifecycleState: 'inventory_exit_ready',
+          lastAction: 'withdraw-lp',
+          residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '5000',
+          updatedAt: '2026-07-17T00:00:00.000Z'
+        }],
+        updatedAt: '2026-07-17T00:00:00.000Z'
+      },
+      accountState: {
+        observedAt: new Date().toISOString(),
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{ mint: 'mint-residual', symbol: 'RES', amount: 9, amountRaw: '9000', currentValueSol: 0.2 }],
+        journalTokens: [{ mint: 'mint-residual', symbol: 'RES', amount: 9, amountRaw: '9000', currentValueSol: 0.2 }],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'pool-residual', liquidityUsd: 50_000 },
+        token: { mint: 'mint-residual', inSession: true, hasSolRoute: true, symbol: 'RES' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.2, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (signedIntent) => {
+          intents.push(signedIntent.intent as unknown as Record<string, unknown>);
+          return {
+            status: 'submitted',
+            submissionId: `${captureMode}-residual-submission`,
+            idempotencyKey: signedIntent.intent.idempotencyKey
+          };
+        }
+      }
+    });
+
+    const live = await run('live');
+    const paper = await run('mechanical-soak');
+
+    expect(paper.action).toBe('dca-out');
+    expect(paper.action).toBe(live.action);
+    expect(paper.audit.reason).toBe(live.audit.reason);
+    expect(paper.executionPlan).toMatchObject({
+      strategyId: live.executionPlan?.strategyId,
+      poolAddress: live.executionPlan?.poolAddress,
+      exitMint: live.executionPlan?.exitMint,
+      maxSlippageBps: live.executionPlan?.maxSlippageBps,
+      maxImpactBps: live.executionPlan?.maxImpactBps,
+      solExitQuote: {
+        routeExists: live.executionPlan?.solExitQuote.routeExists,
+        outputSol: live.executionPlan?.solExitQuote.outputSol,
+        slippageBps: live.executionPlan?.solExitQuote.slippageBps,
+        stale: live.executionPlan?.solExitQuote.stale
+      }
+    });
+    expect(intents).toHaveLength(2);
+    for (const intent of intents) {
+      expect(intent).toMatchObject({
+        strategyId: 'new-token-v1',
+        side: 'sell',
+        poolAddress: '',
+        tokenMint: 'mint-residual',
+        outputSol: 0.2,
+        inputAmountRaw: '5000',
+        preExitTokenAmountRaw: '9000',
+        fullPositionExit: true,
+        liquidateResidualTokenToSol: false,
+        maxSlippageBps: 100,
+        maxImpactBps: 200
+      });
+    }
+    expect(intents[0].executionPolicy).toBe('broadcast');
+    expect(intents[1].executionPolicy).toBe('simulate-only');
+  });
+
   it('blocks a partial withdraw-lp batch while preserving pending lifecycle', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
@@ -235,7 +493,7 @@ describe('runLiveCycle', () => {
     });
   });
 
-  it('returns LIVE for a confirmed full-exit partial batch despite residual sweep failure', async () => {
+  it('keeps a confirmed full-exit partial batch blocked until residual repair is explicit', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
@@ -250,10 +508,14 @@ describe('runLiveCycle', () => {
       },
       accountProvider: {
         readState: vi.fn(async () => ({
+          observedAt: new Date(Date.now() + 1_000).toISOString(),
           walletSol: 1.035,
           journalSol: 1.035,
           walletTokens: [],
-          walletLpPositions: []
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
         }))
       },
       context: {
@@ -290,10 +552,193 @@ describe('runLiveCycle', () => {
       }
     });
 
-    expect(result.mode).toBe('LIVE');
+    const pendingSubmission = await new PendingSubmissionStore(TEST_STATE_DIR).read();
+
+    expect(result.mode).toBe('BLOCKED');
     expect(result.action).toBe('withdraw-lp');
     expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.confirmationStatus).toBe('unknown');
+    expect(result.nextLifecycleState).toBe('lp_exit_pending');
     expect(result.reason).toContain('pending-submission-partial-failure');
+    expect(pendingSubmission).toMatchObject({
+      submissionId: 'sub-close',
+      batchStatus: 'partial',
+      confirmationStatus: 'unknown',
+      finality: 'unknown',
+      reason: 'pending-submission-partial-failure'
+    });
+  });
+
+  it('keeps a confirmed withdraw pending until a fresh complete snapshot proves the exact LP is gone', async () => {
+    const observedAt = new Date(Date.now() + 1_000).toISOString();
+    const accountProvider = {
+      readState: vi.fn(async () => ({
+        observedAt,
+        walletSol: 1.01,
+        journalSol: 1.01,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      }))
+    };
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          currentValueSol: 0.1,
+          solDepletedBins: 61,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted',
+          submissionId: 'sub-confirmed-close',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'confirmed-close-signature',
+          mainExecutionStatus: 'confirmed',
+          batchStatus: 'complete',
+          chainPositionAddress: 'pos-1'
+        })
+      }
+    });
+
+    const pending = await new PendingSubmissionStore(TEST_STATE_DIR).read();
+    expect(result).toMatchObject({
+      action: 'withdraw-lp',
+      confirmationStatus: 'confirmed',
+      nextLifecycleState: 'lp_exit_pending'
+    });
+    expect(pending).toMatchObject({
+      chainPositionAddress: 'pos-1',
+      confirmationStatus: 'confirmed',
+      reason: 'pending-withdraw-awaiting-account-closure-proof'
+    });
+  });
+
+  it('does not let an unavailable bookkeeping quote block an LP withdraw', async () => {
+    const broadcaster = {
+      broadcast: vi.fn(async (intent: any) => ({
+        status: 'submitted' as const,
+        submissionId: 'sub-quote-degraded-exit',
+        idempotencyKey: intent.intent.idempotencyKey
+      }))
+    };
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      quoteProvider: {
+        collect: async () => { throw new Error('quote service offline'); }
+      },
+      broadcaster,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.quote).toMatchObject({ stale: true, routeExists: false });
+    expect(broadcaster.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('still attempts a token dca-out when the bookkeeping quote is unavailable', async () => {
+    const broadcaster = {
+      broadcast: vi.fn(async (intent: any) => ({
+        status: 'submitted' as const,
+        submissionId: 'sub-quote-degraded-dca-out',
+        idempotencyKey: intent.intent.idempotencyKey
+      }))
+    };
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: {
+        allowNewOpens: false,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'mint-safe',
+        activePoolAddress: 'pool-1',
+        lifecycleState: 'inventory_exit_ready',
+        updatedAt: new Date().toISOString()
+      } as any,
+      quoteProvider: {
+        collect: async () => { throw new Error('quote service offline'); }
+      },
+      broadcaster: broadcaster as any,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{ mint: 'mint-safe', amount: 100, amountRaw: '100' }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      positionLedger: {
+        version: 1,
+        records: [{
+          positionKey: 'residual:mint-safe',
+          activeMint: 'mint-safe',
+          lifecycleState: 'closed',
+          residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '100',
+          lastAction: 'withdraw-lp',
+          updatedAt: new Date().toISOString()
+        }],
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+    expect(result).toMatchObject({
+      action: 'dca-out',
+      liveOrderSubmitted: true,
+      quote: { stale: true, routeExists: false }
+    });
+    expect(broadcaster.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it('does not block a confirmed withdraw-lp when residual cleanup is incomplete', async () => {
@@ -312,10 +757,14 @@ describe('runLiveCycle', () => {
       },
       accountProvider: {
         readState: vi.fn(async () => ({
+          observedAt: new Date(Date.now() + 1_000).toISOString(),
           walletSol: 1.035,
           journalSol: 1.035,
           walletTokens: [],
-          walletLpPositions: []
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
         }))
       },
       mirrorSink: {
@@ -366,6 +815,8 @@ describe('runLiveCycle', () => {
       mainExecutionStatus: 'confirmed',
       residualSweepStatus: 'incomplete'
     });
+    expect(result.submittedActionClosureProven).toBe(true);
+    expect(result.fullExitClosureProven).toBe(false);
     expect(orderJournal[0]).toMatchObject({
       side: 'withdraw-lp',
       broadcastStatus: 'submitted',
@@ -471,7 +922,7 @@ describe('runLiveCycle', () => {
         })
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -530,7 +981,7 @@ describe('runLiveCycle', () => {
         })
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -600,7 +1051,7 @@ describe('runLiveCycle', () => {
         poll: confirmationPoll
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -656,7 +1107,7 @@ describe('runLiveCycle', () => {
         })
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -703,6 +1154,20 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.05,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-04-20T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:position-1',
+          chainPositionAddress: 'position-1',
+          activeMint: 'mint-safe',
+          activePoolAddress: 'pool-1',
+          entryFillSubmissionId: 'managed-open-position-1',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-04-20T00:00:00.000Z'
+        }]
+      },
       accountState: {
         walletSol: 1,
         journalSol: 1,
@@ -769,15 +1234,289 @@ describe('runLiveCycle', () => {
         status: 'confirmed'
     });
   });
-  it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
+  it('does not publish a strategy outcome from confirmation alone when the exact LP remains open', async () => {
     const outcomes: LiveCycleOutcomeRecord[] = [];
-    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const observedAt = new Date(Date.now() + 60_000).toISOString();
+    const exactLp = {
+      poolAddress: 'pool-1',
+      positionAddress: 'pos-1',
+      chainPositionAddress: 'pos-1',
+      mint: 'mint-safe',
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 165,
+      solSide: 'tokenX' as const,
+      solDepletedBins: 65,
+      hasLiquidity: true
+    };
 
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [exactLp],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider: {
+        readState: async () => ({
+          walletSol: 1.05,
+          journalSol: 1.05,
+          observedAt,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [exactLp],
+          journalLpPositions: [],
+          fills: []
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: observedAt
+        })
+      },
+      evolutionSink: { appendOutcome: async (record) => { outcomes.push(record); } },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 65 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result).toMatchObject({
+      action: 'withdraw-lp',
+      confirmationStatus: 'confirmed',
+      fullExitClosureProven: false
+    });
+    expect(outcomes).toEqual([]);
+  });
+
+  it('accepts an execution-complete residual boundary while preserving pre-existing same-mint wallet inventory', async () => {
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+    const preExistingToken = {
+      mint: 'mint-safe',
+      symbol: 'SAFE',
+      amount: 500,
+      amountRaw: '500'
+    };
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [preExistingToken],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          solDepletedBins: 65,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider: {
+        readState: async () => ({
+          observedAt: postExitObservedAt,
+          walletSol: 1.08,
+          journalSol: 1.08,
+          walletTokens: [preExistingToken],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        })
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted' as const,
+          submissionId: 'sub-complete-same-mint-baseline',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'complete-same-mint-baseline',
+          batchStatus: 'complete' as const,
+          mainExecutionStatus: 'confirmed' as const,
+          residualSweepStatus: 'complete' as const
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: postExitObservedAt
+        })
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 65 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result).toMatchObject({
+      action: 'withdraw-lp',
+      submittedActionClosureProven: true,
+      fullExitClosureProven: true,
+      orderIntent: { preExitTokenAmountRaw: '500' }
+    });
+  });
+
+  it('treats explicitly ignored residual dust as resolved after fresh exact LP absence', async () => {
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          solDepletedBins: 65,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider: {
+        readState: async () => ({
+          observedAt: postExitObservedAt,
+          walletSol: 1.01,
+          journalSol: 1.01,
+          walletTokens: [{ mint: 'mint-safe', amount: 1, amountRaw: '1' }],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        })
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'submitted' as const,
+          submissionId: 'sub-dust-ignored',
+          idempotencyKey: intent.intent.idempotencyKey,
+          confirmationSignature: 'dust-ignored',
+          mainExecutionStatus: 'confirmed' as const,
+          residualSweepStatus: 'dust_ignored' as const,
+          residualIgnoredMints: ['mint-safe']
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: postExitObservedAt
+        })
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 65 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      }
+    });
+
+    expect(result).toMatchObject({
+      action: 'withdraw-lp',
+      submittedActionClosureProven: true,
+      fullExitClosureProven: true,
+      broadcastResult: { residualSweepStatus: 'dust_ignored' }
+    });
+  });
+
+  it('emits evolution outcome evidence with a parameter snapshot for LP exits', async () => {
+    const outcomes: LiveCycleOutcomeRecord[] = [];
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+    const beforeAccountState = {
+      walletSol: 1,
+      journalSol: 1,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [{
+        poolAddress: 'pool-1',
+        positionAddress: 'pos-1',
+        chainPositionAddress: 'pos-1',
+        mint: 'mint-safe',
+        lowerBinId: 100,
+        upperBinId: 168,
+        activeBinId: 165,
+        solSide: 'tokenX' as const,
+        solDepletedBins: 65,
+        currentValueSol: 0.075,
+        liquidityValueSol: 0.075,
+        unclaimedFeeValueSol: 0,
+        claimedFeeValueSol: 0,
+        recoverableRentSol: 0,
+        lpTotalValueSol: 0.075,
+        unclaimedFeeSol: 0,
+        valuationStatus: 'ready' as const,
+        valuationCompleteness: 'complete' as const,
+        valuationTrust: 'exit_quote' as const,
+        valuationReason: '',
+        valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote',
+        hasLiquidity: true
+      }],
+      journalLpPositions: [],
+      fills: []
+    };
+    const postAccountState = {
+      walletSol: 1.075,
+      journalSol: 1.075,
+      observedAt: postExitObservedAt,
+      walletTokens: [],
+      journalTokens: [],
+      walletLpPositions: [],
+      journalLpPositions: [],
+      fills: []
+    };
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      captureMode: 'mechanical-soak',
+      accountState: beforeAccountState,
+      accountProvider: { readState: async () => postAccountState },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: postExitObservedAt
+        })
+      },
       positionState: {
         allowNewOpens: true,
         flattenOnly: false,
@@ -821,14 +1560,16 @@ describe('runLiveCycle', () => {
 
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
+    expect(result.fullExitClosureProven).toBe(true);
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({
       strategyId: 'new-token-v1',
       tokenMint: 'mint-safe',
       tokenSymbol: 'SAFE',
       positionId: 'pos-1',
+      captureMode: 'mechanical-soak',
       action: 'withdraw-lp',
-      actualExitReason: 'lp-stop-loss',
+      actualExitReason: 'lp-range-exit:sol-depleted-bins:65/unknown:threshold=60',
       openedAt,
       closedAt: expect.any(String),
       entrySol: 0.1,
@@ -846,22 +1587,67 @@ describe('runLiveCycle', () => {
         maxHoldHours: 8
       },
       exitMetrics: {
-        lpNetPnlPct: expect.any(Number),
-        lpSolDepletedBins: 61
+        lpNetPnlPct: undefined,
+        lpSolDepletedBins: 65,
+        valuationTrust: 'exit_quote',
+        valuationCompleteness: 'complete',
+        settlementEvidence: 'paper-synthetic-lp-lifecycle'
       }
     });
-    expect(outcomes[0].actualExitMetricValue).toBeCloseTo(-25, 10);
-    expect(outcomes[0].exitMetrics.lpNetPnlPct).toBeCloseTo(-25, 10);
+    expect(outcomes[0].actualExitMetricValue).toBe(65);
+    expect(outcomes[0].exitMetrics.lpNetPnlPct).toBeUndefined();
     expect(outcomes[0].maxObservedUpsidePct).toBe(0);
   });
 
   it('swallows evolution outcome sink failures without changing the live-cycle result', async () => {
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
       positionState: activeLpPositionState(),
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          chainPositionAddress: 'pos-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 165,
+          solSide: 'tokenX' as const,
+          solDepletedBins: 65,
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      accountProvider: {
+        readState: async () => ({
+          walletSol: 1.08,
+          journalSol: 1.08,
+          observedAt: postExitObservedAt,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: postExitObservedAt
+        })
+      },
       evolutionSink: {
         appendOutcome: async () => {
           throw new Error('outcome-store-unavailable');
@@ -878,6 +1664,7 @@ describe('runLiveCycle', () => {
     expect(result.mode).toBe('LIVE');
     expect(result.action).toBe('withdraw-lp');
     expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.fullExitClosureProven).toBe(true);
   });
 
   it('returns hold without collecting a quote when the strategy is not actionable', async () => {
@@ -993,9 +1780,9 @@ describe('runLiveCycle', () => {
       killSwitch: new KillSwitch(true),
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000 },
-        token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
-        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
       }
     });
@@ -1032,7 +1819,7 @@ describe('runLiveCycle', () => {
       requestedPositionSol: 0.1,
       runtimeMode: 'flatten_only',
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1135,7 +1922,7 @@ describe('runLiveCycle', () => {
         fills: []
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
@@ -1158,11 +1945,26 @@ describe('runLiveCycle', () => {
         allowNewOpens: true,
         flattenOnly: false,
         lastAction: 'withdraw-lp',
-        activeMint: 'lp-mint',
-        activePoolAddress: 'lp-pool',
+        activeMint: 'residual-mint',
+        activePoolAddress: 'residual-pool',
         positionId: 'lp-position',
         chainPositionAddress: 'lp-chain-position',
         lifecycleState: 'inventory_exit_ready',
+        updatedAt: '2026-06-29T17:00:00.000Z'
+      },
+      positionLedger: {
+        version: 1,
+        records: [{
+          positionKey: 'chain-position:lp-chain-position',
+          chainPositionAddress: 'lp-chain-position',
+          activeMint: 'residual-mint',
+          activePoolAddress: 'residual-pool',
+          lifecycleState: 'inventory_exit_ready',
+          lastAction: 'withdraw-lp',
+          residualCleanupStatus: 'residual_cleanup_pending',
+          residualCleanupAmountRaw: '5000',
+          updatedAt: '2026-06-29T17:00:00.000Z'
+        }],
         updatedAt: '2026-06-29T17:00:00.000Z'
       },
       accountState: {
@@ -1196,7 +1998,8 @@ describe('runLiveCycle', () => {
     expect(result.actionIdentity?.chainPositionAddress).toBeUndefined();
     expect(orderJournal[0]).toMatchObject({
       side: 'sell',
-      tokenMint: 'residual-mint'
+      tokenMint: 'residual-mint',
+      inputAmountRaw: '5000'
     });
     expect(result.orderIntent?.poolAddress).toBe('');
     expect(orderJournal[0].poolAddress ?? '').toBe('');
@@ -1210,7 +2013,7 @@ describe('runLiveCycle', () => {
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: {
           mint: 'mint-safe',
           inSession: true,
@@ -1227,15 +2030,15 @@ describe('runLiveCycle', () => {
     expect(result.liveOrderSubmitted).toBe(true);
   });
 
-  it('can ignore the configured live position size cap for paper sampling', async () => {
+  it('never lets paper sampling bypass the configured position size cap', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 2,
-      ignoreLivePositionSolLimit: true,
+      captureMode: 'mechanical-soak',
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: {
           mint: 'mint-safe',
           inSession: true,
@@ -1247,9 +2050,10 @@ describe('runLiveCycle', () => {
       }
     });
 
-    expect(result.mode).toBe('LIVE');
+    expect(result.mode).toBe('BLOCKED');
     expect(result.action).toBe('add-lp');
-    expect(result.liveOrderSubmitted).toBe(true);
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(result.reason).toBe('live-position-cap-exceeded');
   });
 
   it('does not reuse stale LP identity when opening a different target', async () => {
@@ -1271,7 +2075,7 @@ describe('runLiveCycle', () => {
         updatedAt: '2026-06-29T17:00:00.000Z'
       },
       context: {
-        pool: { address: 'new-pool', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'new-pool', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: {
           mint: 'new-mint',
           inSession: true,
@@ -1305,7 +2109,7 @@ describe('runLiveCycle', () => {
         maxDailySpendSol: 1
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1339,6 +2143,186 @@ describe('runLiveCycle', () => {
     expect(spendingState.orderCount).toBe(1);
   });
 
+  it('durably reserves open-risk spend before the broadcaster can accept the order', async () => {
+    const stateDir = `${TEST_STATE_DIR}-spend-before-broadcast`;
+    const spendingStore = new SpendingLimitsStore(stateDir);
+    let reservationObservedBeforeBroadcast = false;
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-spend-before', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-spend-before', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => {
+          const state = await spendingStore.read();
+          reservationObservedBeforeBroadcast = state.reservations.some((reservation) =>
+            reservation.idempotencyKey === intent.intent.idempotencyKey
+            && reservation.requestedSol === 0.1
+            && reservation.status === 'reserved'
+          );
+          return {
+            status: 'submitted',
+            submissionId: 'submission-spend-before',
+            idempotencyKey: intent.intent.idempotencyKey
+          };
+        }
+      }
+    });
+
+    expect(result.action).toBe('add-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+    expect(reservationObservedBeforeBroadcast).toBe(true);
+    expect((await spendingStore.read()).dailySpendSol).toBe(0.1);
+  });
+
+  it('releases open-risk spend after a definite not-submitted result', async () => {
+    const stateDir = `${TEST_STATE_DIR}-spend-release-not-submitted`;
+    const spendingStore = new SpendingLimitsStore(stateDir);
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-spend-reject', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-spend-reject', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async (intent) => ({
+          status: 'failed',
+          reason: 'preflight-rejected',
+          retryable: false,
+          idempotencyKey: intent.intent.idempotencyKey
+        })
+      }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.liveOrderSubmitted).toBe(false);
+    expect(await spendingStore.read()).toMatchObject({
+      dailySpendSol: 0,
+      hourlySpendSol: 0,
+      orderCount: 0,
+      reservations: []
+    });
+    expect(await new PreparedBroadcastStore(stateDir).read()).toBeNull();
+  });
+
+  it('keeps open-risk spend reserved when the broadcast outcome is unknown', async () => {
+    const stateDir = `${TEST_STATE_DIR}-spend-keep-unknown`;
+    const spendingStore = new SpendingLimitsStore(stateDir);
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-spend-unknown', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-spend-unknown', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async () => {
+          throw new ExecutionRequestError('broadcast', {
+            kind: 'unknown',
+            reason: 'broadcast-outcome-unknown',
+            retryable: false
+          });
+        }
+      }
+    });
+
+    const spendingState = await spendingStore.read();
+    expect(result.reason).toBe('broadcast-outcome-unknown');
+    expect(spendingState.dailySpendSol).toBe(0.1);
+    expect(spendingState.reservations).toHaveLength(1);
+    expect(spendingState.reservations[0]).toMatchObject({
+      idempotencyKey: result.orderIntent?.idempotencyKey,
+      status: 'reserved'
+    });
+    expect(await new PreparedBroadcastStore(stateDir).read()).not.toBeNull();
+  });
+
+  it('marks and clears the WAL when spend reservation fails before broadcast', async () => {
+    const stateDir = `${TEST_STATE_DIR}-spend-reservation-failure`;
+    const spendingStore = new SpendingLimitsStore(stateDir);
+    const testSigner = new TestLiveSigner('reservation-conflict-signer');
+    const broadcast = vi.fn();
+
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      spendingLimitsConfig: {
+        maxSingleOrderSol: 1,
+        maxDailySpendSol: 1
+      },
+      context: {
+        pool: { address: 'pool-spend-conflict', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: { mint: 'mint-spend-conflict', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      signer: {
+        sign: async (intent) => {
+          await spendingStore.reserveSpend(intent.idempotencyKey, 0.2);
+          return testSigner.sign(intent);
+        }
+      },
+      broadcaster: { broadcast }
+    });
+
+    expect(result).toMatchObject({
+      mode: 'BLOCKED',
+      liveOrderSubmitted: false,
+      reason: `spending-reservation-conflict:${result.orderIntent?.idempotencyKey}`
+    });
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(await new PreparedBroadcastStore(stateDir).read()).toBeNull();
+    expect(await spendingStore.read()).toMatchObject({
+      dailySpendSol: 0.2,
+      orderCount: 1,
+      reservations: [{
+        idempotencyKey: result.orderIntent?.idempotencyKey,
+        requestedSol: 0.2,
+        status: 'reserved'
+      }]
+    });
+  });
+
   it('blocks open-risk actions when the hourly spend limit is exhausted', async () => {
     const stateDir = `${TEST_STATE_DIR}-hourly-spending`;
 
@@ -1356,7 +2340,7 @@ describe('runLiveCycle', () => {
         maxDailySpendSol: 2
       },
       context: {
-        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.05 },
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
         token: { inSession: true, hasSolRoute: true, symbol: 'SAFE' },
         trader: { hasInventory: false, hasLpPosition: false },
         route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
@@ -1503,6 +2487,114 @@ describe('runLiveCycle', () => {
     expect(pendingSubmission).toBeNull();
   });
 
+  it('treats a structured execution-policy 409 as not submitted and keeps the LP exit retryable', async () => {
+    const stateDir = `${TEST_STATE_DIR}-policy-mismatch-not-submitted`;
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      accountState: {
+        observedAt: new Date().toISOString(),
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-1',
+          positionAddress: 'pos-1',
+          mint: 'mint-safe',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 168,
+          solSide: 'tokenX',
+          solDepletedBins: 68,
+          currentValueSol: 0.1,
+          liquidityValueSol: 0.1,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          lpTotalValueSol: 0.1,
+          unclaimedFeeSol: 0,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationSource: 'meteora-withdraw-simulation+swap-provider-sell-quote',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async () => {
+          throw new ExecutionRequestError('broadcast', {
+            kind: 'hard',
+            reason: 'http-409',
+            retryable: false
+          }, undefined, 409, 'execution policy mismatch: signed intent requires simulate-only');
+        }
+      }
+    });
+
+    expect(result).toMatchObject({
+      mode: 'BLOCKED',
+      action: 'withdraw-lp',
+      reason: 'http-409',
+      liveOrderSubmitted: false,
+      nextLifecycleState: 'open'
+    });
+    expect(await new PendingSubmissionStore(stateDir).read()).toBeNull();
+    expect(await new PreparedBroadcastStore(stateDir).read()).toBeNull();
+  });
+
+  it('keeps an idempotency-pending 409 fail-closed because acceptance is unknown', async () => {
+    const stateDir = `${TEST_STATE_DIR}-idempotency-pending-unknown`;
+    await rm(stateDir, { recursive: true, force: true });
+
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: stateDir,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState(),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpSolDepletedBins: 61 },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      broadcaster: {
+        broadcast: async () => {
+          throw new ExecutionRequestError('broadcast', {
+            kind: 'hard',
+            reason: 'http-409',
+            retryable: false
+          }, undefined, 409, 'idempotency key pending: request is reserved');
+        }
+      }
+    });
+
+    expect(result).toMatchObject({
+      mode: 'BLOCKED',
+      action: 'withdraw-lp',
+      reason: 'http-409',
+      liveOrderSubmitted: false
+    });
+    expect(await new PendingSubmissionStore(stateDir).read()).toMatchObject({
+      submissionId: '',
+      confirmationStatus: 'unknown',
+      reason: 'http-409'
+    });
+    expect(await new PreparedBroadcastStore(stateDir).read()).not.toBeNull();
+  });
+
   it('classifies missing LP position exits as already closed without pending submission', async () => {
     const stateDir = `${TEST_STATE_DIR}-position-already-closed`;
 
@@ -1635,6 +2727,143 @@ describe('runLiveCycle', () => {
       expect(result.context.trader.lpNetPnlPct).toBeUndefined();
     });
 
+  it('uses an explicitly labeled active-bin model for mechanical paper take-profit without creating PnL evidence', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const postExitObservedAt = new Date(Date.now() + 60_000).toISOString();
+    const outcomes: LiveCycleOutcomeRecord[] = [];
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      captureMode: 'mechanical-soak',
+      positionState: activeLpPositionState({ entrySol: 1, openedAt }),
+      accountState: paperModeledLpAccountState(1.31),
+      accountProvider: {
+        readState: async () => ({
+          observedAt: postExitObservedAt,
+          walletSol: 2,
+          journalSol: 2,
+          walletTokens: [],
+          journalTokens: [],
+          walletLpPositions: [],
+          journalLpPositions: [],
+          fills: []
+        })
+      },
+      confirmationProvider: {
+        poll: async ({ submissionId, confirmationSignature }) => ({
+          submissionId,
+          confirmationSignature,
+          status: 'confirmed' as const,
+          finality: 'finalized' as const,
+          checkedAt: postExitObservedAt
+        })
+      },
+      evolutionSink: {
+        appendOutcome: async (record) => { outcomes.push(record); }
+      },
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-take-profit');
+    expect(result.orderIntent?.executionPolicy).toBe('simulate-only');
+    expect(result.context.trader.lpModeledNetPnlPct).toBeCloseTo(31, 10);
+    expect(result.context.trader.lpModeledPnlSource).toBe('paper-shadow-dlmm-active-bin-modeled');
+    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+    expect(result.context.trader.valuationTrust).toBe('fallback_display');
+    expect(result.context.trader.valuationCompleteness).toBe('untrusted');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].exitMetrics).toMatchObject({
+      lpNetPnlPct: undefined,
+      valuationTrust: 'fallback_display',
+      valuationCompleteness: 'untrusted',
+      settlementEvidence: 'paper-synthetic-lp-lifecycle'
+    });
+    expect(outcomes[0].maxObservedUpsidePct).toBe(0);
+  });
+
+  it('uses the same LP exit policy for an explicitly labeled mechanical paper stop-loss', async () => {
+    const openedAt = new Date(Date.now() - (60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      captureMode: 'mechanical-soak',
+      positionState: activeLpPositionState({ entrySol: 1, openedAt }),
+      accountState: paperModeledLpAccountState(0.75),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.audit.reason).toBe('lp-stop-loss');
+    expect(result.orderIntent?.executionPolicy).toBe('simulate-only');
+    expect(result.context.trader.lpModeledNetPnlPct).toBeCloseTo(-25, 10);
+    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+  });
+
+  it('never lets the paper active-bin model trigger live TP/SL', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      captureMode: 'live',
+      positionState: activeLpPositionState({ entrySol: 1, openedAt }),
+      accountState: paperModeledLpAccountState(0.75),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-stop-loss');
+    expect(result.context.trader.lpModeledNetPnlPct).toBeUndefined();
+    expect(result.context.trader.lpNetPnlPct).toBeUndefined();
+    expect(result.orderIntent).toBeUndefined();
+  });
+
+  it('keeps claim-fee disabled when paper only has an active-bin value and no modeled fee evidence', async () => {
+    const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 1,
+      captureMode: 'mechanical-soak',
+      positionState: activeLpPositionState({ entrySol: 1, openedAt }),
+      accountState: paperModeledLpAccountState(1.05),
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000 },
+        token: { mint: 'mint-safe', inSession: true, hasSolRoute: true, symbol: 'SAFE' },
+        trader: { hasInventory: true, hasLpPosition: true, lpUnclaimedFeeUsd: 10_000 },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.audit.reason).not.toBe('lp-claim-fee-threshold');
+    expect(result.context.trader.lpUnclaimedFeeUsd).toBeUndefined();
+    expect(result.context.trader.lpModeledNetPnlPct).toBeCloseTo(5, 10);
+    expect(result.orderIntent).toBeUndefined();
+  });
+
   it('does not derive lpNetPnlPct from complete context valuation without provider quote evidence', async () => {
     const openedAt = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
     const result = await runLiveCycle({
@@ -1695,6 +2924,7 @@ describe('runLiveCycle', () => {
         lastAction: 'add-lp',
         activeMint: 'mint-safe',
         activePoolAddress: 'pool-1',
+        chainPositionAddress: 'position-1',
         lifecycleState: 'open',
         openedAt,
         lastClosedMint: '',
@@ -1875,6 +3105,8 @@ describe('runLiveCycle', () => {
         journalLpPositions: [],
         fills: [{
           submissionId: 'real-open',
+          chainPositionAddress: 'current-chain-position',
+          positionId: 'current-chain-position',
           mint: 'mint-stale-entry',
           side: 'add-lp',
           amount: 0.077416045,
@@ -1882,7 +3114,6 @@ describe('runLiveCycle', () => {
           actualWalletDeltaSol: -0.077416045,
           fillAmountSource: 'wallet-delta',
           hasFillEvidence: true,
-          positionId: 'pool-stale-entry:mint-stale-entry',
           recordedAt: new Date(Date.parse(openedAt) - 7 * 60 * 1000).toISOString()
         }]
       }
@@ -2540,7 +3771,7 @@ describe('runLiveCycle', () => {
         quoteOutputSol: 0.08,
         confirmationStatus: 'confirmed'
       });
-      expect(result.nextLifecycleState).toBe('inventory_exit_ready');
+      expect(result.nextLifecycleState).toBe('lp_exit_pending');
     });
 
     it('does not use unbound journal LP fills to override bin-depletion exits', async () => {
@@ -2806,7 +4037,17 @@ describe('runLiveCycle', () => {
             hasLiquidity: true
           }
         ],
-        fills: []
+        fills: [{
+          submissionId: 'paper-overlay-open',
+          chainPositionAddress: 'paper-chain-position',
+          mint: 'mint-paper',
+          side: 'add-lp',
+          amount: 1,
+          actualFilledSol: 1,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: oldRecordedAt
+        }]
       } as any
     });
 
@@ -2836,6 +4077,7 @@ describe('runLiveCycle', () => {
     await appendJsonLine(baseFillPath, {
       submissionId: 'old-open',
       openIntentId: 'lp-open-intent:old',
+      chainPositionAddress: 'old-chain-position',
       mint: 'mint-same',
       side: 'add-lp',
       amount: 0.109490125,
@@ -2844,7 +4086,7 @@ describe('runLiveCycle', () => {
       actualWalletDeltaSol: -0.109490125,
       fillAmountSource: 'wallet-delta',
       hasFillEvidence: true,
-      positionId: 'pool-same:mint-same',
+      positionId: 'old-chain-position',
       recordedAt: oldRecordedAt
     }, {
       rotateDaily: true,
@@ -2854,6 +4096,7 @@ describe('runLiveCycle', () => {
     await appendJsonLine(baseFillPath, {
       submissionId: 'new-open',
       openIntentId: 'lp-open-intent:new',
+      chainPositionAddress: 'new-chain-position',
       mint: 'mint-same',
       side: 'add-lp',
       amount: 0.077416045,
@@ -2862,7 +4105,7 @@ describe('runLiveCycle', () => {
       actualWalletDeltaSol: -0.077416045,
       fillAmountSource: 'wallet-delta',
       hasFillEvidence: true,
-      positionId: 'pool-same:mint-same',
+      positionId: 'new-chain-position',
       recordedAt: newRecordedAt
     }, {
       rotateDaily: true,
@@ -2947,6 +4190,20 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-04-20T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-residual',
+          chainPositionAddress: 'pos-residual',
+          activeMint: 'mint-residual',
+          activePoolAddress: 'pool-residual',
+          entryFillSubmissionId: 'managed-open-residual',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-04-20T00:00:00.000Z'
+        }]
+      },
       context: {
         pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
         token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
@@ -3038,6 +4295,20 @@ describe('runLiveCycle', () => {
       journalRootDir: TEST_JOURNAL_DIR,
       stateRootDir: TEST_STATE_DIR,
       requestedPositionSol: 0.1,
+      positionLedger: {
+        version: 1,
+        updatedAt: '2026-04-20T00:00:00.000Z',
+        records: [{
+          positionKey: 'chain-position:pos-token-y',
+          chainPositionAddress: 'pos-token-y',
+          activeMint: 'mint-token-y',
+          activePoolAddress: 'pool-token-y',
+          entryFillSubmissionId: 'managed-open-token-y',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          updatedAt: '2026-04-20T00:00:00.000Z'
+        }]
+      },
       context: {
         pool: { address: '', liquidityUsd: 0, hasSolRoute: false, blockReason: 'no-selected-candidate' },
         token: { mint: '', inSession: true, hasSolRoute: false, symbol: '', blockReason: 'no-selected-candidate' },
@@ -3288,5 +4559,285 @@ describe('runLiveCycle', () => {
     expect(result.audit.reason).toContain('lp-range-exit:active-bin-out-of-range:above:17');
     expect(result.context.trader.lpRiskIntent).toBe('range-exit');
     expect(result.context.trader.lpNetPnlPct).toBeGreaterThan(0);
+  });
+
+  it('never converts an unrelated wallet token into a residual exit target', async () => {
+    const broadcast = vi.fn();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      positionState: {
+        allowNewOpens: true,
+        flattenOnly: false,
+        lastAction: 'withdraw-lp',
+        activeMint: 'strategy-mint',
+        activePoolAddress: 'strategy-pool',
+        lifecycleState: 'inventory_exit_ready',
+        updatedAt: '2026-06-29T17:00:00.000Z'
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{
+          mint: 'personal-wallet-mint',
+          symbol: 'PERSONAL',
+          amount: 100,
+          amountRaw: '100000000',
+          currentValueSol: 0.2
+        }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'personal-pool', liquidityUsd: 10_000 },
+        token: { mint: 'personal-wallet-mint', inSession: true, hasSolRoute: true, symbol: 'PERSONAL' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.05, slippageBps: 50 }
+      },
+      broadcaster: { broadcast }
+    });
+
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.reason).toBe('zero_token_balance_resolved:strategy-mint');
+    expect(result.orderIntent).toBeUndefined();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('never sells same-mint wallet inventory without a strategy-owned raw amount', async () => {
+    const broadcast = vi.fn();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.05,
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [{
+          mint: 'personal-wallet-mint',
+          symbol: 'PERSONAL',
+          amount: 100,
+          amountRaw: '100000000',
+          currentValueSol: 0.2
+        }],
+        journalTokens: [],
+        walletLpPositions: [],
+        journalLpPositions: [],
+        fills: []
+      },
+      context: {
+        pool: { address: 'personal-pool', liquidityUsd: 10_000 },
+        token: { mint: 'personal-wallet-mint', inSession: false, hasSolRoute: true, symbol: 'PERSONAL' },
+        trader: { hasInventory: true, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 0.2, slippageBps: 50 }
+      },
+      broadcaster: { broadcast }
+    });
+
+    expect(result).toMatchObject({
+      mode: 'BLOCKED',
+      action: 'dca-out',
+      reason: 'residual-ownership-amount-unknown'
+    });
+    expect(result.orderIntent).toBeUndefined();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('selects a legacy positionId-only managed LP while ignoring a manual sibling in the same pool', async () => {
+    const openedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const makePosition = (suffix: string) => ({
+      poolAddress: `pool-${suffix}`,
+      positionAddress: `pos-${suffix}`,
+      chainPositionAddress: `pos-${suffix}`,
+      mint: `mint-${suffix}`,
+      lowerBinId: 100,
+      upperBinId: 168,
+      activeBinId: 165,
+      solDepletedBins: 61,
+      currentValueSol: 0.1,
+      liquidityValueSol: 0.1,
+      unclaimedFeeValueSol: 0,
+      claimedFeeValueSol: 0,
+      recoverableRentSol: 0,
+      lpTotalValueSol: 0.1,
+      unclaimedFeeSol: 0,
+      hasLiquidity: true,
+      valuationStatus: 'ready' as const,
+      valuationCompleteness: 'complete' as const,
+      valuationTrust: 'exit_quote' as const,
+      valuationSource: 'meteora-withdraw-simulation'
+    });
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState({
+        activeMint: 'mint-a',
+        activePoolAddress: 'pool-a',
+        chainPositionAddress: 'pos-a',
+        entryFillSubmissionId: 'fill-a',
+        openedAt
+      }),
+      positionLedger: {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        records: [
+          {
+            positionKey: 'chain-position:pos-a',
+            chainPositionAddress: 'pos-a',
+            activeMint: 'mint-a',
+            activePoolAddress: 'pool-a',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            entrySol: 0.1,
+            entrySolSource: 'actual_fill',
+            entryFillSubmissionId: 'fill-a',
+            openedAt,
+            lastAction: 'withdraw-lp',
+            lastExitAttemptAt: new Date(Date.now() - 10_000).toISOString(),
+            exitAttemptCount: 1,
+            updatedAt: new Date().toISOString()
+          },
+          {
+            positionKey: 'position:pos-b',
+            positionId: 'pos-b',
+            activeMint: 'mint-b',
+            activePoolAddress: 'pool-b',
+            lifecycleState: 'open',
+            importStatus: 'imported',
+            entrySol: 0.1,
+            entrySolSource: 'actual_fill',
+            entryFillSubmissionId: 'fill-b',
+            openedAt,
+            lastAction: 'hold',
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      },
+      context: {
+        pool: { address: 'pool-a', liquidityUsd: 10_000 },
+        token: { mint: 'mint-a', inSession: true, hasSolRoute: true, symbol: 'A' },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [
+          makePosition('a'),
+          {
+            ...makePosition('b'),
+            positionAddress: 'pos-manual-b',
+            chainPositionAddress: 'pos-manual-b',
+            activeBinId: 168,
+            solDepletedBins: 68
+          },
+          makePosition('b')
+        ],
+        journalLpPositions: [],
+        fills: [
+          {
+            submissionId: 'fill-a',
+            chainPositionAddress: 'pos-a',
+            mint: 'mint-a',
+            side: 'add-lp',
+            amount: 0.1,
+            actualFilledSol: 0.1,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: openedAt
+          },
+          {
+            submissionId: 'fill-b',
+            chainPositionAddress: 'pos-b',
+            mint: 'mint-b',
+            side: 'add-lp',
+            amount: 0.1,
+            actualFilledSol: 0.1,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: openedAt
+          }
+        ]
+      }
+    });
+
+    expect(result.action).toBe('withdraw-lp');
+    expect(result.orderIntent).toMatchObject({
+      tokenMint: 'mint-b',
+      poolAddress: 'pool-b',
+      chainPositionAddress: 'pos-b'
+    });
+  });
+
+  it('does not max-hold or trade an orphan LP without Lightld ownership evidence', async () => {
+    const firstSeenOnChainAt = new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionLedger: {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        records: [{
+          positionKey: 'chain-position:pos-orphan-max-hold',
+          chainPositionAddress: 'pos-orphan-max-hold',
+          activeMint: 'mint-orphan-max-hold',
+          activePoolAddress: 'pool-orphan-max-hold',
+          lifecycleState: 'open',
+          importStatus: 'entry_unknown',
+          firstSeenOnChainAt,
+          lastAction: 'hold',
+          updatedAt: new Date().toISOString()
+        }]
+      },
+      context: {
+        pool: { address: 'pool-orphan-max-hold', liquidityUsd: 10_000 },
+        token: { mint: 'mint-orphan-max-hold', inSession: true, hasSolRoute: true },
+        trader: { hasInventory: true, hasLpPosition: true },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-orphan-max-hold',
+          positionAddress: 'pos-orphan-max-hold',
+          chainPositionAddress: 'pos-orphan-max-hold',
+          mint: 'mint-orphan-max-hold',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 130,
+          solDepletedBins: 0,
+          currentValueSol: 0.1,
+          liquidityValueSol: 0.1,
+          unclaimedFeeValueSol: 0,
+          claimedFeeValueSol: 0,
+          recoverableRentSol: 0,
+          lpTotalValueSol: 0.1,
+          hasLiquidity: true,
+          valuationStatus: 'ready',
+          valuationCompleteness: 'complete',
+          valuationTrust: 'exit_quote',
+          valuationSource: 'meteora-withdraw-simulation'
+        }],
+        journalLpPositions: [],
+        fills: []
+      }
+    });
+
+    expect(result.action).toBe('hold');
+    expect(result.mode).toBe('BLOCKED');
+    expect(result.orderIntent).toBeUndefined();
   });
 });

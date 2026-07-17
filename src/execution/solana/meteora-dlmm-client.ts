@@ -556,10 +556,11 @@ export class MeteoraDlmmClient {
     poolAddress: string,
     amountSol: number,
     strategyType: any = StrategyType.BidAsk,
-    options: { allowDuplicatePosition?: boolean } = {}
+    options: { allowDuplicatePosition?: boolean; slippageBps?: number } = {}
   ): Promise<{
     transaction: Transaction | Transaction[];
     newPositionKeypair?: Keypair;
+    positionAddress: string;
     activeBinId: number;
     lowerBinId: number;
     upperBinId: number;
@@ -573,6 +574,8 @@ export class MeteoraDlmmClient {
       const isTokenXSol = dlmmPool.tokenX.publicKey.equals(SOL_MINT);
       const { minBinId, maxBinId } = resolveSingleSidedBinRange(activeBin.binId, isTokenXSol);
       const amountInLamports = amountSol * LAMPORTS_PER_SOL;
+      const slippageBps = Math.max(0, Math.floor(options.slippageBps ?? 100));
+      const sdkSlippagePercent = slippageBps / 100;
       const inAmountX = isTokenXSol ? new BN(amountInLamports) : new BN(0);
       const inAmountY = !isTokenXSol ? new BN(amountInLamports) : new BN(0);
 
@@ -584,10 +587,11 @@ export class MeteoraDlmmClient {
       if (repairCandidate) {
         return {
           newPositionKeypair: undefined,
+          positionAddress: repairCandidate.publicKey.toBase58(),
           activeBinId: activeBin.binId,
           lowerBinId: minBinId,
           upperBinId: maxBinId,
-          binSlippageBps: 100,
+          binSlippageBps: slippageBps,
           solSide: isTokenXSol ? 'tokenX' : 'tokenY',
           transaction: await dlmmPool.addLiquidityByStrategy({
             positionPubKey: repairCandidate.publicKey,
@@ -600,7 +604,7 @@ export class MeteoraDlmmClient {
               strategyType,
               singleSidedX: isTokenXSol
             },
-            slippage: 1
+            slippage: sdkSlippagePercent
           })
         };
       }
@@ -621,16 +625,17 @@ export class MeteoraDlmmClient {
           strategyType,
           singleSidedX: isTokenXSol,
         },
-        slippage: 1, // 1%
+        slippage: sdkSlippagePercent,
       });
 
       return {
         transaction: result,
         newPositionKeypair: positionKeypair,
+        positionAddress: positionKeypair.publicKey.toBase58(),
         activeBinId: activeBin.binId,
         lowerBinId: minBinId,
         upperBinId: maxBinId,
-        binSlippageBps: 100,
+        binSlippageBps: slippageBps,
         solSide: isTokenXSol ? 'tokenX' : 'tokenY'
       };
     });

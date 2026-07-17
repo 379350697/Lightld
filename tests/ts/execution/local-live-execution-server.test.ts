@@ -182,6 +182,7 @@ describe('createLocalLiveExecutionServer', () => {
     });
 
     await expect(accountProvider.readState()).resolves.toEqual({
+      observedAt: expect.any(String),
       walletSol: 1.25,
       journalSol: 1.25,
       walletLpPositions: [
@@ -254,6 +255,45 @@ describe('createLocalLiveExecutionServer', () => {
 
     expect(broadcast.status).toBe('submitted');
 
+    await server.stop();
+  });
+
+  it('rejects a signed simulate-only intent at the local live boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-local-execution-policy-'));
+    directories.push(root);
+    const keypair = await createSolanaKeypairFile(root);
+    const signer = new LocalLiveSigner({
+      keypairPath: keypair.path,
+      expectedPublicKey: keypair.publicKey
+    });
+    const server = createLocalLiveExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'test-token',
+      stateRootDir: join(root, 'execution-state'),
+      expectedSignerPublicKeys: [keypair.publicKey]
+    });
+    await server.start();
+
+    const signedIntent = await signer.sign(buildOrderIntent({
+      strategyId: 'new-token-v1',
+      poolAddress: 'pool-1',
+      outputSol: 0.1,
+      executionPolicy: 'simulate-only'
+    }));
+    const response = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ intent: signedIntent })
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'execution policy mismatch'
+    });
     await server.stop();
   });
 

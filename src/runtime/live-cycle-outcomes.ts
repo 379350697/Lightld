@@ -84,6 +84,7 @@ export function buildLiveSubmittedResult(
 
 export function buildUnknownPendingSubmissionSnapshot(input: {
   strategyId: string;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
   idempotencyKey: string;
   openIntentId?: string;
   positionId?: string;
@@ -94,11 +95,17 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
   poolAddress: string;
   tokenMint: string;
   tokenSymbol: string;
+  preEntryTokenAmountRaw?: string;
+  preEntryWalletSol?: number;
+  preExitTokenAmountRaw?: string;
+  requestedPositionSol?: number;
+  inputAmountRaw?: string;
   orderAction: LiveAction;
   reason: string;
 }): PendingSubmissionSnapshot {
   return {
     strategyId: input.strategyId,
+    captureMode: input.captureMode,
     idempotencyKey: input.idempotencyKey,
     submissionId: '',
     openIntentId: input.openIntentId,
@@ -114,6 +121,11 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
     poolAddress: input.poolAddress,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
+    preEntryTokenAmountRaw: input.preEntryTokenAmountRaw,
+    preEntryWalletSol: input.preEntryWalletSol,
+    preExitTokenAmountRaw: input.preExitTokenAmountRaw,
+    requestedPositionSol: input.requestedPositionSol,
+    inputAmountRaw: input.inputAmountRaw,
     orderAction: input.orderAction,
     reason: input.reason
   };
@@ -121,6 +133,7 @@ export function buildUnknownPendingSubmissionSnapshot(input: {
 
 export function buildTrackedPendingSubmissionSnapshot(input: {
   strategyId: string;
+  captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
   idempotencyKey: string;
   submissionId: string;
   openIntentId?: string;
@@ -137,11 +150,20 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
   poolAddress: string;
   tokenMint: string;
   tokenSymbol: string;
+  preEntryTokenAmountRaw?: string;
+  preEntryWalletSol?: number;
+  preExitTokenAmountRaw?: string;
+  requestedPositionSol?: number;
+  inputAmountRaw?: string;
   orderAction: LiveAction;
+  batchStatus?: 'complete' | 'partial';
+  residualSweepStatus?: 'complete' | 'incomplete' | 'dust_ignored';
+  residualUnsoldAmountsRaw?: Record<string, string>;
   reason?: string;
 }): PendingSubmissionSnapshot {
   return {
     strategyId: input.strategyId,
+    captureMode: input.captureMode,
     idempotencyKey: input.idempotencyKey,
     submissionId: input.submissionId,
     openIntentId: input.openIntentId,
@@ -159,7 +181,15 @@ export function buildTrackedPendingSubmissionSnapshot(input: {
     poolAddress: input.poolAddress,
     tokenMint: input.tokenMint,
     tokenSymbol: input.tokenSymbol,
+    preEntryTokenAmountRaw: input.preEntryTokenAmountRaw,
+    preEntryWalletSol: input.preEntryWalletSol,
+    preExitTokenAmountRaw: input.preExitTokenAmountRaw,
+    requestedPositionSol: input.requestedPositionSol,
+    inputAmountRaw: input.inputAmountRaw,
     orderAction: input.orderAction,
+    batchStatus: input.batchStatus,
+    residualSweepStatus: input.residualSweepStatus,
+    residualUnsoldAmountsRaw: input.residualUnsoldAmountsRaw,
     reason: input.reason
   };
 }

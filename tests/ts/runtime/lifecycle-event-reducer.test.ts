@@ -77,6 +77,59 @@ describe('lifecycle event reducer', () => {
     expect(buildLifecycleProjection({ ledger }).chainActiveLpCount).toBe(1);
   });
 
+  it('keeps spot deploy and dca-out on one immutable open identity', () => {
+    const events: LifecycleEventRecord[] = [
+      {
+        eventKey: 'event-spot-open',
+        eventType: 'OpenIntentCreated',
+        strategyId: 'large-pool-v1',
+        openIntentId: 'spot-open-1',
+        positionId: 'spot-position-1',
+        action: 'deploy',
+        poolAddress: 'pool-large',
+        tokenMint: 'mint-large',
+        createdAt: now
+      },
+      {
+        eventKey: 'event-spot-submitted',
+        eventType: 'BroadcastSubmitted',
+        strategyId: 'large-pool-v1',
+        openIntentId: 'spot-open-1',
+        positionId: 'spot-position-1',
+        idempotencyKey: 'spot-buy-1',
+        submissionId: 'spot-buy-signature',
+        action: 'deploy',
+        poolAddress: 'pool-large',
+        tokenMint: 'mint-large',
+        createdAt: '2026-07-02T00:00:01.000Z'
+      },
+      {
+        eventKey: 'event-spot-closed',
+        eventType: 'PositionClosed',
+        strategyId: 'large-pool-v1',
+        openIntentId: 'spot-open-1',
+        positionId: 'spot-position-1',
+        idempotencyKey: 'spot-sell-1',
+        action: 'dca-out',
+        poolAddress: 'pool-large',
+        tokenMint: 'mint-large',
+        createdAt: '2026-07-02T00:00:02.000Z'
+      }
+    ];
+
+    const ledger = reduceLifecycleEventsToLedger({ events, now });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0]).toMatchObject({
+      positionKey: 'open-intent:spot-open-1',
+      openIntentId: 'spot-open-1',
+      positionId: 'spot-position-1',
+      lifecycleState: 'closed',
+      lastAction: 'dca-out'
+    });
+    expect(buildLifecycleProjection({ ledger }).activeLpCount).toBe(0);
+  });
+
   it('keeps residual cleanup as a closed-position obligation instead of active LP state', () => {
     const events: LifecycleEventRecord[] = [
       {

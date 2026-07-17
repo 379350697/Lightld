@@ -138,7 +138,14 @@ export const LiveCycleExitMetricsSchema = z.object({
   lpRecoverableRentSol: z.number().finite().nonnegative().optional(),
   lpTradingValueSol: z.number().finite().nonnegative().optional(),
   lpEntryTradingSol: z.number().finite().nonnegative().optional(),
-  valuationCompleteness: z.enum(['complete', 'incomplete', 'untrusted']).optional()
+  exitQuoteValueSol: z.number().finite().nonnegative().optional(),
+  valuationTrust: z.enum(['exit_quote', 'market_price', 'fallback_display']).optional(),
+  valuationCompleteness: z.enum(['complete', 'incomplete', 'untrusted']).optional(),
+  settlementEvidence: z.enum([
+    'on-chain-wallet-delta',
+    'paper-executable-spot-quote',
+    'paper-synthetic-lp-lifecycle'
+  ]).optional()
 });
 export type LiveCycleExitMetrics = z.infer<typeof LiveCycleExitMetricsSchema>;
 

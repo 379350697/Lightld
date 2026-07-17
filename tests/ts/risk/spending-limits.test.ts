@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createEmptySpendingLimitsState,
@@ -138,5 +138,75 @@ describe('evaluateSpendingLimits', () => {
       settledSol: 0.137416044,
       status: 'settled'
     });
+  });
+
+  it('releases an un-settled reservation exactly once after a definite rejection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-spending-release-'));
+    const store = new SpendingLimitsStore(root);
+
+    await store.reserveSpend('order-release', 0.08);
+    await store.releaseSpend('order-release');
+    await store.releaseSpend('order-release');
+    const state = await store.read();
+
+    expect(state.dailySpendSol).toBe(0);
+    expect(state.hourlySpendSol).toBe(0);
+    expect(state.orderCount).toBe(0);
+    expect(state.hourlyOrderCount).toBe(0);
+    expect(state.reservations).toEqual([]);
+  });
+
+  it('never releases a settled reservation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-spending-settled-release-'));
+    const store = new SpendingLimitsStore(root);
+
+    await store.reserveSpend('order-settled', 0.08);
+    await store.settleSpend('order-settled', 0.09);
+    await store.releaseSpend('order-settled');
+    const state = await store.read();
+
+    expect(state.dailySpendSol).toBeCloseTo(0.09);
+    expect(state.hourlySpendSol).toBeCloseTo(0.09);
+    expect(state.orderCount).toBe(1);
+    expect(state.reservations[0]).toMatchObject({
+      idempotencyKey: 'order-settled',
+      settledSol: 0.09,
+      status: 'settled'
+    });
+  });
+
+  it('rejects an idempotency-key collision with a different requested amount', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lightld-spending-conflict-'));
+    const store = new SpendingLimitsStore(root);
+
+    await store.reserveSpend('order-conflict', 0.08);
+
+    await expect(store.reserveSpend('order-conflict', 0.09)).rejects.toThrow(
+      'spending-reservation-conflict:order-conflict'
+    );
+  });
+
+  it('does not subtract an old-hour release from current-hour reservations', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-17T12:59:00.000Z'));
+      const root = await mkdtemp(join(tmpdir(), 'lightld-spending-hour-boundary-'));
+      const store = new SpendingLimitsStore(root);
+
+      await store.reserveSpend('order-old-hour', 0.4);
+      vi.setSystemTime(new Date('2026-07-17T13:00:00.000Z'));
+      await store.reserveSpend('order-current-hour', 0.2);
+      await store.releaseSpend('order-old-hour');
+      const state = await store.read();
+
+      expect(state.dailySpendSol).toBeCloseTo(0.2);
+      expect(state.hourlySpendSol).toBeCloseTo(0.2);
+      expect(state.orderCount).toBe(1);
+      expect(state.hourlyOrderCount).toBe(1);
+      expect(state.reservations).toHaveLength(1);
+      expect(state.reservations[0].idempotencyKey).toBe('order-current-hour');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

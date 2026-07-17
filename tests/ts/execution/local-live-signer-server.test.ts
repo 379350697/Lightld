@@ -109,7 +109,8 @@ describe('createLocalLiveSignerServer', () => {
           poolAddress: 'pool-1',
           outputSol: 0.1,
           createdAt: '2026-03-24T00:00:00.000Z',
-          idempotencyKey: 'new-token-v1:pool-1:2026-03-24T00:00:00.000Z'
+          idempotencyKey: 'new-token-v1:pool-1:2026-03-24T00:00:00.000Z',
+          executionPolicy: 'broadcast'
         }
       })
     });
@@ -147,6 +148,7 @@ describe('createLocalLiveSignerServer', () => {
       outputSol: 0.1,
       createdAt: '2026-03-24T00:00:00.000Z',
       idempotencyKey: 'new-token-v1:pool-1:2026-03-24T00:00:00.000Z',
+      executionPolicy: 'broadcast',
       side: 'add-lp',
       tokenMint: 'mint-1',
       fullPositionExit: false,

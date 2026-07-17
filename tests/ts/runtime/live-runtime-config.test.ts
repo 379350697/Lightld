@@ -67,7 +67,7 @@ describe('loadLiveRuntimeConfig', () => {
     });
   });
 
-  it('loads spending limit overrides from env', () => {
+  it('loads spending limits without accepting an automatic restart reset', () => {
     expect(
       loadLiveRuntimeConfig({
         LIVE_MAX_SINGLE_ORDER_SOL: '0.1',
@@ -79,8 +79,7 @@ describe('loadLiveRuntimeConfig', () => {
       executionMode: 'test',
       maxSingleOrderSol: 0.1,
       maxDailySpendSol: 2.5,
-      maxHourlySpendSol: 0.5,
-      resetSpendingLimitsOnStartup: true
+      maxHourlySpendSol: 0.5
     });
   });
 });

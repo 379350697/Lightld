@@ -8,6 +8,13 @@ export function applyRuntimeActionPolicy(input: {
   const actionClass = classifyAction(input.action);
 
   if (input.mode === 'paused') {
+    if (actionClass === 'reduce_risk') {
+      return {
+        action: input.action,
+        blockedReason: ''
+      };
+    }
+
     return {
       action: 'hold' as const,
       blockedReason: 'runtime-paused'

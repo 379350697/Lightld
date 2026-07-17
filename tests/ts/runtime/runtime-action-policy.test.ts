@@ -16,6 +16,17 @@ describe('action semantics', () => {
 });
 
 describe('applyRuntimeActionPolicy', () => {
+  it('keeps exits available in paused mode while blocking new exposure', () => {
+    expect(applyRuntimeActionPolicy({ mode: 'paused', action: 'withdraw-lp' })).toEqual({
+      action: 'withdraw-lp',
+      blockedReason: ''
+    });
+    expect(applyRuntimeActionPolicy({ mode: 'paused', action: 'add-lp' })).toEqual({
+      action: 'hold',
+      blockedReason: 'runtime-paused'
+    });
+  });
+
   it('blocks exposure-increasing actions while allowing exits in circuit_open mode', () => {
     expect(
       applyRuntimeActionPolicy({

@@ -6,7 +6,7 @@ import {
   type JupiterQuoteResponse
 } from '../execution/solana/jupiter-client.ts';
 import { StrategyResearchStore } from './store.ts';
-import type { ResearchEpisode, ResearchMark, ResearchMarkStatus } from './types.ts';
+import type { ResearchEpisode, ResearchHorizonMinutes, ResearchMark, ResearchMarkStatus } from './types.ts';
 
 export type EntryQuoteResult = {
   status: ResearchMarkStatus;
@@ -19,7 +19,7 @@ export type EntryQuoteResult = {
 
 export interface ResearchMarkCollector {
   collectEntry(episode: ResearchEpisode): Promise<EntryQuoteResult>;
-  collectMark(episode: ResearchEpisode, horizonMinutes: 15 | 60 | 240 | 1440): Promise<ResearchMark>;
+  collectMark(episode: ResearchEpisode, horizonMinutes: ResearchHorizonMinutes): Promise<ResearchMark>;
 }
 
 export class JupiterResearchMarkCollector implements ResearchMarkCollector {
@@ -59,7 +59,7 @@ export class JupiterResearchMarkCollector implements ResearchMarkCollector {
     }
   }
 
-  async collectMark(episode: ResearchEpisode, horizonMinutes: 15 | 60 | 240 | 1440): Promise<ResearchMark> {
+  async collectMark(episode: ResearchEpisode, horizonMinutes: ResearchHorizonMinutes): Promise<ResearchMark> {
     const observedAt = new Date().toISOString();
     try {
       if (!episode.targetTokenRaw || !episode.doubleTokenRaw) throw new Error('entry quote is missing');
@@ -179,19 +179,19 @@ export async function runResearchWorker(input: {
 
 function impactBps(quote: JupiterQuoteResponse) {
   const percent = Number(quote.priceImpactPct);
-  return Number.isFinite(percent) ? percent * 100 : null;
+  return Number.isFinite(percent) ? Math.abs(percent) * 100 : null;
 }
 
 export function classifyQuoteFailure(error: unknown): EntryQuoteResult {
   const message = error instanceof Error ? error.message : String(error);
+  if (isJupiterNoRouteError(error)) {
+    return { status: 'no_route', detail: error.message };
+  }
   if (/rug|honeypot|mint authority|freeze authority|frozen token/i.test(message)) {
     return { status: 'rug', detail: message };
   }
   if (/dead pool|pool closed|pool not found|insufficient liquidity/i.test(message)) {
     return { status: 'dead_pool', detail: message };
-  }
-  if (isJupiterNoRouteError(error)) {
-    return { status: 'no_route', detail: error.message };
   }
   return { status: 'unavailable', detail: message };
 }

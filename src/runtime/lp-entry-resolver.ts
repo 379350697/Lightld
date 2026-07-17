@@ -51,7 +51,7 @@ export function matchesPositionStateLifecycle(
   }
 
   if (typeof positionState.chainPositionAddress === 'string' && positionState.chainPositionAddress.length > 0) {
-    return positionState.chainPositionAddress === position.positionAddress;
+    return positionState.chainPositionAddress === (position.chainPositionAddress || position.positionAddress);
   }
 
   if (
