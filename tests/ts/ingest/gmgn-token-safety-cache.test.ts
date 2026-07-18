@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_SAFETY_CONFIG,
   clearTokenSafetyCacheForTests,
   fetchTokenSafetyBatch,
   getTokenSafetyCacheSize,
@@ -16,7 +17,7 @@ import {
 } from '../../../src/ingest/gmgn/token-safety-client';
 
 describe('GMGN token safety cache', () => {
-  it('fails closed when required holder or bluechip evidence is missing or below policy', () => {
+  it('requires holder evidence and applies a bluechip gate only when explicitly configured', () => {
     const base = {
       mint: 'mint-policy',
       safe: true,
@@ -25,8 +26,10 @@ describe('GMGN token safety cache', () => {
     };
 
     expect(isTokenSafe(base)).toBe(false);
-    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 0.7 })).toBe(false);
-    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 1 })).toBe(true);
+    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: -1 })).toBe(true);
+    const strictBluechipPolicy = { ...DEFAULT_SAFETY_CONFIG, minBluechipPct: 0.8 };
+    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 0.7 }, strictBluechipPolicy)).toBe(false);
+    expect(isTokenSafe({ ...base, holders: 2_000, bluechipPct: 1 }, strictBluechipPolicy)).toBe(true);
   });
 
   it('sweeps expired entries before enforcing the max entry limit', () => {

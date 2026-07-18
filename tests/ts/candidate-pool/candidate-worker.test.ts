@@ -105,7 +105,7 @@ describe('candidate worker', () => {
         safetyScore: 80,
         maxScore: 120,
         holders: 2_000,
-        bluechipPct: 1
+        bluechipPct: -1
       }];
     });
 

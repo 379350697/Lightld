@@ -78,7 +78,7 @@ export type TokenSafetyConfig = {
   disabled: boolean;
   /** Hard gate: minimum holder count (default: 1000) */
   minHolders: number;
-  /** Hard gate: minimum bluechip holder % (default: 0.8) */
+  /** Optional hard gate: minimum bluechip holder % (default: 0; enable only when the source reports it reliably) */
   minBluechipPct: number;
   /** Minimum total safety score to pass (default: 0 = any safety score accepted if hard gates pass) */
   minSafetyScore: number;
@@ -87,7 +87,10 @@ export type TokenSafetyConfig = {
 export const DEFAULT_SAFETY_CONFIG: TokenSafetyConfig = {
   disabled: false,
   minHolders: 1000,
-  minBluechipPct: 0.8,
+  // GMGN's checker treats bluechip as a score bonus, not a hard gate. Its
+  // page can omit the field, so requiring it here would turn a safe result
+  // into a false rejection.
+  minBluechipPct: 0,
   minSafetyScore: 0,
 };
 
