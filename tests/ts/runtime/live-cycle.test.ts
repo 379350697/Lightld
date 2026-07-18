@@ -4069,6 +4069,116 @@ describe('runLiveCycle', () => {
     });
   });
 
+  it('does not combine a stale context target with a lifecycle-bound observed LP', async () => {
+    const staleOpenedAt = new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString();
+    const freshOpenedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      requestedPositionSol: 0.1,
+      positionState: activeLpPositionState({
+        activeMint: 'mint-observed',
+        activePoolAddress: 'pool-observed',
+        positionId: 'position-observed',
+        chainPositionAddress: 'position-observed',
+        entryFillSubmissionId: 'observed-open',
+        openedAt: freshOpenedAt
+      }),
+      positionLedger: {
+        version: 1,
+        updatedAt: freshOpenedAt,
+        records: [{
+          positionKey: 'chain-position:position-observed',
+          positionId: 'position-observed',
+          chainPositionAddress: 'position-observed',
+          activeMint: 'mint-observed',
+          activePoolAddress: 'pool-observed',
+          lifecycleState: 'open',
+          lastAction: 'add-lp',
+          entrySol: 0.1,
+          entrySolSource: 'actual_fill',
+          entryFillSubmissionId: 'observed-open',
+          openedAt: freshOpenedAt,
+          updatedAt: freshOpenedAt
+        }]
+      },
+      // This stale context previously supplied the old pool/mint and a
+      // max-hold duration after the observed position had replaced it.
+      context: {
+        pool: { address: 'pool-stale', liquidityUsd: 10_000 },
+        token: { mint: 'mint-stale', inSession: true, hasSolRoute: true, symbol: 'STALE' },
+        trader: {
+          hasInventory: true,
+          hasLpPosition: true,
+          lpCurrentValueSol: 0.1,
+          valuationStatus: 'ready',
+          valuationSource: 'paper-shadow-dlmm-active-bin-modeled',
+          valuationTrust: 'fallback_display',
+          valuationCompleteness: 'untrusted'
+        },
+        route: { hasSolRoute: true, expectedOutSol: 0.1, slippageBps: 50 }
+      },
+      accountState: {
+        walletSol: 1,
+        journalSol: 1,
+        walletTokens: [],
+        journalTokens: [],
+        walletLpPositions: [{
+          poolAddress: 'pool-observed',
+          positionAddress: 'position-observed',
+          chainPositionAddress: 'position-observed',
+          mint: 'mint-observed',
+          lowerBinId: 100,
+          upperBinId: 168,
+          activeBinId: 120,
+          solSide: 'tokenX',
+          solDepletedBins: 5,
+          currentValueSol: 0.1,
+          displayValueSol: 0.1,
+          valuationStatus: 'ready',
+          valuationSource: 'paper-shadow-dlmm-active-bin-modeled',
+          valuationTrust: 'fallback_display',
+          valuationCompleteness: 'untrusted',
+          hasLiquidity: true
+        }],
+        journalLpPositions: [],
+        fills: [
+          {
+            submissionId: 'stale-open',
+            mint: 'mint-stale',
+            side: 'add-lp',
+            amount: 0.1,
+            actualFilledSol: 0.1,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: staleOpenedAt
+          },
+          {
+            submissionId: 'observed-open',
+            positionId: 'position-observed',
+            chainPositionAddress: 'position-observed',
+            mint: 'mint-observed',
+            side: 'add-lp',
+            amount: 0.1,
+            actualFilledSol: 0.1,
+            fillAmountSource: 'wallet-delta',
+            hasFillEvidence: true,
+            recordedAt: freshOpenedAt
+          }
+        ]
+      }
+    });
+
+    expect(result).toMatchObject({
+      action: 'hold',
+      liveOrderSubmitted: false
+    });
+    expect(result.context.pool.address).toBe('pool-observed');
+    expect(result.context.token.mint).toBe('mint-observed');
+    expect(result.orderIntent).toBeUndefined();
+  });
+
   it('does not reuse stale position-state entry for a new chain LP in the same pool and mint', async () => {
     const oldRecordedAt = '2026-06-30T07:58:40.362Z';
     const newRecordedAt = '2026-06-30T14:45:12.942Z';

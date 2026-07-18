@@ -3399,16 +3399,29 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
     applyLpObservationToContext(context, observedLpPosition);
   }
 
-  activeMint = firstString(multiLpExit?.position.mint, logContext.tokenMint, context.token.mint);
-  if (multiLpExit?.position.poolAddress) {
-    poolAddress = multiLpExit.position.poolAddress;
-    tokenSymbol = firstString(context.token.symbol, logContext.tokenSymbol, multiLpExit.position.mint);
+  // The selected observation is the one source of truth for an LP
+  // maintenance decision.  A compatibility position state can describe a
+  // different open LP while the ingest context still carries its old
+  // pool/mint.  Never combine that old target with the observed LP's chain
+  // address when constructing an exit intent.
+  const selectedLpObservation = multiLpExit ?? observedLpPosition;
+  if (selectedLpObservation?.position.mint) {
+    activeMint = selectedLpObservation.position.mint;
+    context.token.mint = selectedLpObservation.position.mint;
+    logContext.tokenMint = selectedLpObservation.position.mint;
+  } else {
+    activeMint = firstString(logContext.tokenMint, context.token.mint);
+  }
+  if (selectedLpObservation?.position.poolAddress) {
+    poolAddress = selectedLpObservation.position.poolAddress;
+    context.pool.address = poolAddress;
+    context.route.poolAddress = poolAddress;
+    tokenSymbol = firstString(context.token.symbol, logContext.tokenSymbol, selectedLpObservation.position.mint);
     logContext.poolAddress = poolAddress;
-    logContext.tokenMint = multiLpExit.position.mint;
     logContext.tokenSymbol = tokenSymbol;
   }
 
-  const stateBoundOpenTarget = !multiLpExit
+  const stateBoundOpenTarget = !selectedLpObservation
     ? resolveStateBoundOpenTarget({
         positionState: input.positionState,
         tokenMint: activeMint
@@ -3622,18 +3635,18 @@ export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResu
       }))
     : null;
   if (config.poolClass === 'new-token') {
-    (updatedSnapshot as any).holdTimeMs = typeof multiLpExit?.snapshot.holdTimeMs === 'number'
-      ? multiLpExit.snapshot.holdTimeMs
+    (updatedSnapshot as any).holdTimeMs = typeof selectedLpObservation?.snapshot.holdTimeMs === 'number'
+      ? selectedLpObservation.snapshot.holdTimeMs
       : (snapshot as any).holdTimeMs;
-    (updatedSnapshot as any).pendingConfirmationStatus = typeof multiLpExit?.snapshot.pendingConfirmationStatus === 'string'
-      ? multiLpExit.snapshot.pendingConfirmationStatus
+    (updatedSnapshot as any).pendingConfirmationStatus = typeof selectedLpObservation?.snapshot.pendingConfirmationStatus === 'string'
+      ? selectedLpObservation.snapshot.pendingConfirmationStatus
       : (snapshot as any).pendingConfirmationStatus;
-    if (typeof multiLpExit?.snapshot.entrySol === 'number' && multiLpExit.snapshot.entrySol > 0) {
-      (updatedSnapshot as any).entrySol = multiLpExit.snapshot.entrySol;
+    if (typeof selectedLpObservation?.snapshot.entrySol === 'number' && selectedLpObservation.snapshot.entrySol > 0) {
+      (updatedSnapshot as any).entrySol = selectedLpObservation.snapshot.entrySol;
     }
-    if (typeof multiLpExit?.snapshot.lpModeledNetPnlPct === 'number') {
-      (updatedSnapshot as any).lpModeledNetPnlPct = multiLpExit.snapshot.lpModeledNetPnlPct;
-      (updatedSnapshot as any).lpModeledPnlSource = multiLpExit.snapshot.lpModeledPnlSource;
+    if (typeof selectedLpObservation?.snapshot.lpModeledNetPnlPct === 'number') {
+      (updatedSnapshot as any).lpModeledNetPnlPct = selectedLpObservation.snapshot.lpModeledNetPnlPct;
+      (updatedSnapshot as any).lpModeledPnlSource = selectedLpObservation.snapshot.lpModeledPnlSource;
     }
     (updatedSnapshot as any).valuationStatus = liveLpValuation?.valuationStatus;
     (updatedSnapshot as any).valuationReason = liveLpValuation?.valuationReason;
