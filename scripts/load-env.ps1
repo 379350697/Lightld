@@ -1,5 +1,6 @@
 param(
-    [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string[]]$OverlayFiles = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +28,9 @@ function Import-DotEnv {
 Import-DotEnv (Join-Path $Root ".env")
 Import-DotEnv (Join-Path $Root ".env.local")
 Import-DotEnv (Join-Path $Root ".env.windows.local")
+foreach ($OverlayFile in $OverlayFiles) {
+    Import-DotEnv (Join-Path $Root $OverlayFile)
+}
 
 if ((-not $env:HTTP_PROXY -or $env:HTTP_PROXY -eq "http://127.0.0.1:9") -and $env:LIGHTLD_DEFAULT_PROXY) {
     $env:HTTP_PROXY = $env:LIGHTLD_DEFAULT_PROXY

@@ -18,7 +18,7 @@ $Root = (Resolve-Path -LiteralPath $Root).Path
 $StateRoot = if ([System.IO.Path]::IsPathRooted($StateRoot)) { [System.IO.Path]::GetFullPath($StateRoot) } else { [System.IO.Path]::GetFullPath((Join-Path $Root $StateRoot)) }
 $JournalRoot = if ([System.IO.Path]::IsPathRooted($JournalRoot)) { [System.IO.Path]::GetFullPath($JournalRoot) } else { [System.IO.Path]::GetFullPath((Join-Path $Root $JournalRoot)) }
 Set-Location $Root
-& (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root
+& (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root -OverlayFiles @(".env.paper.local")
 . (Join-Path $PSScriptRoot "lightld-process-records.ps1")
 $RoleLock = Enter-LightldRoleLock -Root $Root -StateRoot $StateRoot -Role $Role
 $env:LIGHTLD_RUN_MODE = "mechanical-soak"

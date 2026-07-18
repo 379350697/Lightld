@@ -45,7 +45,7 @@ hardGates:
 filters:
   minLiquidityUsd: 1000
 riskThresholds:
-  maxPositionSol: 1
+  maxPositionSol: 0.5
   maxDailyLossSol: 1
 sessionWindows:
   - start: "00:00"
@@ -63,7 +63,7 @@ entryEdge:
   defaultSafetyMarginBps: 10
 live:
   enabled: true
-  maxLivePositionSol: 1
+  maxLivePositionSol: 0.15
   autoFlattenRequired: true
   maxHoldHours: 8
   minCloseToOpenIntervalSeconds: 120

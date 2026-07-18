@@ -223,11 +223,26 @@ async function main() {
   if (args.strategy !== 'new-token-v1' && args.strategy !== 'large-pool-v1') {
     throw new Error('Expected --strategy to be one of: new-token-v1, large-pool-v1');
   }
-  const strategyConfig = await loadStrategyConfig(
+  const loadedStrategyConfig = await loadStrategyConfig(
     args.strategy === 'new-token-v1'
       ? 'src/config/strategies/new-token-v1.yaml'
       : 'src/config/strategies/large-pool-v1.yaml'
   );
+  const paperMaxLivePositionSol = runMode === 'mechanical-soak'
+    ? parsePositiveNumber(
+        process.env.LIVE_PAPER_MAX_LIVE_POSITION_SOL,
+        loadedStrategyConfig.live.maxLivePositionSol
+      )
+    : loadedStrategyConfig.live.maxLivePositionSol;
+  const strategyConfig = paperMaxLivePositionSol === loadedStrategyConfig.live.maxLivePositionSol
+    ? loadedStrategyConfig
+    : {
+        ...loadedStrategyConfig,
+        live: {
+          ...loadedStrategyConfig.live,
+          maxLivePositionSol: paperMaxLivePositionSol
+        }
+      };
 
   const strategy = args.strategy;
 
