@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 describe('personal paper/live scripts', () => {
   it('keeps paper mode and StateRoot isolated', async () => {
-    const [script, launcher] = await Promise.all([
+    const [script, launcher, logonLauncher] = await Promise.all([
       readFile('scripts/run-paper-realistic-component.ps1', 'utf8'),
-      readFile('scripts/start-paper-realistic.ps1', 'utf8')
+      readFile('scripts/start-paper-realistic.ps1', 'utf8'),
+      readFile('scripts/start-paper-realistic-at-logon.ps1', 'utf8')
     ]);
     expect(script).toContain('$env:LIGHTLD_RUN_MODE = "mechanical-soak"');
     expect(script).toContain('$env:LIGHTLD_EXECUTION_MODE = "mechanical-soak"');
@@ -32,6 +33,9 @@ describe('personal paper/live scripts', () => {
     expect(launcher).toContain('"-Strategy"');
     expect(launcher).toContain('Write-LightldProcessRecord');
     expect(launcher).toContain('-StateRoot $StateRoot -Role all');
+    expect(logonLauncher).toContain('start-paper-realistic.ps1');
+    expect(logonLauncher).toContain('-StateRoot "state-paper-realistic"');
+    expect(logonLauncher).toContain('-Strategy "new-token-v1"');
     expect(script).toContain('Enter-LightldRoleLock');
     expect(script).toContain('LIGHTLD_DAEMON_RESTART_DELAY_MS');
     expect(script).toContain('LIGHTLD_DAEMON_WATCHDOG_STALE_AFTER_MS');
