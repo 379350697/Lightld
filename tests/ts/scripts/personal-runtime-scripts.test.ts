@@ -33,6 +33,11 @@ describe('personal paper/live scripts', () => {
     expect(launcher).toContain('Write-LightldProcessRecord');
     expect(launcher).toContain('-StateRoot $StateRoot -Role all');
     expect(script).toContain('Enter-LightldRoleLock');
+    expect(script).toContain('LIGHTLD_DAEMON_RESTART_DELAY_MS');
+    expect(script).toContain('LIGHTLD_DAEMON_WATCHDOG_STALE_AFTER_MS');
+    expect(script).toContain('component-logs');
+    expect(script).toContain('Start-Process -FilePath "npm.cmd"');
+    expect(script).toContain('taskkill.exe /PID $daemonProcess.Id /T /F');
     expect(launcher).not.toContain('RequestedPositionSol');
     expect(launcher).not.toContain('100000');
   });
@@ -69,6 +74,7 @@ describe('personal paper/live scripts', () => {
     expect(component).toContain('run:solana-execution');
     expect(component).toContain('run:research-worker');
     expect(component).toContain('run:daemon');
+    expect(component).toContain('daemon) restart_worker daemon npm run run:daemon');
     expect(component).toContain('--strategy "$STRATEGY"');
     expect(component).toContain('--state-root-dir "$STATE_ROOT"');
   });

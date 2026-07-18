@@ -151,5 +151,121 @@ if (-not $executionReady) {
     throw "Paper execution health check failed or dryRun was not true: $executionHealthUrl"
 }
 
-npm.cmd run run:daemon -- --strategy $Strategy --state-root-dir $StateRoot --journal-root-dir $JournalRoot --max-active-positions $MaxActivePositions --tick-interval-ms $TickIntervalMs --hot-tick-interval-ms $HotTickIntervalMs
-exit $LASTEXITCODE
+function Get-PaperDaemonPositiveIntegerSetting {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultValue,
+        [Parameter(Mandatory = $true)]
+        [int]$MinimumValue,
+        [Parameter(Mandatory = $true)]
+        [int]$MaximumValue
+    )
+
+    $parsedValue = 0
+    $rawValue = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [int]::TryParse($rawValue, [ref]$parsedValue) -or $parsedValue -lt $MinimumValue) {
+        return $DefaultValue
+    }
+    return [Math]::Min($MaximumValue, $parsedValue)
+}
+
+$daemonRestartDelayMs = Get-PaperDaemonPositiveIntegerSetting -Name "LIGHTLD_DAEMON_RESTART_DELAY_MS" -DefaultValue 5000 -MinimumValue 1000 -MaximumValue 300000
+$daemonWatchdogPollMs = Get-PaperDaemonPositiveIntegerSetting -Name "LIGHTLD_DAEMON_WATCHDOG_POLL_MS" -DefaultValue 5000 -MinimumValue 1000 -MaximumValue 60000
+$daemonStaleAfterMs = Get-PaperDaemonPositiveIntegerSetting -Name "LIGHTLD_DAEMON_WATCHDOG_STALE_AFTER_MS" -DefaultValue 300000 -MinimumValue 60000 -MaximumValue 1800000
+$daemonLogDirectory = Join-Path $JournalRoot "component-logs"
+New-Item -ItemType Directory -Force -Path $daemonLogDirectory | Out-Null
+$daemonStdoutLog = Join-Path $daemonLogDirectory "paper-daemon.stdout.log"
+$daemonStderrLog = Join-Path $daemonLogDirectory "paper-daemon.stderr.log"
+$daemonSupervisorLog = Join-Path $daemonLogDirectory "paper-daemon-supervisor.log"
+
+function Write-PaperDaemonSupervisorLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    $line = "[{0}] [PaperRealistic] daemon {1}" -f (Get-Date).ToUniversalTime().ToString("o"), $Message
+    Add-Content -LiteralPath $daemonSupervisorLog -Value $line -Encoding utf8
+    Write-Host $line
+}
+
+function Test-PaperDaemonHeartbeatFresh {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HealthPath,
+        [Parameter(Mandatory = $true)]
+        [datetime]$StartedAtUtc,
+        [Parameter(Mandatory = $true)]
+        [int]$StaleAfterMs
+    )
+
+    $now = (Get-Date).ToUniversalTime()
+    if (($now - $StartedAtUtc).TotalMilliseconds -lt $StaleAfterMs) {
+        return $true
+    }
+
+    try {
+        $health = Get-Content -LiteralPath $HealthPath -Raw | ConvertFrom-Json
+        if ([string]::IsNullOrWhiteSpace([string]$health.lastSuccessfulTickAt)) {
+            return $false
+        }
+        $lastSuccessfulTickAt = [datetime]::Parse([string]$health.lastSuccessfulTickAt).ToUniversalTime()
+        if ($lastSuccessfulTickAt -lt $StartedAtUtc) {
+            return $false
+        }
+        return (($now - $lastSuccessfulTickAt).TotalMilliseconds -lt $StaleAfterMs)
+    } catch {
+        return $false
+    }
+}
+
+$daemonArguments = @(
+    "run", "run:daemon", "--",
+    "--strategy", $Strategy,
+    "--state-root-dir", $StateRoot,
+    "--journal-root-dir", $JournalRoot,
+    "--max-active-positions", [string]$MaxActivePositions,
+    "--tick-interval-ms", [string]$TickIntervalMs,
+    "--hot-tick-interval-ms", [string]$HotTickIntervalMs
+)
+$daemonHealthPath = Join-Path $StateRoot "health.json"
+
+while ($true) {
+    $daemonStartedAtUtc = (Get-Date).ToUniversalTime()
+    Write-PaperDaemonSupervisorLog "starting"
+    try {
+        $daemonProcess = Start-Process -FilePath "npm.cmd" -ArgumentList $daemonArguments -PassThru -NoNewWindow -RedirectStandardOutput $daemonStdoutLog -RedirectStandardError $daemonStderrLog
+    } catch {
+        Write-PaperDaemonSupervisorLog "failed to start: $($_.Exception.Message); retrying in ${daemonRestartDelayMs}ms"
+        Start-Sleep -Milliseconds $daemonRestartDelayMs
+        continue
+    }
+
+    $watchdogRestart = $false
+    while (-not $daemonProcess.HasExited) {
+        Start-Sleep -Milliseconds $daemonWatchdogPollMs
+        $daemonProcess.Refresh()
+        if (-not $daemonProcess.HasExited -and -not (Test-PaperDaemonHeartbeatFresh -HealthPath $daemonHealthPath -StartedAtUtc $daemonStartedAtUtc -StaleAfterMs $daemonStaleAfterMs)) {
+            $watchdogRestart = $true
+            Write-PaperDaemonSupervisorLog "heartbeat stale; terminating PID $($daemonProcess.Id)"
+            & taskkill.exe /PID $daemonProcess.Id /T /F | Out-Null
+            $daemonProcess.WaitForExit()
+        }
+    }
+
+    $daemonProcess.Refresh()
+    $exitCode = "unknown"
+    try {
+        $reportedExitCode = $daemonProcess.ExitCode
+        if ($null -ne $reportedExitCode) {
+            $exitCode = [string]$reportedExitCode
+        }
+    } catch {
+        # taskkill can make the Windows Process API lose the child's exit code.
+    }
+    $exitReason = if ($watchdogRestart) { "watchdog restart" } else { "process exited" }
+    Write-PaperDaemonSupervisorLog "$exitReason with code $exitCode; retrying in ${daemonRestartDelayMs}ms"
+    Start-Sleep -Milliseconds $daemonRestartDelayMs
+}

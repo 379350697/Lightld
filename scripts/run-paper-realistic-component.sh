@@ -65,6 +65,6 @@ case "$ROLE" in
   execution) exec npm run run:solana-execution ;;
   candidate) restart_worker candidate npm run run:candidate-worker -- --strategy "$STRATEGY" --state-root-dir "$STATE_ROOT" --db-path "$LIVE_CANDIDATE_POOL_DB_PATH" ;;
   research) restart_worker research npm run run:research-worker -- --state-root-dir "$STATE_ROOT" ;;
-  daemon) exec npm run run:daemon -- --strategy "$STRATEGY" --state-root-dir "$STATE_ROOT" --journal-root-dir "$JOURNAL_ROOT" --max-active-positions "$MAX_ACTIVE_POSITIONS" --tick-interval-ms "$TICK_INTERVAL_MS" --hot-tick-interval-ms "$HOT_TICK_INTERVAL_MS" ;;
+  daemon) restart_worker daemon npm run run:daemon -- --strategy "$STRATEGY" --state-root-dir "$STATE_ROOT" --journal-root-dir "$JOURNAL_ROOT" --max-active-positions "$MAX_ACTIVE_POSITIONS" --tick-interval-ms "$TICK_INTERVAL_MS" --hot-tick-interval-ms "$HOT_TICK_INTERVAL_MS" ;;
   *) echo "Unknown paper component role: $ROLE" >&2; exit 1 ;;
 esac
