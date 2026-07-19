@@ -19,6 +19,14 @@ $StateRoot = if ([System.IO.Path]::IsPathRooted($StateRoot)) { [System.IO.Path]:
 $JournalRoot = if ([System.IO.Path]::IsPathRooted($JournalRoot)) { [System.IO.Path]::GetFullPath($JournalRoot) } else { [System.IO.Path]::GetFullPath((Join-Path $Root $JournalRoot)) }
 Set-Location $Root
 & (Join-Path $PSScriptRoot "load-env.ps1") -Root $Root -OverlayFiles @(".env.paper.local")
+$paperMaxActivePositions = 0
+$rawPaperMaxActivePositions = [Environment]::GetEnvironmentVariable("LIVE_PAPER_MAX_ACTIVE_POSITIONS")
+if (-not [string]::IsNullOrWhiteSpace($rawPaperMaxActivePositions)) {
+    if (-not [int]::TryParse($rawPaperMaxActivePositions, [ref]$paperMaxActivePositions) -or $paperMaxActivePositions -lt 1 -or $paperMaxActivePositions -gt 100) {
+        throw "LIVE_PAPER_MAX_ACTIVE_POSITIONS must be an integer from 1 to 100."
+    }
+    $MaxActivePositions = $paperMaxActivePositions
+}
 . (Join-Path $PSScriptRoot "lightld-process-records.ps1")
 $RoleLock = Enter-LightldRoleLock -Root $Root -StateRoot $StateRoot -Role $Role
 $env:LIGHTLD_RUN_MODE = "mechanical-soak"

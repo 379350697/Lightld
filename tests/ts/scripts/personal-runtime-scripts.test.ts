@@ -12,6 +12,8 @@ describe('personal paper/live scripts', () => {
     expect(script).toContain('$env:LIGHTLD_RUN_MODE = "mechanical-soak"');
     expect(script).toContain('$env:LIGHTLD_EXECUTION_MODE = "mechanical-soak"');
     expect(script).toContain('$env:SOLANA_EXECUTION_DRY_RUN = "true"');
+    expect(script).toContain('LIVE_PAPER_MAX_ACTIVE_POSITIONS');
+    expect(script).toContain('must be an integer from 1 to 100');
     expect(script).toContain('(Join-Path $StateRoot "lightld-candidate-pool.sqlite")');
     expect(script).toContain('Paper signer health check failed');
     expect(script).not.toContain('"state/lightld-candidate-pool.sqlite"');
