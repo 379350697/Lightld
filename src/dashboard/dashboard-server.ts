@@ -601,6 +601,7 @@ type OrderRow = {
   broadcast_status: string;
   confirmation_status: string;
   finality: string;
+  exit_trigger_reason: string;
   created_at: string;
   updated_at: string;
 };
@@ -610,7 +611,7 @@ async function handleOrders() {
     SELECT
       lifecycle_key, idempotency_key, submission_id, open_intent_id, position_id, chain_position_address, confirmation_signature, token_mint,
       token_symbol, action, requested_position_sol,
-      broadcast_status, confirmation_status, finality, created_at, updated_at
+      broadcast_status, confirmation_status, finality, exit_trigger_reason, created_at, updated_at
     FROM orders
     ORDER BY updated_at DESC
     LIMIT 50
@@ -642,6 +643,7 @@ async function handleOrders() {
         requestedPositionSol: r.requested_position_sol,
         broadcastStatus,
         confirmationStatus: lifecycleStatus === 'local-intent' ? 'local_exit_intent_unsubmitted' : r.confirmation_status,
+        exitTriggerReason: r.exit_trigger_reason,
         lifecycleStatus,
         terminalStatus: toExecutionTerminalStatus({
           action: r.action,
@@ -689,6 +691,7 @@ async function handleOrders() {
       requestedPositionSol: Number(r.requestedPositionSol ?? r.outputSol ?? 0),
       broadcastStatus,
       confirmationStatus: lifecycleStatus === 'local-intent' ? 'local_exit_intent_unsubmitted' : rawConfirmationStatus,
+      exitTriggerReason: String(r.exitTriggerReason ?? ''),
       lifecycleStatus,
       terminalStatus: toExecutionTerminalStatus({
         action,
@@ -902,6 +905,7 @@ function parseDecisionMetrics(reason: string) {
   };
 
   return {
+    exitTriggerReason: reason.split(' | ')[0]?.trim() || undefined,
     entrySol: toNumber('entrySol'),
     lpCurrentValueSol: toNumber('lpCurrentValueSol'),
     lpLiquidityValueSol: toNumber('lpLiquidityValueSol'),
@@ -1031,6 +1035,7 @@ async function handleHistory() {
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
+      exitTriggerReason: String(order.exitTriggerReason ?? ''),
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),
@@ -1094,6 +1099,7 @@ async function handleHistoryPage(input?: {
       requestedPositionSol: Number(order.requestedPositionSol ?? 0),
       broadcastStatus: String(order.broadcastStatus ?? 'pending'),
       confirmationStatus: String(order.confirmationStatus ?? 'unknown'),
+      exitTriggerReason: String(order.exitTriggerReason ?? ''),
       createdAt: String(order.createdAt ?? ''),
       updatedAt: String(order.updatedAt ?? order.createdAt ?? '')
     })),

@@ -264,6 +264,7 @@ describe('buildCashflowMetrics', () => {
           action: 'withdraw-lp',
           submissionId: 'sub-paper-close',
           recordedAt: '2026-04-22T14:39:46.000Z',
+          exitTriggerReason: 'max-hold-with-lp-position',
           lpModeledNetPnlPct: -2.5
         }
       ],
@@ -274,6 +275,7 @@ describe('buildCashflowMetrics', () => {
     expect(result[0]).toMatchObject({
       tokenMint: 'mint-paper-model',
       confirmationStatus: 'confirmed',
+      closeReason: 'max-hold-with-lp-position',
       investedSol: 1,
       feeEarnedSol: null,
       pnlSol: -0.025,

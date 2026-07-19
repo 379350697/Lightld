@@ -405,6 +405,7 @@ export function buildDashboardHtml(): string {
             <tr>
               <th>Position/Pool</th>
               <th>Age</th>
+              <th>Close Reason</th>
               <th>Invested</th>
               <th>Fee Earned</th>
               <th>PnL</th>
@@ -507,6 +508,12 @@ export function buildDashboardHtml(): string {
       if (trust === 'modeled') return '纸面模型';
       if (trust === 'untrusted') return '收益不可信';
       return '';
+    }
+    function historyCloseReasonLabel(reason) {
+      if (reason === 'max-hold-with-lp-position') return '达到最长持仓时间';
+      if (reason.indexOf('lp-range-exit:active-bin-out-of-range:above:') === 0) return '超出 LP 区间（上方）';
+      if (reason.indexOf('lp-range-exit:active-bin-out-of-range:below:') === 0) return '超出 LP 区间（下方）';
+      return reason || '--';
     }
     function historyMetricClass(value, trust) {
       return trust === 'untrusted' ? 'cell-muted' : metricClass(value);
@@ -724,9 +731,13 @@ export function buildDashboardHtml(): string {
         var pnlValue = typeof row.pnlSol === 'number' ? fmtSignedSol(pnl) + ' SOL' : '--';
         var pnlPctText = typeof row.pnlPct === 'number' ? fmtPct(pnlPct) : '';
         var dprText = typeof row.dprPct === 'number' ? fmtPct(dpr) : '--';
+        var rawCloseReason = typeof row.closeReason === 'string' ? row.closeReason : '';
+        var closeReason = historyCloseReasonLabel(rawCloseReason);
+        var closeReasonDetail = rawCloseReason && closeReason !== rawCloseReason ? rawCloseReason : '';
         return '<tr>'
           + '<td><div class="token-cell"><div class="position-side-icon">↘</div><div class="token-avatar">' + escHtml((tokenMint || '?').charAt(0).toUpperCase()) + '</div><div class="token-info"><div class="token-name">' + escHtml(label) + '</div><div class="token-meta"><span class="dlmm-badge">DLMM</span><span class="pool-addr">' + escHtml(truncAddr(tokenMint)) + '</span><span class="token-tag">' + escHtml(row.source || '--') + '</span>' + trustBadge + '</div></div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(durationLabel(row.openedAt, row.closedAt)) + '</div><div class="cell-sub">' + escHtml(row.confirmationStatus || '--') + '</div></div></td>'
+          + '<td><div class="cell-metric"><div class="cell-main">' + escHtml(closeReason) + '</div><div class="cell-sub">' + escHtml(closeReasonDetail) + '</div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main">' + fmtSol(Number(row.investedSol != null ? row.investedSol : row.amountSol)) + ' ◎</div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main ' + historyMetricClass(Number(row.feeEarnedSol), profitTrust) + '">' + feeValue + '</div><div class="cell-sub ' + historyMetricClass(Number(row.feeEarnedSol), profitTrust) + '">' + escHtml(historyMetricSubtext(feePct, profitTrust)) + '</div></div></td>'
           + '<td><div class="cell-metric"><div class="cell-main ' + historyMetricClass(pnl, profitTrust) + '">' + pnlValue + '</div><div class="cell-sub ' + historyMetricClass(pnl, profitTrust) + '">' + escHtml(historyMetricSubtext(pnlPctText, profitTrust)) + '</div></div></td>'

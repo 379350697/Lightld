@@ -47,4 +47,13 @@ describe('buildDashboardHtml', () => {
     expect(html).toContain('收益不可信');
     expect(html).toContain('history-trust-badge');
   });
+
+  it('includes a close-reason column alongside each historical PnL row', () => {
+    const html = buildDashboardHtml();
+
+    expect(html).toContain('Close Reason');
+    expect(html).toContain('function historyCloseReasonLabel');
+    expect(html).toContain('达到最长持仓时间');
+    expect(html).toContain('超出 LP 区间（上方）');
+  });
 });

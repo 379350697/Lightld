@@ -47,6 +47,7 @@ type HistoricalOrderFallback = {
   requestedPositionSol: number;
   broadcastStatus?: string;
   confirmationStatus?: string;
+  exitTriggerReason?: string;
   updatedAt: string;
   createdAt: string;
 };
@@ -70,6 +71,7 @@ type HistoricalDecisionFallback = {
   lpEntryTradingSol?: number;
   lpNetPnlPct?: number;
   lpModeledNetPnlPct?: number;
+  exitTriggerReason?: string;
 };
 
 type DailyCashflowPoint = {
@@ -125,6 +127,7 @@ export type DashboardHistoricalActivityEntry = {
   confirmationStatus: string;
   openedAt: string | null;
   closedAt: string | null;
+  closeReason: string | null;
   investedSol: number | null;
   feeEarnedSol: number | null;
   feeEarnedPct: number | null;
@@ -149,6 +152,7 @@ type ReconciledHistoricalAction = {
   entrySol?: number;
   entrySolSource?: string;
   exitValueSol?: number;
+  exitTriggerReason?: string;
   feeEarnedSol?: number;
   pnlPct?: number;
   modeledPnlPct?: number;
@@ -704,6 +708,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
       confirmationStatus: 'confirmed',
       openedAt: openAction.recordedAt,
       closedAt: closeAction.recordedAt,
+      closeReason: closeAction.exitTriggerReason ?? null,
       investedSol,
       feeEarnedSol,
       feeEarnedPct,
@@ -735,6 +740,7 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
     confirmationStatus: toDashboardHistoryStatus(errorStatus),
     openedAt: openAction?.recordedAt ?? null,
     closedAt: closeAction?.recordedAt ?? null,
+    closeReason: closeAction?.exitTriggerReason ?? null,
     investedSol,
     feeEarnedSol,
     feeEarnedPct,
@@ -774,6 +780,7 @@ function buildClosedPositionSnapshotEntry(snapshot: ClosedPositionSnapshot): Das
     confirmationStatus: 'confirmed',
     openedAt: snapshot.openedAt,
     closedAt: snapshot.closedAt,
+    closeReason: null,
     investedSol,
     feeEarnedSol,
     feeEarnedPct,
@@ -1075,6 +1082,7 @@ export function buildHistoricalActivity(input: {
         status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved'),
         provenance: 'chain',
         hasRealizedChainAmount: hasFillEvidence && fill.filledSol > 0,
+        exitTriggerReason: matchedOrder?.exitTriggerReason || decision?.exitTriggerReason,
         modeledPnlPct: isCloseExitAction(action) && typeof decision?.lpModeledNetPnlPct === 'number'
           ? decision.lpModeledNetPnlPct
           : undefined
@@ -1120,6 +1128,7 @@ export function buildHistoricalActivity(input: {
         ? decision.entrySol
         : undefined,
       entrySolSource: hasTrustedDecisionEntry ? decision?.entrySolSource : undefined,
+      exitTriggerReason: order.exitTriggerReason || decision?.exitTriggerReason,
       exitValueSol: hasTrustedDecisionEntry && typeof (decision?.lpTotalValueSol ?? decision?.lpCurrentValueSol) === 'number'
         ? decision?.lpTotalValueSol ?? decision!.lpCurrentValueSol
         : undefined,
