@@ -207,6 +207,82 @@ describe('buildCashflowMetrics', () => {
     expect(result).toHaveLength(0);
   });
 
+  it('shows explicitly labeled paper-model PnL when the simulated fill has no economic exit amount', () => {
+    const result = buildHistoricalActivity({
+      fills: [
+        {
+          tokenMint: 'mint-paper-model',
+          tokenSymbol: 'PAPER',
+          side: 'add-lp',
+          submissionId: 'sub-paper-open',
+          positionId: 'position-paper-model',
+          filledSol: 1,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: '2026-04-22T13:07:07.421Z'
+        },
+        {
+          tokenMint: 'mint-paper-model',
+          tokenSymbol: 'PAPER',
+          side: 'withdraw-lp',
+          submissionId: 'sub-paper-close',
+          positionId: 'position-paper-model',
+          filledSol: 1,
+          fillAmountSource: 'wallet-delta',
+          hasFillEvidence: true,
+          recordedAt: '2026-04-22T14:39:45.589Z'
+        }
+      ],
+      orderFallback: [
+        {
+          tokenMint: 'mint-paper-model',
+          tokenSymbol: 'PAPER',
+          action: 'add-lp',
+          submissionId: 'sub-paper-open',
+          positionId: 'position-paper-model',
+          requestedPositionSol: 1,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T13:07:01.000Z',
+          updatedAt: '2026-04-22T13:07:07.000Z'
+        },
+        {
+          tokenMint: 'mint-paper-model',
+          tokenSymbol: 'PAPER',
+          action: 'withdraw-lp',
+          submissionId: 'sub-paper-close',
+          positionId: 'position-paper-model',
+          requestedPositionSol: 1,
+          confirmationStatus: 'confirmed',
+          createdAt: '2026-04-22T14:39:40.000Z',
+          updatedAt: '2026-04-22T14:39:45.000Z'
+        }
+      ],
+      decisionFallback: [
+        {
+          tokenMint: 'mint-paper-model',
+          tokenSymbol: 'PAPER',
+          action: 'withdraw-lp',
+          submissionId: 'sub-paper-close',
+          recordedAt: '2026-04-22T14:39:46.000Z',
+          lpModeledNetPnlPct: -2.5
+        }
+      ],
+      limit: 5
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      tokenMint: 'mint-paper-model',
+      confirmationStatus: 'confirmed',
+      investedSol: 1,
+      feeEarnedSol: null,
+      pnlSol: -0.025,
+      pnlPct: -2.5,
+      dprPct: -2.5,
+      profitTrust: 'modeled'
+    });
+  });
+
   it('prefers wallet-delta closed snapshots over overlapping solana-chain snapshots for the same position', () => {
     const result = buildHistoricalActivity({
       fills: [],

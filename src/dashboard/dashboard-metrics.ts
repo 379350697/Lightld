@@ -56,6 +56,7 @@ type HistoricalDecisionFallback = {
   tokenSymbol: string;
   action: string;
   recordedAt: string;
+  submissionId?: string;
   entrySol?: number;
   entrySolSource?: string;
   lpCurrentValueSol?: number;
@@ -68,6 +69,7 @@ type HistoricalDecisionFallback = {
   lpTradingValueSol?: number;
   lpEntryTradingSol?: number;
   lpNetPnlPct?: number;
+  lpModeledNetPnlPct?: number;
 };
 
 type DailyCashflowPoint = {
@@ -129,7 +131,7 @@ export type DashboardHistoricalActivityEntry = {
   pnlSol: number | null;
   pnlPct: number | null;
   dprPct: number | null;
-  profitTrust: 'trusted' | 'estimated' | 'untrusted';
+  profitTrust: 'trusted' | 'estimated' | 'modeled' | 'untrusted';
 };
 
 const HISTORY_ERROR_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -149,6 +151,7 @@ type ReconciledHistoricalAction = {
   exitValueSol?: number;
   feeEarnedSol?: number;
   pnlPct?: number;
+  modeledPnlPct?: number;
 };
 
 type HistoricalLifecycle = {
@@ -210,6 +213,10 @@ function hasEstimatedHistoricalCloseMetrics(action: ReconciledHistoricalAction |
     typeof action.exitValueSol === 'number'
     || typeof action.pnlPct === 'number'
   ));
+}
+
+function hasPaperModeledCloseMetrics(action: ReconciledHistoricalAction | undefined) {
+  return Boolean(action && typeof action.modeledPnlPct === 'number');
 }
 
 function startOfUtcDayString(date: Date) {
@@ -392,9 +399,21 @@ function findDecisionFallback(input: {
   tokenMint: string;
   action: string;
   recordedAt: string;
+  submissionId?: string;
   decisions: HistoricalDecisionFallback[];
   maxDistanceMs?: number;
 }) {
+  if (input.submissionId) {
+    const directMatch = input.decisions.find((decision) =>
+      decision.submissionId === input.submissionId
+      && decision.tokenMint === input.tokenMint
+      && decision.action === input.action
+    );
+    if (directMatch) {
+      return directMatch;
+    }
+  }
+
   const targetRecordedAtMs = toRecordedAtMillis(input.recordedAt);
   const maxDistanceMs = input.maxDistanceMs ?? 120_000;
   let bestMatch: HistoricalDecisionFallback | null = null;
@@ -628,17 +647,22 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const hasTrustedEntryMetrics = typeof trustedInvestedSol === 'number' && trustedInvestedSol > 0;
   const hasTrustedCloseMetrics = hasTrustedHistoricalCloseMetrics(closeAction);
   const hasEstimatedCloseMetrics = hasEstimatedHistoricalCloseMetrics(closeAction);
+  const hasPaperModeledClose = hasPaperModeledCloseMetrics(closeAction);
   const totalExitValueSol = typeof closeAction?.exitValueSol === 'number'
     ? closeAction.exitValueSol
     : hasTrustedCloseMetrics && closeAction
       ? closeAction.amountSol
       : null;
-  const rawPnlSol = hasTrustedEntryMetrics && typeof totalExitValueSol === 'number'
+  const rawPnlSol = hasTrustedEntryMetrics && hasPaperModeledClose && typeof closeAction?.modeledPnlPct === 'number'
+    ? trustedInvestedSol * (closeAction.modeledPnlPct / 100)
+    : hasTrustedEntryMetrics && typeof totalExitValueSol === 'number'
     ? totalExitValueSol - trustedInvestedSol
     : hasTrustedEntryMetrics && hasEstimatedCloseMetrics && typeof closeAction?.pnlPct === 'number'
       ? trustedInvestedSol * (closeAction.pnlPct / 100)
       : null;
-  const rawPnlPct = hasTrustedEntryMetrics && typeof rawPnlSol === 'number'
+  const rawPnlPct = hasPaperModeledClose && typeof closeAction?.modeledPnlPct === 'number'
+    ? closeAction.modeledPnlPct
+    : hasTrustedEntryMetrics && typeof rawPnlSol === 'number'
     ? (rawPnlSol / trustedInvestedSol) * 100
     : hasTrustedEntryMetrics && hasEstimatedCloseMetrics && typeof closeAction?.pnlPct === 'number'
       ? closeAction.pnlPct
@@ -653,13 +677,15 @@ function buildLifecycleEntry(lifecycle: HistoricalLifecycle): DashboardHistorica
   const hasAnyProfitMetrics = [rawFeeEarnedSol, rawPnlSol, rawPnlPct].some((value) => typeof value === 'number');
   const hasTrustedProfitMetrics = isMatchedLifecycle && hasTrustedEntryMetrics && hasTrustedCloseMetrics;
   const hasEstimatedProfitMetrics = hasTrustedEntryMetrics && hasEstimatedCloseMetrics && hasAnyProfitMetrics;
-  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = hasTrustedProfitMetrics
+  const profitTrust: DashboardHistoricalActivityEntry['profitTrust'] = hasPaperModeledClose && hasTrustedEntryMetrics
+    ? 'modeled'
+    : hasTrustedProfitMetrics
     ? 'trusted'
     : hasEstimatedProfitMetrics
       ? 'estimated'
       : 'untrusted';
-  const feeEarnedSol = profitTrust === 'untrusted' ? null : rawFeeEarnedSol;
-  const feeEarnedPct = profitTrust !== 'untrusted' && hasTrustedEntryMetrics && typeof feeEarnedSol === 'number'
+  const feeEarnedSol = profitTrust === 'untrusted' || profitTrust === 'modeled' ? null : rawFeeEarnedSol;
+  const feeEarnedPct = profitTrust !== 'untrusted' && profitTrust !== 'modeled' && hasTrustedEntryMetrics && typeof feeEarnedSol === 'number'
     ? (feeEarnedSol / trustedInvestedSol) * 100
     : null;
   const pnlSol = profitTrust === 'untrusted' ? null : rawPnlSol;
@@ -1007,11 +1033,21 @@ export function buildHistoricalActivity(input: {
         ? fill.side
         : matchedOrder?.action ?? '';
 
+      const resolvedTokenMint = fill.tokenMint || matchedOrder?.tokenMint || '';
+      const decision = resolvedTokenMint.length > 0 && action.length > 0
+        ? findDecisionFallback({
+            tokenMint: resolvedTokenMint,
+            action,
+            recordedAt: fill.recordedAt,
+            submissionId: fill.submissionId ?? matchedOrder?.submissionId,
+            decisions
+          })
+        : null;
+
       if (matchedOrder && matchedOrderKey.length > 0) {
         usedOrderKeys.add(matchedOrderKey);
       }
 
-      const resolvedTokenMint = fill.tokenMint || matchedOrder?.tokenMint || '';
       if (
         resolvedTokenMint.length === 0
         || action.length === 0
@@ -1038,7 +1074,10 @@ export function buildHistoricalActivity(input: {
           .sort((left, right) => right.localeCompare(left))[0] ?? '',
         status: matchedOrder ? 'ok' : (hasReliableIdentity ? 'missing-local' : 'unresolved'),
         provenance: 'chain',
-        hasRealizedChainAmount: hasFillEvidence && fill.filledSol > 0
+        hasRealizedChainAmount: hasFillEvidence && fill.filledSol > 0,
+        modeledPnlPct: isCloseExitAction(action) && typeof decision?.lpModeledNetPnlPct === 'number'
+          ? decision.lpModeledNetPnlPct
+          : undefined
       });
     }
   }
@@ -1052,6 +1091,7 @@ export function buildHistoricalActivity(input: {
       tokenMint: order.tokenMint,
       action: order.action,
       recordedAt: order.updatedAt || order.createdAt,
+      submissionId: order.submissionId,
       decisions
     });
     const hasTrustedDecisionEntry = decision?.entrySolSource === 'actual_fill'
@@ -1086,7 +1126,10 @@ export function buildHistoricalActivity(input: {
       feeEarnedSol: hasTrustedDecisionEntry && typeof (decision?.lpUnclaimedFeeValueSol ?? decision?.lpUnclaimedFeeSol) === 'number'
         ? decision?.lpUnclaimedFeeValueSol ?? decision!.lpUnclaimedFeeSol
         : undefined,
-      pnlPct: hasTrustedDecisionEntry && typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined
+      pnlPct: hasTrustedDecisionEntry && typeof decision?.lpNetPnlPct === 'number' ? decision.lpNetPnlPct : undefined,
+      modeledPnlPct: isCloseExitAction(order.action) && typeof decision?.lpModeledNetPnlPct === 'number'
+        ? decision.lpModeledNetPnlPct
+        : undefined
     });
   }
 

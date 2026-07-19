@@ -39,10 +39,11 @@ describe('buildDashboardHtml', () => {
     expect(html).not.toContain('walletSol + openValue + openFees');
   });
 
-  it('includes the historical trust badge copy for estimated and untrusted rows', () => {
+  it('includes the historical trust badge copy for estimated, modeled, and untrusted rows', () => {
     const html = buildDashboardHtml();
 
     expect(html).toContain('收益估算');
+    expect(html).toContain('纸面模型');
     expect(html).toContain('收益不可信');
     expect(html).toContain('history-trust-badge');
   });

@@ -23,7 +23,7 @@ $JournalRoot = Resolve-LightldPath -Root $Root -Path $JournalRoot
 $logDirectory = Join-Path $JournalRoot "component-logs"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $supervisorLog = Join-Path $logDirectory "paper-system-supervisor.log"
-$roles = @("signer", "gmgn", "execution", "candidate", "research", "daemon")
+$roles = @("signer", "gmgn", "execution", "candidate", "research", "daemon", "dashboard")
 $launcher = Join-Path $PSScriptRoot "start-paper-realistic.ps1"
 
 function Write-PaperSystemSupervisorLog {

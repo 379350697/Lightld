@@ -228,6 +228,7 @@ export function buildDashboardHtml(): string {
     .token-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-secondary); font-size: 10px; font-weight: 700; }
     .history-trust-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 10px; font-weight: 700; }
     .history-trust-badge.estimated { color: #fbbf24; background: rgba(251,191,36,0.10); }
+    .history-trust-badge.modeled { color: #93c5fd; background: rgba(96,165,250,0.10); }
     .history-trust-badge.untrusted { color: var(--text-muted); background: rgba(255,255,255,0.03); }
     .pool-addr, .cell-sub, .log-time, .log-token { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); }
     .cell-main { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--font-mono); }
@@ -503,14 +504,16 @@ export function buildDashboardHtml(): string {
     }
     function historyTrustLabel(trust) {
       if (trust === 'estimated') return '收益估算';
+      if (trust === 'modeled') return '纸面模型';
       if (trust === 'untrusted') return '收益不可信';
       return '';
     }
     function historyMetricClass(value, trust) {
-      return trust === 'trusted' ? metricClass(value) : 'cell-muted';
+      return trust === 'untrusted' ? 'cell-muted' : metricClass(value);
     }
     function historyMetricSubtext(value, trust) {
       if (trust === 'estimated') return value ? value + ' · 估算' : '估算';
+      if (trust === 'modeled') return value ? value + ' · 纸面模型' : '纸面模型';
       if (trust === 'untrusted') return value ? value + ' · 不可信' : '不可信';
       return value || '--';
     }

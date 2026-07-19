@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force -Path $StateRoot, $JournalRoot | Out-Null
 Set-Location $Root
 
 $stopScript = Join-Path $PSScriptRoot "stop-lightld.ps1"
-$roles = @("signer", "gmgn", "execution", "candidate", "research", "daemon")
+$roles = @("signer", "gmgn", "execution", "candidate", "research", "daemon", "dashboard")
 $started = @()
 $LaunchLock = Enter-LightldLaunchLock -Root $Root -StateRoot $StateRoot
 try {

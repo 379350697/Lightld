@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("signer", "gmgn", "execution", "candidate", "research", "daemon")]
+    [ValidateSet("signer", "gmgn", "execution", "candidate", "research", "daemon", "dashboard")]
     [string]$Role,
     [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$StateRoot = "state-paper-realistic",
@@ -135,6 +135,15 @@ if ($Role -eq "research") {
         Write-Warning "[PaperRealistic] research worker exited with code $LASTEXITCODE; restarting in 5 seconds"
         Start-Sleep -Seconds 5
     }
+}
+
+if ($Role -eq "dashboard") {
+    $env:LIVE_STATE_DIR = $StateRoot
+    $env:LIVE_JOURNAL_DIR = $JournalRoot
+    $env:LIVE_DB_MIRROR_PATH = (Join-Path $StateRoot "lightld-observability.sqlite")
+    if (-not $env:DASHBOARD_PORT) { $env:DASHBOARD_PORT = "8899" }
+    Invoke-PaperComponentForever -Component "dashboard" -StartComponent { npm.cmd run run:dashboard }
+    exit
 }
 
 $env:LIVE_EXECUTION_MODE = "http"

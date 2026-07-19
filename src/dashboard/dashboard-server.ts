@@ -31,7 +31,7 @@ const ACCOUNT_STATE_URL = process.env.LIVE_ACCOUNT_STATE_URL ?? 'http://127.0.0.
 const LIVE_AUTH_TOKEN = process.env.LIVE_AUTH_TOKEN ?? '';
 const POSITION_STATE_PATH = join(STATE_ROOT_DIR, 'position-state.json');
 const HISTORY_PAGE_SIZE = 10;
-const HISTORY_DECISION_FALLBACK_LINES = 1000;
+const HISTORY_DECISION_FALLBACK_LINES = 10_000;
 
 // ── SQLite helpers (lazy, read-only) ──
 
@@ -916,6 +916,7 @@ function parseDecisionMetrics(reason: string) {
     lpTradingValueSol: toNumber('lpTradingValueSol'),
     lpEntryTradingSol: toNumber('lpEntryTradingSol'),
     lpNetPnlPct: toNumber('lpNetPnlPct'),
+    lpModeledNetPnlPct: toNumber('lpModeledNetPnlPct'),
   };
 }
 
@@ -934,6 +935,7 @@ async function readHistoryDecisionFallback() {
         tokenSymbol: String(entry.tokenSymbol ?? ''),
         action: String(entry.action ?? ''),
         recordedAt: String(entry.recordedAt ?? ''),
+        submissionId: String(entry.submissionId ?? ''),
         ...parsed,
       };
     })

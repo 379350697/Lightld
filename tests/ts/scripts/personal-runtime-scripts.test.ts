@@ -45,6 +45,8 @@ describe('personal paper/live scripts', () => {
     expect(script).toContain('Start-Process -FilePath "npm.cmd"');
     expect(script).toContain('taskkill.exe /PID $daemonProcess.Id /T /F');
     expect(script).toContain('Invoke-PaperComponentForever -Component "execution"');
+    expect(script).toContain('Invoke-PaperComponentForever -Component "dashboard"');
+    expect(launcher).toContain('"dashboard"');
     expect(launcher).not.toContain('RequestedPositionSol');
     expect(launcher).not.toContain('100000');
   });
