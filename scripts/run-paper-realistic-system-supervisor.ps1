@@ -4,6 +4,7 @@ param(
     [string]$JournalRoot = "tmp/paper-realistic-journals",
     [ValidateSet("new-token-v1", "large-pool-v1")]
     [string]$Strategy = "new-token-v1",
+    [switch]$ForceRestart,
     [ValidateRange(5, 300)]
     [int]$CheckIntervalSeconds = 15,
     [ValidateRange(15, 300)]
@@ -65,8 +66,15 @@ function Start-PaperRuntime {
 }
 
 Write-PaperSystemSupervisorLog "started as $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+$forceRestartPending = $ForceRestart
 while ($true) {
-    $failedRoles = @($roles | Where-Object { -not (Test-PaperRoleProcess -Role $_) })
+    $failedRoles = if ($forceRestartPending) {
+        $forceRestartPending = $false
+        Write-PaperSystemSupervisorLog "forced runtime restart requested"
+        @($roles)
+    } else {
+        @($roles | Where-Object { -not (Test-PaperRoleProcess -Role $_) })
+    }
     if ($failedRoles.Count -gt 0) {
         Write-PaperSystemSupervisorLog "unhealthy roles: $($failedRoles -join ', '); restarting runtime"
         try {

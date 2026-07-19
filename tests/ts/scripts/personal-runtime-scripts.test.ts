@@ -55,12 +55,16 @@ describe('personal paper/live scripts', () => {
       readFile('scripts/install-paper-realistic-system-task.ps1', 'utf8')
     ]);
     expect(supervisor).toContain('Test-PaperRoleProcess');
+    expect(supervisor).toContain('$ForceRestart');
+    expect(supervisor).toContain('forced runtime restart requested');
     expect(supervisor).toContain('unhealthy roles:');
     expect(supervisor).toContain('start-paper-realistic.ps1');
     expect(installer).toContain('<BootTrigger>');
     expect(installer).toContain('<UserId>S-1-5-18</UserId>');
     expect(installer).toContain('<RestartOnFailure>');
     expect(installer).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+    expect(installer).toContain('"-ForceRestart"');
+    expect(installer).toContain('schtasks.exe /End');
     expect(installer).toContain('schtasks.exe /Create');
   });
 

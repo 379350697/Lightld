@@ -38,6 +38,7 @@ $arguments = @(
     "-StateRoot", (Quote-TaskArgument -Value $StateRoot),
     "-JournalRoot", (Quote-TaskArgument -Value $JournalRoot),
     "-Strategy", (Quote-TaskArgument -Value $Strategy),
+    "-ForceRestart",
     "-MaxActivePositions", [string]$MaxActivePositions
 ) -join " "
 
@@ -95,6 +96,10 @@ $taskXml = @"
 
 $xmlPath = Join-Path ([System.IO.Path]::GetTempPath()) ("lightld-paper-task-" + [Guid]::NewGuid().ToString("N") + ".xml")
 try {
+    & schtasks.exe /Query /TN $TaskName *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & schtasks.exe /End /TN $TaskName *> $null
+    }
     [System.IO.File]::WriteAllText($xmlPath, $taskXml, [System.Text.UnicodeEncoding]::new($false, $true))
     & schtasks.exe /Create /TN $TaskName /XML $xmlPath /F | Out-Host
     if ($LASTEXITCODE -ne 0) {
