@@ -44,8 +44,24 @@ describe('personal paper/live scripts', () => {
     expect(script).toContain('component-logs');
     expect(script).toContain('Start-Process -FilePath "npm.cmd"');
     expect(script).toContain('taskkill.exe /PID $daemonProcess.Id /T /F');
+    expect(script).toContain('Invoke-PaperComponentForever -Component "execution"');
     expect(launcher).not.toContain('RequestedPositionSol');
     expect(launcher).not.toContain('100000');
+  });
+
+  it('installs a persistent SYSTEM-level supervisor for paper mode', async () => {
+    const [supervisor, installer] = await Promise.all([
+      readFile('scripts/run-paper-realistic-system-supervisor.ps1', 'utf8'),
+      readFile('scripts/install-paper-realistic-system-task.ps1', 'utf8')
+    ]);
+    expect(supervisor).toContain('Test-PaperRoleProcess');
+    expect(supervisor).toContain('unhealthy roles:');
+    expect(supervisor).toContain('start-paper-realistic.ps1');
+    expect(installer).toContain('<BootTrigger>');
+    expect(installer).toContain('<UserId>S-1-5-18</UserId>');
+    expect(installer).toContain('<RestartOnFailure>');
+    expect(installer).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+    expect(installer).toContain('schtasks.exe /Create');
   });
 
   it('provides a full Linux paper launcher with the same isolation and research worker', async () => {

@@ -42,21 +42,53 @@ if (-not $env:SOLANA_DEFAULT_SLIPPAGE_BPS) { $env:SOLANA_DEFAULT_SLIPPAGE_BPS = 
 if (-not $env:LIVE_MAX_SINGLE_ORDER_SOL) { $env:LIVE_MAX_SINGLE_ORDER_SOL = "0.05" }
 if (-not $env:LIVE_MAX_DAILY_SPEND_SOL) { $env:LIVE_MAX_DAILY_SPEND_SOL = "0.2" }
 
-$Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
+try {
+    $Host.UI.RawUI.WindowTitle = "Lightld Paper Realistic $Role"
+} catch {
+    # Scheduled Task runs without an interactive console.
+}
+
+function Invoke-PaperComponentForever {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Component,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$StartComponent,
+        [int]$RestartDelayMs = 5000
+    )
+
+    while ($true) {
+        $startedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Host "[PaperRealistic] $Component starting at $startedAt"
+        $exitCode = "unknown"
+        try {
+            & $StartComponent
+            if ($null -ne $LASTEXITCODE) {
+                $exitCode = [string]$LASTEXITCODE
+            }
+        } catch {
+            $exitCode = "exception: $($_.Exception.Message)"
+        }
+        $stoppedAt = (Get-Date).ToUniversalTime().ToString("o")
+        Write-Warning "[PaperRealistic] $Component exited with code $exitCode at $stoppedAt; restarting in ${RestartDelayMs}ms"
+        Start-Sleep -Milliseconds $RestartDelayMs
+    }
+}
+
 if ($Role -eq "signer") {
-    npm.cmd run run:signer
-    exit $LASTEXITCODE
+    Invoke-PaperComponentForever -Component "signer" -StartComponent { npm.cmd run run:signer }
+    exit
 }
 
 if ($Role -eq "gmgn") {
-    & (Join-Path $PSScriptRoot "start-gmgn-safety.ps1") -Root $Root
-    exit $LASTEXITCODE
+    Invoke-PaperComponentForever -Component "gmgn" -StartComponent { & (Join-Path $PSScriptRoot "start-gmgn-safety.ps1") -Root $Root }
+    exit
 }
 
 if ($Role -eq "execution") {
     $env:SOLANA_EXECUTION_STATE_DIR = (Join-Path $StateRoot "solana-execution")
-    npm.cmd run run:solana-execution
-    exit $LASTEXITCODE
+    Invoke-PaperComponentForever -Component "execution" -StartComponent { npm.cmd run run:solana-execution }
+    exit
 }
 
 if ($Role -eq "candidate") {
