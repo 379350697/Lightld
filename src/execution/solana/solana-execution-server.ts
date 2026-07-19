@@ -206,6 +206,12 @@ type SolanaExecutionServerOptions = {
   residualTokenDustMaxUiAmount?: number;
   jitoTipLamports?: number;
   dryRun?: boolean;
+  /**
+   * When set in dry-run mode, paper capital is fully virtual and does not
+   * borrow the signer's real SOL balance or require a balance-backed RPC
+   * simulation. Omit it to retain balance-backed dry-run behaviour.
+   */
+  paperStartingSol?: number;
   dryRunAddLpRebuildOnBinSlippage?: boolean;
   dryRunAddLpRebuildMaxAttempts?: number;
   addLpBinSlippageCooldownMs?: number;
@@ -1414,6 +1420,12 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     defaultSlippageBps = 100,
     dryRun = false
   } = options;
+  const paperStartingSol = typeof options.paperStartingSol === 'number'
+    && Number.isFinite(options.paperStartingSol)
+    && options.paperStartingSol >= 0
+    ? options.paperStartingSol
+    : undefined;
+  const hasVirtualPaperBalance = dryRun && typeof paperStartingSol === 'number';
   const dryRunAddLpRebuildOnBinSlippage = options.dryRunAddLpRebuildOnBinSlippage ?? true;
   const dryRunAddLpRebuildMaxAttempts = options.dryRunAddLpRebuildMaxAttempts ?? 1;
   const addLpBinSlippageCooldownMs = options.addLpBinSlippageCooldownMs ?? 300_000;
@@ -1894,6 +1906,9 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
     signedTransactionBase64: string
   ) => {
     if (dryRun) {
+      if (hasVirtualPaperBalance) {
+        return buildDryRunSignature(signedTransactionBase64);
+      }
       return simulateDryRunRawTransaction(signedTransactionBase64);
     }
 
@@ -3217,21 +3232,24 @@ export function createSolanaExecutionServer(options: SolanaExecutionServerOption
           // Account state — query wallet SOL and token balances from RPC
           if (request.method === 'GET' && request.url === '/account-state') {
             if (dryRun) {
-              let baseWalletLamports: number;
-              try {
-                // Paper owns only the synthetic positions/tokens below, but
-                // its buying power must start from the same real signer SOL
-                // balance as live. Otherwise repeated simulations can allocate
-                // capital that the live wallet could never fund.
-                baseWalletLamports = await rpcClient.getBalance(walletPublicKey);
-              } catch (error) {
-                writeJson(response, 503, accountStateUnavailablePayload(error));
-                return;
+              let baseWalletSol: number;
+              if (hasVirtualPaperBalance) {
+                baseWalletSol = paperStartingSol;
+              } else {
+                try {
+                  // The legacy dry-run mode deliberately mirrors the signer
+                  // balance. An explicitly configured paper balance never
+                  // reads or consumes real-wallet capital.
+                  baseWalletSol = (await rpcClient.getBalance(walletPublicKey)) / LAMPORTS_PER_SOL;
+                } catch (error) {
+                  writeJson(response, 503, accountStateUnavailablePayload(error));
+                  return;
+                }
               }
               const paperState = await revaluePaperDryRunTokens(
                 await revaluePaperDryRunState(await paperDryRunStore.read())
               );
-              const walletSol = baseWalletLamports / LAMPORTS_PER_SOL + paperState.walletSolDelta;
+              const walletSol = baseWalletSol + paperState.walletSolDelta;
               const walletLpPositions = paperState.positions.map(toPaperLpPosition);
               const walletTokens = paperState.tokens.map(toPaperWalletToken);
               writeJson(response, 200, {

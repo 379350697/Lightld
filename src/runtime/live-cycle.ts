@@ -300,6 +300,8 @@ export type LiveCycleInput = {
   journalRootDir?: string;
   stateRootDir?: string;
   captureMode?: 'live' | 'mechanical-soak' | 'economic-shadow';
+  /** Paper-only limit override. Ignored outside mechanical-soak mode. */
+  maxLivePositionSolOverride?: number;
   runtimeMode?: RuntimeMode;
   sessionPhase?: 'active' | 'flatten-only' | 'closed';
   reconciliationStatus?: 'matched' | 'balance-mismatch';
@@ -3038,7 +3040,19 @@ function isResidualCleanupIncomplete(result: LiveBroadcastResult | undefined) {
 
 export async function runLiveCycle(input: LiveCycleInput): Promise<LiveCycleResult> {
   let currentLifecycleState: PositionLifecycleState = input.positionState?.lifecycleState ?? 'closed';
-  const config = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
+  const loadedConfig = await loadStrategyConfig(STRATEGY_CONFIGS[input.strategy]);
+  const config = input.captureMode === 'mechanical-soak'
+    && typeof input.maxLivePositionSolOverride === 'number'
+    && Number.isFinite(input.maxLivePositionSolOverride)
+    && input.maxLivePositionSolOverride > 0
+    ? {
+        ...loadedConfig,
+        live: {
+          ...loadedConfig.live,
+          maxLivePositionSol: input.maxLivePositionSolOverride
+        }
+      }
+    : loadedConfig;
   let accountState = input.accountState;
   const journals = createJournals(input.strategy, input.journalRootDir);
   const stateRootDir = resolveStateRootDir(input.strategy, input.stateRootDir);

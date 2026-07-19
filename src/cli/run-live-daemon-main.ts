@@ -234,16 +234,6 @@ async function main() {
         loadedStrategyConfig.live.maxLivePositionSol
       )
     : loadedStrategyConfig.live.maxLivePositionSol;
-  const strategyConfig = paperMaxLivePositionSol === loadedStrategyConfig.live.maxLivePositionSol
-    ? loadedStrategyConfig
-    : {
-        ...loadedStrategyConfig,
-        live: {
-          ...loadedStrategyConfig.live,
-          maxLivePositionSol: paperMaxLivePositionSol
-        }
-      };
-
   const strategy = args.strategy;
 
   const executionAdapters = runtimeConfig.executionMode === 'http'
@@ -361,8 +351,8 @@ async function main() {
       process.env.LIVE_RESIDUAL_TOKEN_SWEEP_MIN_VALUE_SOL,
       0.1
     ),
-    residualSweepMaxSlippageBps: strategyConfig.solRouteLimits.maxSlippageBps,
-    residualSweepMaxImpactBps: strategyConfig.solRouteLimits.maxImpactBps,
+    residualSweepMaxSlippageBps: loadedStrategyConfig.solRouteLimits.maxSlippageBps,
+    residualSweepMaxImpactBps: loadedStrategyConfig.solRouteLimits.maxImpactBps,
     maxTicks: args.maxTicks,
     accountProvider: executionAdapters.accountProvider,
     lpEntryEvidenceProvider: executionAdapters.lpEntryEvidenceProvider,
@@ -405,6 +395,9 @@ async function main() {
       return {
         ...executionAdapters,
         captureMode: runMode,
+        maxLivePositionSolOverride: runMode === 'mechanical-soak'
+          ? paperMaxLivePositionSol
+          : undefined,
         accountState,
         spendingLimitsConfig,
         ...ingestInput

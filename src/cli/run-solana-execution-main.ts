@@ -38,6 +38,9 @@ async function main() {
   process.stdout.write(`Swap providers: ${config.swapProviderOrder.join(', ')}\n`);
   process.stdout.write(`Valuation providers: ${config.valuationProviderOrder.join(', ')}\n`);
   process.stdout.write(`Execution dry-run: ${config.dryRun ? 'enabled (paper, no sendTransaction)' : 'disabled'}\n`);
+  if (config.dryRun && typeof config.paperStartingSol === 'number') {
+    process.stdout.write(`Paper starting SOL: ${config.paperStartingSol}\n`);
+  }
 
   const endpointRegistry = new RpcEndpointRegistry({
     rateLimitedCooldownMs: config.rpc429CooldownMs,
@@ -138,6 +141,7 @@ async function main() {
     residualTokenDustMaxUiAmount: config.residualTokenDustMaxUiAmount,
     jitoTipLamports: config.jitoTipLamports,
     dryRun: config.dryRun,
+    paperStartingSol: config.paperStartingSol,
     dryRunAddLpRebuildOnBinSlippage: config.dryRunAddLpRebuildOnBinSlippage,
     dryRunAddLpRebuildMaxAttempts: config.dryRunAddLpRebuildMaxAttempts,
     addLpBinSlippageCooldownMs: config.addLpBinSlippageCooldownMs

@@ -827,6 +827,78 @@ describe('createSolanaExecutionServer', () => {
     await server.stop();
   });
 
+  it('uses an explicit virtual paper balance without reading or simulating the real wallet balance', async () => {
+    const keypair = Keypair.generate();
+    const getBalance = vi.fn(async () => 181_000_000);
+    const simulateRawTransaction = vi.fn(async () => ({
+      value: {
+        err: { InstructionError: [1, { Custom: 1 }] },
+        logs: ['Transfer: insufficient lamports 181000000, need 1000000000']
+      }
+    }));
+    const server = createSolanaExecutionServer({
+      host: '127.0.0.1',
+      port: 0,
+      keypair,
+      rpcClient: {
+        getBalance,
+        getTokenAccountsByOwner: async () => [],
+        getLatestBlockhash: async () => ({ value: { blockhash: 'blockhash-1', lastValidBlockHeight: 1 } }),
+        sendRawTransaction: vi.fn(async () => 'unexpected-live-signature'),
+        simulateRawTransaction
+      } as any,
+      jupiterClient: {} as any,
+      dlmmClient: {
+        addLiquidityByStrategy: async () => ({
+          transaction: new FakeTransaction('open-1')
+        }),
+        getPositionSnapshots: async () => []
+      } as any,
+      authToken: 'test-token',
+      dryRun: true,
+      paperStartingSol: 10_000
+    });
+
+    await server.start();
+
+    const beforeResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    expect((await beforeResponse.json()).walletSol).toBe(10_000);
+    expect(getBalance).not.toHaveBeenCalled();
+
+    const broadcastResponse = await fetch(`${server.origin}/broadcast`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildBroadcastPayload('add-lp', {
+        executionPolicy: 'simulate-only',
+        idempotencyKey: 'paper-virtual-balance-open',
+        outputSol: 1
+      }))
+    });
+    const broadcast = await broadcastResponse.json();
+
+    expect(broadcastResponse.status).toBe(200);
+    expect(broadcast).toMatchObject({
+      status: 'submitted',
+      idempotencyKey: 'paper-virtual-balance-open',
+      mainExecutionStatus: 'confirmed'
+    });
+    expect(simulateRawTransaction).not.toHaveBeenCalled();
+
+    const afterResponse = await fetch(`${server.origin}/account-state`, {
+      headers: { authorization: 'Bearer test-token' }
+    });
+    const afterAccount = await afterResponse.json();
+    expect(afterAccount.walletSol).toBe(9_999);
+    expect(afterAccount.walletLpPositions).toHaveLength(1);
+
+    await server.stop();
+  });
+
   it('fails dry-run account state closed when the real wallet SOL balance is unavailable', async () => {
     const keypair = Keypair.generate();
     const getBalance = vi.fn(async () => {

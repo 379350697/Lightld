@@ -2056,6 +2056,32 @@ describe('runLiveCycle', () => {
     expect(result.reason).toBe('live-position-cap-exceeded');
   });
 
+  it('applies the explicit paper-only position cap to a matching paper open', async () => {
+    const result = await runLiveCycle({
+      strategy: 'new-token-v1',
+      journalRootDir: TEST_JOURNAL_DIR,
+      stateRootDir: TEST_STATE_DIR,
+      captureMode: 'mechanical-soak',
+      requestedPositionSol: 1,
+      maxLivePositionSolOverride: 1,
+      context: {
+        pool: { address: 'pool-1', liquidityUsd: 10_000, feeTvlRatio24h: 0.06 },
+        token: {
+          mint: 'mint-safe',
+          inSession: true,
+          hasSolRoute: true,
+          symbol: 'SAFE'
+        },
+        trader: { hasInventory: false, hasLpPosition: false },
+        route: { hasSolRoute: true, expectedOutSol: 1, slippageBps: 50 }
+      }
+    });
+
+    expect(result.mode).toBe('LIVE');
+    expect(result.action).toBe('add-lp');
+    expect(result.liveOrderSubmitted).toBe(true);
+  });
+
   it('does not reuse stale LP identity when opening a different target', async () => {
     const result = await runLiveCycle({
       strategy: 'new-token-v1',

@@ -70,6 +70,7 @@ const SolanaExecutionConfigSchema = z.object({
   residualTokenDustMaxUiAmount: z.number().finite().nonnegative().default(0.00001),
   jitoTipLamports: z.number().int().nonnegative().optional(),
   dryRun: z.boolean().default(false),
+  paperStartingSol: z.number().finite().nonnegative().optional(),
   dryRunAddLpRebuildOnBinSlippage: z.boolean().default(true),
   dryRunAddLpRebuildMaxAttempts: z.number().int().nonnegative().default(1),
   addLpBinSlippageCooldownMs: z.number().int().nonnegative().default(300_000)
@@ -197,6 +198,9 @@ export function loadSolanaExecutionConfig(
       ? Number(env.JITO_TIP_LAMPORTS)
       : undefined,
     dryRun: parseBooleanFlag(env.SOLANA_EXECUTION_DRY_RUN),
+    paperStartingSol: env.SOLANA_PAPER_STARTING_SOL
+      ? Number(env.SOLANA_PAPER_STARTING_SOL)
+      : undefined,
     dryRunAddLpRebuildOnBinSlippage: env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE
       ? parseBooleanFlag(env.SOLANA_DRY_RUN_ADD_LP_REBUILD_ON_BIN_SLIPPAGE)
       : true,
